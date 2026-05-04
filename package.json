@@ -4,12 +4,25 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "wrangler pages dev",
+    "preview": "wrangler pages dev dist --ip 0.0.0.0 --port 3000",
     "deploy": "npm run build && wrangler pages deploy",
+    "serve": "npx serve dist -l 3000 -s",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
-    "hono": "^4.12.12"
+    "@tailwindcss/vite": "^4.2.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.5.0",
+    "hono": "^4.12.12",
+    "lucide-react": "^1.14.0",
+    "postcss": "^8.5.14",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-router-dom": "^7.14.2",
+    "tailwindcss": "^4.2.4",
+    "typescript": "^6.0.3"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",

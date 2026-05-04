@@ -1,12 +1,12 @@
 import { Hono } from 'hono'
-import { renderer } from './renderer'
+import { serveStatic } from 'hono/cloudflare-workers'
 
 const app = new Hono()
 
-app.use(renderer)
+// Serve static files from the dist directory (built React SPA)
+app.use('/*', serveStatic({ root: './dist' }))
 
-app.get('/', (c) => {
-  return c.render(<h1>Hello!</h1>)
-})
+// API placeholder routes for future Phase 2
+app.get('/api/health', (c) => c.json({ status: 'ok', project: 'smart-school' }))
 
 export default app
