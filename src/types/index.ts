@@ -113,3 +113,79 @@ export interface NavItem {
   badge?: string;
   section?: string;
 }
+
+// ===========================================
+// Phase 2: Academic Data Types
+// ===========================================
+export type ClassStage = 'رياض' | 'ابتدائي' | 'متوسط' | 'إعدادي' | 'ثانوي' | 'جامعي';
+export type Gender = 'male' | 'female';
+export type SubjectType = 'أساسية' | 'اختيارية';
+
+export interface Class {
+  id: number;
+  school_id: number;
+  name: string;
+  stage: ClassStage;
+  order_index: number;
+  status: UserStatus;
+  created_at: string;
+  updated_at: string;
+  sections_count?: number;
+  students_count?: number;
+}
+
+export interface Section {
+  id: number;
+  school_id: number;
+  class_id: number;
+  name: string;
+  capacity: number;
+  status: UserStatus;
+  created_at: string;
+  updated_at: string;
+  class_name?: string;
+  students_count?: number;
+}
+
+export interface Student {
+  id: number;
+  school_id: number;
+  student_number: string;
+  full_name: string;
+  father_name: string | null;
+  mother_name: string | null;
+  gender: Gender;
+  birth_date: string | null;
+  phone: string | null;
+  guardian_name: string | null;
+  guardian_phone: string | null;
+  address: string | null;
+  class_id: number | null;
+  section_id: number | null;
+  photo_url: string | null;
+  notes: string | null;
+  status: UserStatus;
+  created_at: string;
+  updated_at: string;
+  class_name?: string;
+  section_name?: string;
+}
+
+export interface Subject {
+  id: number;
+  school_id: number;
+  class_id: number;
+  section_id: number | null;
+  name: string;
+  subject_type: SubjectType;
+  counts_in_average: boolean;
+  appears_in_report_card: boolean;
+  passing_grade: number;
+  exemption_grade: number;
+  order_index: number;
+  status: UserStatus;
+  created_at: string;
+  updated_at: string;
+  class_name?: string;
+  section_name?: string;
+}

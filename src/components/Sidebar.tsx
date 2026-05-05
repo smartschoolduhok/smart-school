@@ -16,13 +16,14 @@ const activeModules: NavItem[] = [
   { label: 'المدارس', path: '/schools', icon: <School size={20} />, active: true },
   { label: 'المستخدمون', path: '/users', icon: <Users size={20} />, active: true },
   { label: 'الأدوار والصلاحيات', path: '/roles', icon: <Shield size={20} />, active: true },
+  // Phase 2 modules — enabled
+  { label: 'الطلاب', path: '/students', icon: <GraduationCap size={20} />, active: true },
+  { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={20} />, active: true },
+  { label: 'المواد', path: '/subjects', icon: <BookOpen size={20} />, active: true },
   { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true },
 ];
 
 const futureModules: NavItem[] = [
-  { label: 'الطلاب', path: '#', icon: <GraduationCap size={20} />, active: false, disabled: true },
-  { label: 'الصفوف والشعب', path: '#', icon: <Layers size={20} />, active: false, disabled: true },
-  { label: 'المواد', path: '#', icon: <BookOpen size={20} />, active: false, disabled: true },
   { label: 'الدرجات', path: '#', icon: <Calculator size={20} />, active: false, disabled: true },
   { label: 'كارتات النتائج', path: '#', icon: <FileText size={20} />, active: false, disabled: true },
   { label: 'الأقساط', path: '#', icon: <CreditCard size={20} />, active: false, disabled: true },
@@ -73,15 +74,20 @@ export default function Sidebar() {
 
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mt-6 mb-2 px-3">الموديلات المستقبلية</p>
           {futureModules.map((item) => (
-            <div
+            <button
               key={item.label}
-              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-600 cursor-not-allowed opacity-60"
+              onClick={(e) => {
+                e.preventDefault();
+                // Intentionally blocked - disabled module
+              }}
+              disabled
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-600 cursor-not-allowed opacity-60 disabled:cursor-not-allowed"
               title="غير مفعّل"
             >
               {item.icon}
               <span>{item.label}</span>
               <span className="mr-auto text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">غير مفعّل</span>
-            </div>
+            </button>
           ))}
         </nav>
       </div>

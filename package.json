@@ -3,11 +3,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && vite build --config vite.worker.config.ts",
+    "build:fe": "vite build",
+    "build:api": "vite build --config vite.worker.config.ts",
     "preview": "wrangler pages dev dist --ip 0.0.0.0 --port 3000",
     "deploy": "npm run build && wrangler pages deploy",
     "serve": "npx serve dist -l 3000 -s",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:create": "wrangler d1 create smart-school-db",
+    "db:migrate": "wrangler d1 migrations apply smart-school-db --local",
+    "db:seed": "wrangler d1 execute smart-school-db --local --file=./seed.sql",
+    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate && npm run db:seed",
+    "test:api": "curl -s http://localhost:3000/api/schools | head -c 200"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.4",

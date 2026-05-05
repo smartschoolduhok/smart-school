@@ -1,7 +1,9 @@
-import { School, Users, Calendar, Puzzle, TrendingUp, Activity } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { School, Users, Calendar, Puzzle, TrendingUp, Activity, Loader2, AlertCircle } from 'lucide-react';
 import { toArabicDigits, formatArabicNumber } from '../../lib/arabicDigits';
 import { useAuth } from '../../hooks/useAuth';
-import { demoSchools, demoUsers, demoAcademicYears, demoModules } from '../../data/demoData';
+import { getDashboardStats, getSchools } from '../../lib/api';
+import type { School as SchoolType } from '../../types';
 
 function DashboardCard({ title, value, icon, color, subtitle }: {
   title: string;
@@ -36,11 +38,69 @@ function DashboardCard({ title, value, icon, color, subtitle }: {
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const [stats, setStats] = useState({
+    active_schools: 0,
+    active_users: 0,
+    total_users: 0,
+    current_academic_year: '---',
+    total_modules: 0,
+    core_modules: 0,
+  });
+  const [schools, setSchools] = useState<SchoolType[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const activeSchools = demoSchools.filter(s => s.status === 'active').length;
-  const activeUsers = demoUsers.filter(u => u.status === 'active').length;
-  const currentYear = demoAcademicYears.find(y => y.is_active);
-  const enabledModules = demoModules.filter(m => m.id <= 5).length;
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      setError(null);
+      const [{ data: statsData, error: statsErr }, { data: schoolsData, error: schoolsErr }] = await Promise.all([
+        getDashboardStats(),
+        getSchools(),
+      ]);
+      if (!cancelled) {
+        if (statsErr || schoolsErr) {
+          setError(statsErr || schoolsErr || 'فشل في جلب البيانات');
+        } else {
+          if (statsData) setStats(statsData);
+          if (schoolsData) setSchools(schoolsData.map((s: any) => ({
+            ...s,
+            created_at: s.created_at ? new Date(s.created_at * 1000).toISOString().split('T')[0] : '',
+          })) as SchoolType[]);
+        }
+        setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="p-12 flex flex-col items-center justify-center gap-3 text-gray-500">
+        <Loader2 size={28} className="animate-spin text-primary-600" />
+        <p className="text-sm">جاري تحميل لوحة التحكم...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-8 flex flex-col items-center justify-center gap-3 text-red-600">
+        <AlertCircle size={28} />
+        <p className="text-sm">{error}</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-sm font-medium transition-colors"
+        >
+          إعادة المحاولة
+        </button>
+      </div>
+    );
+  }
+
+  const activeSchoolsList = schools.filter(s => s.status === 'active');
 
   return (
     <div>
@@ -54,31 +114,31 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <DashboardCard
           title="عدد المدارس"
-          value={formatArabicNumber(activeSchools)}
+          value={formatArabicNumber(stats.active_schools)}
           icon={<School size={24} />}
           color="blue"
           subtitle="المدارس النشطة"
         />
         <DashboardCard
           title="عدد المستخدمين"
-          value={formatArabicNumber(activeUsers)}
+          value={formatArabicNumber(stats.active_users)}
           icon={<Users size={24} />}
           color="green"
           subtitle="المستخدمون النشطون"
         />
         <DashboardCard
           title="السنة الدراسية الحالية"
-          value={currentYear?.name || '---'}
+          value={stats.current_academic_year || '---'}
           icon={<Calendar size={24} />}
           color="amber"
           subtitle="مفعّلة حالياً"
         />
         <DashboardCard
           title="الموديلات المفعلة"
-          value={formatArabicNumber(enabledModules)}
+          value={formatArabicNumber(stats.core_modules)}
           icon={<Puzzle size={24} />}
           color="purple"
-          subtitle="من أصل ١٩ موديل"
+          subtitle={`من أصل ${toArabicDigits(stats.total_modules.toString())} موديل`}
         />
       </div>
 
@@ -87,11 +147,14 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-gray-900">المدارس النشطة</h2>
             <span className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-full font-medium">
-              {formatArabicNumber(demoSchools.length)} مدرسة
+              {formatArabicNumber(schools.length)} مدرسة
             </span>
           </div>
           <div className="space-y-3">
-            {demoSchools.map(school => (
+            {activeSchoolsList.length === 0 && (
+              <p className="text-sm text-gray-400 text-center py-8">لا توجد مدارس نشطة</p>
+            )}
+            {activeSchoolsList.map(school => (
               <div key={school.id} className="flex items-center justify-between p-4 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 bg-primary-100 text-primary-700 rounded-lg flex items-center justify-center font-bold text-sm">
