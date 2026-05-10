@@ -76,10 +76,10 @@ export default function SubjectsPage() {
     setLoading(true); setError('');
     const sid = schoolId ?? undefined;
     const [subRes, cRes, sRes] = await Promise.all([getSubjects(sid), getClasses(sid), getSections(sid)]);
-    if (subRes.data) setSubjects(subRes.data);
+    if (subRes.data) setSubjects(subRes.data as SubjectRecord[]);
     else if (subRes.error) setError(subRes.error);
-    if (cRes.data) setClasses(cRes.data);
-    if (sRes.data) setSections(sRes.data);
+    if (cRes.data) setClasses(cRes.data as ClassRecord[]);
+    if (sRes.data) setSections(sRes.data as SectionRecord[]);
     setLoading(false);
   }
 
@@ -338,7 +338,7 @@ export default function SubjectsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">الصف <span className="text-red-500">*</span></label>
                   <select value={String(form.class_id)} onChange={(e) => setForm({ ...form, class_id: e.target.value, section_id: '' })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                     <option value="">اختر الصف</option>
-                    {classes.filter((c) => c.status === 'active').map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
+                    {classes.filter((c) => (c as any).status === 'active').map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
                   </select>
                 </div>
                 <div>

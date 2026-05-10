@@ -1,11 +1,24 @@
 // ===========================================
-// Authentication Context
-// Mock implementation for Phase 1
-// Ready for Supabase Auth integration in Phase 2
+// Authentication Context - JWT Bearer Token
+// Backend integration with Hono Cloudflare Worker
 // ===========================================
 
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import type { AuthState, AuthUser } from '../types';
+
+const TOKEN_KEY = 'smart_school_token';
+const USER_KEY = 'smart_school_user';
+
+interface LoginResponse {
+  data: {
+    token: string;
+    user: AuthUser;
+  };
+}
+
+interface MeResponse {
+  data: AuthUser;
+}
 
 interface AuthContextType extends AuthState {
   login: (email: string, password: string) => Promise<boolean>;
@@ -14,91 +27,122 @@ interface AuthContextType extends AuthState {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Mock admin user for development
-const MOCK_ADMIN: AuthUser = {
-  id: 1,
-  full_name: 'أحمد عبدالله',
-  email: 'admin@smart-school.iq',
-  role_id: 1,
-  role_key: 'system_admin',
-  role_name: 'مدير النظام',
-  school_id: null,
-  school_name: null,
-};
+function getStoredToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
 
-// Mock school user for development
-const MOCK_SCHOOL_USER: AuthUser = {
-  id: 2,
-  full_name: 'سارة محمود',
-  email: 'principal@nukhba.iq',
-  role_id: 3,
-  role_key: 'principal',
-  role_name: 'المدير',
-  school_id: 1,
-  school_name: 'مدرسة النخبة الأهلية',
-};
+function getStoredUser(): AuthUser | null {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearAuth() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  // Also remove legacy key if present
+  localStorage.removeItem('smart_school_auth');
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({
-    user: null,
-    isAuthenticated: false,
-    isLoading: false,
+    user: getStoredUser(),
+    isAuthenticated: !!getStoredToken(),
+    isLoading: true,
   });
+
+  // On mount: validate token with backend
+  useEffect(() => {
+    const token = getStoredToken();
+    if (!token) {
+      setState(prev => ({ ...prev, isLoading: false }));
+      return;
+    }
+
+    fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async res => {
+        if (!res.ok) {
+          throw new Error('Session expired');
+        }
+        const body = (await res.json()) as MeResponse;
+        if (body.data) {
+          localStorage.setItem(USER_KEY, JSON.stringify(body.data));
+          setState({
+            user: body.data,
+            isAuthenticated: true,
+            isLoading: false,
+          });
+        } else {
+          throw new Error('Invalid session');
+        }
+      })
+      .catch(() => {
+        clearAuth();
+        setState({
+          user: null,
+          isAuthenticated: false,
+          isLoading: false,
+        });
+      });
+  }, []);
 
   const login = useCallback(async (email: string, password: string): Promise<boolean> => {
     setState(prev => ({ ...prev, isLoading: true }));
 
-    // Simulate API delay
-    await new Promise(resolve => setTimeout(resolve, 800));
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
 
-    // Mock authentication logic
-    let user: AuthUser | null = null;
-    if (email === 'admin@smart-school.iq' && password === 'admin123') {
-      user = MOCK_ADMIN;
-    } else if (email === 'principal@nukhba.iq' && password === 'school123') {
-      user = MOCK_SCHOOL_USER;
-    }
+      if (!res.ok) {
+        setState(prev => ({ ...prev, isLoading: false }));
+        return false;
+      }
 
-    if (user) {
+      const body = (await res.json()) as LoginResponse;
+      const { token, user } = body.data;
+
+      localStorage.setItem(TOKEN_KEY, token);
+      localStorage.setItem(USER_KEY, JSON.stringify(user));
+
       setState({
         user,
         isAuthenticated: true,
         isLoading: false,
       });
-      // Store in localStorage for persistence (can be replaced with Supabase session)
-      localStorage.setItem('smart_school_auth', JSON.stringify(user));
       return true;
+    } catch {
+      setState(prev => ({ ...prev, isLoading: false }));
+      return false;
     }
-
-    setState(prev => ({ ...prev, isLoading: false }));
-    return false;
   }, []);
 
-  const logout = useCallback(() => {
-    localStorage.removeItem('smart_school_auth');
+  const logout = useCallback(async () => {
+    const token = getStoredToken();
+    if (token) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        // ignore network errors on logout
+      }
+    }
+    clearAuth();
     setState({
       user: null,
       isAuthenticated: false,
       isLoading: false,
     });
     window.location.href = '/login';
-  }, []);
-
-  // Check for stored auth on mount (simulating Supabase session recovery)
-  React.useEffect(() => {
-    const stored = localStorage.getItem('smart_school_auth');
-    if (stored) {
-      try {
-        const user = JSON.parse(stored) as AuthUser;
-        setState({
-          user,
-          isAuthenticated: true,
-          isLoading: false,
-        });
-      } catch {
-        localStorage.removeItem('smart_school_auth');
-      }
-    }
   }, []);
 
   return (
@@ -115,8 +159,3 @@ export function useAuth() {
   }
   return context;
 }
-
-// TODO Phase 2: Replace mock auth with Supabase Auth
-// import { createClient } from '@supabase/supabase-js'
-// const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
-// Use supabase.auth.signInWithPassword() and supabase.auth.onAuthStateChange()

@@ -1,41 +1,60 @@
 // ===========================================
-// API Client - Phase 2 (Security Hardening)
+// API Client - JWT Bearer Token Authentication
 // Connects React frontend to Hono backend
-// Automatically injects x-user-email header from auth context
+// Automatically injects Authorization: Bearer <token> header
 // ===========================================
 
 const API_BASE = import.meta.env.PROD ? '' : '';
-// In both dev and prod, the API is served from the same origin (Pages + Worker)
 
-function getAuthEmail(): string | null {
-  try {
-    const raw = localStorage.getItem('smart_school_auth');
-    if (!raw) return null;
-    const user = JSON.parse(raw);
-    return user?.email || null;
-  } catch {
-    return null;
-  }
+function getToken(): string | null {
+  return localStorage.getItem('smart_school_token');
+}
+
+function clearAuthAndRedirect() {
+  localStorage.removeItem('smart_school_token');
+  localStorage.removeItem('smart_school_user');
+  localStorage.removeItem('smart_school_auth');
+  window.location.href = '/login';
+}
+
+function showError(message: string) {
+  // Try to use a toast or alert - fallback to alert for now
+  alert(message);
 }
 
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; error?: string }> {
   try {
-    const email = getAuthEmail();
+    const token = getToken();
     const headers: Record<string, string> = {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
     };
-    if (email) {
-      headers['x-user-email'] = email;
+
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
+
     const res = await fetch(`${API_BASE}${path}`, {
       headers,
       ...options,
     });
+
+    if (res.status === 401) {
+      clearAuthAndRedirect();
+      showError('غير مسموح: يجب تسجيل الدخول أولاً');
+      return { error: 'غير مسموح: يجب تسجيل الدخول أولاً' };
+    }
+
+    if (res.status === 403) {
+      showError('غير مسموح: لا تملك صلاحية الوصول');
+      return { error: 'غير مسموح: لا تملك صلاحية الوصول' };
+    }
+
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       return { error: body.error || `خطأ ${res.status}` };
     }
+
     const body = await res.json();
     return { data: body.data ?? body };
   } catch (err: any) {
@@ -97,7 +116,7 @@ export function getAcademicYears(schoolId?: number | null) {
 }
 
 // ===========================================
-// Phase 2: Classes
+// Classes
 // ===========================================
 export function getClasses(schoolId?: number | null) {
   const qs = schoolId != null ? `?school_id=${schoolId}` : '';
@@ -117,7 +136,7 @@ export function archiveClass(id: number | string) {
 }
 
 // ===========================================
-// Phase 2: Sections
+// Sections
 // ===========================================
 export function getSections(schoolId?: number | null, classId?: number | null) {
   const params = new URLSearchParams();
@@ -140,7 +159,7 @@ export function archiveSection(id: number | string) {
 }
 
 // ===========================================
-// Phase 2: Students
+// Students
 // ===========================================
 export function getStudents(schoolId?: number | null, classId?: number | null, sectionId?: number | null) {
   const params = new URLSearchParams();
@@ -168,7 +187,7 @@ export function archiveStudent(id: number | string) {
 }
 
 // ===========================================
-// Phase 2: Subjects
+// Subjects
 // ===========================================
 export function getSubjects(schoolId?: number | null, classId?: number | null, sectionId?: number | null) {
   const params = new URLSearchParams();
@@ -189,4 +208,181 @@ export function updateSubject(id: number | string, data: Record<string, any>) {
 
 export function archiveSubject(id: number | string) {
   return fetchApi<Record<string, any>>(`/api/subjects/${id}/archive`, { method: 'PUT', body: '{}' });
+}
+
+// ===========================================
+// Student Subjects
+// ===========================================
+export function getStudentSubjects(schoolId?: number | null, studentId?: number | null, classId?: number | null, sectionId?: number | null, subjectId?: number | null, isActive?: boolean | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  if (studentId != null) params.append('student_id', String(studentId));
+  if (classId != null) params.append('class_id', String(classId));
+  if (sectionId != null) params.append('section_id', String(sectionId));
+  if (subjectId != null) params.append('subject_id', String(subjectId));
+  if (isActive != null) params.append('is_active', isActive ? '1' : '0');
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/student-subjects${qs}`);
+}
+
+export function getStudentActiveSubjects(studentId: number | string) {
+  return fetchApi<Array<Record<string, any>>>(`/api/students/${studentId}/subjects`);
+}
+
+export function assignSubjectsToClass(classId: number | string, subjectIds: number[]) {
+  return fetchApi<Record<string, any>>('/api/student-subjects/assign-class', { method: 'POST', body: JSON.stringify({ class_id: Number(classId), subject_ids: subjectIds }) });
+}
+
+export function assignSubjectsToSection(sectionId: number | string, subjectIds: number[]) {
+  return fetchApi<Record<string, any>>('/api/student-subjects/assign-section', { method: 'POST', body: JSON.stringify({ section_id: Number(sectionId), subject_ids: subjectIds }) });
+}
+
+export function assignSubjectsToStudents(studentIds: number[], subjectIds: number[]) {
+  return fetchApi<Record<string, any>>('/api/student-subjects/assign-students', { method: 'POST', body: JSON.stringify({ student_ids: studentIds, subject_ids: subjectIds }) });
+}
+
+export function assignSubjectToOne(studentId: number | string, subjectId: number | string) {
+  return fetchApi<Record<string, any>>('/api/student-subjects/assign-one', { method: 'POST', body: JSON.stringify({ student_id: Number(studentId), subject_id: Number(subjectId) }) });
+}
+
+export function deactivateStudentSubject(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/student-subjects/${id}/deactivate`, { method: 'PUT', body: '{}' });
+}
+
+export function reactivateStudentSubject(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/student-subjects/${id}/reactivate`, { method: 'PUT', body: '{}' });
+}
+
+export function bulkDeactivateStudentSubject(ids: number[]) {
+  return fetchApi<Record<string, any>>('/api/student-subjects/bulk-deactivate', { method: 'POST', body: JSON.stringify({ ids }) });
+}
+
+// ===========================================
+// Grades (Phase 4)
+// ===========================================
+export function getGrades(filters?: {
+  student_id?: number | null;
+  class_id?: number | null;
+  section_id?: number | null;
+  subject_id?: number | null;
+  is_active?: boolean | null;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.student_id != null) params.append('student_id', String(filters.student_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  if (filters?.subject_id != null) params.append('subject_id', String(filters.subject_id));
+  if (filters?.is_active != null) params.append('is_active', filters.is_active ? '1' : '0');
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/grades${qs}`);
+}
+
+export function getStudentGrades(studentId: number | string) {
+  return fetchApi<Record<string, any>>(`/api/students/${studentId}/grades`);
+}
+
+export function initializeStudentGrades(studentId: number | string) {
+  return fetchApi<Record<string, any>>(`/api/grades/initialize-student/${studentId}`, { method: 'POST', body: '{}' });
+}
+
+export function initializeSectionGrades(data: { section_id: number; subject_ids: number[] }) {
+  return fetchApi<Record<string, any>>('/api/grades/initialize-section', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateGrade(id: number | string, data: Record<string, any>) {
+  return fetchApi<Record<string, any>>(`/api/grades/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function bulkUpdateGrades(entries: Array<Record<string, any>>) {
+  return fetchApi<Record<string, any>>('/api/grades/bulk-entry', { method: 'POST', body: JSON.stringify({ entries }) });
+}
+
+export function getGradeHistory(id: number | string) {
+  return fetchApi<Array<Record<string, any>>>(`/api/grades/${id}/history`);
+}
+
+export function getGradeSettings() {
+  return fetchApi<Record<string, any>>('/api/grade-settings');
+}
+
+export function updateGradeSettings(data: Record<string, any>) {
+  // Non-admin users: backend derives school_id from JWT.
+  // Do NOT include school_id in body for principals/teachers.
+  return fetchApi<Record<string, any>>('/api/grade-settings', { method: 'PUT', body: JSON.stringify(data) });
+}
+
+// ===========================================
+// Analytics (Phase 5)
+// ===========================================
+export function getAnalyticsOverview(filters?: { school_id?: number | null; class_id?: number | null; section_id?: number | null; subject_id?: number | null }) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  if (filters?.subject_id != null) params.append('subject_id', String(filters.subject_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/analytics/overview${qs}`);
+}
+
+export function getAnalyticsByClass(filters?: { school_id?: number | null; class_id?: number | null; section_id?: number | null; subject_id?: number | null }) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  if (filters?.subject_id != null) params.append('subject_id', String(filters.subject_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/analytics/by-class${qs}`);
+}
+
+export function getAnalyticsBySection(filters?: { school_id?: number | null; class_id?: number | null; section_id?: number | null; subject_id?: number | null }) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  if (filters?.subject_id != null) params.append('subject_id', String(filters.subject_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/analytics/by-section${qs}`);
+}
+
+export function getAnalyticsBySubject(filters?: { school_id?: number | null; class_id?: number | null; section_id?: number | null; subject_id?: number | null }) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  if (filters?.subject_id != null) params.append('subject_id', String(filters.subject_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/analytics/by-subject${qs}`);
+}
+
+export function getStudentsCloseToPassing(filters?: { school_id?: number | null; class_id?: number | null; section_id?: number | null; subject_id?: number | null }) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  if (filters?.subject_id != null) params.append('subject_id', String(filters.subject_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/analytics/students-close-to-passing${qs}`);
+}
+
+export function getStudentsCloseToExemption(filters?: { school_id?: number | null; class_id?: number | null; section_id?: number | null; subject_id?: number | null }) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  if (filters?.subject_id != null) params.append('subject_id', String(filters.subject_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/analytics/students-close-to-exemption${qs}`);
+}
+
+export function getExemptionBlockers(filters?: { school_id?: number | null; class_id?: number | null; section_id?: number | null }) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/analytics/exemption-blockers${qs}`);
+}
+
+export function getStudentSummary(studentId: number | string) {
+  return fetchApi<Record<string, any>>(`/api/analytics/student-summary/${studentId}`);
 }

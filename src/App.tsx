@@ -9,6 +9,9 @@ import RolesPage from './modules/roles/RolesPage';
 import StudentsPage from './modules/students/StudentsPage';
 import ClassesPage from './modules/classes/ClassesPage';
 import SubjectsPage from './modules/subjects/SubjectsPage';
+import StudentSubjectsPage from './modules/studentSubjects/StudentSubjectsPage';
+import GradesPage from './modules/grades/GradesPage';
+import AnalyticsPage from './modules/analytics/AnalyticsPage';
 
 // Settings placeholder - Phase 1: active module
 function SettingsPage() {
@@ -58,7 +61,9 @@ export default function App() {
           <Route path="/students" element={<Layout><StudentsPage /></Layout>} />
           <Route path="/classes" element={<Layout><ClassesPage /></Layout>} />
           <Route path="/subjects" element={<Layout><SubjectsPage /></Layout>} />
-          <Route path="/grades" element={<Layout><DisabledModulePage moduleName="الدرجات" /></Layout>} />
+          <Route path="/student-subjects" element={<Layout><StudentSubjectsPage /></Layout>} />
+          <Route path="/grades" element={<Layout><GradesPage /></Layout>} />
+          <Route path="/analytics" element={<Layout><AnalyticsPage /></Layout>} />
           <Route path="/result-cards" element={<Layout><DisabledModulePage moduleName="كارتات النتائج" /></Layout>} />
           <Route path="/fees" element={<Layout><DisabledModulePage moduleName="الأقساط" /></Layout>} />
           <Route path="/treasury" element={<Layout><DisabledModulePage moduleName="الخزنة" /></Layout>} />

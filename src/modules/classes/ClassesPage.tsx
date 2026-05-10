@@ -70,9 +70,9 @@ export default function ClassesPage() {
     setLoading(true); setError('');
     const sid = schoolId ?? undefined;
     const [cRes, sRes] = await Promise.all([getClasses(sid), getSections(sid)]);
-    if (cRes.data) setClasses(cRes.data);
+    if (cRes.data) setClasses(cRes.data as ClassRecord[]);
     else if (cRes.error) setError(cRes.error);
-    if (sRes.data) setSections(sRes.data);
+    if (sRes.data) setSections(sRes.data as SectionRecord[]);
     else if (sRes.error) setError(sRes.error);
     setLoading(false);
   }

@@ -1,0 +1,684 @@
+// ===========================================
+// Phase 4: Grades & Academic Calculations API
+// These routes are appended to worker.ts at build time or imported
+// ===========================================
+
+// NOTE: This file is meant to be concatenated into worker.ts manually
+// since we can't use ES modules imports in the single-file worker pattern.
+
+// ===========================================
+// Grade Calculation Helpers
+// ===========================================
+
+function roundGrade(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || isNaN(value)) return null;
+  return Math.round(value);
+}
+
+function avg(values: (number | null | undefined)[]): number | null {
+  const valid = values.filter(v => v !== null && v !== undefined && !isNaN(v)) as number[];
+  if (valid.length === 0) return null;
+  return valid.reduce((a, b) => a + b, 0) / valid.length;
+}
+
+function calculateGrades(
+  g: {
+    first_month?: number | null;
+    second_month?: number | null;
+    third_month?: number | null;
+    fourth_month?: number | null;
+    mid_year_exam?: number | null;
+    final_exam?: number | null;
+    completion_exam?: number | null;
+  },
+  settings: { passing_grade: number; exemption_grade: number; max_grade: number }
+): {
+  first_term_average: number | null;
+  second_term_average: number | null;
+  annual_effort: number | null;
+  final_grade: number | null;
+  grade_after_completion: number | null;
+  effective_grade: number | null;
+  result_status: string | null;
+  exemption_status: number;
+} {
+  const fm = g.first_month ?? null;
+  const sm = g.second_month ?? null;
+  const tm = g.third_month ?? null;
+  const fom = g.fourth_month ?? null;
+  const mye = g.mid_year_exam ?? null;
+  const fe = g.final_exam ?? null;
+  const ce = g.completion_exam ?? null;
+
+  const first_term_average = roundGrade(avg([fm, sm]));
+  const second_term_average = roundGrade(avg([tm, fom]));
+  const annual_effort = roundGrade(avg([first_term_average, mye, second_term_average]));
+  const final_grade = roundGrade(avg([annual_effort, fe]));
+
+  let grade_after_completion: number | null = null;
+  let effective_grade: number | null = null;
+  let result_status: string | null = null;
+  let exemption_status = 0;
+
+  if (final_grade !== null) {
+    if (final_grade >= settings.passing_grade) {
+      // Student passed — ignore completion exam entirely
+      grade_after_completion = null;
+      effective_grade = final_grade;
+      result_status = 'ناجح';
+    } else {
+      // Student failed
+      if (ce !== null) {
+        grade_after_completion = Math.max(final_grade, ce);
+        effective_grade = grade_after_completion;
+        if (effective_grade >= settings.passing_grade) {
+          result_status = 'ناجح';
+        } else {
+          result_status = 'راسب';
+        }
+      } else {
+        grade_after_completion = null;
+        effective_grade = final_grade;
+        result_status = 'مكمل';
+      }
+    }
+
+    // Exemption status is separate from result_status
+    if (effective_grade !== null && effective_grade >= settings.exemption_grade) {
+      exemption_status = 1;
+    }
+  }
+
+  return {
+    first_term_average,
+    second_term_average,
+    annual_effort,
+    final_grade,
+    grade_after_completion,
+    effective_grade,
+    result_status,
+    exemption_status,
+  };
+}
+
+function validateGradeValue(value: any, maxGrade: number, fieldName: string): { ok: boolean; error?: string; numeric?: number | null } {
+  if (value === '' || value === null || value === undefined) {
+    return { ok: true, numeric: null };
+  }
+  const num = Number(value);
+  if (isNaN(num)) {
+    return { ok: false, error: `القيمة في حقل ${fieldName} ليست رقمًا صحيحًا` };
+  }
+  if (num < 0 || num > maxGrade) {
+    return { ok: false, error: `القيمة في حقل ${fieldName} يجب أن تكون بين ٠ و ${maxGrade}` };
+  }
+  return { ok: true, numeric: num };
+}
+
+// ===========================================
+// Grade Settings Routes
+// ===========================================
+
+app.get('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const scope = c.get('scope');
+    const resolvedSchoolId = c.get('resolvedSchoolId');
+
+    if (scope === 'single' && resolvedSchoolId) {
+      const row = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(resolvedSchoolId).first<any>();
+      if (!row) {
+        // Auto-create default settings for this school
+        await db.prepare(`
+          INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, created_at, updated_at)
+          VALUES (?, 100, 50, 30, unixepoch(), unixepoch())
+        `).bind(resolvedSchoolId).run();
+        const newRow = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(resolvedSchoolId).first<any>();
+        return c.json({ data: newRow });
+      }
+      return c.json({ data: row });
+    }
+
+    // Admin can list all
+    const rows = await db.prepare('SELECT * FROM grade_settings ORDER BY school_id').all<any>();
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب إعدادات الدرجات', detail: err.message }, 500);
+  }
+});
+
+app.put('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const body = await c.req.json();
+    const { school_id, max_grade, passing_grade, exemption_grade,
+      first_term_formula, second_term_formula, annual_effort_formula,
+      final_grade_formula, completion_formula, effective_formula } = body;
+
+    const scope = c.get('scope');
+    const resolvedSchoolId = c.get('resolvedSchoolId');
+    const targetSchoolId = scope === 'single' ? resolvedSchoolId : (school_id || resolvedSchoolId);
+
+    if (!targetSchoolId) return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+
+    // Check existing
+    const existing = await db.prepare('SELECT id FROM grade_settings WHERE school_id = ?').bind(targetSchoolId).first<{ id: number }>();
+
+    if (existing) {
+      await db.prepare(`
+        UPDATE grade_settings SET
+          max_grade = COALESCE(?, max_grade),
+          passing_grade = COALESCE(?, passing_grade),
+          exemption_grade = COALESCE(?, exemption_grade),
+          first_term_formula = COALESCE(?, first_term_formula),
+          second_term_formula = COALESCE(?, second_term_formula),
+          annual_effort_formula = COALESCE(?, annual_effort_formula),
+          final_grade_formula = COALESCE(?, final_grade_formula),
+          completion_formula = COALESCE(?, completion_formula),
+          effective_formula = COALESCE(?, effective_formula),
+          updated_at = unixepoch(),
+          updated_by_user_id = ?
+        WHERE school_id = ?
+      `).bind(
+        max_grade ?? null, passing_grade ?? null, exemption_grade ?? null,
+        first_term_formula ?? null, second_term_formula ?? null, annual_effort_formula ?? null,
+        final_grade_formula ?? null, completion_formula ?? null, effective_formula ?? null,
+        user?.id || null, targetSchoolId
+      ).run();
+    } else {
+      await db.prepare(`
+        INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, first_term_formula, second_term_formula, annual_effort_formula, final_grade_formula, completion_formula, effective_formula, updated_by_user_id, created_at, updated_at)
+        VALUES (?, COALESCE(?, 100), COALESCE(?, 50), COALESCE(?, 30), ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+      `).bind(
+        targetSchoolId, max_grade ?? null, passing_grade ?? null, exemption_grade ?? null,
+        first_term_formula ?? null, second_term_formula ?? null, annual_effort_formula ?? null,
+        final_grade_formula ?? null, completion_formula ?? null, effective_formula ?? null,
+        user?.id || null
+      ).run();
+    }
+
+    const row = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(targetSchoolId).first<any>();
+    return c.json({ data: row });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث إعدادات الدرجات', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// Grade Query Helpers
+// ===========================================
+
+async function getGradeSettings(db: D1Database, schoolId: number): Promise<any> {
+  const row = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(schoolId).first<any>();
+  if (!row) {
+    // Insert defaults
+    await db.prepare(`
+      INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, created_at, updated_at)
+      VALUES (?, 100, 50, 30, unixepoch(), unixepoch())
+    `).bind(schoolId).run();
+    return db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(schoolId).first<any>();
+  }
+  return row;
+}
+
+async function getActiveStudentSubjects(db: D1Database, studentId: number, schoolId: number): Promise<any[]> {
+  const rows = await db.prepare(`
+    SELECT ss.id as student_subject_id, s.id as subject_id, s.name as subject_name,
+           c.name as class_name, sec.name as section_name
+    FROM student_subjects ss
+    JOIN subjects s ON ss.subject_id = s.id
+    LEFT JOIN classes c ON s.class_id = c.id
+    LEFT JOIN sections sec ON s.section_id = sec.id
+    WHERE ss.student_id = ? AND ss.school_id = ? AND ss.is_active = 1 AND s.status = 'active'
+    ORDER BY s.name
+  `).bind(studentId, schoolId).all<any>();
+  return rows.results || [];
+}
+
+// ===========================================
+// GET /api/grades
+// ===========================================
+
+app.get('/api/grades', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  try {
+    const scope = c.get('scope');
+    const resolvedSchoolId = c.get('resolvedSchoolId');
+
+    const q = c.req.query();
+    const studentId = q.student_id ? Number(q.student_id) : null;
+    const subjectId = q.subject_id ? Number(q.subject_id) : null;
+    const classId = q.class_id ? Number(q.class_id) : null;
+    const sectionId = q.section_id ? Number(q.section_id) : null;
+    const isActive = q.is_active !== undefined ? Number(q.is_active) : null;
+
+    let sql = `
+      SELECT g.*,
+             st.full_name as student_name, st.student_number,
+             s.name as subject_name,
+             c.name as class_name, sec.name as section_name
+      FROM grades g
+      JOIN student_subjects ss ON g.student_subject_id = ss.id
+      JOIN students st ON ss.student_id = st.id
+      JOIN subjects s ON ss.subject_id = s.id
+      LEFT JOIN classes c ON st.class_id = c.id
+      LEFT JOIN sections sec ON st.section_id = sec.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (scope === 'single' && resolvedSchoolId) {
+      sql += ' AND g.school_id = ?';
+      params.push(resolvedSchoolId);
+    }
+    if (studentId) {
+      sql += ' AND ss.student_id = ?';
+      params.push(studentId);
+    }
+    if (subjectId) {
+      sql += ' AND ss.subject_id = ?';
+      params.push(subjectId);
+    }
+    if (classId) {
+      sql += ' AND st.class_id = ?';
+      params.push(classId);
+    }
+    if (sectionId) {
+      sql += ' AND st.section_id = ?';
+      params.push(sectionId);
+    }
+    if (isActive !== null) {
+      sql += ' AND g.is_active = ?';
+      params.push(isActive);
+    } else {
+      sql += ' AND g.is_active = 1';
+    }
+
+    sql += ' ORDER BY st.full_name, s.name';
+
+    const stmt = db.prepare(sql);
+    const rows = await (params.length > 0 ? stmt.bind(...params).all<any>() : stmt.all<any>());
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب الدرجات', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// GET /api/students/:id/grades
+// ===========================================
+
+app.get('/api/students/:id/grades', requireAuthEnforced(), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  const studentId = Number(c.req.param('id'));
+  try {
+    const student = await db.prepare('SELECT school_id, full_name FROM students WHERE id = ?').bind(studentId).first<{ school_id: number; full_name: string }>();
+    if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
+
+    if (user && user.role_key !== 'system_admin' && student.school_id !== user.school_id) {
+      return c.json({ error: 'غير مسموح: الطالب في مدرسة أخرى' }, 403);
+    }
+
+    const settings = await getGradeSettings(db, student.school_id);
+
+    const rows = await db.prepare(`
+      SELECT g.*, s.name as subject_name, s.id as subject_id
+      FROM grades g
+      JOIN student_subjects ss ON g.student_subject_id = ss.id
+      JOIN subjects s ON ss.subject_id = s.id
+      WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1 AND ss.is_active = 1 AND s.status = 'active'
+      ORDER BY s.name
+    `).bind(studentId, student.school_id).all<any>();
+
+    return c.json({ data: { student_name: student.full_name, settings, grades: rows.results || [] } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب درجات الطالب', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// POST /api/grades/initialize-student/:student_id
+// Create empty grade rows for all active student_subjects
+// ===========================================
+
+app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  const studentId = Number(c.req.param('student_id'));
+  try {
+    const student = await db.prepare('SELECT school_id FROM students WHERE id = ?').bind(studentId).first<{ school_id: number }>();
+    if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
+
+    if (user && user.role_key !== 'system_admin' && student.school_id !== user.school_id) {
+      return c.json({ error: 'غير مسموح' }, 403);
+    }
+
+    const activeAssignments = await getActiveStudentSubjects(db, studentId, student.school_id);
+    let created = 0;
+    let skipped = 0;
+
+    for (const assignment of activeAssignments) {
+      const existing = await db.prepare('SELECT id FROM grades WHERE student_subject_id = ? AND is_active = 1').bind(assignment.student_subject_id).first<any>();
+      if (existing) {
+        skipped++;
+        continue;
+      }
+      await db.prepare(`
+        INSERT INTO grades (school_id, student_subject_id, is_active, created_at, updated_at, updated_by_user_id)
+        VALUES (?, ?, 1, unixepoch(), unixepoch(), ?)
+      `).bind(student.school_id, assignment.student_subject_id, user?.id || null).run();
+      created++;
+    }
+
+    return c.json({ data: { created, skipped, total: activeAssignments.length } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تهيئة درجات الطالب', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// POST /api/grades/initialize-section
+// Initialize grades for all students in a section for given subjects
+// ===========================================
+
+app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const body = await c.req.json();
+    const { section_id, subject_ids } = body;
+    if (!section_id) return c.json({ error: 'معرف الشعبة مطلوب' }, 400);
+    if (!Array.isArray(subject_ids) || subject_ids.length === 0) return c.json({ error: 'يجب اختيار مادة واحدة على الأقل' }, 400);
+
+    const section = await db.prepare('SELECT school_id, class_id FROM sections WHERE id = ?').bind(Number(section_id)).first<{ school_id: number; class_id: number }>();
+    if (!section) return c.json({ error: 'الشعبة غير موجودة' }, 404);
+
+    if (user && user.role_key !== 'system_admin' && section.school_id !== user.school_id) {
+      return c.json({ error: 'غير مسموح' }, 403);
+    }
+
+    const students = await db.prepare('SELECT id FROM students WHERE section_id = ? AND school_id = ? AND status = "active"').bind(section_id, section.school_id).all<{ id: number }>();
+    let created = 0;
+    let skipped = 0;
+
+    for (const st of (students.results || [])) {
+      for (const suId of subject_ids) {
+        const ss = await db.prepare(`
+          SELECT id FROM student_subjects
+          WHERE student_id = ? AND subject_id = ? AND school_id = ? AND is_active = 1
+        `).bind(st.id, suId, section.school_id).first<{ id: number }>();
+        if (!ss) { skipped++; continue; }
+
+        const existing = await db.prepare('SELECT id FROM grades WHERE student_subject_id = ? AND is_active = 1').bind(ss.id).first<any>();
+        if (existing) { skipped++; continue; }
+
+        await db.prepare(`
+          INSERT INTO grades (school_id, student_subject_id, is_active, created_at, updated_at, updated_by_user_id)
+          VALUES (?, ?, 1, unixepoch(), unixepoch(), ?)
+        `).bind(section.school_id, ss.id, user?.id || null).run();
+        created++;
+      }
+    }
+
+    return c.json({ data: { created, skipped } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تهيئة درجات الشعبة', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// PUT /api/grades/:id - update grade fields with calculations & audit log
+// ===========================================
+
+app.put('/api/grades/:id', requireAuthEnforced(), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  const gradeId = Number(c.req.param('id'));
+  try {
+    const gradeRow = await db.prepare('SELECT * FROM grades WHERE id = ?').bind(gradeId).first<any>();
+    if (!gradeRow) return c.json({ error: 'الدرجة غير موجودة' }, 404);
+
+    if (user && user.role_key !== 'system_admin' && gradeRow.school_id !== user.school_id) {
+      return c.json({ error: 'غير مسموح' }, 403);
+    }
+
+    const settings = await getGradeSettings(db, gradeRow.school_id);
+    const body = await c.req.json();
+    const { first_month, second_month, third_month, fourth_month,
+      mid_year_exam, final_exam, completion_exam, notes, change_reason } = body;
+
+    // Validate inputs
+    const fields = [
+      { val: first_month, name: 'الشهر الأول' },
+      { val: second_month, name: 'الشهر الثاني' },
+      { val: third_month, name: 'الشهر الثالث' },
+      { val: fourth_month, name: 'الشهر الرابع' },
+      { val: mid_year_exam, name: 'امتحان منتصف العام' },
+      { val: final_exam, name: 'الامتحان النهائي' },
+      { val: completion_exam, name: 'امتحان التكميل' },
+    ];
+
+    for (const f of fields) {
+      if (f.val !== undefined) {
+        const check = validateGradeValue(f.val, settings.max_grade, f.name);
+        if (!check.ok) return c.json({ error: check.error }, 400);
+      }
+    }
+
+    // Build update values
+    const updates: Record<string, any> = {};
+    const setNull = (v: any) => (v === '' || v === null || v === undefined) ? null : Number(v);
+
+    if (first_month !== undefined) updates.first_month = setNull(first_month);
+    if (second_month !== undefined) updates.second_month = setNull(second_month);
+    if (third_month !== undefined) updates.third_month = setNull(third_month);
+    if (fourth_month !== undefined) updates.fourth_month = setNull(fourth_month);
+    if (mid_year_exam !== undefined) updates.mid_year_exam = setNull(mid_year_exam);
+    if (final_exam !== undefined) updates.final_exam = setNull(final_exam);
+    if (completion_exam !== undefined) updates.completion_exam = setNull(completion_exam);
+    if (notes !== undefined) updates.notes = notes;
+
+    // Calculate derived fields using new + existing values
+    const calcInput = {
+      first_month: updates.first_month !== undefined ? updates.first_month : gradeRow.first_month,
+      second_month: updates.second_month !== undefined ? updates.second_month : gradeRow.second_month,
+      third_month: updates.third_month !== undefined ? updates.third_month : gradeRow.third_month,
+      fourth_month: updates.fourth_month !== undefined ? updates.fourth_month : gradeRow.fourth_month,
+      mid_year_exam: updates.mid_year_exam !== undefined ? updates.mid_year_exam : gradeRow.mid_year_exam,
+      final_exam: updates.final_exam !== undefined ? updates.final_exam : gradeRow.final_exam,
+      completion_exam: updates.completion_exam !== undefined ? updates.completion_exam : gradeRow.completion_exam,
+    };
+
+    const derived = calculateGrades(calcInput, settings);
+
+    // Merge derived into updates
+    updates.first_term_average = derived.first_term_average;
+    updates.second_term_average = derived.second_term_average;
+    updates.annual_effort = derived.annual_effort;
+    updates.final_grade = derived.final_grade;
+    updates.grade_after_completion = derived.grade_after_completion;
+    updates.effective_grade = derived.effective_grade;
+    updates.result_status = derived.result_status;
+    updates.exemption_status = derived.exemption_status;
+    updates.updated_by_user_id = user?.id || null;
+
+    // Perform update
+    const setParts: string[] = [];
+    const bindVals: any[] = [];
+    for (const [k, v] of Object.entries(updates)) {
+      setParts.push(`${k} = ?`);
+      bindVals.push(v);
+    }
+    bindVals.push(gradeId);
+
+    await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ?`).bind(...bindVals).run();
+
+    // Audit log for changed scalar fields
+    const auditFields = ['first_month', 'second_month', 'third_month', 'fourth_month',
+      'mid_year_exam', 'final_exam', 'completion_exam', 'notes'];
+    for (const field of auditFields) {
+      if (body[field] !== undefined) {
+        const oldVal = gradeRow[field] === null || gradeRow[field] === undefined ? '' : String(gradeRow[field]);
+        const newVal = body[field] === '' || body[field] === null || body[field] === undefined ? '' : String(body[field]);
+        if (oldVal !== newVal) {
+          await db.prepare(`
+            INSERT INTO grade_change_logs (school_id, grade_id, field_name, old_value, new_value, changed_by_user_id, change_reason, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+          `).bind(gradeRow.school_id, gradeId, field, oldVal || null, newVal || null, user?.id || null, change_reason || null).run();
+        }
+      }
+    }
+
+    const updated = await db.prepare('SELECT * FROM grades WHERE id = ?').bind(gradeId).first<any>();
+    return c.json({ data: updated });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث الدرجة', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// POST /api/grades/bulk-entry
+// Body: { entries: [{ grade_id, first_month?, second_month?, ... }] }
+// ===========================================
+
+app.post('/api/grades/bulk-entry', requireAuthEnforced(), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const body = await c.req.json();
+    const { entries } = body;
+    if (!Array.isArray(entries) || entries.length === 0) return c.json({ error: 'يجب إرسال مدخلات واحدة على الأقل' }, 400);
+
+    let updated = 0;
+    const errors: string[] = [];
+
+    for (const entry of entries) {
+      const { grade_id, first_month, second_month, third_month, fourth_month,
+        mid_year_exam, final_exam, completion_exam, notes, change_reason } = entry;
+      if (!grade_id) { errors.push('معرف الدرجة مفقود في أحد المدخلات'); continue; }
+
+      const gradeRow = await db.prepare('SELECT * FROM grades WHERE id = ?').bind(Number(grade_id)).first<any>();
+      if (!gradeRow) { errors.push(`الدرجة ${grade_id} غير موجودة`); continue; }
+
+      if (user && user.role_key !== 'system_admin' && gradeRow.school_id !== user.school_id) {
+        errors.push(`غير مسموح بالدرجة ${grade_id}`); continue;
+      }
+
+      const settings = await getGradeSettings(db, gradeRow.school_id);
+
+      // Validate
+      const fields = [
+        { val: first_month, name: 'الشهر الأول' },
+        { val: second_month, name: 'الشهر الثاني' },
+        { val: third_month, name: 'الشهر الثالث' },
+        { val: fourth_month, name: 'الشهر الرابع' },
+        { val: mid_year_exam, name: 'امتحان منتصف العام' },
+        { val: final_exam, name: 'الامتحان النهائي' },
+        { val: completion_exam, name: 'امتحان التكميل' },
+      ];
+      let valid = true;
+      for (const f of fields) {
+        if (f.val !== undefined) {
+          const check = validateGradeValue(f.val, settings.max_grade, f.name);
+          if (!check.ok) { errors.push(check.error!); valid = false; }
+        }
+      }
+      if (!valid) continue;
+
+      const setNull = (v: any) => (v === '' || v === null || v === undefined) ? null : Number(v);
+      const updates: Record<string, any> = {};
+      if (first_month !== undefined) updates.first_month = setNull(first_month);
+      if (second_month !== undefined) updates.second_month = setNull(second_month);
+      if (third_month !== undefined) updates.third_month = setNull(third_month);
+      if (fourth_month !== undefined) updates.fourth_month = setNull(fourth_month);
+      if (mid_year_exam !== undefined) updates.mid_year_exam = setNull(mid_year_exam);
+      if (final_exam !== undefined) updates.final_exam = setNull(final_exam);
+      if (completion_exam !== undefined) updates.completion_exam = setNull(completion_exam);
+      if (notes !== undefined) updates.notes = notes;
+
+      const calcInput = {
+        first_month: updates.first_month !== undefined ? updates.first_month : gradeRow.first_month,
+        second_month: updates.second_month !== undefined ? updates.second_month : gradeRow.second_month,
+        third_month: updates.third_month !== undefined ? updates.third_month : gradeRow.third_month,
+        fourth_month: updates.fourth_month !== undefined ? updates.fourth_month : gradeRow.fourth_month,
+        mid_year_exam: updates.mid_year_exam !== undefined ? updates.mid_year_exam : gradeRow.mid_year_exam,
+        final_exam: updates.final_exam !== undefined ? updates.final_exam : gradeRow.final_exam,
+        completion_exam: updates.completion_exam !== undefined ? updates.completion_exam : gradeRow.completion_exam,
+      };
+
+      const derived = calculateGrades(calcInput, settings);
+      updates.first_term_average = derived.first_term_average;
+      updates.second_term_average = derived.second_term_average;
+      updates.annual_effort = derived.annual_effort;
+      updates.final_grade = derived.final_grade;
+      updates.grade_after_completion = derived.grade_after_completion;
+      updates.effective_grade = derived.effective_grade;
+      updates.result_status = derived.result_status;
+      updates.exemption_status = derived.exemption_status;
+      updates.updated_by_user_id = user?.id || null;
+
+      const setParts: string[] = [];
+      const bindVals: any[] = [];
+      for (const [k, v] of Object.entries(updates)) {
+        setParts.push(`${k} = ?`);
+        bindVals.push(v);
+      }
+      bindVals.push(Number(grade_id));
+      await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ?`).bind(...bindVals).run();
+
+      // Audit log
+      const auditFields = ['first_month', 'second_month', 'third_month', 'fourth_month',
+        'mid_year_exam', 'final_exam', 'completion_exam', 'notes'];
+      for (const field of auditFields) {
+        if (entry[field] !== undefined) {
+          const oldVal = gradeRow[field] === null || gradeRow[field] === undefined ? '' : String(gradeRow[field]);
+          const newVal = entry[field] === '' || entry[field] === null || entry[field] === undefined ? '' : String(entry[field]);
+          if (oldVal !== newVal) {
+            await db.prepare(`
+              INSERT INTO grade_change_logs (school_id, grade_id, field_name, old_value, new_value, changed_by_user_id, change_reason, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+            `).bind(gradeRow.school_id, Number(grade_id), field, oldVal || null, newVal || null, user?.id || null, change_reason || null).run();
+          }
+        }
+      }
+      updated++;
+    }
+
+    return c.json({ data: { updated, errors: errors.length > 0 ? errors : undefined } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في الإدخال المجمّع', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// GET /api/grades/:id/history - audit log
+// ===========================================
+
+app.get('/api/grades/:id/history', requireAuthEnforced(), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  const gradeId = Number(c.req.param('id'));
+  try {
+    const gradeRow = await db.prepare('SELECT school_id FROM grades WHERE id = ?').bind(gradeId).first<{ school_id: number }>();
+    if (!gradeRow) return c.json({ error: 'الدرجة غير موجودة' }, 404);
+
+    if (user && user.role_key !== 'system_admin' && gradeRow.school_id !== user.school_id) {
+      return c.json({ error: 'غير مسموح' }, 403);
+    }
+
+    const rows = await db.prepare(`
+      SELECT l.*, u.full_name as changed_by_name
+      FROM grade_change_logs l
+      LEFT JOIN users u ON l.changed_by_user_id = u.id
+      WHERE l.grade_id = ? AND l.school_id = ?
+      ORDER BY l.created_at DESC
+    `).bind(gradeId, gradeRow.school_id).all<any>();
+
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب سجل التعديلات', detail: err.message }, 500);
+  }
+});

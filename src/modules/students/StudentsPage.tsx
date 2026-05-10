@@ -94,10 +94,10 @@ export default function StudentsPage() {
       getClasses(sid),
       getSections(sid),
     ]);
-    if (sRes.data) setStudents(sRes.data);
+    if (sRes.data) setStudents(sRes.data as StudentRecord[]);
     else if (sRes.error) setError(sRes.error);
-    if (cRes.data) setClasses(cRes.data);
-    if (secRes.data) setSections(secRes.data);
+    if (cRes.data) setClasses(cRes.data as ClassRecord[]);
+    if (secRes.data) setSections(secRes.data as SectionRecord[]);
     setLoading(false);
   }
 

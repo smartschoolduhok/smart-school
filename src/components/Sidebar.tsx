@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, School, Users, Shield, Settings, GraduationCap, BookOpen, Calculator, CreditCard, Wallet, FileText, Printer, Bus, Globe, Brain, BookMarked, Layers, UserCheck, HeartHandshake } from 'lucide-react';
+import { LayoutDashboard, School, Users, Shield, Settings, GraduationCap, BookOpen, Calculator, CreditCard, Wallet, FileText, Printer, Bus, Globe, Brain, BookMarked, Layers, UserCheck, HeartHandshake, BarChart3 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 interface NavItem {
@@ -20,11 +20,14 @@ const activeModules: NavItem[] = [
   { label: 'الطلاب', path: '/students', icon: <GraduationCap size={20} />, active: true },
   { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={20} />, active: true },
   { label: 'المواد', path: '/subjects', icon: <BookOpen size={20} />, active: true },
+  { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={20} />, active: true },
+  { label: 'الدرجات', path: '/grades', icon: <Calculator size={20} />, active: true },
+  { label: 'التحليل', path: '/analytics', icon: <BarChart3 size={20} />, active: true },
   { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true },
 ];
 
 const futureModules: NavItem[] = [
-  { label: 'الدرجات', path: '#', icon: <Calculator size={20} />, active: false, disabled: true },
+  { label: 'كارتات النتائج', path: '#', icon: <FileText size={20} />, active: false, disabled: true },
   { label: 'كارتات النتائج', path: '#', icon: <FileText size={20} />, active: false, disabled: true },
   { label: 'الأقساط', path: '#', icon: <CreditCard size={20} />, active: false, disabled: true },
   { label: 'الخزنة', path: '#', icon: <Wallet size={20} />, active: false, disabled: true },

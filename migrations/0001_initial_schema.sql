@@ -100,6 +100,17 @@ CREATE TABLE IF NOT EXISTS school_modules (
 
 CREATE INDEX IF NOT EXISTS idx_school_modules_school_id ON school_modules(school_id);
 CREATE INDEX IF NOT EXISTS idx_school_modules_module_id ON school_modules(module_id);
+-- TABLE: token_blacklist
+-- Stores revoked JWT tokens for logout invalidation
+CREATE TABLE IF NOT EXISTS token_blacklist (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  token         TEXT NOT NULL,
+  expires_at    INTEGER,
+  created_at    INTEGER DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_blacklist_token ON token_blacklist(token);
+
 
 -- Seed: roles
 INSERT OR IGNORE INTO roles (id, key, name, description, is_system) VALUES
