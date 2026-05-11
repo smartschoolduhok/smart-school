@@ -3,7 +3,7 @@ import { useAuth } from '../../hooks/useAuth';
 import {
   getGrades, getStudentGrades, initializeStudentGrades, initializeSectionGrades,
   updateGrade, bulkUpdateGrades, getGradeHistory, getGradeSettings, updateGradeSettings,
-  getStudents, getClasses, getSections, getSubjects
+  getStudents, getClasses, getSections, getSubjects, getSchools
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
