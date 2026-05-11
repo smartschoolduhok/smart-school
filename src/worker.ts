@@ -1865,7 +1865,7 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
     }
 
     const row = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(targetSchoolId).first<any>();
-    return c.json({ data: row });
+    return c.json({ data: row, message: 'تم حفظ إعدادات الدرجات بنجاح' });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث إعدادات الدرجات', detail: err.message }, 500);
   }

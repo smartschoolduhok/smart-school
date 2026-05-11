@@ -21,7 +21,7 @@ ON CONFLICT(id) DO NOTHING;
 -- Users (passwords: admin123, school123, teacher123, owner123, accountant123, registrar123)
 INSERT INTO users (id, school_id, full_name, email, password_hash, role_id, status, created_at, updated_at) VALUES
   (1, NULL, 'أحمد عبدالله', 'admin@smart-school.iq', 'fec40b1064ee33fb17ea5d6741ff7a1f73c56fc789e2ce5dca8a246f934eb0c3', 1, 'active', unixepoch(), unixepoch()),
-  (2, 1, 'سارة محمود', 'principal@nukhba.iq', '89ff5406d1bdd9a60014f2fd79e4397897d9bb17c692c48a6164f114fd97a281', 3, 'active', unixepoch(), unixepoch()),
+  (2, 1, 'سارة محمود', 'principal@nukhba.iq', 'e62d2a514cb6aec21834da21b462512f41d6f22b8c7527b0c80cdbf903fc103b', 3, 'active', unixepoch(), unixepoch()),
   (3, 1, 'خالد العامري', 'teacher@nukhba.iq', '0cd4dc8d9533d88450058f4afdf147dce7f7d1ec0b5daf83c703935ec3ff22ee', 5, 'active', unixepoch(), unixepoch()),
   (4, 2, 'فاطمة الزهراء', 'owner@rafidain.iq', '2856c1e528be93bb2c261755eb71bb3e1c1ef9f4c9f4f65031ba28a52de7563a', 2, 'active', unixepoch(), unixepoch()),
   (5, 2, 'محمد حسين', 'accountant@rafidain.iq', '80d02588132ccedfc7f6b15e1b162e512a2164fe50e8873fe85039376dd65e17', 6, 'active', unixepoch(), unixepoch()),
