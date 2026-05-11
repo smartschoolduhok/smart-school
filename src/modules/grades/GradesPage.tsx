@@ -207,7 +207,7 @@ function StudentGradesTab() {
       setMessage({ text: res.error, type: 'error' });
     } else {
       await loadStudentGrades(selectedStudentId);
-      setMessage({ text: 'تم حفظ الدرجة بنجاح', type: 'success' });
+      setMessage({ text: 'تم حفظ الدرجة بنجاح — اضغط Enter أو انقر خارج الحقل لحفظ القيمة', type: 'success' });
     }
     setTimeout(() => setMessage(null), 3000);
   }
@@ -309,27 +309,38 @@ function StudentGradesTab() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-gray-600 text-xs">
-                  <th className="px-3 py-2 text-right font-medium border-b border-gray-200">المادة</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">الشهر الأول</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">الشهر الثاني</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">معدل الفصل الأول</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">نصف السنة</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">الشهر الثالث</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">الشهر الرابع</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">معدل الفصل الثاني</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">السعي السنوي</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">الامتحان النهائي</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">الدرجة النهائية</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">درجة الإكمال</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">الحالة</th>
-                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 w-24">ملاحظات</th>
+                  <th rowSpan={2} className="px-3 py-2 text-right font-medium border-b border-gray-200 align-middle">المادة</th>
+                  <th colSpan={3} className="px-2 py-1 text-center font-medium border-b border-gray-200 border-l border-gray-200 bg-blue-50/40">الفصل الأول</th>
+                  <th colSpan={3} className="px-2 py-1 text-center font-medium border-b border-gray-200 border-l border-gray-200 bg-emerald-50/40">الفصل الثاني</th>
+                  <th colSpan={3} className="px-2 py-1 text-center font-medium border-b border-gray-200 border-l border-gray-200 bg-amber-50/40">السنوي</th>
+                  <th colSpan={2} className="px-2 py-1 text-center font-medium border-b border-gray-200 border-l border-gray-200 bg-rose-50/40">النهائي</th>
+                  <th rowSpan={2} className="px-2 py-2 text-center font-medium border-b border-gray-200 w-20 align-middle">الحالة</th>
+                  <th rowSpan={2} className="px-2 py-2 text-center font-medium border-b border-gray-200 w-20 align-middle">ملاحظات</th>
+                </tr>
+                <tr className="bg-gray-50 text-gray-500 text-[10px]">
+                  {/* First term sub-columns */}
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الشهر ١</th>
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الشهر ٢</th>
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">نصف السنة</th>
+                  {/* Second term sub-columns */}
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الشهر ٣</th>
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الشهر ٤</th>
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">معدل الفصل</th>
+                  {/* Annual sub-columns */}
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">السعي</th>
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">النهائي</th>
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الدرجة</th>
+                  {/* Final sub-columns */}
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الإكمال</th>
+                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الفعّالة</th>
                 </tr>
               </thead>
               <tbody>
                 {grades.map((g) => (
                   <tr key={g.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-3 py-2 border-b border-gray-100 font-medium text-gray-900">{g.subject_name}</td>
-                    {(['first_month','second_month','mid_year_exam','third_month','fourth_month','final_exam','completion_exam'] as const).map((field) => (
+                    {/* First term: editable */}
+                    {(['first_month','second_month','mid_year_exam'] as const).map((field) => (
                       <td key={field} className="px-1 py-1 border-b border-gray-100">
                         <input
                           type="text"
@@ -346,13 +357,67 @@ function StudentGradesTab() {
                         />
                       </td>
                     ))}
-                    {/* Read-only calculated fields */}
-                    <td className="px-2 py-2 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.first_term_average)}</td>
-                    <td className="px-2 py-2 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.second_term_average)}</td>
-                    <td className="px-2 py-2 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.annual_effort)}</td>
-                    <td className="px-2 py-2 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.final_grade)}</td>
-                    <td className="px-2 py-2 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.completion_exam)}</td>
+                    {/* Second term: editable */}
+                    {(['third_month','fourth_month'] as const).map((field) => (
+                      <td key={field} className="px-1 py-1 border-b border-gray-100">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          defaultValue={displayNum(g[field] as any)}
+                          onBlur={(e) => {
+                            const val = e.target.value.trim();
+                            const current = g[field] === null ? '' : toArabicDigits(String(g[field]));
+                            if (val !== current) handleSaveGrade(g, field, val);
+                          }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                          className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                          placeholder="—"
+                        />
+                      </td>
+                    ))}
+                    {/* Second term average: read-only */}
+                    <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.second_term_average)}</td>
+                    {/* Annual: read-only effort */}
+                    <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-amber-50/30">{displayNum(g.annual_effort)}</td>
+                    {/* Final exam: editable */}
+                    <td className="px-1 py-1 border-b border-gray-100">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        defaultValue={displayNum(g.final_exam as any)}
+                        onBlur={(e) => {
+                          const val = e.target.value.trim();
+                          const current = g.final_exam === null ? '' : toArabicDigits(String(g.final_exam));
+                          if (val !== current) handleSaveGrade(g, 'final_exam', val);
+                        }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                        className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                        placeholder="—"
+                      />
+                    </td>
+                    {/* Final grade: read-only */}
+                    <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-amber-50/30">{displayNum(g.final_grade)}</td>
+                    {/* Completion exam: editable */}
+                    <td className="px-1 py-1 border-b border-gray-100">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        defaultValue={displayNum(g.completion_exam as any)}
+                        onBlur={(e) => {
+                          const val = e.target.value.trim();
+                          const current = g.completion_exam === null ? '' : toArabicDigits(String(g.completion_exam));
+                          if (val !== current) handleSaveGrade(g, 'completion_exam', val);
+                        }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                        className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                        placeholder="—"
+                      />
+                    </td>
+                    {/* Effective grade: read-only (same as completion or final) */}
+                    <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-rose-50/30">{displayNum(g.effective_grade ?? g.final_grade)}</td>
+                    {/* Status */}
                     <td className="px-2 py-2 border-b border-gray-100 text-center">{statusBadge(g.result_status)}</td>
+                    {/* Notes */}
                     <td className="px-1 py-1 border-b border-gray-100">
                       <input
                         type="text"
@@ -369,6 +434,17 @@ function StudentGradesTab() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-500 space-y-1">
+            <p className="flex flex-wrap gap-x-3 gap-y-1">
+              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400 inline-block"></span> الفصل الأول: الشهر ١ + الشهر ٢ + نصف السنة</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span> الفصل الثاني: الشهر ٣ + الشهر ٤</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400 inline-block"></span> السعي السنوي = معدل الفصل الأول + معدل الفصل الثاني</span>
+            </p>
+            <p className="flex flex-wrap gap-x-3 gap-y-1">
+              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-rose-400 inline-block"></span> الدرجة الفعّالة = النهائي (أو الإكمال إذا أقل من النجاح)</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-gray-300 inline-block"></span> الحقول الرمادية تُحسب تلقائيًا</span>
+            </p>
           </div>
         </div>
       )}
@@ -626,7 +702,12 @@ function SectionGradesTab() {
    ═══════════════════════════════════════ */
 function SettingsTab() {
   const { user } = useAuth();
-  const schoolId = user?.school_id;
+  const isAdmin = user?.role_key === 'system_admin';
+  const isTeacher = user?.role_key === 'teacher';
+  const canEdit = isAdmin || ['school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
+  const jwtSchoolId = user?.school_id;
+  const [selectedSchoolId, setSelectedSchoolId] = useState<number | null>(jwtSchoolId ?? null);
+  const [schools, setSchools] = useState<Array<Record<string, any>>>([]);
   const [settings, setSettings] = useState<GradeSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -641,12 +722,19 @@ function SettingsTab() {
   });
 
   useEffect(() => {
+    if (isAdmin) {
+      getSchools().then((res) => { if (res.data) setSchools(res.data as any); });
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
     loadSettings();
-  }, [schoolId]);
+  }, [selectedSchoolId, jwtSchoolId]);
 
   async function loadSettings() {
     setLoading(true);
-    const res = await getGradeSettings();
+    const schoolIdForApi = isAdmin ? selectedSchoolId : jwtSchoolId;
+    const res = await getGradeSettings(schoolIdForApi ?? null);
     setLoading(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -693,12 +781,13 @@ function SettingsTab() {
       general_exemption_average_grade: generalAvg,
       general_exemption_min_subject_grade: generalMin,
     };
-    const res = await updateGradeSettings(payload);
+    const schoolIdForApi = isAdmin ? selectedSchoolId : jwtSchoolId;
+    const res = await updateGradeSettings(payload, schoolIdForApi ?? null);
     setSaving(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
     } else {
-      setMessage({ text: 'تم حفظ الإعدادات بنجاح', type: 'success' });
+      setMessage({ text: 'تم حفظ إعدادات الدرجات بنجاح', type: 'success' });
       const data = Array.isArray(res.data) ? res.data[0] : res.data;
       if (data) setSettings(data as GradeSettings);
     }
@@ -729,35 +818,58 @@ function SettingsTab() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">الدرجة العظمى</label>
-              <input type="number" value={form.max_grade} onChange={(e) => setForm((f) => ({ ...f, max_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+              <input type="number" value={form.max_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, max_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">درجة النجاح</label>
-              <input type="number" value={form.passing_grade} onChange={(e) => setForm((f) => ({ ...f, passing_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+              <input type="number" value={form.passing_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, passing_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">درجة الإعفاء الفردي (المادة)</label>
-              <input type="number" value={form.exemption_grade} onChange={(e) => setForm((f) => ({ ...f, exemption_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+              <input type="number" value={form.exemption_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, exemption_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
               <p className="text-xs text-gray-500 mt-1">إذا كان السعي السنوي ≥ هذه القيمة ⇒ معفى فرديًا</p>
             </div>
             <div />
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">متوسط الإعفاء العام</label>
-              <input type="number" value={form.general_exemption_average_grade} onChange={(e) => setForm((f) => ({ ...f, general_exemption_average_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+              <input type="number" value={form.general_exemption_average_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, general_exemption_average_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
               <p className="text-xs text-gray-500 mt-1">متوسط السعي السنوي لجميع المواد يجب أن يكون ≥ هذه القيمة</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">أدنى درجة للإعفاء العام (لكل مادة)</label>
-              <input type="number" value={form.general_exemption_min_subject_grade} onChange={(e) => setForm((f) => ({ ...f, general_exemption_min_subject_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500" />
+              <input type="number" value={form.general_exemption_min_subject_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, general_exemption_min_subject_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
               <p className="text-xs text-gray-500 mt-1">أدنى سعي سنوي بين جميع المواد يجب أن يكون ≥ هذه القيمة</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3 pt-2">
-            <button onClick={handleSave} disabled={saving} className="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50">
-              {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-              حفظ الإعدادات
-            </button>
+          <div className="flex flex-col gap-3 pt-2">
+            {isAdmin && (
+              <div className="w-full max-w-sm">
+                <label className="block text-sm font-medium text-gray-700 mb-1">اختيار المدرسة</label>
+                <select
+                  value={selectedSchoolId ?? ''}
+                  onChange={(e) => setSelectedSchoolId(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white"
+                >
+                  <option value="">— اختر مدرسة —</option>
+                  {schools.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {isTeacher && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 text-sm">
+                <AlertCircle size={16} />
+                <span>ليس لديك صلاحية تعديل الإعدادات. يمكنك فقط الاطلاع على القيم.</span>
+              </div>
+            )}
+            {canEdit && (
+              <button onClick={handleSave} disabled={saving} className="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 w-fit">
+                {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                حفظ الإعدادات
+              </button>
+            )}
           </div>
 
           {settings && (

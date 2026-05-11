@@ -301,14 +301,14 @@ export function getGradeHistory(id: number | string) {
   return fetchApi<Array<Record<string, any>>>(`/api/grades/${id}/history`);
 }
 
-export function getGradeSettings(schoolId?: number | null) {
-  const qs = schoolId != null ? '?school_id=' + schoolId : '';
-  return fetchApi<Record<string, any>>('/api/grade-settings' + qs);
+export function getGradeSettings() {
+  return fetchApi<Record<string, any>>('/api/grade-settings');
 }
 
-export function updateGradeSettings(data: Record<string, any>, schoolId?: number | null) {
-  const payload = schoolId != null ? { ...data, school_id: schoolId } : data;
-  return fetchApi<Record<string, any>>('/api/grade-settings', { method: 'PUT', body: JSON.stringify(payload) });
+export function updateGradeSettings(data: Record<string, any>) {
+  // Non-admin users: backend derives school_id from JWT.
+  // Do NOT include school_id in body for principals/teachers.
+  return fetchApi<Record<string, any>>('/api/grade-settings', { method: 'PUT', body: JSON.stringify(data) });
 }
 
 // ===========================================

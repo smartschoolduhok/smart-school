@@ -309,12 +309,6 @@ app.post('/api/auth/login', async (c) => {
       return c.json({ error: 'البريد الإلكتروني وكلمة المرور مطلوبة' }, 400)
     }
 
-    // Pre-check for inactive users to return clear message
-    const inactiveCheck = await db.prepare(`SELECT id, status FROM users WHERE email = ?`).bind(email).first<{ id: number; status: string }>();
-    if (inactiveCheck && inactiveCheck.status !== 'active') {
-      return c.json({ error: 'هذا الحساب غير فعال، يرجى التواصل مع الإدارة' }, 403);
-    }
-
     const row = await db.prepare(`
       SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.password_hash,
              r.key AS role_key, r.name AS role_name
@@ -1774,11 +1768,6 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
       general_exemption_average_grade, general_exemption_min_subject_grade,
       first_term_formula, second_term_formula, annual_effort_formula,
       final_grade_formula, completion_formula, effective_formula } = body;
-
-    // Role-based permission: only admin, owner, principal, vice_principal can update
-    if (user && !['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user.role_key)) {
-      return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات الدرجات' }, 403);
-    }
 
     const scope = c.get('scope');
     const resolvedSchoolId = c.get('resolvedSchoolId');
