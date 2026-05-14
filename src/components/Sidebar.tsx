@@ -23,12 +23,11 @@ const activeModules: NavItem[] = [
   { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={20} />, active: true },
   { label: 'الدرجات', path: '/grades', icon: <Calculator size={20} />, active: true },
   { label: 'التحليل', path: '/analytics', icon: <BarChart3 size={20} />, active: true },
+  { label: 'كارتات النتائج', path: '/result-cards', icon: <FileText size={20} />, active: true },
   { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true },
 ];
 
 const futureModules: NavItem[] = [
-  { label: 'كارتات النتائج', path: '#', icon: <FileText size={20} />, active: false, disabled: true },
-  { label: 'كارتات النتائج', path: '#', icon: <FileText size={20} />, active: false, disabled: true },
   { label: 'الأقساط', path: '#', icon: <CreditCard size={20} />, active: false, disabled: true },
   { label: 'الخزنة', path: '#', icon: <Wallet size={20} />, active: false, disabled: true },
   { label: 'الكتب الرسمية', path: '#', icon: <BookMarked size={20} />, active: false, disabled: true },

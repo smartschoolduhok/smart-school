@@ -386,3 +386,47 @@ export function getExemptionBlockers(filters?: { school_id?: number | null; clas
 export function getStudentSummary(studentId: number | string) {
   return fetchApi<Record<string, any>>(`/api/analytics/student-summary/${studentId}`);
 }
+
+// ===========================================
+// Result Cards (Phase 6)
+// ===========================================
+export function getResultCards(filters?: {
+  school_id?: number | null;
+  class_id?: number | null;
+  section_id?: number | null;
+  student_id?: number | null;
+  status?: string | null;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.class_id != null) params.append('class_id', String(filters.class_id));
+  if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
+  if (filters?.student_id != null) params.append('student_id', String(filters.student_id));
+  if (filters?.status != null) params.append('status', filters.status);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/result-cards${qs}`);
+}
+
+export function getResultCard(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/result-cards/${id}`);
+}
+
+export function generateStudentResultCard(studentId: number | string) {
+  return fetchApi<Record<string, any>>(`/api/result-cards/generate-student/${studentId}`, { method: 'POST', body: '{}' });
+}
+
+export function generateSectionResultCards(data: { class_id: number; section_id: number }) {
+  return fetchApi<Record<string, any>>('/api/result-cards/generate-section', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function markResultCardPrinted(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/result-cards/${id}/mark-printed`, { method: 'PUT', body: '{}' });
+}
+
+export function cancelResultCard(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/result-cards/${id}/cancel`, { method: 'PUT', body: '{}' });
+}
+
+export function verifyResultCard(token: string) {
+  return fetchApi<Record<string, any>>(`/api/verify/result-card/${token}`);
+}
