@@ -36,3 +36,8 @@ CREATE INDEX IF NOT EXISTS idx_result_cards_student_id ON result_cards(student_i
 CREATE INDEX IF NOT EXISTS idx_result_cards_verification_token ON result_cards(verification_token);
 CREATE INDEX IF NOT EXISTS idx_result_cards_card_number ON result_cards(card_number);
 CREATE INDEX IF NOT EXISTS idx_result_cards_status ON result_cards(status);
+
+-- Partial unique index: prevent duplicate active cards per student per year
+CREATE UNIQUE INDEX IF NOT EXISTS idx_result_cards_unique_active_student_year
+ON result_cards(student_id, academic_year_id)
+WHERE status = 'active';

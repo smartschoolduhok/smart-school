@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   getResultCards, getResultCard, generateStudentResultCard,
   generateSectionResultCards, markResultCardPrinted, cancelResultCard,
@@ -45,43 +46,6 @@ function resultStatusBadge(status: string | null) {
     status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
     'bg-gray-100 text-gray-700';
   return <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cls}`}>{status}</span>;
-}
-
-/* ─── QR Placeholder ─── */
-function QRPlaceholder({ url }: { url: string }) {
-  // Simple 25x25 grid SVG as QR-like placeholder
-  const size = 25;
-  const cells: boolean[] = [];
-  // Seed random-ish pattern from url
-  let seed = 0;
-  for (let i = 0; i < url.length; i++) seed = (seed * 31 + url.charCodeAt(i)) & 0x7fffffff;
-  const rand = () => { seed = (seed * 16807 + 0) & 0x7fffffff; return (seed / 0x7fffffff); };
-  for (let i = 0; i < size * size; i++) {
-    // Fixed position markers (top-left, top-right, bottom-left)
-    const x = i % size, y = Math.floor(i / size);
-    const inTL = x < 7 && y < 7;
-    const inTR = x >= size - 7 && y < 7;
-    const inBL = x < 7 && y >= size - 7;
-    if (inTL || inTR || inBL) {
-      // Finder pattern border + inner
-      const mx = inTL ? x : inTR ? x - (size - 7) : x;
-      const my = inTL ? y : inTR ? y : y - (size - 7);
-      cells.push(mx === 0 || mx === 6 || my === 0 || my === 6 || (mx >= 2 && mx <= 4 && my >= 2 && my <= 4));
-    } else {
-      cells.push(rand() > 0.5);
-    }
-  }
-  const cellSize = 6;
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <svg width={size * cellSize} height={size * cellSize} className="bg-white border border-gray-200 rounded">
-        {cells.map((on, i) => on ? (
-          <rect key={i} x={(i % size) * cellSize} y={Math.floor(i / size) * cellSize} width={cellSize} height={cellSize} fill="#111" />
-        ) : null)}
-      </svg>
-      <span className="text-[10px] text-gray-400 break-all max-w-[150px] text-center" dir="ltr">{url}</span>
-    </div>
-  );
 }
 
 /* ─── Types ─── */
@@ -240,8 +204,7 @@ function GenerateStudentTab() {
         th { background: #f3f4f6; font-weight: 600; }
         .summary { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 12px; }
         .summary-box { border: 1px solid #333; padding: 10px 14px; font-size: 13px; }
-        .qr { text-align: center; }
-        .qr svg { display: block; margin: 0 auto; }
+        svg { display: block; margin: 0 auto; }
         .footer { margin-top: 24px; text-align: center; font-size: 11px; color: #555; border-top: 1px solid #ccc; padding-top: 10px; }
         @media print { .card { border: none; } body { background: #fff; } }
       </style></head><body>${printRef.current.innerHTML}</body></html>`;
@@ -791,7 +754,14 @@ function CardPreview({ card, details, student }: { card: CardRecord | null; deta
 
         {verificationUrl && (
           <div className="shrink-0">
-            <QRPlaceholder url={verificationUrl} />
+            <QRCodeSVG
+              value={`${window.location.origin}${verificationUrl}`}
+              size={140}
+              level="M"
+              bgColor="#ffffff"
+              fgColor="#111827"
+            />
+            <span className="text-[10px] text-gray-400 break-all max-w-[150px] text-center block mt-1" dir="ltr">{verificationUrl}</span>
           </div>
         )}
       </div>

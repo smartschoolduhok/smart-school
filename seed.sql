@@ -151,3 +151,39 @@ INSERT OR IGNORE INTO subjects (id, school_id, class_id, section_id, name, subje
   (22, 2, 8, NULL, 'English Language', 'أساسية', 1, 1, 50, 25, 2, 'active'),
   (23, 2, 8, NULL, 'Science', 'أساسية', 1, 1, 50, 25, 3, 'active'),
   (24, 2, 8, NULL, 'Social Studies', 'أساسية', 1, 1, 50, 25, 4, 'active');
+
+-- Seed: student_subjects for school_id=1 (student 1 in class 1 section 1)
+INSERT OR IGNORE INTO student_subjects (id, school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, removed_at, notes, created_at, updated_at) VALUES
+  (1, 1, 1, 1, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (2, 1, 1, 2, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (3, 1, 1, 3, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (4, 1, 1, 4, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (5, 1, 1, 5, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (6, 1, 1, 6, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch());
+
+-- Seed: grades for student 1 (high scores to pass general exemption)
+INSERT OR IGNORE INTO grades (id, school_id, student_subject_id, first_month, second_month, third_month, fourth_month, first_term_average, second_term_average, mid_year_exam, final_exam, completion_exam, annual_effort, final_grade, grade_after_completion, effective_grade, result_status, exemption_status, notes, is_active, created_at, updated_at, updated_by_user_id) VALUES
+  (1, 1, 1, 92, 94, 90, 88, 93, 89, 85, 90, NULL, 91, 90, 90, 90, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (2, 1, 2, 88, 90, 92, 91, 89, 91, 88, 90, NULL, 90, 89, 89, 89, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (3, 1, 3, 95, 96, 94, 93, 95, 93, 92, 94, NULL, 94, 94, 94, 94, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (4, 1, 4, 90, 88, 91, 92, 89, 91, 87, 89, NULL, 89, 88, 88, 88, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (5, 1, 5, 93, 94, 92, 91, 93, 91, 90, 92, NULL, 92, 92, 92, 92, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (6, 1, 6, 85, 87, 86, 88, 86, 87, 84, 85, NULL, 85, 84, 84, 84, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1);
+
+-- Seed: student_subjects for student 2 (class 1 section 1)
+INSERT OR IGNORE INTO student_subjects (id, school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, removed_at, notes, created_at, updated_at) VALUES
+  (7, 1, 2, 1, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (8, 1, 2, 2, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (9, 1, 2, 3, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (10, 1, 2, 4, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (11, 1, 2, 5, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch()),
+  (12, 1, 2, 6, 1, 1, 1, 1, unixepoch(), NULL, '', unixepoch(), unixepoch());
+
+-- Student 2: mixed grades (some fail)
+INSERT OR IGNORE INTO grades (id, school_id, student_subject_id, first_month, second_month, third_month, fourth_month, first_term_average, second_term_average, mid_year_exam, final_exam, completion_exam, annual_effort, final_grade, grade_after_completion, effective_grade, result_status, exemption_status, notes, is_active, created_at, updated_at, updated_by_user_id) VALUES
+  (7, 1, 7, 40, 42, 38, 35, 41, 36, 30, 32, 45, 33, 32, 45, 45, 'مكمل', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (8, 1, 8, 92, 88, 90, 91, 90, 90, 88, 89, NULL, 89, 89, 89, 89, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (9, 1, 9, 88, 82, 85, 87, 85, 86, 84, 85, NULL, 85, 84, 84, 84, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (10, 1, 10, 95, 90, 93, 94, 92, 93, 91, 92, NULL, 92, 92, 92, 92, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (11, 1, 11, 91, 87, 89, 90, 89, 89, 88, 89, NULL, 89, 88, 88, 88, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1),
+  (12, 1, 12, 80, 75, 78, 82, 77, 80, 76, 78, NULL, 77, 77, 77, 77, 'ناجح', 0, '', 1, unixepoch(), unixepoch(), 1);

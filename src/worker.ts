@@ -3115,8 +3115,15 @@ app.post('/api/result-cards/generate-student/:student_id', requireSameSchoolOrAd
     const incompleteCount = grades.filter((g: any) => g.result_status === 'مكمل').length;
     const overallStatus = failCount > 0 ? 'راسب' : (incompleteCount > 0 ? 'مكمل' : 'ناجح');
 
-    // Delete any existing active card for same student to avoid duplicates (or keep history; here we regenerate)
-    await db.prepare(`UPDATE result_cards SET status = 'cancelled', updated_at = unixepoch() WHERE student_id = ? AND status = 'active'`).bind(studentId).run();
+    // Block duplicate active card for same student + academic year
+    const existingActive = await db.prepare(`
+      SELECT id FROM result_cards
+      WHERE student_id = ? AND academic_year_id = ? AND status = 'active'
+      LIMIT 1
+    `).bind(studentId, ay?.id || 0).first<any>();
+    if (existingActive) {
+      return c.json({ error: 'يوجد كارت نتيجة فعّال بالفعل لهذا الطالب في نفس السنة الدراسية. يجب إلغاؤه أولاً أو استخدام خيار التجديد.' }, 409);
+    }
 
     const token = generateVerificationToken();
     const tokenHash = await hashToken(token);
@@ -3269,7 +3276,16 @@ app.post('/api/result-cards/generate-section', requireSameSchoolOrAdmin(), async
 
       const ay = await db.prepare(`SELECT id, name FROM academic_years WHERE school_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1`).bind(student.school_id).first<any>();
 
-      await db.prepare(`UPDATE result_cards SET status = 'cancelled', updated_at = unixepoch() WHERE student_id = ? AND status = 'active'`).bind(student.id).run();
+      // Block duplicate active card for same student + academic year
+      const existingActive = await db.prepare(`
+        SELECT id FROM result_cards
+        WHERE student_id = ? AND academic_year_id = ? AND status = 'active'
+        LIMIT 1
+      `).bind(student.id, ay?.id || 0).first<any>();
+      if (existingActive) {
+        skipped.push({ student_id: student.id, student_name: student.full_name, reason: 'يوجد كارت نتيجة فعّال بالفعل في نفس السنة الدراسية' });
+        continue;
+      }
 
       const token = generateVerificationToken();
       const tokenHash = await hashToken(token);

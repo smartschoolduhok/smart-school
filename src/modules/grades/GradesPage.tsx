@@ -87,16 +87,24 @@ interface AuditRecord {
 
 type TabKey = 'student' | 'section' | 'settings' | 'history';
 
-const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
+const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; roles?: string[] }[] = [
   { key: 'student', label: 'إدخال درجات طالب', icon: <User size={18} /> },
   { key: 'section', label: 'إدخال درجات شعبة', icon: <Users size={18} /> },
-  { key: 'settings', label: 'إعدادات الدرجات', icon: <Settings size={18} /> },
+  { key: 'settings', label: 'إعدادات الدرجات', icon: <Settings size={18} />, roles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
   { key: 'history', label: 'سجل تعديل الدرجات', icon: <History size={18} /> },
 ];
 
+function canAccessTab(userRole: string | undefined, tabRoles?: string[]): boolean {
+  if (!tabRoles || tabRoles.length === 0) return true;
+  return tabRoles.includes(userRole || '');
+}
+
 export default function GradesPage() {
   const { user } = useAuth();
+  const visibleTabs = TAB_CONFIG.filter((tab) => canAccessTab(user?.role_key, tab.roles));
   const [activeTab, setActiveTab] = useState<TabKey>('student');
+  // Reset to first visible tab if current tab becomes hidden
+  const effectiveTab = visibleTabs.find((t) => t.key === activeTab) ? activeTab : visibleTabs[0]?.key || 'student';
 
   return (
     <div className="space-y-6" dir="rtl">
@@ -112,12 +120,12 @@ export default function GradesPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-gray-200">
-        {TAB_CONFIG.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
             className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === tab.key
+              effectiveTab === tab.key
                 ? 'border-primary-600 text-primary-700'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
@@ -128,10 +136,10 @@ export default function GradesPage() {
         ))}
       </div>
 
-      {activeTab === 'student' && <StudentGradesTab />}
-      {activeTab === 'section' && <SectionGradesTab />}
-      {activeTab === 'settings' && <SettingsTab />}
-      {activeTab === 'history' && <HistoryTab />}
+      {effectiveTab === 'student' && <StudentGradesTab />}
+      {effectiveTab === 'section' && <SectionGradesTab />}
+      {effectiveTab === 'settings' && <SettingsTab />}
+      {effectiveTab === 'history' && <HistoryTab />}
     </div>
   );
 }
@@ -723,7 +731,15 @@ function SettingsTab() {
 
   useEffect(() => {
     if (isAdmin) {
-      getSchools().then((res) => { if (res.data) setSchools(res.data as any); });
+      getSchools().then((res) => {
+        if (res.data) {
+          setSchools(res.data as any);
+          // Auto-select first school if none selected
+          if (!selectedSchoolId && res.data.length > 0) {
+            setSelectedSchoolId((res.data as any)[0].id);
+          }
+        }
+      });
     }
   }, [isAdmin]);
 
@@ -738,6 +754,7 @@ function SettingsTab() {
     setLoading(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
+      setSettings(null);
       return;
     }
     const data = Array.isArray(res.data) ? res.data[0] : res.data;
@@ -750,6 +767,8 @@ function SettingsTab() {
         general_exemption_average_grade: String(data.general_exemption_average_grade ?? 85),
         general_exemption_min_subject_grade: String(data.general_exemption_min_subject_grade ?? 75),
       });
+    } else {
+      setSettings(null);
     }
   }
 
@@ -787,7 +806,8 @@ function SettingsTab() {
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
     } else {
-      setMessage({ text: 'تم حفظ إعدادات الدرجات بنجاح', type: 'success' });
+      const apiMessage = res.message || 'تم حفظ إعدادات الدرجات بنجاح';
+      setMessage({ text: apiMessage, type: 'success' });
       const data = Array.isArray(res.data) ? res.data[0] : res.data;
       if (data) setSettings(data as GradeSettings);
     }
@@ -858,7 +878,7 @@ function SettingsTab() {
                 </select>
               </div>
             )}
-            {isTeacher && (
+            {!isAdmin && !canEdit && (
               <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 text-sm">
                 <AlertCircle size={16} />
                 <span>ليس لديك صلاحية تعديل الإعدادات. يمكنك فقط الاطلاع على القيم.</span>
