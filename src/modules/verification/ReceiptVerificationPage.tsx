@@ -1,26 +1,32 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { verifyResultCard } from '../../lib/api';
-import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Shield, School, GraduationCap, Layers, Calendar } from 'lucide-react';
+import { verifyReceipt } from '../../lib/api';
+import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Shield, School, GraduationCap, Layers, Calendar, DollarSign, Receipt } from 'lucide-react';
 
-interface VerifyResult {
+interface VerifyReceiptResult {
   valid: boolean;
   cancelled?: boolean;
-  card_number?: string;
+  receipt_number?: string;
   student_name?: string;
   school_name?: string;
   class_name?: string;
   section_name?: string;
   academic_year?: string;
-  generated_at?: string;
+  total_amount?: number;
+  created_at?: string;
   status?: string;
-  overall_result_status?: string;
-  general_exemption_status?: boolean;
+  payments?: Array<{
+    payment_id: number;
+    amount: number;
+    payment_method: string;
+    payment_date: number;
+    fee_type: string;
+  }>;
 }
 
-export default function ResultCardVerificationPage() {
+export default function ReceiptVerificationPage() {
   const { token } = useParams<{ token: string }>();
-  const [result, setResult] = useState<VerifyResult | null>(null);
+  const [result, setResult] = useState<VerifyReceiptResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,13 +36,16 @@ export default function ResultCardVerificationPage() {
       setError('رمز التحقق مفقود');
       return;
     }
-    verifyResultCard(token)
+    verifyReceipt(token)
       .then((res) => {
-        setResult((res.data as any) || null);
+        if (res.error || !res.data) {
+          throw new Error(res.error || 'فشل التحقق');
+        }
+        setResult(res.data as VerifyReceiptResult);
         setLoading(false);
       })
       .catch((err) => {
-        setError(err?.response?.data?.error || 'فشل التحقق من البطاقة');
+        setError(err?.message || 'فشل التحقق من الإيصال');
         setLoading(false);
       });
   }, [token]);
@@ -46,7 +55,7 @@ export default function ResultCardVerificationPage() {
       <div dir="rtl" className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-600 font-medium">جاري التحقق من البطاقة...</p>
+          <p className="text-gray-600 font-medium">جاري التحقق من الإيصال...</p>
         </div>
       </div>
     );
@@ -60,7 +69,7 @@ export default function ResultCardVerificationPage() {
             <XCircle size={32} className="text-red-500" />
           </div>
           <h1 className="text-xl font-bold text-gray-900 mb-2">فشل التحقق</h1>
-          <p className="text-gray-500 mb-6">{error || 'لم يتم العثور على البطاقة'}</p>
+          <p className="text-gray-500 mb-6">{error || 'لم يتم العثور على الإيصال'}</p>
           <Link
             to="/"
             className="inline-flex items-center gap-2 px-6 py-2.5 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors font-medium"
@@ -91,23 +100,23 @@ export default function ResultCardVerificationPage() {
             )}
           </div>
           <h1 className={`text-2xl font-bold mb-1 ${isValid ? 'text-emerald-800' : isCancelled ? 'text-amber-800' : 'text-red-800'}`}>
-            {isValid ? 'بطاقة نتيجة أصلية ومفعّلة' : isCancelled ? 'بطاقة ملغاة' : 'بطاقة غير صالحة'}
+            {isValid ? 'إيصال أصلي ومفعّل' : isCancelled ? 'إيصال ملغى' : 'إيصال غير صالح'}
           </h1>
           <p className={`text-sm ${isValid ? 'text-emerald-600' : isCancelled ? 'text-amber-600' : 'text-red-600'}`}>
             {isValid
-              ? 'تم التحقق من صحة هذه البطاقة وهي مسجلة رسمياً في النظام'
+              ? 'تم التحقق من صحة هذا الإيصال وهو مسجل رسمياً في النظام'
               : isCancelled
-              ? 'هذه البطاقة ملغاة ولم تعد صالحة للاستخدام'
+              ? 'هذا الإيصال ملغى ولم يعد صالحاً للاستخدام'
               : 'لم يتم العثور على بيانات تطابق رمز التحقق المُدخل'}
           </p>
         </div>
 
-        {/* Card Details */}
-        {result.card_number && (
+        {/* Receipt Details */}
+        {result.receipt_number && (
           <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
             <div className="bg-primary-600 px-6 py-4 flex items-center gap-3">
-              <Shield size={20} className="text-white" />
-              <h2 className="text-white font-bold">بيانات البطاقة</h2>
+              <Receipt size={20} className="text-white" />
+              <h2 className="text-white font-bold">بيانات الإيصال</h2>
             </div>
 
             <div className="p-6 space-y-4">
@@ -157,26 +166,54 @@ export default function ResultCardVerificationPage() {
 
               <div className="border-t border-gray-100 pt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="text-center p-3 bg-gray-50 rounded-xl">
-                  <p className="text-xs text-gray-500 mb-1">رقم البطاقة</p>
-                  <p className="font-mono font-bold text-gray-900 text-sm">{result.card_number}</p>
+                  <p className="text-xs text-gray-500 mb-1">رقم الإيصال</p>
+                  <p className="font-mono font-bold text-gray-900 text-sm">{result.receipt_number}</p>
+                </div>
+                <div className="text-center p-3 bg-emerald-50 rounded-xl">
+                  <p className="text-xs text-emerald-600 mb-1">المبلغ الإجمالي</p>
+                  <p className="font-mono font-bold text-emerald-700 text-lg">
+                    {result.total_amount !== undefined ? result.total_amount.toLocaleString('ar-SA', { minimumFractionDigits: 2 }) : '---'}
+                  </p>
                 </div>
                 <div className="text-center p-3 bg-gray-50 rounded-xl">
-                  <p className="text-xs text-gray-500 mb-1">النتيجة العامة</p>
-                  <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${result.overall_result_status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' : result.overall_result_status === 'راسب' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-700'}`}>
-                    {result.overall_result_status || '---'}
-                  </span>
-                </div>
-                <div className="text-center p-3 bg-gray-50 rounded-xl">
-                  <p className="text-xs text-gray-500 mb-1">الاعفاء العام</p>
-                  <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${result.general_exemption_status ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-700'}`}>
-                    {result.general_exemption_status ? 'مُعفى' : 'غير مُعفى'}
+                  <p className="text-xs text-gray-500 mb-1">الحالة</p>
+                  <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${isValid ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                    {isValid ? 'مفعّل' : 'ملغى'}
                   </span>
                 </div>
               </div>
 
+              {/* Payments Detail */}
+              {result.payments && result.payments.length > 0 && (
+                <div className="border-t border-gray-100 pt-4">
+                  <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
+                    <DollarSign size={16} className="text-primary-600" />
+                    تفاصيل المدفوعات
+                  </h3>
+                  <div className="space-y-2">
+                    {result.payments.map((p, i) => (
+                      <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                        <div className="flex items-center gap-3">
+                          <span className="w-6 h-6 bg-primary-100 text-primary-700 rounded-full flex items-center justify-center text-xs font-bold">{i + 1}</span>
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">{p.fee_type || p.payment_method}</p>
+                            <p className="text-xs text-gray-500">
+                              {p.payment_method === 'cash' ? 'نقدي' : p.payment_method === 'bank_transfer' ? 'تحويل بنكي' : p.payment_method === 'cheque' ? 'شيك' : p.payment_method === 'credit_card' ? 'بطاقة ائتمان' : p.payment_method === 'debit_card' ? 'بطاقة خصم' : p.payment_method === 'mobile_payment' ? 'محفظة إلكترونية' : 'أخرى'}
+                            </p>
+                          </div>
+                        </div>
+                        <p className="font-mono font-bold text-gray-900">
+                          {p.amount.toLocaleString('ar-SA', { minimumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="border-t border-gray-100 pt-4 text-center">
                 <p className="text-xs text-gray-400">
-                  تم إصدار البطاقة: {result.generated_at ? new Date(result.generated_at).toLocaleString('ar-SA') : '---'}
+                  تم إصدار الإيصال: {result.created_at ? new Date(result.created_at).toLocaleString('ar-SA') : '---'}
                 </p>
               </div>
             </div>

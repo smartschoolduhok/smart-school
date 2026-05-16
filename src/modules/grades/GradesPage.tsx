@@ -806,7 +806,7 @@ function SettingsTab() {
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
     } else {
-      const apiMessage = res.message || 'تم حفظ إعدادات الدرجات بنجاح';
+      const apiMessage = (res.data as any)?.message || 'تم حفظ إعدادات الدرجات بنجاح';
       setMessage({ text: apiMessage, type: 'success' });
       const data = Array.isArray(res.data) ? res.data[0] : res.data;
       if (data) setSettings(data as GradeSettings);

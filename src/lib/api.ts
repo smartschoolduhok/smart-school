@@ -430,3 +430,75 @@ export function cancelResultCard(id: number | string) {
 export function verifyResultCard(token: string) {
   return fetchApi<Record<string, any>>(`/api/verify/result-card/${token}`);
 }
+
+// ===========================================
+// Fees & Receipts (Phase 7)
+// ===========================================
+export function getStudentFees(filters?: {
+  school_id?: number | null;
+  student_id?: number | null;
+  status?: string | null;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.student_id != null) params.append('student_id', String(filters.student_id));
+  if (filters?.status != null) params.append('status', filters.status);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/student-fees${qs}`);
+}
+
+export function createStudentFee(data: Record<string, any>) {
+  return fetchApi<Record<string, any>>('/api/student-fees', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateStudentFee(id: number | string, data: Record<string, any>) {
+  return fetchApi<Record<string, any>>(`/api/student-fees/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function deleteStudentFee(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/student-fees/${id}`, { method: 'DELETE' });
+}
+
+export function getFeePayments(filters?: {
+  school_id?: number | null;
+  student_id?: number | null;
+  student_fee_id?: number | null;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.student_id != null) params.append('student_id', String(filters.student_id));
+  if (filters?.student_fee_id != null) params.append('student_fee_id', String(filters.student_fee_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/fee-payments${qs}`);
+}
+
+export function createFeePayment(data: Record<string, any>) {
+  return fetchApi<Record<string, any>>('/api/fee-payments', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function getFeeReceipts(filters?: {
+  school_id?: number | null;
+  student_id?: number | null;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.student_id != null) params.append('student_id', String(filters.student_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/fee-receipts${qs}`);
+}
+
+export function getFeeReceipt(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}`);
+}
+
+export function generateFeeReceipt(data: { student_id: number; payment_ids: number[] }) {
+  return fetchApi<Record<string, any>>('/api/fee-receipts/generate', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function cancelFeeReceipt(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}/cancel`, { method: 'PUT', body: '{}' });
+}
+
+export function verifyReceipt(token: string) {
+  return fetchApi<Record<string, any>>(`/api/verify/receipt/${token}`);
+}

@@ -152,7 +152,7 @@ function GenerateStudentTab() {
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
     } else {
-      setMessage({ text: res.message || 'تم إنشاء الكارت بنجاح', type: 'success' });
+      setMessage({ text: (res.data as any)?.message || 'تم إنشاء الكارت بنجاح', type: 'success' });
       setCard(res.data?.card || null);
       if (res.data?.card?.id) {
         const d = await getResultCard(res.data.card.id);
@@ -323,7 +323,7 @@ function GenerateSectionTab() {
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
     } else {
-      setMessage({ text: res.message || `تم إنشاء ${displayNum(res.data?.generated_count)} كارت`, type: 'success' });
+      setMessage({ text: (res.data as any)?.message || `تم إنشاء ${displayNum(res.data?.generated_count)} كارت`, type: 'success' });
       setResult(res.data || null);
     }
     setTimeout(() => setMessage(null), 6000);

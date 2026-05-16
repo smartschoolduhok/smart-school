@@ -24,11 +24,13 @@ const activeModules: NavItem[] = [
   { label: 'الدرجات', path: '/grades', icon: <Calculator size={20} />, active: true },
   { label: 'التحليل', path: '/analytics', icon: <BarChart3 size={20} />, active: true },
   { label: 'كارتات النتائج', path: '/result-cards', icon: <FileText size={20} />, active: true },
+  // Phase 7 modules — enabled
+  { label: 'الأقساط', path: '/fees', icon: <CreditCard size={20} />, active: true },
   { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true },
 ];
 
 const futureModules: NavItem[] = [
-  { label: 'الأقساط', path: '#', icon: <CreditCard size={20} />, active: false, disabled: true },
+  { label: 'الخزنة', path: '#', icon: <Wallet size={20} />, active: false, disabled: true },
   { label: 'الخزنة', path: '#', icon: <Wallet size={20} />, active: false, disabled: true },
   { label: 'الكتب الرسمية', path: '#', icon: <BookMarked size={20} />, active: false, disabled: true },
   { label: 'السجلات المطبوعة', path: '#', icon: <Printer size={20} />, active: false, disabled: true },

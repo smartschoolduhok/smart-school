@@ -189,3 +189,69 @@ export interface Subject {
   class_name?: string;
   section_name?: string;
 }
+
+// ===========================================
+// Phase 7: Fees & Receipts Types
+// ===========================================
+export type FeeStatus = 'pending' | 'partial' | 'paid' | 'overpaid';
+export type PaymentMethod = 'cash' | 'bank_transfer' | 'cheque' | 'credit_card' | 'debit_card' | 'mobile_payment' | 'other';
+export type ReceiptStatus = 'active' | 'cancelled';
+
+export interface StudentFee {
+  id: number;
+  school_id: number;
+  student_id: number;
+  academic_year_id: number | null;
+  fee_type: string;
+  amount: number;
+  currency: string;
+  due_date: number | null;
+  paid_amount: number;
+  status: FeeStatus;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  student_name?: string;
+  student_number?: string;
+  class_name?: string;
+  section_name?: string;
+}
+
+export interface FeePayment {
+  id: number;
+  school_id: number;
+  student_fee_id: number;
+  student_id: number;
+  amount: number;
+  payment_method: string;
+  payment_date: number;
+  receipt_number: string | null;
+  notes: string | null;
+  created_by_user_id: number | null;
+  created_at: string;
+  student_name?: string;
+  student_number?: string;
+  created_by_name?: string;
+}
+
+export interface FeeReceipt {
+  id: number;
+  school_id: number;
+  student_id: number;
+  receipt_number: string;
+  total_amount: number;
+  payment_ids_json: string;
+  payments_snapshot_json: string | null;
+  student_name_snapshot: string;
+  class_name_snapshot: string | null;
+  section_name_snapshot: string | null;
+  school_name_snapshot: string | null;
+  academic_year_snapshot: string | null;
+  verification_token: string;
+  verification_hash: string;
+  status: ReceiptStatus;
+  created_by_user_id: number | null;
+  created_at: string;
+  updated_at: string;
+  created_by_name?: string;
+}

@@ -13,7 +13,9 @@ import StudentSubjectsPage from './modules/studentSubjects/StudentSubjectsPage';
 import GradesPage from './modules/grades/GradesPage';
 import AnalyticsPage from './modules/analytics/AnalyticsPage';
 import ResultCardsPage from './modules/resultCards/ResultCardsPage';
+import FeesPage from './modules/fees/FeesPage';
 import ResultCardVerificationPage from './modules/verification/ResultCardVerificationPage';
+import ReceiptVerificationPage from './modules/verification/ReceiptVerificationPage';
 
 // Settings placeholder - Phase 1: active module
 function SettingsPage() {
@@ -68,8 +70,10 @@ export default function App() {
           <Route path="/analytics" element={<Layout><AnalyticsPage /></Layout>} />
           <Route path="/result-cards" element={<Layout><ResultCardsPage /></Layout>} />
           {/* Public verification route - no auth, no layout */}
+          {/* Public verification routes — no auth, no layout */}
           <Route path="/verify/result-card/:token" element={<ResultCardVerificationPage />} />
-          <Route path="/fees" element={<Layout><DisabledModulePage moduleName="الأقساط" /></Layout>} />
+          <Route path="/verify/receipt/:token" element={<ReceiptVerificationPage />} />
+          <Route path="/fees" element={<Layout><FeesPage /></Layout>} />
           <Route path="/treasury" element={<Layout><DisabledModulePage moduleName="الخزنة" /></Layout>} />
           <Route path="/official-books" element={<Layout><DisabledModulePage moduleName="الكتب الرسمية" /></Layout>} />
           <Route path="/print-records" element={<Layout><DisabledModulePage moduleName="السجلات المطبوعة" /></Layout>} />
