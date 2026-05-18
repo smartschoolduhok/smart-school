@@ -3476,7 +3476,7 @@ app.get('/api/student-fees', requireSameSchoolOrAdmin(), async (c) => {
     const studentId = query.student_id ? parseInt(query.student_id, 10) : null;
     const status = query.status || null;
 
-    let sql = `SELECT sf.id, sf.school_id, sf.student_id, sf.academic_year_id, sf.fee_type, sf.amount, sf.currency, sf.due_date, sf.paid_amount, sf.status, sf.notes, sf.created_at, sf.updated_at, st.full_name as student_name, st.student_number, c.name as class_name, s.name as section_name FROM student_fees sf LEFT JOIN students st ON sf.student_id = st.id LEFT JOIN classes c ON st.class_id = c.id LEFT JOIN sections s ON st.section_id = s.id WHERE 1=1`;
+    let sql = `SELECT sf.id, sf.school_id, sf.student_id, sf.academic_year_id, sf.fee_type, sf.amount, sf.currency, sf.due_date, sf.paid_amount, sf.status, sf.notes, sf.discount_type, sf.discount_value, sf.discount_amount, sf.net_fee, sf.created_at, sf.updated_at, st.full_name as student_name, st.student_number, c.name as class_name, s.name as section_name FROM student_fees sf LEFT JOIN students st ON sf.student_id = st.id LEFT JOIN classes c ON st.class_id = c.id LEFT JOIN sections s ON st.section_id = s.id WHERE 1=1`;
     const params: any[] = [];
 
     if (scope === 'single' && resolvedSchoolId) {
@@ -3530,10 +3530,33 @@ app.post('/api/student-fees', requireSameSchoolOrAdmin(), async (c) => {
     if (student.school_id !== school_id) return c.json({ error: 'الطالب لا ينتمي لهذه المدرسة' }, 400);
     if (student.status !== 'active') return c.json({ error: 'لا يمكن إنشاء قسط لطالب غير نشط' }, 400);
 
+    // Duplicate fee prevention: same student + academic_year + fee_type (unless academic_year is null, then block any active fee for same type)
+    const duplicateCheck = await db.prepare(`
+      SELECT id FROM student_fees
+      WHERE student_id = ? AND academic_year_id IS ? AND fee_type = ? AND status IN ('pending','partial','paid')
+    `).bind(student_id, academic_year_id || null, fee_type || 'رسوم دراسية').first<{ id: number }>();
+    if (duplicateCheck) {
+      return c.json({ error: 'يوجد قسط نشط بنفس النوع والعام الدراسي لهذا الطالب' }, 409);
+    }
+
+    // Discount calculations
+    const discount_type = body.discount_type || 'none';
+    const discount_value = parseFloat(body.discount_value || '0') || 0;
+    const amountNum = parseFloat(amount);
+    let discount_amount = 0;
+    let net_fee = amountNum;
+    if (discount_type === 'fixed') {
+      discount_amount = Math.min(discount_value, amountNum);
+      net_fee = amountNum - discount_amount;
+    } else if (discount_type === 'percentage') {
+      discount_amount = Math.min((amountNum * discount_value) / 100, amountNum);
+      net_fee = amountNum - discount_amount;
+    }
+
     const result = await db.prepare(`
-      INSERT INTO student_fees (school_id, student_id, academic_year_id, fee_type, amount, currency, due_date, paid_amount, status, notes, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, unixepoch(), unixepoch())
-    `).bind(school_id, student_id, academic_year_id || null, fee_type || 'رسوم دراسية', amount, currency || 'EGP', due_date || null, notes || null).run();
+      INSERT INTO student_fees (school_id, student_id, academic_year_id, fee_type, amount, currency, due_date, paid_amount, status, notes, discount_type, discount_value, discount_amount, net_fee, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+    `).bind(school_id, student_id, academic_year_id || null, fee_type || 'رسوم دراسية', amountNum, currency || 'EGP', due_date || null, notes || null, discount_type, discount_value, discount_amount, net_fee).run();
 
     return c.json({ data: { id: result.meta.last_row_id, school_id, student_id, amount, status: 'pending' } }, 201);
   } catch (err: any) {
@@ -3563,16 +3586,29 @@ app.put('/api/student-fees/:id', requireSameSchoolOrAdmin(), async (c) => {
 
     const body = await c.req.json();
     const fee_type = body.fee_type !== undefined ? body.fee_type : existing.fee_type;
-    const amount = body.amount !== undefined ? body.amount : existing.amount;
+    const amount = body.amount !== undefined ? parseFloat(body.amount) : existing.amount;
     const currency = body.currency !== undefined ? body.currency : existing.currency;
     const due_date = body.due_date !== undefined ? body.due_date : existing.due_date;
     const notes = body.notes !== undefined ? body.notes : existing.notes;
 
-    await db.prepare(`
-      UPDATE student_fees SET fee_type = ?, amount = ?, currency = ?, due_date = ?, notes = ?, updated_at = unixepoch() WHERE id = ?
-    `).bind(fee_type, amount, currency, due_date, notes, id).run();
+    // Recalculate discount if amount or discount fields changed
+    const discount_type = body.discount_type !== undefined ? body.discount_type : (existing.discount_type || 'none');
+    const discount_value = body.discount_value !== undefined ? parseFloat(body.discount_value || '0') : (existing.discount_value || 0);
+    let discount_amount = 0;
+    let net_fee = amount;
+    if (discount_type === 'fixed') {
+      discount_amount = Math.min(discount_value, amount);
+      net_fee = amount - discount_amount;
+    } else if (discount_type === 'percentage') {
+      discount_amount = Math.min((amount * discount_value) / 100, amount);
+      net_fee = amount - discount_amount;
+    }
 
-    return c.json({ data: { id, fee_type, amount, currency, due_date, notes }, message: 'تم تحديث القسط' });
+    await db.prepare(`
+      UPDATE student_fees SET fee_type = ?, amount = ?, currency = ?, due_date = ?, notes = ?, discount_type = ?, discount_value = ?, discount_amount = ?, net_fee = ?, updated_at = unixepoch() WHERE id = ?
+    `).bind(fee_type, amount, currency, due_date, notes, discount_type, discount_value, discount_amount, net_fee, id).run();
+
+    return c.json({ data: { id, fee_type, amount, currency, due_date, notes, discount_type, discount_value, discount_amount, net_fee }, message: 'تم تحديث القسط' });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث القسط', detail: err.message }, 500);
   }
@@ -3599,6 +3635,12 @@ app.delete('/api/student-fees/:id', requireSameSchoolOrAdmin(), async (c) => {
     }
     if (existing.paid_amount > 0) {
       return c.json({ error: 'لا يمكن حذف قسط تم سداد جزء منه' }, 400);
+    }
+
+    // Also block if any payment records exist (even zero-amount ones)
+    const paymentCount = await db.prepare('SELECT COUNT(*) as cnt FROM fee_payments WHERE student_fee_id = ?').bind(id).first<{ cnt: number }>();
+    if (paymentCount && paymentCount.cnt > 0) {
+      return c.json({ error: 'لا يمكن حذف قسط له مدفوعات مسجلة. استخدم إلغاء القسط بدلاً من الحذف.' }, 400);
     }
 
     await db.prepare('DELETE FROM student_fees WHERE id = ?').bind(id).run();
@@ -3660,6 +3702,10 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
     if (!student_fee_id || !amount || !payment_date) {
       return c.json({ error: 'معرف القسط والمبلغ وتاريخ الدفع مطلوبة' }, 400);
     }
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      return c.json({ error: 'المبلغ يجب أن يكون أكبر من صفر' }, 400);
+    }
 
     const fee = await db.prepare('SELECT * FROM student_fees WHERE id = ?').bind(student_fee_id).first<any>();
     if (!fee) return c.json({ error: 'القسط غير موجود' }, 404);
@@ -3668,24 +3714,77 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'غير مسموح: القسط لا ينتمي إلى مدرستك' }, 403);
     }
 
-    const remaining = fee.amount - fee.paid_amount;
-    if (amount > remaining) {
-      return c.json({ error: `المبلغ المدفوع (${amount}) يتجاوز المتبقي (${remaining})` }, 400);
+    // Use net_fee for remaining if available (discount-aware), fallback to amount
+    const targetAmount = fee.net_fee || fee.amount;
+    const remaining = targetAmount - fee.paid_amount;
+    if (amountNum > remaining) {
+      return c.json({ error: `المبلغ المدفوع (${amountNum}) يتجاوز المتبقي (${remaining})` }, 400);
     }
 
-    const newPaid = fee.paid_amount + amount;
-    const newStatus = newPaid >= fee.amount ? 'paid' : (newPaid > 0 ? 'partial' : 'pending');
+    const newPaid = fee.paid_amount + amountNum;
+    const newStatus = newPaid >= targetAmount ? 'paid' : (newPaid > 0 ? 'partial' : 'pending');
 
     const result = await db.prepare(`
       INSERT INTO fee_payments (school_id, student_fee_id, student_id, amount, payment_method, payment_date, notes, created_by_user_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
-    `).bind(fee.school_id, student_fee_id, fee.student_id, amount, payment_method || 'cash', payment_date, notes || null, user.id).run();
+    `).bind(fee.school_id, student_fee_id, fee.student_id, amountNum, payment_method || 'cash', payment_date, notes || null, user.id).run();
 
     await db.prepare(`
       UPDATE student_fees SET paid_amount = ?, status = ?, updated_at = unixepoch() WHERE id = ?
     `).bind(newPaid, newStatus, student_fee_id).run();
 
-    return c.json({ data: { id: result.meta.last_row_id, amount, payment_method, remaining: fee.amount - newPaid } }, 201);
+    const paymentId = result.meta.last_row_id;
+
+    // Auto-generate receipt if requested and no duplicate exists for this payment
+    let autoReceipt = null;
+    if (body.auto_generate_receipt === true) {
+      const dupCheck = await db.prepare(`SELECT id FROM fee_receipts WHERE payment_ids_json LIKE ?`).bind(`%"${paymentId}"%`).first<any>();
+      if (!dupCheck) {
+        const student = await db.prepare(`
+          SELECT s.id, s.school_id, s.full_name, s.student_number, s.class_id, s.section_id,
+                 c.name AS class_name, sec.name AS section_name, sch.name AS school_name
+          FROM students s
+          LEFT JOIN classes c ON s.class_id = c.id
+          LEFT JOIN sections sec ON s.section_id = sec.id
+          LEFT JOIN schools sch ON s.school_id = sch.id
+          WHERE s.id = ? AND s.status = 'active'
+        `).bind(fee.student_id).first<any>();
+
+        if (student) {
+          const ay = await db.prepare(`SELECT id, name FROM academic_years WHERE school_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1`).bind(student.school_id).first<any>();
+          const token = generateVerificationToken();
+          const tokenHash = await hashToken(token);
+          const receiptNumber = generateReceiptNumber(student.school_id, fee.student_id);
+          const paymentsSnapshot = [{
+            payment_id: paymentId,
+            amount: amountNum,
+            payment_method: payment_method || 'cash',
+            payment_date: payment_date,
+            fee_type: fee.fee_type,
+          }];
+          await db.prepare(`
+            INSERT INTO fee_receipts (
+              school_id, student_id, receipt_number, total_amount,
+              payment_ids_json, payments_snapshot_json,
+              student_name_snapshot, class_name_snapshot, section_name_snapshot,
+              school_name_snapshot, academic_year_snapshot,
+              verification_token, verification_hash,
+              status, created_by_user_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
+          `).bind(
+            student.school_id, fee.student_id, receiptNumber, amountNum,
+            JSON.stringify([paymentId]), JSON.stringify(paymentsSnapshot),
+            student.full_name, student.class_name || null, student.section_name || null,
+            student.school_name || null, ay?.name || null,
+            token, tokenHash,
+            user.id
+          ).run();
+          autoReceipt = { receipt_number: receiptNumber, verification_url: `/verify/receipt/${token}` };
+        }
+      }
+    }
+
+    return c.json({ data: { id: paymentId, amount: amountNum, payment_method, remaining: targetAmount - newPaid, auto_receipt: autoReceipt } }, 201);
   } catch (err: any) {
     return c.json({ error: 'فشل في تسجيل الدفع', detail: err.message }, 500);
   }

@@ -209,6 +209,10 @@ export interface StudentFee {
   paid_amount: number;
   status: FeeStatus;
   notes: string | null;
+  discount_type: string;
+  discount_value: number;
+  discount_amount: number;
+  net_fee: number;
   created_at: string;
   updated_at: string;
   student_name?: string;

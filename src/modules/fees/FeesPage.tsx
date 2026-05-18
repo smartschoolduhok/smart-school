@@ -35,6 +35,10 @@ interface FeeRecord {
   notes: string | null;
   created_at: string;
   academic_year_id?: number | null;
+  net_fee?: number;
+  discount_type?: string;
+  discount_value?: number;
+  discount_amount?: number;
 }
 
 interface PaymentRecord {
@@ -92,6 +96,8 @@ export default function FeesPage() {
   const [dueDate, setDueDate] = useState('');
   const [feeNotes, setFeeNotes] = useState('');
   const [selectedYear, setSelectedYear] = useState<number | ''>('');
+  const [discountType, setDiscountType] = useState<'none' | 'fixed' | 'percentage'>('none');
+  const [discountValue, setDiscountValue] = useState('');
 
   // Payments tab
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
@@ -179,11 +185,13 @@ export default function FeesPage() {
       currency,
       due_date: dueDate ? Math.floor(new Date(dueDate).getTime() / 1000) : null,
       notes: feeNotes || null,
+      discount_type: discountType,
+      discount_value: discountType === 'none' ? 0 : Number(discountValue),
     });
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم إضافة القسط بنجاح');
-      setSelectedStudent(''); setAmount(''); setDueDate(''); setFeeNotes(''); setSelectedYear(''); setFeeType('رسوم دراسية');
+      setSelectedStudent(''); setAmount(''); setDueDate(''); setFeeNotes(''); setSelectedYear(''); setFeeType('رسوم دراسية'); setDiscountType('none'); setDiscountValue('');
       loadFees();
       setActiveTab('list');
     }
@@ -386,9 +394,9 @@ export default function FeesPage() {
                           <div className="text-xs text-gray-500">{fee.student_number} — {fee.class_name} {fee.section_name}</div>
                         </td>
                         <td className="px-4 py-3">{fee.fee_type}</td>
-                        <td className="px-4 py-3 font-mono font-medium">{formatCurrency(fee.amount, fee.currency)}</td>
+                        <td className="px-4 py-3 font-mono font-medium">{formatCurrency(fee.net_fee || fee.amount, fee.currency)}</td>
                         <td className="px-4 py-3 font-mono text-emerald-600">{formatCurrency(fee.paid_amount, fee.currency)}</td>
-                        <td className="px-4 py-3 font-mono text-red-600">{formatCurrency(fee.amount - fee.paid_amount, fee.currency)}</td>
+                        <td className="px-4 py-3 font-mono text-red-600">{formatCurrency((fee.net_fee || fee.amount) - fee.paid_amount, fee.currency)}</td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold ${
                             fee.status === 'paid' ? 'bg-emerald-100 text-emerald-700' :
@@ -486,6 +494,35 @@ export default function FeesPage() {
                   />
                 </div>
               </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">نوع الخصم</label>
+                  <select
+                    value={discountType}
+                    onChange={e => setDiscountType(e.target.value as any)}
+                    className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"
+                    dir="rtl"
+                  >
+                    <option value="none">بدون خصم</option>
+                    <option value="fixed">خصم مبلغ ثابت</option>
+                    <option value="percentage">خصم نسبة مئوية</option>
+                  </select>
+                </div>
+                {discountType !== 'none' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{discountType === 'percentage' ? 'نسبة الخصم (%)' : 'قيمة الخصم'}</label>
+                    <input
+                      type="number"
+                      step={discountType === 'percentage' ? '1' : '0.01'}
+                      value={discountValue}
+                      onChange={e => setDiscountValue(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"
+                      dir="rtl"
+                      required
+                    />
+                  </div>
+                )}
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">العام الدراسي</label>
                 <select
@@ -550,7 +587,7 @@ export default function FeesPage() {
                       <option value="">اختر القسط</option>
                       {studentUnpaidFees.map(f => (
                         <option key={f.id} value={f.id}>
-                          {f.fee_type} — متبقي {formatCurrency(f.amount - f.paid_amount, f.currency)}
+                          {f.fee_type} — متبقي {formatCurrency((f.net_fee || f.amount) - f.paid_amount, f.currency)}
                         </option>
                       ))}
                     </select>
