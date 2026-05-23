@@ -22,7 +22,7 @@ function showError(message: string) {
   alert(message);
 }
 
-async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; error?: string }> {
+async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string }> {
   try {
     const token = getToken();
     const headers: Record<string, string> = {
@@ -56,7 +56,7 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?
     }
 
     const body = await res.json();
-    return { data: body.data ?? body };
+    return { data: body.data ?? body, meta: body.meta };
   } catch (err: any) {
     return { error: err.message || 'خطأ في الاتصال بالخادم' };
   }
@@ -501,4 +501,80 @@ export function cancelFeeReceipt(id: number | string) {
 
 export function verifyReceipt(token: string) {
   return fetchApi<Record<string, any>>(`/api/verify/receipt/${token}`);
+}
+
+// ===========================================
+// Treasury (Phase 8)
+// ===========================================
+export function getTreasurySummary(schoolId?: number | null) {
+  const qs = schoolId != null ? `?school_id=${schoolId}` : '';
+  return fetchApi<Record<string, any>>(`/api/treasury/summary${qs}`);
+}
+
+export function getTreasuryTransactions(filters?: {
+  school_id?: number | null;
+  type?: string | null;
+  category?: string | null;
+  status?: string | null;
+  date_from?: number | string | null;
+  date_to?: number | string | null;
+  from?: string | null;
+  to?: string | null;
+  limit?: number | string | null;
+  offset?: number | string | null;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.type != null) params.append('type', filters.type);
+  if (filters?.category != null) params.append('category', filters.category);
+  if (filters?.status != null) params.append('status', filters.status);
+  if (filters?.date_from != null) params.append('date_from', String(filters.date_from));
+  if (filters?.date_to != null) params.append('date_to', String(filters.date_to));
+  if (filters?.from != null) params.append('from', filters.from);
+  if (filters?.to != null) params.append('to', filters.to);
+  if (filters?.limit != null) params.append('limit', String(filters.limit));
+  if (filters?.offset != null) params.append('offset', String(filters.offset));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/treasury/transactions${qs}`);
+}
+
+export function createTreasuryTransaction(data: Record<string, any>) {
+  return fetchApi<Record<string, any>>('/api/treasury/transactions', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function cancelTreasuryTransaction(id: number | string, reason: string) {
+  return fetchApi<Record<string, any>>(`/api/treasury/transactions/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ reason }) });
+}
+
+export function getTreasuryClosings(schoolId?: number | null) {
+  const qs = schoolId != null ? `?school_id=${schoolId}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/treasury/daily-closings${qs}`);
+}
+
+export function closeTreasuryDay(data: { school_id?: number; closing_date?: string; notes?: string }) {
+  return fetchApi<Record<string, any>>('/api/treasury/daily-closings/close-day', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function getTreasuryDailyReport(schoolId?: number | null, date?: string | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  if (date != null) params.append('date', date);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<any>(`/api/treasury/reports/daily${qs}`);
+}
+
+export function getTreasuryMonthlyReport(schoolId?: number | null, month?: string | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  if (month != null) params.append('month', month);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<any>(`/api/treasury/reports/monthly${qs}`);
+}
+
+export function getTreasuryCategories(schoolId?: number | null, type?: string | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  if (type != null) params.append('type', type);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/treasury/categories${qs}`);
 }
