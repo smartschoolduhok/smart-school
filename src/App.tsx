@@ -15,6 +15,7 @@ import AnalyticsPage from './modules/analytics/AnalyticsPage';
 import ResultCardsPage from './modules/resultCards/ResultCardsPage';
 import FeesPage from './modules/fees/FeesPage';
 import TreasuryPage from './modules/treasury/TreasuryPage';
+import EmployeesPage from './modules/employees/EmployeesPage';
 import ResultCardVerificationPage from './modules/verification/ResultCardVerificationPage';
 import ReceiptVerificationPage from './modules/verification/ReceiptVerificationPage';
 
@@ -78,7 +79,7 @@ export default function App() {
           <Route path="/treasury" element={<Layout><TreasuryPage /></Layout>} />
           <Route path="/official-books" element={<Layout><DisabledModulePage moduleName="الكتب الرسمية" /></Layout>} />
           <Route path="/print-records" element={<Layout><DisabledModulePage moduleName="السجلات المطبوعة" /></Layout>} />
-          <Route path="/employees" element={<Layout><DisabledModulePage moduleName="الموظفون" /></Layout>} />
+          <Route path="/employees" element={<Layout><EmployeesPage /></Layout>} />
           <Route path="/transport" element={<Layout><DisabledModulePage moduleName="النقل المدرسي" /></Layout>} />
           <Route path="/teacher-portal" element={<Layout><DisabledModulePage moduleName="بوابة المدرس" /></Layout>} />
           <Route path="/parent-portal" element={<Layout><DisabledModulePage moduleName="بوابة ولي الأمر" /></Layout>} />

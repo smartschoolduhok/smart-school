@@ -3472,6 +3472,18 @@ function canManageTreasury(roleKey: RoleKey): boolean {
   return ['system_admin', 'school_owner', 'principal', 'accountant'].includes(roleKey);
 }
 
+function canViewEmployees(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal', 'accountant'].includes(roleKey);
+}
+
+function canManageEmployees(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+}
+
+function canManageSalaries(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal', 'accountant'].includes(roleKey);
+}
+
 // GET /api/student-fees
 // ===========================================
 app.get('/api/student-fees', requireSameSchoolOrAdmin(), async (c) => {
@@ -4092,6 +4104,636 @@ app.get('/api/verify/receipt/:token', async (c) => {
 // ===========================================
 app.use('/assets/*', serveStatic({ root: './', manifest: {} as any }))
 app.use('/static/*', serveStatic({ root: './', manifest: {} as any }))
+
+// ===========================================
+// Phase 9: Employees & Salaries (الموظفون والرواتب)
+// ===========================================
+
+// GET /api/employees
+// ===========================================
+app.get('/api/employees', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canViewEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const query = c.req.query();
+    const status = query.status || null;
+
+    let sql = `SELECT e.*, sch.name as school_name FROM employees e LEFT JOIN schools sch ON e.school_id = sch.id WHERE 1=1`;
+    const params: any[] = [];
+
+    if (scope === 'single' && resolvedSchoolId) {
+      sql += ` AND e.school_id = ?`;
+      params.push(resolvedSchoolId);
+    }
+    if (status) {
+      sql += ` AND e.status = ?`;
+      params.push(status);
+    }
+    sql += ` ORDER BY e.created_at DESC`;
+
+    const rows = await db.prepare(sql).bind(...params).all<any>();
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب الموظفين', detail: err.message }, 500);
+  }
+});
+
+// GET /api/employees/:id
+// ===========================================
+app.get('/api/employees/:id', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canViewEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+
+    const row = await db.prepare(`
+      SELECT e.*, sch.name as school_name FROM employees e
+      LEFT JOIN schools sch ON e.school_id = sch.id
+      WHERE e.id = ?
+    `).bind(id).first<any>();
+
+    if (!row) return c.json({ error: 'الموظف غير موجود' }, 404);
+
+    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
+    }
+
+    return c.json({ data: row });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب الموظف', detail: err.message }, 500);
+  }
+});
+
+// POST /api/employees
+// ===========================================
+app.post('/api/employees', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const body = await c.req.json();
+    const { full_name, school_id, employee_number, phone, email, role, job_title, salary_amount, hire_date, notes } = body;
+
+    if (!full_name) {
+      return c.json({ error: 'اسم الموظف مطلوب' }, 400);
+    }
+
+    const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : (school_id || null);
+    if (!targetSchoolId) {
+      return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+    }
+
+    const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseInt(String(salary_amount), 10) : 0;
+    if (isNaN(salaryNum) || salaryNum < 0) {
+      return c.json({ error: 'راتب الموظف يجب أن يكون صفر أو أكبر' }, 400);
+    }
+
+    const result = await db.prepare(`
+      INSERT INTO employees (school_id, full_name, employee_number, phone, email, role, job_title, salary_amount, hire_date, notes, created_by_user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+    `).bind(targetSchoolId, full_name, employee_number || null, phone || null, email || null, role || 'staff', job_title || null, salaryNum, hire_date || null, notes || null, user.id).run();
+
+    const newId = result.meta.last_row_id;
+    return c.json({ data: { id: newId, full_name, salary_amount: salaryNum, status: 'active' } }, 201);
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إنشاء الموظف', detail: err.message }, 500);
+  }
+});
+
+// PUT /api/employees/:id
+// ===========================================
+app.put('/api/employees/:id', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+
+    const existing = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(id).first<any>();
+    if (!existing) return c.json({ error: 'الموظف غير موجود' }, 404);
+
+    if (scope === 'single' && resolvedSchoolId && existing.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
+    }
+
+    const body = await c.req.json();
+    const { full_name, employee_number, phone, email, role, job_title, salary_amount, hire_date, notes } = body;
+
+    const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseInt(String(salary_amount), 10) : existing.salary_amount;
+    if (isNaN(salaryNum) || salaryNum < 0) {
+      return c.json({ error: 'راتب الموظف يجب أن يكون صفر أو أكبر' }, 400);
+    }
+
+    await db.prepare(`
+      UPDATE employees SET
+        full_name = COALESCE(?, full_name),
+        employee_number = COALESCE(?, employee_number),
+        phone = COALESCE(?, phone),
+        email = COALESCE(?, email),
+        role = COALESCE(?, role),
+        job_title = COALESCE(?, job_title),
+        salary_amount = ?,
+        hire_date = COALESCE(?, hire_date),
+        notes = COALESCE(?, notes),
+        updated_at = unixepoch()
+      WHERE id = ?
+    `).bind(
+      full_name || null, employee_number || null, phone || null, email || null,
+      role || null, job_title || null, salaryNum, hire_date || null, notes || null, id
+    ).run();
+
+    return c.json({ data: { id, updated: true } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث الموظف', detail: err.message }, 500);
+  }
+});
+
+// PUT /api/employees/:id/archive
+// ===========================================
+app.put('/api/employees/:id/archive', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+
+    const existing = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(id).first<any>();
+    if (!existing) return c.json({ error: 'الموظف غير موجود' }, 404);
+
+    if (scope === 'single' && resolvedSchoolId && existing.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
+    }
+
+    await db.prepare(`UPDATE employees SET status = 'archived', updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    return c.json({ data: { id, status: 'archived' } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في أرشفة الموظف', detail: err.message }, 500);
+  }
+});
+
+// GET /api/salaries
+// ===========================================
+app.get('/api/salaries', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canViewEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const query = c.req.query();
+    const employeeId = query.employee_id ? parseInt(query.employee_id, 10) : null;
+    const month = query.month ? parseInt(query.month, 10) : null;
+    const year = query.year ? parseInt(query.year, 10) : null;
+    const status = query.status || null;
+
+    let sql = `SELECT s.*, e.full_name as employee_name, e.employee_number, e.job_title FROM employee_salaries s LEFT JOIN employees e ON s.employee_id = e.id WHERE 1=1`;
+    const params: any[] = [];
+
+    if (scope === 'single' && resolvedSchoolId) {
+      sql += ` AND s.school_id = ?`;
+      params.push(resolvedSchoolId);
+    }
+    if (employeeId && !isNaN(employeeId)) {
+      sql += ` AND s.employee_id = ?`;
+      params.push(employeeId);
+    }
+    if (month !== null && !isNaN(month)) {
+      sql += ` AND s.month = ?`;
+      params.push(month);
+    }
+    if (year !== null && !isNaN(year)) {
+      sql += ` AND s.year = ?`;
+      params.push(year);
+    }
+    if (status) {
+      sql += ` AND s.status = ?`;
+      params.push(status);
+    }
+    sql += ` ORDER BY s.year DESC, s.month DESC, s.created_at DESC`;
+
+    const rows = await db.prepare(sql).bind(...params).all<any>();
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب الرواتب', detail: err.message }, 500);
+  }
+});
+
+// GET /api/salaries/:id
+// ===========================================
+app.get('/api/salaries/:id', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canViewEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+
+    const row = await db.prepare(`
+      SELECT s.*, e.full_name as employee_name, e.employee_number, e.job_title, e.status as employee_status
+      FROM employee_salaries s
+      LEFT JOIN employees e ON s.employee_id = e.id
+      WHERE s.id = ?
+    `).bind(id).first<any>();
+
+    if (!row) return c.json({ error: 'الراتب غير موجود' }, 404);
+
+    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: الراتب لا ينتمي إلى مدرستك' }, 403);
+    }
+
+    return c.json({ data: row });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب الراتب', detail: err.message }, 500);
+  }
+});
+
+// POST /api/salaries/generate
+// ===========================================
+app.post('/api/salaries/generate', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageSalaries(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const body = await c.req.json();
+    const { employee_id, month, year, base_salary, bonus_amount, deduction_amount } = body;
+
+    if (!employee_id || !month || !year) {
+      return c.json({ error: 'معرف الموظف والشهر والسنة مطلوبة' }, 400);
+    }
+
+    const emp = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(employee_id).first<any>();
+    if (!emp) return c.json({ error: 'الموظف غير موجود' }, 404);
+
+    const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : emp.school_id;
+    if (scope === 'single' && resolvedSchoolId && emp.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
+    }
+
+    if (emp.status === 'archived') {
+      return c.json({ error: 'لا يمكن توليد راتب لموظف مؤرشف' }, 400);
+    }
+
+    const base = base_salary !== undefined ? parseInt(String(base_salary), 10) : emp.salary_amount;
+    const bonus = bonus_amount !== undefined ? parseInt(String(bonus_amount), 10) : 0;
+    const deduction = deduction_amount !== undefined ? parseInt(String(deduction_amount), 10) : 0;
+
+    if (isNaN(base) || base < 0 || isNaN(bonus) || bonus < 0 || isNaN(deduction) || deduction < 0) {
+      return c.json({ error: 'المبالغ يجب أن تكون صفر أو أكبر' }, 400);
+    }
+
+    const net = base + bonus - deduction;
+    if (net < 0) {
+      return c.json({ error: 'مبلغ الاستقطاع أكبر من الراتب والمكافأة' }, 400);
+    }
+
+    const result = await db.prepare(`
+      INSERT INTO employee_salaries (school_id, employee_id, month, year, base_salary, bonus_amount, deduction_amount, net_salary, status, created_by_user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, unixepoch(), unixepoch())
+    `).bind(targetSchoolId, employee_id, month, year, base, bonus, deduction, net, user.id).run();
+
+    const newId = result.meta.last_row_id;
+    return c.json({ data: { id: newId, employee_id, month, year, base_salary: base, bonus_amount: bonus, deduction_amount: deduction, net_salary: net, status: 'unpaid' } }, 201);
+  } catch (err: any) {
+    if (err.message && err.message.includes('UNIQUE constraint failed')) {
+      return c.json({ error: 'يوجد راتب مسجل لهذا الموظف في هذا الشهر' }, 409);
+    }
+    return c.json({ error: 'فشل في توليد الراتب', detail: err.message }, 500);
+  }
+});
+
+// POST /api/salaries/generate-all
+// ===========================================
+app.post('/api/salaries/generate-all', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageSalaries(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const body = await c.req.json();
+    const { school_id, month, year, bonus_amount, deduction_amount } = body;
+
+    if (!month || !year) {
+      return c.json({ error: 'الشهر والسنة مطلوبة' }, 400);
+    }
+
+    const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : (school_id || null);
+    if (!targetSchoolId) {
+      return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+    }
+
+    const bonus = bonus_amount !== undefined ? parseInt(String(bonus_amount), 10) : 0;
+    const deduction = deduction_amount !== undefined ? parseInt(String(deduction_amount), 10) : 0;
+
+    if (isNaN(bonus) || bonus < 0 || isNaN(deduction) || deduction < 0) {
+      return c.json({ error: 'المبالغ يجب أن تكون صفر أو أكبر' }, 400);
+    }
+
+    const employees = await db.prepare(`
+      SELECT * FROM employees WHERE school_id = ? AND status = 'active'
+    `).bind(targetSchoolId).all<any>();
+
+    const created: any[] = [];
+    const skipped: any[] = [];
+
+    for (const emp of (employees.results || [])) {
+      const base = emp.salary_amount || 0;
+      const net = base + bonus - deduction;
+      if (net < 0) {
+        skipped.push({ employee_id: emp.id, reason: 'مبلغ الاستقطاع أكبر من الراتب والمكافأة' });
+        continue;
+      }
+      try {
+        const result = await db.prepare(`
+          INSERT INTO employee_salaries (school_id, employee_id, month, year, base_salary, bonus_amount, deduction_amount, net_salary, status, created_by_user_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, unixepoch(), unixepoch())
+        `).bind(targetSchoolId, emp.id, month, year, base, bonus, deduction, net, user.id).run();
+        created.push({ id: result.meta.last_row_id, employee_id: emp.id, month, year, net_salary: net });
+      } catch (insertErr: any) {
+        if (insertErr.message && insertErr.message.includes('UNIQUE constraint failed')) {
+          skipped.push({ employee_id: emp.id, reason: 'يوجد راتب مسجل لهذا الموظف في هذا الشهر' });
+        } else {
+          skipped.push({ employee_id: emp.id, reason: insertErr.message });
+        }
+      }
+    }
+
+    return c.json({ data: { created, skipped, count: created.length } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في توليد الرواتب', detail: err.message }, 500);
+  }
+});
+
+// PUT /api/salaries/:id/pay
+// ===========================================
+app.put('/api/salaries/:id/pay', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageSalaries(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+
+    const salary = await db.prepare(`
+      SELECT s.*, e.full_name as employee_name FROM employee_salaries s
+      LEFT JOIN employees e ON s.employee_id = e.id
+      WHERE s.id = ?
+    `).bind(id).first<any>();
+
+    if (!salary) return c.json({ error: 'الراتب غير موجود' }, 404);
+
+    if (scope === 'single' && resolvedSchoolId && salary.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: الراتب لا ينتمي إلى مدرستك' }, 403);
+    }
+
+    if (salary.status === 'paid') {
+      return c.json({ error: 'تم دفع هذا الراتب مسبقاً' }, 409);
+    }
+    if (salary.status === 'cancelled') {
+      return c.json({ error: 'هذا الراتب ملغى مسبقاً' }, 409);
+    }
+
+    // Check duplicate treasury transaction
+    const existingTx = await db.prepare(`
+      SELECT id FROM treasury_transactions WHERE school_id = ? AND source_type = 'salary_payment' AND source_id = ?
+    `).bind(salary.school_id, id).first<any>();
+
+    if (existingTx) {
+      return c.json({ error: 'تم دفع هذا الراتب مسبقاً' }, 409);
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+    const paidAt = body.paid_at || new Date().toISOString().split('T')[0];
+    const paidAtUnix = Math.floor(new Date(paidAt).getTime() / 1000) || Math.floor(Date.now() / 1000);
+
+    // ── Mark salary paid first (optimistic), then treasury; rollback on failure ──
+    await db.prepare(`
+      UPDATE employee_salaries SET status = 'paid', paid_at = ?, paid_by_user_id = ?, updated_at = unixepoch() WHERE id = ?
+    `).bind(paidAtUnix, user.id, id).run();
+
+    try {
+      // Create treasury expense transaction
+      await db.prepare(`
+        INSERT INTO treasury_transactions
+        (school_id, transaction_type, category, amount, currency, description,
+         source_type, source_id, status, created_by, created_at)
+        VALUES (?, 'expense', 'salary', ?, 'IQD', ?,
+                'salary_payment', ?, 'active', ?, unixepoch())
+      `).bind(salary.school_id, salary.net_salary, `دفع راتب ${salary.employee_name || salary.employee_id}`, id, user.id).run();
+
+      // Update cached balance
+      await db.prepare(`
+        INSERT INTO treasury_accounts (school_id, current_balance, updated_at)
+        VALUES (?, ?, unixepoch())
+        ON CONFLICT(school_id) DO UPDATE SET
+          current_balance = treasury_accounts.current_balance + excluded.current_balance,
+          updated_at = unixepoch()
+      `).bind(salary.school_id, -salary.net_salary).run();
+
+      // Link treasury transaction id back to salary
+      const txRow = await db.prepare(`
+        SELECT id FROM treasury_transactions WHERE school_id = ? AND source_type = 'salary_payment' AND source_id = ? ORDER BY id DESC LIMIT 1
+      `).bind(salary.school_id, id).first<any>();
+
+      if (txRow) {
+        await db.prepare(`UPDATE employee_salaries SET treasury_transaction_id = ? WHERE id = ?`).bind(txRow.id, id).run();
+      }
+    } catch (treasuryErr: any) {
+      // COMPENSATING ROLLBACK — treasury failed, revert salary to unpaid
+      await db.prepare(`
+        UPDATE employee_salaries SET status = 'unpaid', paid_at = NULL, paid_by_user_id = NULL, treasury_transaction_id = NULL, updated_at = unixepoch() WHERE id = ?
+      `).bind(id).run();
+
+      return c.json({
+        error: 'تعذر تسجيل الدفع في الخزنة، تم التراجع عن دفع الراتب',
+        detail: treasuryErr.message
+      }, 500);
+    }
+
+    return c.json({ data: { id, status: 'paid', paid_at: paidAtUnix, net_salary: salary.net_salary } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في دفع الراتب', detail: err.message }, 500);
+  }
+});
+
+// PUT /api/salaries/:id/cancel
+// ===========================================
+app.put('/api/salaries/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageSalaries(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+
+    const salary = await db.prepare(`SELECT * FROM employee_salaries WHERE id = ?`).bind(id).first<any>();
+    if (!salary) return c.json({ error: 'الراتب غير موجود' }, 404);
+
+    if (scope === 'single' && resolvedSchoolId && salary.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: الراتب لا ينتمي إلى مدرستك' }, 403);
+    }
+
+    if (salary.status === 'cancelled') {
+      return c.json({ error: 'هذا الراتب ملغى مسبقاً' }, 409);
+    }
+
+    const body = await c.req.json();
+    const { cancel_reason } = body;
+    if (!cancel_reason || typeof cancel_reason !== 'string' || cancel_reason.trim().length === 0) {
+      return c.json({ error: 'سبب الإلغاء مطلوب' }, 400);
+    }
+
+    // If paid, cancel linked treasury transaction and reverse balance
+    if (salary.status === 'paid' && salary.treasury_transaction_id) {
+      const tx = await db.prepare(`SELECT * FROM treasury_transactions WHERE id = ? AND source_type = 'salary_payment' AND source_id = ?`)
+        .bind(salary.treasury_transaction_id, id).first<any>();
+      if (tx && tx.status === 'active') {
+        await db.prepare(`
+          UPDATE treasury_transactions SET status = 'cancelled', cancel_reason = ?, cancelled_by = ?, cancelled_at = unixepoch(), updated_at = unixepoch() WHERE id = ?
+        `).bind(cancel_reason, user.id, tx.id).run();
+
+        // Reverse cached balance
+        await db.prepare(`
+          INSERT INTO treasury_accounts (school_id, current_balance, updated_at)
+          VALUES (?, ?, unixepoch())
+          ON CONFLICT(school_id) DO UPDATE SET
+            current_balance = treasury_accounts.current_balance + excluded.current_balance,
+            updated_at = unixepoch()
+        `).bind(salary.school_id, salary.net_salary).run();
+      }
+    }
+
+    await db.prepare(`
+      UPDATE employee_salaries SET status = 'cancelled', cancel_reason = ?, updated_at = unixepoch() WHERE id = ?
+    `).bind(cancel_reason, id).run();
+
+    return c.json({ data: { id, status: 'cancelled', cancel_reason } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إلغاء الراتب', detail: err.message }, 500);
+  }
+});
+
+// GET /api/salaries/reports/monthly
+// ===========================================
+app.get('/api/salaries/reports/monthly', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canViewEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
+  }
+
+  try {
+    const query = c.req.query();
+    const month = query.month ? parseInt(query.month, 10) : null;
+    const year = query.year ? parseInt(query.year, 10) : null;
+
+    let targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : (query.school_id ? parseInt(query.school_id, 10) : null);
+
+    let sql = `
+      SELECT month, year,
+        COALESCE(SUM(base_salary), 0) as total_base,
+        COALESCE(SUM(bonus_amount), 0) as total_bonus,
+        COALESCE(SUM(deduction_amount), 0) as total_deduction,
+        COALESCE(SUM(net_salary), 0) as total_net,
+        COUNT(CASE WHEN status = 'paid' THEN 1 END) as paid_count,
+        COUNT(CASE WHEN status = 'unpaid' THEN 1 END) as unpaid_count,
+        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_count,
+        COUNT(*) as total_count
+      FROM employee_salaries
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (targetSchoolId) {
+      sql += ` AND school_id = ?`;
+      params.push(targetSchoolId);
+    }
+    if (month !== null && !isNaN(month)) {
+      sql += ` AND month = ?`;
+      params.push(month);
+    }
+    if (year !== null && !isNaN(year)) {
+      sql += ` AND year = ?`;
+      params.push(year);
+    }
+    sql += ` GROUP BY month, year ORDER BY year DESC, month DESC`;
+
+    const rows = await db.prepare(sql).bind(...params).all<any>();
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب تقرير الرواتب', detail: err.message }, 500);
+  }
+});
 
 // ===========================================
 // SPA Fallback: serve index.html for all non-API routes

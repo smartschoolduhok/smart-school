@@ -26,15 +26,15 @@ const activeModules: NavItem[] = [
   { label: 'كارتات النتائج', path: '/result-cards', icon: <FileText size={20} />, active: true },
   // Phase 7 modules — enabled
   { label: 'الأقساط', path: '/fees', icon: <CreditCard size={20} />, active: true },
+  { label: 'الخزنة', path: '/treasury', icon: <Wallet size={20} />, active: true },
+  // Phase 9 modules — enabled
+  { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true },
   { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true },
 ];
 
 const futureModules: NavItem[] = [
-  { label: 'الخزنة', path: '#', icon: <Wallet size={20} />, active: false, disabled: true },
-  { label: 'الخزنة', path: '#', icon: <Wallet size={20} />, active: false, disabled: true },
   { label: 'الكتب الرسمية', path: '#', icon: <BookMarked size={20} />, active: false, disabled: true },
   { label: 'السجلات المطبوعة', path: '#', icon: <Printer size={20} />, active: false, disabled: true },
-  { label: 'الموظفون', path: '#', icon: <UserCheck size={20} />, active: false, disabled: true },
   { label: 'النقل المدرسي', path: '#', icon: <Bus size={20} />, active: false, disabled: true },
   { label: 'بوابة المدرس', path: '#', icon: <Globe size={20} />, active: false, disabled: true },
   { label: 'بوابة ولي الأمر', path: '#', icon: <HeartHandshake size={20} />, active: false, disabled: true },

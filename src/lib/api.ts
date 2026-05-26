@@ -578,3 +578,68 @@ export function getTreasuryCategories(schoolId?: number | null, type?: string | 
   const qs = params.toString() ? `?${params.toString()}` : '';
   return fetchApi<Array<Record<string, any>>>(`/api/treasury/categories${qs}`);
 }
+
+// ===========================================
+// Employees & Salaries API
+// ===========================================
+
+export function getEmployees(schoolId?: number | null) {
+  const qs = schoolId != null ? `?school_id=${schoolId}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/employees${qs}`);
+}
+
+export function getEmployee(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/employees/${id}`);
+}
+
+export function createEmployee(data: Record<string, any>) {
+  return fetchApi<Record<string, any>>('/api/employees', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateEmployee(id: number | string, data: Record<string, any>) {
+  return fetchApi<Record<string, any>>(`/api/employees/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function archiveEmployee(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/employees/${id}/archive`, { method: 'PUT' });
+}
+
+export function getSalaries(filters?: { school_id?: number | null; employee_id?: number | null; month?: number | null; year?: number | null; status?: string | null; limit?: number | null; offset?: number | null }) {
+  const params = new URLSearchParams();
+  if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
+  if (filters?.employee_id != null) params.append('employee_id', String(filters.employee_id));
+  if (filters?.month != null) params.append('month', String(filters.month));
+  if (filters?.year != null) params.append('year', String(filters.year));
+  if (filters?.status != null) params.append('status', filters.status);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/salaries${qs}`);
+}
+
+export function getSalary(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/salaries/${id}`);
+}
+
+export function generateSalary(data: Record<string, any>) {
+  return fetchApi<Record<string, any>>('/api/salaries/generate', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function generateAllSalaries(data: Record<string, any>) {
+  return fetchApi<Record<string, any>>('/api/salaries/generate-all', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function paySalary(id: number | string, paid_at?: string) {
+  return fetchApi<Record<string, any>>(`/api/salaries/${id}/pay`, { method: 'PUT', body: JSON.stringify(paid_at ? { paid_at } : {}) });
+}
+
+export function cancelSalary(id: number | string, cancel_reason: string) {
+  return fetchApi<Record<string, any>>(`/api/salaries/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ cancel_reason }) });
+}
+
+export function getSalaryMonthlyReport(schoolId?: number | null, month?: string | null, year?: string | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  if (month != null) params.append('month', month);
+  if (year != null) params.append('year', year);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<any>(`/api/salaries/reports/monthly${qs}`);
+}
