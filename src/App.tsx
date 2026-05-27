@@ -63,7 +63,7 @@ export default function App() {
           <Route path="/users" element={<Layout><UsersPage /></Layout>} />
           <Route path="/roles" element={<Layout><RolesPage /></Layout>} />
           <Route path="/settings" element={<Layout><SettingsPage /></Layout>} />
-          {/* Disabled/future module routes - explicit catch to prevent 404 and show clear message */}
+          {/* Active Phase 2+ module routes */}
           <Route path="/students" element={<Layout><StudentsPage /></Layout>} />
           <Route path="/classes" element={<Layout><ClassesPage /></Layout>} />
           <Route path="/subjects" element={<Layout><SubjectsPage /></Layout>} />
