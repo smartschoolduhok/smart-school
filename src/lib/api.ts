@@ -643,3 +643,49 @@ export function getSalaryMonthlyReport(schoolId?: number | null, month?: string 
   const qs = params.toString() ? `?${params.toString()}` : '';
   return fetchApi<any>(`/api/salaries/reports/monthly${qs}`);
 }
+
+// ===========================================
+// Settings API (Phase 11)
+// ===========================================
+
+export function getSchoolSettings(schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/settings/school${qs}`);
+}
+
+export function updateSchoolProfile(data: Record<string, any>, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/settings/school${qs}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function getDocumentSettings(schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/settings/document${qs}`);
+}
+
+export function updateDocumentSettings(data: Record<string, any>, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/settings/document${qs}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function getSystemSettings(schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/settings/system${qs}`);
+}
+
+export function updateSystemSettings(data: Record<string, any>, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/settings/system${qs}`, { method: 'PUT', body: JSON.stringify(data) });
+}

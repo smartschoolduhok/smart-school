@@ -3484,6 +3484,10 @@ function canManageSalaries(roleKey: RoleKey): boolean {
   return ['system_admin', 'school_owner', 'principal', 'accountant'].includes(roleKey);
 }
 
+function canManageSettings(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+}
+
 // GET /api/student-fees
 // ===========================================
 app.get('/api/student-fees', requireSameSchoolOrAdmin(), async (c) => {
@@ -5329,6 +5333,295 @@ app.get('/api/treasury/categories', requireSameSchoolOrAdmin(), async (c) => {
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب التصنيفات', detail: err.message }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PHASE 11: SETTINGS MODULE
+// ═══════════════════════════════════════════════════════════════
+
+// ===========================================
+// GET /api/settings/school
+// Returns: school profile + document settings + system settings merged
+// ===========================================
+app.get('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const targetSchoolId = c.get('resolvedSchoolId') as number;
+
+  if (!targetSchoolId) {
+    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+  }
+
+  try {
+    // Fetch school profile
+    const school = await db.prepare(`
+      SELECT id, name, name_en, school_type, city, province, address, phone, email, website, principal_name, logo_url, official_stamp_url, status, created_at, updated_at
+      FROM schools WHERE id = ?
+    `).bind(targetSchoolId).first<any>();
+
+    if (!school) {
+      return c.json({ error: 'المدرسة غير موجودة' }, 404);
+    }
+
+    // Fetch school_settings (document + system preferences)
+    let settings = await db.prepare(`
+      SELECT school_id, result_card_header_text, result_card_footer_text, receipt_footer_text, verification_note_text,
+             use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size,
+             use_arabic_indic_digits, currency_label, date_format, created_at, updated_at
+      FROM school_settings WHERE school_id = ?
+    `).bind(targetSchoolId).first<any>();
+
+    // Auto-create default settings row if missing
+    if (!settings) {
+      await db.prepare(`
+        INSERT OR IGNORE INTO school_settings
+        (school_id, use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size, use_arabic_indic_digits, currency_label, date_format)
+        VALUES (?, 1, 0, 'A4', 'A5', 1, 'د.ع', 'dd/MM/yyyy')
+      `).bind(targetSchoolId).run();
+      settings = await db.prepare(`
+        SELECT school_id, result_card_header_text, result_card_footer_text, receipt_footer_text, verification_note_text,
+               use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size,
+               use_arabic_indic_digits, currency_label, date_format, created_at, updated_at
+        FROM school_settings WHERE school_id = ?
+      `).bind(targetSchoolId).first<any>();
+    }
+
+    return c.json({ data: { school, settings } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب إعدادات المدرسة', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// PUT /api/settings/school
+// Updates: school profile fields only (safe fields)
+// ===========================================
+app.put('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const targetSchoolId = c.get('resolvedSchoolId') as number;
+
+  if (!targetSchoolId) {
+    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+  }
+
+  if (!user || !canManageSettings(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
+  }
+
+  try {
+    const body = await c.req.json();
+    const allowedFields = ['name', 'name_en', 'school_type', 'city', 'province', 'address', 'phone', 'email', 'website', 'principal_name', 'logo_url', 'official_stamp_url'];
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    for (const key of allowedFields) {
+      if (body[key] !== undefined) {
+        updates.push(`${key} = ?`);
+        params.push(body[key]);
+      }
+    }
+
+    if (updates.length === 0) {
+      return c.json({ error: 'لا توجد بيانات للتحديث' }, 400);
+    }
+
+    updates.push(`updated_at = unixepoch()`);
+    params.push(targetSchoolId);
+    const sql = `UPDATE schools SET ${updates.join(', ')} WHERE id = ?`;
+    await db.prepare(sql).bind(...params).run();
+
+    return c.json({ data: { message: 'تم تحديث بيانات المدرسة بنجاح' } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث بيانات المدرسة', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// GET /api/settings/document
+// Returns: document/print preferences only
+// ===========================================
+app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const targetSchoolId = c.get('resolvedSchoolId') as number;
+
+  if (!targetSchoolId) {
+    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+  }
+
+  try {
+    let row = await db.prepare(`
+      SELECT result_card_header_text, result_card_footer_text, receipt_footer_text, verification_note_text,
+             use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size, updated_at
+      FROM school_settings WHERE school_id = ?
+    `).bind(targetSchoolId).first<any>();
+
+    if (!row) {
+      // Return defaults
+      return c.json({ data: {
+        result_card_header_text: null,
+        result_card_footer_text: null,
+        receipt_footer_text: null,
+        verification_note_text: null,
+        use_school_logo_on_docs: 1,
+        use_school_stamp_on_docs: 0,
+        default_print_size: 'A4',
+        default_receipt_size: 'A5',
+      }});
+    }
+
+    return c.json({ data: row });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب إعدادات الوثائق', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// PUT /api/settings/document
+// Updates: document/print preferences
+// ===========================================
+app.put('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const targetSchoolId = c.get('resolvedSchoolId') as number;
+
+  if (!targetSchoolId) {
+    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+  }
+
+  if (!user || !canManageSettings(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
+  }
+
+  try {
+    const body = await c.req.json();
+
+    // Ensure row exists
+    const existing = await db.prepare(`SELECT id FROM school_settings WHERE school_id = ?`).bind(targetSchoolId).first<any>();
+    if (!existing) {
+      await db.prepare(`
+        INSERT OR IGNORE INTO school_settings
+        (school_id, use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size, use_arabic_indic_digits, currency_label, date_format)
+        VALUES (?, 1, 0, 'A4', 'A5', 1, 'د.ع', 'dd/MM/yyyy')
+      `).bind(targetSchoolId).run();
+    }
+
+    const allowedFields = ['result_card_header_text', 'result_card_footer_text', 'receipt_footer_text', 'verification_note_text',
+      'use_school_logo_on_docs', 'use_school_stamp_on_docs', 'default_print_size', 'default_receipt_size'];
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    for (const key of allowedFields) {
+      if (body[key] !== undefined) {
+        updates.push(`${key} = ?`);
+        params.push(body[key]);
+      }
+    }
+
+    // Always update updated_at explicitly (no trigger)
+    updates.push('updated_at = unixepoch()');
+
+    if (updates.length === 1) {
+      return c.json({ error: 'لا توجد بيانات للتحديث' }, 400);
+    }
+
+    params.push(targetSchoolId);
+    const sql = `UPDATE school_settings SET ${updates.join(', ')} WHERE school_id = ?`;
+    await db.prepare(sql).bind(...params).run();
+
+    return c.json({ data: { message: 'تم تحديث إعدادات الوثائق بنجاح' } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث إعدادات الوثائق', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// GET /api/settings/system
+// Returns: localization preferences only
+// ===========================================
+app.get('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const targetSchoolId = c.get('resolvedSchoolId') as number;
+
+  if (!targetSchoolId) {
+    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+  }
+
+  try {
+    let row = await db.prepare(`
+      SELECT use_arabic_indic_digits, currency_label, date_format, updated_at
+      FROM school_settings WHERE school_id = ?
+    `).bind(targetSchoolId).first<any>();
+
+    if (!row) {
+      return c.json({ data: {
+        use_arabic_indic_digits: 1,
+        currency_label: 'د.ع',
+        date_format: 'dd/MM/yyyy',
+      }});
+    }
+
+    return c.json({ data: row });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب إعدادات النظام', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// PUT /api/settings/system
+// Updates: localization preferences
+// ===========================================
+app.put('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const targetSchoolId = c.get('resolvedSchoolId') as number;
+
+  if (!targetSchoolId) {
+    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+  }
+
+  if (!user || !canManageSettings(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
+  }
+
+  try {
+    const body = await c.req.json();
+
+    // Ensure row exists
+    const existing = await db.prepare(`SELECT id FROM school_settings WHERE school_id = ?`).bind(targetSchoolId).first<any>();
+    if (!existing) {
+      await db.prepare(`
+        INSERT OR IGNORE INTO school_settings
+        (school_id, use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size, use_arabic_indic_digits, currency_label, date_format)
+        VALUES (?, 1, 0, 'A4', 'A5', 1, 'د.ع', 'dd/MM/yyyy')
+      `).bind(targetSchoolId).run();
+    }
+
+    const allowedFields = ['use_arabic_indic_digits', 'currency_label', 'date_format'];
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    for (const key of allowedFields) {
+      if (body[key] !== undefined) {
+        updates.push(`${key} = ?`);
+        params.push(body[key]);
+      }
+    }
+
+    updates.push('updated_at = unixepoch()');
+
+    if (updates.length === 1) {
+      return c.json({ error: 'لا توجد بيانات للتحديث' }, 400);
+    }
+
+    params.push(targetSchoolId);
+    const sql = `UPDATE school_settings SET ${updates.join(', ')} WHERE school_id = ?`;
+    await db.prepare(sql).bind(...params).run();
+
+    return c.json({ data: { message: 'تم تحديث إعدادات النظام بنجاح' } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث إعدادات النظام', detail: err.message }, 500);
   }
 });
 

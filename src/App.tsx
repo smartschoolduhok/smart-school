@@ -19,21 +19,7 @@ import EmployeesPage from './modules/employees/EmployeesPage';
 import ResultCardVerificationPage from './modules/verification/ResultCardVerificationPage';
 import ReceiptVerificationPage from './modules/verification/ReceiptVerificationPage';
 
-// Settings placeholder - Phase 1: active module
-function SettingsPage() {
-  return (
-    <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">إعدادات النظام</h1>
-      <div className="bg-white rounded-xl border border-gray-200 p-8 text-center">
-        <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-          <span className="text-2xl">⚙️</span>
-        </div>
-        <h2 className="text-lg font-bold text-gray-900 mb-2">قيد التطوير</h2>
-        <p className="text-sm text-gray-500">سيتم إضافة إعدادات النظام في المرحلة القادمة</p>
-      </div>
-    </div>
-  );
-}
+import SettingsPage from './modules/settings/SettingsPage';
 
 // Disabled module placeholder - redirects to dashboard
 // Phase 1: these modules are NOT implemented (students, classes, fees, transport, etc.)
