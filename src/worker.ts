@@ -3129,6 +3129,12 @@ app.post('/api/result-cards/generate-student/:student_id', requireSameSchoolOrAd
     const tokenHash = await hashToken(token);
     const cardNumber = generateCardNumber(student.school_id, studentId);
 
+    const schoolSettings = await db.prepare(`
+      SELECT result_card_header_text, result_card_footer_text, verification_note_text,
+             use_school_logo_on_docs, use_school_stamp_on_docs, logo_url, official_stamp_url
+      FROM school_settings WHERE school_id = ?
+    `).bind(student.school_id).first<any>();
+
     const cardData = {
       school: { id: student.school_id, name: student.school_name },
       student: { id: studentId, name: student.full_name, student_number: student.student_number },
@@ -3143,6 +3149,15 @@ app.post('/api/result-cards/generate-student/:student_id', requireSameSchoolOrAd
         min_annual_effort: minAnnualEffort,
         general_exemption_eligible: generalExemptionEligible,
         overall_result_status: overallStatus,
+      },
+      document_settings: {
+        result_card_header_text: schoolSettings?.result_card_header_text || null,
+        result_card_footer_text: schoolSettings?.result_card_footer_text || null,
+        verification_note_text: schoolSettings?.verification_note_text || null,
+        use_school_logo_on_docs: schoolSettings?.use_school_logo_on_docs === 1,
+        use_school_stamp_on_docs: schoolSettings?.use_school_stamp_on_docs === 1,
+        logo_url: (schoolSettings?.use_school_logo_on_docs === 1 && schoolSettings?.logo_url) ? schoolSettings.logo_url : null,
+        official_stamp_url: (schoolSettings?.use_school_stamp_on_docs === 1 && schoolSettings?.official_stamp_url) ? schoolSettings.official_stamp_url : null,
       },
       generated_by: user.id,
       generated_at: Math.floor(Date.now() / 1000),
@@ -3405,7 +3420,8 @@ app.get('/api/verify/result-card/:token', async (c) => {
     const row = await db.prepare(`
       SELECT card_number, student_name_snapshot, class_name_snapshot, section_name_snapshot,
              school_name_snapshot, academic_year_snapshot, generated_at, status,
-             overall_result_status, general_exemption_status
+             overall_result_status, general_exemption_status,
+             card_data_json
       FROM result_cards WHERE verification_token = ?
     `).bind(token).first<any>();
 
@@ -3428,6 +3444,11 @@ app.get('/api/verify/result-card/:token', async (c) => {
       });
     }
 
+    let cardData = null;
+    try {
+      cardData = JSON.parse(row.card_data_json || '{}');
+    } catch { /* ignore */ }
+    const docSettings = cardData?.document_settings || {};
     return c.json({
       valid: true,
       card_number: row.card_number,
@@ -3440,6 +3461,7 @@ app.get('/api/verify/result-card/:token', async (c) => {
       status: row.status,
       overall_result_status: row.overall_result_status,
       general_exemption_status: row.general_exemption_status === 1,
+      verification_note: docSettings.verification_note_text || null,
     });
   } catch (err: any) {
     return c.json({ valid: false, message: 'خطأ في التحقق', detail: err.message }, 500);
@@ -3835,10 +3857,19 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
               payment_date: payment_date,
               fee_type: fee.fee_type,
             }];
+            const receiptSettings = await db.prepare(`
+              SELECT receipt_footer_text, verification_note_text, use_school_logo_on_docs, logo_url
+              FROM school_settings WHERE school_id = ?
+            `).bind(student.school_id).first<any>();
+            const settingsSnapshot = {
+              receipt_footer_text: receiptSettings?.receipt_footer_text || null,
+              verification_note_text: receiptSettings?.verification_note_text || null,
+              logo_url: (receiptSettings?.use_school_logo_on_docs === 1 && receiptSettings?.logo_url) ? receiptSettings.logo_url : null,
+            };
             await db.prepare(`
               INSERT INTO fee_receipts (
                 school_id, student_id, receipt_number, total_amount,
-                payment_ids_json, payments_snapshot_json,
+                payment_ids_json, payments_snapshot_json, settings_snapshot_json,
                 student_name_snapshot, class_name_snapshot, section_name_snapshot,
                 school_name_snapshot, academic_year_snapshot,
                 verification_token, verification_hash,
@@ -3846,7 +3877,7 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
             `).bind(
               student.school_id, fee.student_id, receiptNumber, amountNum,
-              JSON.stringify([paymentId]), JSON.stringify(paymentsSnapshot),
+              JSON.stringify([paymentId]), JSON.stringify(paymentsSnapshot), JSON.stringify(settingsSnapshot),
               student.full_name, student.class_name || null, student.section_name || null,
               student.school_name || null, ay?.name || null,
               token, tokenHash,
@@ -3915,7 +3946,7 @@ app.get('/api/fee-receipts/:id', requireSameSchoolOrAdmin(), async (c) => {
     }
     let data = row;
     try {
-      data = { ...row, payments_snapshot: JSON.parse(row.payments_snapshot_json || '[]'), payment_ids: JSON.parse(row.payment_ids_json || '[]') };
+      data = { ...row, payments_snapshot: JSON.parse(row.payments_snapshot_json || '[]'), payment_ids: JSON.parse(row.payment_ids_json || '[]'), settings_snapshot: JSON.parse(row.settings_snapshot_json || '{}') };
     } catch { /* leave as-is */ }
     return c.json({ data });
   } catch (err: any) {
@@ -3984,11 +4015,20 @@ app.post('/api/fee-receipts/generate', requireSameSchoolOrAdmin(), async (c) => 
       payment_date: p.payment_date,
       fee_type: p.fee_type,
     }));
+    const receiptSettings2 = await db.prepare(`
+      SELECT receipt_footer_text, verification_note_text, use_school_logo_on_docs, logo_url
+      FROM school_settings WHERE school_id = ?
+    `).bind(student.school_id).first<any>();
+    const settingsSnapshot2 = {
+      receipt_footer_text: receiptSettings2?.receipt_footer_text || null,
+      verification_note_text: receiptSettings2?.verification_note_text || null,
+      logo_url: (receiptSettings2?.use_school_logo_on_docs === 1 && receiptSettings2?.logo_url) ? receiptSettings2.logo_url : null,
+    };
 
     await db.prepare(`
       INSERT INTO fee_receipts (
         school_id, student_id, receipt_number, total_amount,
-        payment_ids_json, payments_snapshot_json,
+        payment_ids_json, payments_snapshot_json, settings_snapshot_json,
         student_name_snapshot, class_name_snapshot, section_name_snapshot,
         school_name_snapshot, academic_year_snapshot,
         verification_token, verification_hash,
@@ -3996,7 +4036,7 @@ app.post('/api/fee-receipts/generate', requireSameSchoolOrAdmin(), async (c) => 
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
     `).bind(
       student.school_id, student_id, receiptNumber, totalAmount,
-      JSON.stringify(payment_ids), JSON.stringify(paymentsSnapshot),
+      JSON.stringify(payment_ids), JSON.stringify(paymentsSnapshot), JSON.stringify(settingsSnapshot2),
       student.full_name, student.class_name || null, student.section_name || null,
       student.school_name || null, ay?.name || null,
       token, tokenHash,
@@ -4058,7 +4098,7 @@ app.get('/api/verify/receipt/:token', async (c) => {
     const row = await db.prepare(`
       SELECT receipt_number, student_name_snapshot, class_name_snapshot, section_name_snapshot,
              school_name_snapshot, academic_year_snapshot, total_amount, status, created_at,
-             payments_snapshot_json
+             payments_snapshot_json, settings_snapshot_json
       FROM fee_receipts WHERE verification_token = ?
     `).bind(token).first<any>();
 
@@ -4085,6 +4125,10 @@ app.get('/api/verify/receipt/:token', async (c) => {
     try {
       payments = JSON.parse(row.payments_snapshot_json || '[]');
     } catch { /* ignore */ }
+    let receiptSettings = null;
+    try {
+      receiptSettings = JSON.parse(row.settings_snapshot_json || '{}');
+    } catch { /* ignore */ }
 
     return c.json({
       valid: true,
@@ -4098,6 +4142,7 @@ app.get('/api/verify/receipt/:token', async (c) => {
       created_at: row.created_at,
       status: row.status,
       payments,
+      verification_note: receiptSettings?.verification_note_text || null,
     });
   } catch (err: any) {
     return c.json({ valid: false, message: 'خطأ في التحقق', detail: err.message }, 500);
