@@ -3131,8 +3131,12 @@ app.post('/api/result-cards/generate-student/:student_id', requireSameSchoolOrAd
 
     const schoolSettings = await db.prepare(`
       SELECT result_card_header_text, result_card_footer_text, verification_note_text,
-             use_school_logo_on_docs, use_school_stamp_on_docs, logo_url, official_stamp_url
+             use_school_logo_on_docs, use_school_stamp_on_docs
       FROM school_settings WHERE school_id = ?
+    `).bind(student.school_id).first<any>();
+
+    const schoolLogoInfo = await db.prepare(`
+      SELECT logo_url, official_stamp_url FROM schools WHERE id = ?
     `).bind(student.school_id).first<any>();
 
     const cardData = {
@@ -3156,8 +3160,8 @@ app.post('/api/result-cards/generate-student/:student_id', requireSameSchoolOrAd
         verification_note_text: schoolSettings?.verification_note_text || null,
         use_school_logo_on_docs: schoolSettings?.use_school_logo_on_docs === 1,
         use_school_stamp_on_docs: schoolSettings?.use_school_stamp_on_docs === 1,
-        logo_url: (schoolSettings?.use_school_logo_on_docs === 1 && schoolSettings?.logo_url) ? schoolSettings.logo_url : null,
-        official_stamp_url: (schoolSettings?.use_school_stamp_on_docs === 1 && schoolSettings?.official_stamp_url) ? schoolSettings.official_stamp_url : null,
+        logo_url: (schoolSettings?.use_school_logo_on_docs === 1 && schoolLogoInfo?.logo_url) ? schoolLogoInfo.logo_url : null,
+        official_stamp_url: (schoolSettings?.use_school_stamp_on_docs === 1 && schoolLogoInfo?.official_stamp_url) ? schoolLogoInfo.official_stamp_url : null,
       },
       generated_by: user.id,
       generated_at: Math.floor(Date.now() / 1000),
@@ -3858,13 +3862,14 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
               fee_type: fee.fee_type,
             }];
             const receiptSettings = await db.prepare(`
-              SELECT receipt_footer_text, verification_note_text, use_school_logo_on_docs, logo_url
+              SELECT receipt_footer_text, verification_note_text, use_school_logo_on_docs
               FROM school_settings WHERE school_id = ?
             `).bind(student.school_id).first<any>();
+            const schoolLogoForReceipt = await db.prepare(`SELECT logo_url FROM schools WHERE id = ?`).bind(student.school_id).first<any>();
             const settingsSnapshot = {
               receipt_footer_text: receiptSettings?.receipt_footer_text || null,
               verification_note_text: receiptSettings?.verification_note_text || null,
-              logo_url: (receiptSettings?.use_school_logo_on_docs === 1 && receiptSettings?.logo_url) ? receiptSettings.logo_url : null,
+              logo_url: (receiptSettings?.use_school_logo_on_docs === 1 && schoolLogoForReceipt?.logo_url) ? schoolLogoForReceipt.logo_url : null,
             };
             await db.prepare(`
               INSERT INTO fee_receipts (
@@ -3874,7 +3879,7 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
                 school_name_snapshot, academic_year_snapshot,
                 verification_token, verification_hash,
                 status, created_by_user_id, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
             `).bind(
               student.school_id, fee.student_id, receiptNumber, amountNum,
               JSON.stringify([paymentId]), JSON.stringify(paymentsSnapshot), JSON.stringify(settingsSnapshot),
@@ -3887,7 +3892,7 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
           }
         }
       } catch (receiptErr: any) {
-        receiptWarning = 'تعذر إنشاء الإيصال التلقائي، لكن تم تسجيل الدفعة والخزنة بنجاح';
+        receiptWarning = 'تعذر إنشاء الإيصال التلقائي: ' + (receiptErr?.message || receiptErr);
       }
     }
 
@@ -4016,13 +4021,14 @@ app.post('/api/fee-receipts/generate', requireSameSchoolOrAdmin(), async (c) => 
       fee_type: p.fee_type,
     }));
     const receiptSettings2 = await db.prepare(`
-      SELECT receipt_footer_text, verification_note_text, use_school_logo_on_docs, logo_url
+      SELECT receipt_footer_text, verification_note_text, use_school_logo_on_docs
       FROM school_settings WHERE school_id = ?
     `).bind(student.school_id).first<any>();
+    const schoolLogoForReceipt2 = await db.prepare(`SELECT logo_url FROM schools WHERE id = ?`).bind(student.school_id).first<any>();
     const settingsSnapshot2 = {
       receipt_footer_text: receiptSettings2?.receipt_footer_text || null,
       verification_note_text: receiptSettings2?.verification_note_text || null,
-      logo_url: (receiptSettings2?.use_school_logo_on_docs === 1 && receiptSettings2?.logo_url) ? receiptSettings2.logo_url : null,
+      logo_url: (receiptSettings2?.use_school_logo_on_docs === 1 && schoolLogoForReceipt2?.logo_url) ? schoolLogoForReceipt2.logo_url : null,
     };
 
     await db.prepare(`
@@ -4033,7 +4039,7 @@ app.post('/api/fee-receipts/generate', requireSameSchoolOrAdmin(), async (c) => 
         school_name_snapshot, academic_year_snapshot,
         verification_token, verification_hash,
         status, created_by_user_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
     `).bind(
       student.school_id, student_id, receiptNumber, totalAmount,
       JSON.stringify(payment_ids), JSON.stringify(paymentsSnapshot), JSON.stringify(settingsSnapshot2),
