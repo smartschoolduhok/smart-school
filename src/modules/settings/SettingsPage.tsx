@@ -83,7 +83,7 @@ export default function SettingsPage() {
     if (isAdmin) {
       getSchools().then(({ data }) => {
         if (data) {
-          setSchools(data);
+          setSchools(data as School[]);
           if (!selectedSchoolId && data.length > 0) {
             setSelectedSchoolId(data[0].id);
           }
@@ -239,7 +239,6 @@ export default function SettingsPage() {
             {activeTab === 'security' && (
               <SecurityTab
                 user={user}
-                canEdit={canEdit}
               />
             )}
             {activeTab === 'backup' && <BackupTab />}
