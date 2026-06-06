@@ -689,3 +689,71 @@ export function updateSystemSettings(data: Record<string, any>, schoolId?: numbe
   const qs = params.toString() ? `?${params.toString()}` : '';
   return fetchApi<Record<string, any>>(`/api/settings/system${qs}`, { method: 'PUT', body: JSON.stringify(data) });
 }
+
+// ───────────────────────────────────────────
+// Phase 12: Official Books
+// ───────────────────────────────────────────
+
+export function getOfficialBookTemplates(schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/official-book-templates${qs}`);
+}
+
+export function createOfficialBookTemplate(data: Record<string, any>, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/official-book-templates${qs}`, { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateOfficialBookTemplate(id: number, data: Record<string, any>, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/official-book-templates/${id}${qs}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function getOfficialBooks(schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/official-books${qs}`);
+}
+
+export function createOfficialBook(data: Record<string, any>, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/official-books${qs}`, { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function cancelOfficialBook(id: number, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/official-books/${id}/cancel${qs}`, { method: 'PUT' });
+}
+
+export function printOfficialBook(id: number, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/official-books/${id}/print${qs}`, { method: 'POST' });
+}
+
+export function getPrintRecords(filters?: Record<string, any>, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  if (filters?.print_type) params.append('print_type', filters.print_type);
+  if (filters?.from_date) params.append('from_date', String(filters.from_date));
+  if (filters?.to_date) params.append('to_date', String(filters.to_date));
+  if (filters?.user_id) params.append('user_id', String(filters.user_id));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Array<Record<string, any>>>(`/api/print-records${qs}`);
+}
+
+export function verifyOfficialBook(token: string) {
+  return fetchApi<Record<string, any>>(`/api/verify/official-book/${token}`);
+}

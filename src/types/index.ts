@@ -259,3 +259,68 @@ export interface FeeReceipt {
   updated_at: string;
   created_by_name?: string;
 }
+
+export type TemplateStatus = 'active' | 'archived';
+export type OfficialBookStatus = 'active' | 'cancelled';
+export type PrintRecordType = 'official_book' | 'result_card' | 'receipt';
+
+export interface OfficialBookTemplate {
+  id: number;
+  school_id: number;
+  title: string;
+  body_text: string;
+  paper_size: 'A4' | 'A5' | 'Letter';
+  requires_student: boolean;
+  requires_employee: boolean;
+  status: TemplateStatus;
+  created_by_user_id: number | null;
+  created_at: string;
+  updated_at: string;
+  created_by_name?: string;
+}
+
+export interface OfficialBook {
+  id: number;
+  school_id: number;
+  template_id: number;
+  document_number: string;
+  title: string;
+  body_text: string;
+  paper_size: 'A4' | 'A5' | 'Letter';
+  student_id: number | null;
+  employee_id: number | null;
+  school_name_snapshot: string;
+  principal_name_snapshot: string | null;
+  logo_url_snapshot: string | null;
+  stamp_url_snapshot: string | null;
+  use_logo_snapshot: boolean;
+  use_stamp_snapshot: boolean;
+  header_text_snapshot: string | null;
+  footer_text_snapshot: string | null;
+  verification_note_snapshot: string | null;
+  date_format_snapshot: string | null;
+  use_arabic_indic_digits_snapshot: boolean;
+  settings_snapshot_json: string;
+  verification_token: string;
+  verification_hash: string;
+  status: OfficialBookStatus;
+  created_by_user_id: number | null;
+  created_at: string;
+  updated_at: string;
+  student_name?: string;
+  employee_name?: string;
+  created_by_name?: string;
+  template_title?: string;
+}
+
+export interface PrintRecord {
+  id: number;
+  school_id: number;
+  document_id: number;
+  print_type: PrintRecordType;
+  printed_at: string;
+  printed_by_user_id: number | null;
+  printer_info_json: string | null;
+  created_at: string;
+  printed_by_name?: string;
+}

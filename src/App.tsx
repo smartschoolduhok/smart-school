@@ -18,6 +18,9 @@ import TreasuryPage from './modules/treasury/TreasuryPage';
 import EmployeesPage from './modules/employees/EmployeesPage';
 import ResultCardVerificationPage from './modules/verification/ResultCardVerificationPage';
 import ReceiptVerificationPage from './modules/verification/ReceiptVerificationPage';
+import OfficialBookVerificationPage from './modules/verification/OfficialBookVerificationPage';
+import OfficialBooksPage from './modules/officialBooks/OfficialBooksPage';
+import PrintRecordsPage from './modules/printRecords/PrintRecordsPage';
 
 import SettingsPage from './modules/settings/SettingsPage';
 
@@ -61,10 +64,11 @@ export default function App() {
           {/* Public verification routes — no auth, no layout */}
           <Route path="/verify/result-card/:token" element={<ResultCardVerificationPage />} />
           <Route path="/verify/receipt/:token" element={<ReceiptVerificationPage />} />
+          <Route path="/verify/official-book/:token" element={<OfficialBookVerificationPage />} />
           <Route path="/fees" element={<Layout><FeesPage /></Layout>} />
           <Route path="/treasury" element={<Layout><TreasuryPage /></Layout>} />
-          <Route path="/official-books" element={<Layout><DisabledModulePage moduleName="الكتب الرسمية" /></Layout>} />
-          <Route path="/print-records" element={<Layout><DisabledModulePage moduleName="السجلات المطبوعة" /></Layout>} />
+          <Route path="/official-books" element={<Layout><OfficialBooksPage /></Layout>} />
+          <Route path="/print-records" element={<Layout><PrintRecordsPage /></Layout>} />
           <Route path="/employees" element={<Layout><EmployeesPage /></Layout>} />
           <Route path="/transport" element={<Layout><DisabledModulePage moduleName="النقل المدرسي" /></Layout>} />
           <Route path="/teacher-portal" element={<Layout><DisabledModulePage moduleName="بوابة المدرس" /></Layout>} />

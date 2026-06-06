@@ -3486,6 +3486,22 @@ function generateReceiptNumber(schoolId: number, studentId: number): string {
   return `REC-${schoolId}-${studentId}-${ts}`;
 }
 
+function canManageOfficialBookTemplates(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+}
+
+function canManageOfficialBooks(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(roleKey);
+}
+
+function canViewOfficialBooks(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar', 'teacher'].includes(roleKey);
+}
+
+function canViewPrintRecords(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar', 'teacher'].includes(roleKey);
+}
+
 function canManageFees(roleKey: RoleKey): boolean {
   return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant', 'registrar'].includes(roleKey);
 }
@@ -5417,7 +5433,7 @@ app.get('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
 
     // Fetch school_settings (document + system preferences)
     let settings = await db.prepare(`
-      SELECT school_id, result_card_header_text, result_card_footer_text, receipt_footer_text, verification_note_text,
+      SELECT school_id, result_card_header_text, result_card_footer_text, receipt_footer_text, official_book_header_text, official_book_footer_text, verification_note_text,
              use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size,
              use_arabic_indic_digits, currency_label, date_format, created_at, updated_at
       FROM school_settings WHERE school_id = ?
@@ -5431,7 +5447,7 @@ app.get('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
         VALUES (?, 1, 0, 'A4', 'A5', 1, 'د.ع', 'dd/MM/yyyy')
       `).bind(targetSchoolId).run();
       settings = await db.prepare(`
-        SELECT school_id, result_card_header_text, result_card_footer_text, receipt_footer_text, verification_note_text,
+        SELECT school_id, result_card_header_text, result_card_footer_text, receipt_footer_text, official_book_header_text, official_book_footer_text, verification_note_text,
                use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size,
                use_arabic_indic_digits, currency_label, date_format, created_at, updated_at
         FROM school_settings WHERE school_id = ?
@@ -5503,7 +5519,7 @@ app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
 
   try {
     let row = await db.prepare(`
-      SELECT result_card_header_text, result_card_footer_text, receipt_footer_text, verification_note_text,
+      SELECT result_card_header_text, result_card_footer_text, receipt_footer_text, official_book_header_text, official_book_footer_text, verification_note_text,
              use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size, updated_at
       FROM school_settings WHERE school_id = ?
     `).bind(targetSchoolId).first<any>();
@@ -5514,6 +5530,8 @@ app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
         result_card_header_text: null,
         result_card_footer_text: null,
         receipt_footer_text: null,
+        official_book_header_text: null,
+        official_book_footer_text: null,
         verification_note_text: null,
         use_school_logo_on_docs: 1,
         use_school_stamp_on_docs: 0,
@@ -5558,7 +5576,7 @@ app.put('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
       `).bind(targetSchoolId).run();
     }
 
-    const allowedFields = ['result_card_header_text', 'result_card_footer_text', 'receipt_footer_text', 'verification_note_text',
+    const allowedFields = ['result_card_header_text', 'result_card_footer_text', 'receipt_footer_text', 'official_book_header_text', 'official_book_footer_text', 'verification_note_text',
       'use_school_logo_on_docs', 'use_school_stamp_on_docs', 'default_print_size', 'default_receipt_size'];
     const updates: string[] = [];
     const params: any[] = [];
@@ -5673,6 +5691,430 @@ app.put('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
     return c.json({ data: { message: 'تم تحديث إعدادات النظام بنجاح' } });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث إعدادات النظام', detail: err.message }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PHASE 12: OFFICIAL BOOKS MODULE
+// ═══════════════════════════════════════════════════════════════
+
+// ===========================================
+// GET /api/official-book-templates
+// ===========================================
+app.get('/api/official-book-templates', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  try {
+    let sql = `SELECT obt.id, obt.school_id, obt.title, obt.body_text, obt.paper_size, obt.requires_student, obt.requires_employee, obt.status, obt.created_by_user_id, obt.created_at, obt.updated_at, u.full_name as created_by_name FROM official_book_templates obt LEFT JOIN users u ON obt.created_by_user_id = u.id WHERE 1=1`;
+    const params: any[] = [];
+
+    if (scope === 'single' && resolvedSchoolId) {
+      sql += ` AND obt.school_id = ?`;
+      params.push(resolvedSchoolId);
+    }
+
+    sql += ` ORDER BY obt.created_at DESC`;
+    const rows = await db.prepare(sql).bind(...params).all<any>();
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب قوالب الكتب الرسمية', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// POST /api/official-book-templates
+// ===========================================
+app.post('/api/official-book-templates', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageOfficialBookTemplates(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة قوالب الكتب الرسمية' }, 403);
+  }
+
+  try {
+    const body = await c.req.json();
+    const schoolId = scope === 'all' ? (body.school_id || user.school_id) : resolvedSchoolId;
+
+    if (!schoolId) {
+      return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+    }
+    if (!body.title || !body.body_text) {
+      return c.json({ error: 'العنوان ونص الكتاب مطلوبان' }, 400);
+    }
+
+    const paperSize = body.paper_size || 'A4';
+    const result = await db.prepare(`
+      INSERT INTO official_book_templates (school_id, title, body_text, paper_size, requires_student, requires_employee, status, created_by_user_id)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+    `).bind(schoolId, body.title, body.body_text, paperSize, body.requires_student ? 1 : 0, body.requires_employee ? 1 : 0, user.id).run();
+
+    const id = result.meta?.last_row_id;
+    return c.json({ data: { id, message: 'تم إنشاء القالب بنجاح' } }, 201);
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إنشاء القالب', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// PUT /api/official-book-templates/:id
+// ===========================================
+app.put('/api/official-book-templates/:id', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+
+  if (!user || !canManageOfficialBookTemplates(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة قوالب الكتب الرسمية' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    const body = await c.req.json();
+    const allowed = ['title', 'body_text', 'paper_size', 'requires_student', 'requires_employee', 'status'];
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    for (const key of allowed) {
+      if (body[key] !== undefined) {
+        updates.push(`${key} = ?`);
+        params.push(body[key]);
+      }
+    }
+    if (updates.length === 0) {
+      return c.json({ error: 'لا توجد بيانات للتحديث' }, 400);
+    }
+    updates.push('updated_at = unixepoch()');
+    params.push(id);
+
+    await db.prepare(`UPDATE official_book_templates SET ${updates.join(', ')} WHERE id = ?`).bind(...params).run();
+    return c.json({ data: { message: 'تم تحديث القالب بنجاح' } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث القالب', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// GET /api/official-books
+// ===========================================
+app.get('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canViewOfficialBooks(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية عرض الكتب الرسمية' }, 403);
+  }
+
+  try {
+    let sql = `SELECT ob.id, ob.school_id, ob.template_id, ob.document_number, ob.title, ob.body_text, ob.paper_size, ob.student_id, ob.employee_id, ob.status, ob.created_by_user_id, ob.created_at, ob.updated_at, obt.title as template_title, st.full_name as student_name, emp.full_name as employee_name, u.full_name as created_by_name FROM official_books ob LEFT JOIN official_book_templates obt ON ob.template_id = obt.id LEFT JOIN students st ON ob.student_id = st.id LEFT JOIN employees emp ON ob.employee_id = emp.id LEFT JOIN users u ON ob.created_by_user_id = u.id WHERE 1=1`;
+    const params: any[] = [];
+
+    if (scope === 'single' && resolvedSchoolId) {
+      sql += ` AND ob.school_id = ?`;
+      params.push(resolvedSchoolId);
+    }
+    if (user.role_key === 'teacher') {
+      sql += ` AND ob.student_id IS NOT NULL`;
+    }
+
+    sql += ` ORDER BY ob.created_at DESC`;
+    const rows = await db.prepare(sql).bind(...params).all<any>();
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب الكتب الرسمية', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// POST /api/official-books
+// Generate official book with snapshot + two-step numbering
+// ===========================================
+app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canManageOfficialBooks(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الكتب الرسمية' }, 403);
+  }
+
+  try {
+    const body = await c.req.json();
+    const schoolId = scope === 'all' ? (body.school_id || user.school_id) : resolvedSchoolId;
+    const templateId = body.template_id;
+    const studentId = body.student_id || null;
+    const employeeId = body.employee_id || null;
+
+    if (!schoolId || !templateId) {
+      return c.json({ error: 'معرف المدرسة والقالب مطلوبان' }, 400);
+    }
+
+    // Fetch template
+    const template = await db.prepare(`SELECT * FROM official_book_templates WHERE id = ? AND school_id = ?`).bind(templateId, schoolId).first<any>();
+    if (!template) {
+      return c.json({ error: 'القالب غير موجود' }, 404);
+    }
+
+    // Validate required entities
+    if (template.requires_student && !studentId) {
+      return c.json({ error: 'هذا القالب يتطلب اختيار طالب' }, 400);
+    }
+    if (template.requires_employee && !employeeId) {
+      return c.json({ error: 'هذا القالب يتطلب اختيار موظف' }, 400);
+    }
+
+    // Fetch school + settings for snapshot
+    const school = await db.prepare(`SELECT name, principal_name, logo_url, official_stamp_url FROM schools WHERE id = ?`).bind(schoolId).first<any>();
+    const settings = await db.prepare(`SELECT official_book_header_text, official_book_footer_text, verification_note_text, use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, date_format, use_arabic_indic_digits FROM school_settings WHERE school_id = ?`).bind(schoolId).first<any>();
+
+    // Fetch student/employee if needed
+    let studentName = null, studentNumber = null, className = null, sectionName = null;
+    let employeeName = null, employeePosition = null;
+    if (studentId) {
+      const st = await db.prepare(`SELECT full_name, student_number, class_id, section_id FROM students WHERE id = ?`).bind(studentId).first<any>();
+      if (st) {
+        studentName = st.full_name;
+        studentNumber = st.student_number;
+        const cls = await db.prepare(`SELECT name FROM classes WHERE id = ?`).bind(st.class_id).first<any>();
+        const sec = await db.prepare(`SELECT name FROM sections WHERE id = ?`).bind(st.section_id).first<any>();
+        className = cls?.name || null;
+        sectionName = sec?.name || null;
+      }
+    }
+    if (employeeId) {
+      const emp = await db.prepare(`SELECT full_name, job_title FROM employees WHERE id = ?`).bind(employeeId).first<any>();
+      if (emp) {
+        employeeName = emp.full_name;
+        employeePosition = emp.job_title;
+      }
+    }
+
+    // Build snapshot JSON
+    const snapshot = {
+      school_name: school?.name || '',
+      principal_name: school?.principal_name || '',
+      logo_url: school?.logo_url || null,
+      stamp_url: school?.official_stamp_url || null,
+      use_logo: settings?.use_school_logo_on_docs === 1,
+      use_stamp: settings?.use_school_stamp_on_docs === 1,
+      official_book_header_text: settings?.official_book_header_text || null,
+      official_book_footer_text: settings?.official_book_footer_text || null,
+      verification_note: settings?.verification_note_text || null,
+      paper_size: template.paper_size || settings?.default_print_size || 'A4',
+      date_format: settings?.date_format || 'dd/MM/yyyy',
+      use_arabic_indic_digits: settings?.use_arabic_indic_digits === 1,
+    };
+
+    // Placeholder replacement
+    let bodyText = template.body_text;
+    const dateStr = new Date().toLocaleDateString('ar-IQ');
+    const placeholders: Record<string, string | null> = {
+      '{{school_name}}': snapshot.school_name,
+      '{{principal_name}}': snapshot.principal_name,
+      '{{student_name}}': studentName,
+      '{{student_number}}': studentNumber,
+      '{{class_name}}': className,
+      '{{section_name}}': sectionName,
+      '{{academic_year}}': null,
+      '{{employee_name}}': employeeName,
+      '{{employee_position}}': employeePosition,
+      '{{date}}': dateStr,
+      '{{document_number}}': null, // filled later
+    };
+
+    for (const [key, value] of Object.entries(placeholders)) {
+      if (value !== null) {
+        bodyText = bodyText.replace(new RegExp(key.replace(/[{}]/g, '\\$&'), 'g'), String(value));
+      }
+    }
+
+    // Generate verification token + hash
+    const token = crypto.randomUUID().replace(/-/g, '');
+    const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    // Step 1: Insert with temporary document number
+    const tempNumber = `TEMP-${Date.now()}`;
+    const result = await db.prepare(`
+      INSERT INTO official_books (school_id, template_id, document_number, title, body_text, paper_size, student_id, employee_id, school_name_snapshot, principal_name_snapshot, logo_url_snapshot, stamp_url_snapshot, use_logo_snapshot, use_stamp_snapshot, header_text_snapshot, footer_text_snapshot, verification_note_snapshot, date_format_snapshot, use_arabic_indic_digits_snapshot, settings_snapshot_json, verification_token, verification_hash, status, created_by_user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+    `).bind(schoolId, templateId, tempNumber, template.title, bodyText, snapshot.paper_size, studentId, employeeId, snapshot.school_name, snapshot.principal_name || null, snapshot.logo_url, snapshot.stamp_url, snapshot.use_logo ? 1 : 0, snapshot.use_stamp ? 1 : 0, snapshot.official_book_header_text, snapshot.official_book_footer_text, snapshot.verification_note, snapshot.date_format, snapshot.use_arabic_indic_digits ? 1 : 0, JSON.stringify(snapshot), token, hashHex, user.id).run();
+
+    const bookId = result.meta?.last_row_id;
+    const ts = Math.floor(Date.now() / 1000);
+    const documentNumber = `BOOK-${schoolId}-${bookId}-${ts}`;
+
+    // Step 2: Update document number
+    await db.prepare(`UPDATE official_books SET document_number = ? WHERE id = ?`).bind(documentNumber, bookId).run();
+
+    // Final placeholder replacement for document number
+    bodyText = bodyText.replace(/\{\{document_number\}\}/g, documentNumber);
+    await db.prepare(`UPDATE official_books SET body_text = ? WHERE id = ?`).bind(bodyText, bookId).run();
+
+    return c.json({ data: { id: bookId, document_number: documentNumber, verification_token: token, message: 'تم إنشاء الكتاب الرسمي بنجاح' } }, 201);
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إنشاء الكتاب الرسمي', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// PUT /api/official-books/:id/cancel
+// ===========================================
+app.put('/api/official-books/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+
+  if (!user || !canManageOfficialBooks(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الكتب الرسمية' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    await db.prepare(`UPDATE official_books SET status = 'cancelled', updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    return c.json({ data: { message: 'تم إلغاء الكتاب بنجاح' } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إلغاء الكتاب', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// POST /api/official-books/:id/print
+// ===========================================
+app.post('/api/official-books/:id/print', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+
+  if (!user || !canManageOfficialBooks(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية طباعة الكتب الرسمية' }, 403);
+  }
+
+  try {
+    const id = parseInt(c.req.param('id'), 10);
+    const book = await db.prepare(`SELECT school_id, status FROM official_books WHERE id = ?`).bind(id).first<any>();
+    if (!book) {
+      return c.json({ error: 'الكتاب غير موجود' }, 404);
+    }
+    if (book.status === 'cancelled') {
+      return c.json({ error: 'هذا الكتاب ملغى ولا يمكن طباعته' }, 400);
+    }
+
+    await db.prepare(`UPDATE official_books SET printed_at = unixepoch() WHERE id = ?`).bind(id).run();
+    await db.prepare(`INSERT INTO print_records (school_id, document_id, print_type, printed_at, printed_by_user_id, printer_info_json) VALUES (?, ?, 'official_book', unixepoch(), ?, ?)`).bind(book.school_id, id, user.id, null).run();
+    return c.json({ data: { message: 'تم تسجيل الطباعة بنجاح' } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تسجيل الطباعة', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// GET /api/print-records
+// ===========================================
+app.get('/api/print-records', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+
+  if (!user || !canViewPrintRecords(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية عرض سجلات الطباعة' }, 403);
+  }
+
+  try {
+    const query = c.req.query();
+    const printType = query.print_type || null;
+    const fromDate = query.from_date ? parseInt(query.from_date, 10) : null;
+    const toDate = query.to_date ? parseInt(query.to_date, 10) : null;
+    const userId = query.user_id ? parseInt(query.user_id, 10) : null;
+
+    let sql = `SELECT pr.id, pr.school_id, pr.document_id, pr.print_type, pr.printed_at, pr.printed_by_user_id, pr.printer_info_json, pr.created_at, u.full_name as printed_by_name FROM print_records pr LEFT JOIN users u ON pr.printed_by_user_id = u.id WHERE 1=1`;
+    const params: any[] = [];
+
+    if (scope === 'single' && resolvedSchoolId) {
+      sql += ` AND pr.school_id = ?`;
+      params.push(resolvedSchoolId);
+    }
+    if (printType) {
+      sql += ` AND pr.print_type = ?`;
+      params.push(printType);
+    }
+    if (fromDate) {
+      sql += ` AND pr.printed_at >= ?`;
+      params.push(fromDate);
+    }
+    if (toDate) {
+      sql += ` AND pr.printed_at <= ?`;
+      params.push(toDate);
+    }
+    if (userId) {
+      sql += ` AND pr.printed_by_user_id = ?`;
+      params.push(userId);
+    }
+
+    sql += ` ORDER BY pr.printed_at DESC`;
+    const rows = await db.prepare(sql).bind(...params).all<any>();
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب سجلات الطباعة', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// GET /api/verify/official-book/:token
+// Public — no JWT required
+// ===========================================
+app.get('/api/verify/official-book/:token', async (c) => {
+  const db = c.env.DB;
+  const token = c.req.param('token');
+
+  try {
+    const book = await db.prepare(`
+      SELECT ob.id, ob.document_number, ob.title, ob.body_text, ob.status, ob.created_at, ob.school_name_snapshot, ob.student_id, ob.employee_id, ob.verification_hash, ob.settings_snapshot_json, st.full_name as student_name, emp.full_name as employee_name
+      FROM official_books ob
+      LEFT JOIN students st ON ob.student_id = st.id
+      LEFT JOIN employees emp ON ob.employee_id = emp.id
+      WHERE ob.verification_token = ?
+    `).bind(token).first<any>();
+
+    if (!book) {
+      return c.json({ valid: false, message: 'الكتاب غير موجود أو رمز التحقق غير صحيح' }, 404);
+    }
+
+    const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    if (hashHex !== book.verification_hash) {
+      return c.json({ valid: false, message: 'الكتاب غير موجود أو رمز التحقق غير صحيح' }, 404);
+    }
+
+    const settings = book.settings_snapshot_json ? JSON.parse(book.settings_snapshot_json) : {};
+
+    const result: any = {
+      valid: true,
+      document_number: book.document_number,
+      title: book.title,
+      school_name: book.school_name_snapshot,
+      student_name: book.student_name,
+      employee_name: book.employee_name,
+      generated_at: book.created_at,
+      status: book.status,
+      verification_note: settings.verification_note || null,
+    };
+
+    if (book.status === 'cancelled') {
+      result.cancelled_warning = 'هذا الكتاب ملغى ولا يُعتد به';
+    }
+
+    return c.json({ data: result });
+  } catch (err: any) {
+    return c.json({ valid: false, message: 'الكتاب غير موجود أو رمز التحقق غير صحيح' }, 500);
   }
 });
 

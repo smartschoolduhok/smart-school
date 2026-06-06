@@ -29,12 +29,13 @@ const activeModules: NavItem[] = [
   { label: 'الخزنة', path: '/treasury', icon: <Wallet size={20} />, active: true },
   // Phase 9 modules — enabled
   { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true },
+  // Phase 12 modules — enabled
+  { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={20} />, active: true },
+  { label: 'السجلات المطبوعة', path: '/print-records', icon: <Printer size={20} />, active: true },
   { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true },
 ];
 
 const futureModules: NavItem[] = [
-  { label: 'الكتب الرسمية', path: '#', icon: <BookMarked size={20} />, active: false, disabled: true },
-  { label: 'السجلات المطبوعة', path: '#', icon: <Printer size={20} />, active: false, disabled: true },
   { label: 'النقل المدرسي', path: '#', icon: <Bus size={20} />, active: false, disabled: true },
   { label: 'بوابة المدرس', path: '#', icon: <Globe size={20} />, active: false, disabled: true },
   { label: 'بوابة ولي الأمر', path: '#', icon: <HeartHandshake size={20} />, active: false, disabled: true },
