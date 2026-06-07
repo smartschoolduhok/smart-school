@@ -6005,7 +6005,6 @@ app.post('/api/official-books/:id/print', requireSameSchoolOrAdmin(), async (c) 
       return c.json({ error: 'هذا الكتاب ملغى ولا يمكن طباعته' }, 400);
     }
 
-    await db.prepare(`UPDATE official_books SET printed_at = unixepoch() WHERE id = ?`).bind(id).run();
     await db.prepare(`INSERT INTO print_records (school_id, document_id, print_type, printed_at, printed_by_user_id, printer_info_json) VALUES (?, ?, 'official_book', unixepoch(), ?, ?)`).bind(book.school_id, id, user.id, null).run();
     return c.json({ data: { message: 'تم تسجيل الطباعة بنجاح' } });
   } catch (err: any) {

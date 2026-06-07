@@ -10,6 +10,7 @@ import {
   FileText, Printer, Search, User, Briefcase, CheckCircle, AlertCircle,
   Loader2, QrCode, XCircle, Eye, Archive, BookOpen, CheckSquare, Globe
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 
 /* ─── Helpers ─── */
 function canManageTemplates(roleKey?: string): boolean {
@@ -62,6 +63,7 @@ interface BookRecord {
   verification_token: string;
   printed_at?: number | null;
   settings_snapshot_json?: string;
+  school_name_snapshot?: string;
 }
 
 interface StudentOption { id: number; full_name: string; student_number: string; }
@@ -147,7 +149,7 @@ function TemplatesTab({ user }: { user: any }) {
     setLoading(true);
     try {
       const res = await getOfficialBookTemplates(user?.school_id || null);
-      setTemplates(res.data || []);
+      setTemplates((res.data || []) as TemplateRecord[]);
     } catch (e: any) {
       setError(e?.message || 'فشل في جلب القوالب');
     } finally { setLoading(false); }
@@ -278,7 +280,7 @@ function GenerateTab({ user }: { user: any }) {
   const [generated, setGenerated] = useState<any>(null);
 
   useEffect(() => {
-    getOfficialBookTemplates(user?.school_id || null).then(r => setTemplates((r.data || []).filter((t: TemplateRecord) => t.status === 'active')));
+    getOfficialBookTemplates(user?.school_id || null).then(r => setTemplates(((r.data || []) as TemplateRecord[]).filter((t: TemplateRecord) => t.status === 'active')));
     getStudents(user?.school_id || null).then(r => setStudents((r.data || []).map((s: any) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number }))));
     getEmployees(user?.school_id || null).then(r => setEmployees((r.data || []).map((e: any) => ({ id: e.id, full_name: e.full_name, job_title: e.job_title }))));
   }, []);
@@ -381,7 +383,7 @@ function ListTab({ user }: { user: any }) {
     setLoading(true);
     try {
       const res = await getOfficialBooks(user?.school_id || null);
-      setBooks(res.data || []);
+      setBooks((res.data || []) as BookRecord[]);
     } catch (e) { /* ignore */ }
     finally { setLoading(false); }
   };
@@ -495,7 +497,7 @@ function PrintPreview({ book }: { book: BookRecord }) {
         {useStamp && <img src={settings.stamp_url} alt="stamp" className="h-16 mx-auto mt-2" />}
         {settings.verification_note && <div className="text-xs text-gray-400 mt-2">{settings.verification_note}</div>}
         <div className="mt-4 flex justify-center">
-          <QrCodeSVG value={getPreviewUrl(book.verification_token)} size={80} />
+          <QRCodeSVG value={getPreviewUrl(book.verification_token)} size={80} />
         </div>
       </div>
     </div>

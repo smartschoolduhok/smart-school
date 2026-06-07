@@ -62,7 +62,7 @@ export default function PrintRecordsPage() {
       if (toDate) filters.to_date = Math.floor(new Date(toDate + 'T23:59:59').getTime() / 1000);
       if (filterUser) filters.user_id = parseInt(filterUser, 10);
       const res = await getPrintRecords(filters, user?.school_id || null);
-      setRecords(res.data || []);
+      setRecords((res.data || []) as RecordItem[]);
     } catch (e) { /* ignore */ }
     finally { setLoading(false); }
   };

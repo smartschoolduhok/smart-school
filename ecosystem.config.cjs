@@ -14,4 +14,4 @@ module.exports = {
       exec_mode: 'fork'
     }
   ]
-};
+}
