@@ -499,6 +499,10 @@ export function cancelFeeReceipt(id: number | string) {
   return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}/cancel`, { method: 'PUT', body: '{}' });
 }
 
+export function markReceiptPrinted(id: number | string, copies?: number) {
+  return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}/mark-printed`, { method: 'PUT', body: JSON.stringify({ copies: copies ?? 1 }) });
+}
+
 export function verifyReceipt(token: string) {
   return fetchApi<Record<string, any>>(`/api/verify/receipt/${token}`);
 }
@@ -720,6 +724,10 @@ export function getOfficialBooks(schoolId?: number | null) {
   if (schoolId != null) params.append('school_id', String(schoolId));
   const qs = params.toString() ? `?${params.toString()}` : '';
   return fetchApi<Array<Record<string, any>>>(`/api/official-books${qs}`);
+}
+
+export function getOfficialBook(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/official-books/${id}`);
 }
 
 export function createOfficialBook(data: Record<string, any>, schoolId?: number | null) {

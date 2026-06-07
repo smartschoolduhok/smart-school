@@ -4109,6 +4109,62 @@ app.put('/api/fee-receipts/:id/cancel', requireSameSchoolOrAdmin(), async (c) =>
   }
 });
 
+// ===========================================
+// PUT /api/fee-receipts/:id/mark-printed
+// ===========================================
+app.put('/api/fee-receipts/:id/mark-printed', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+  const id = parseInt(c.req.param('id'), 10);
+
+  if (!user) {
+    return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 403);
+  }
+
+  // Fees access required (view, not just manage, because print is a view-level action)
+  const canAccess = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant', 'registrar', 'parent'].includes(user.role_key);
+  if (!canAccess) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية الوصول إلى الإيصالات' }, 403);
+  }
+
+  try {
+    const row = await db.prepare('SELECT school_id, status, receipt_number FROM fee_receipts WHERE id = ?').bind(id).first<any>();
+    if (!row) return c.json({ error: 'الإيصال غير موجود' }, 404);
+    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح' }, 403);
+    }
+    if (row.status !== 'active') {
+      return c.json({ error: 'لا يمكن تعليم إيصال غير فعال كمطبوع' }, 400);
+    }
+
+    const printedAt = Math.floor(Date.now() / 1000);
+
+    // Update fee_receipts printed_at if column exists (best-effort via migrations; use try/catch for schema robustness)
+    try {
+      await db.prepare(`UPDATE fee_receipts SET printed_at = ?, updated_at = unixepoch() WHERE id = ?`).bind(printedAt, id).run();
+    } catch (e: any) {
+      // If column doesn't exist yet, just continue
+      if (e.message && !e.message.includes('no such column')) {
+        throw e;
+      }
+    }
+
+    // Create print record
+    const body = await c.req.json().catch(() => ({}));
+    const copies = typeof body.copies === 'number' ? body.copies : 1;
+    await db.prepare(`
+      INSERT INTO print_records (school_id, document_id, print_type, source_type, source_id, document_number, title, printed_at, printed_by_user_id, copies_count, printer_info_json)
+      VALUES (?, ?, 'receipt', 'fee_receipts', ?, ?, 'وصل قسط', ?, ?, ?, ?)
+    `).bind(row.school_id, id, id, row.receipt_number || '', printedAt, user.id, copies, null).run();
+
+    return c.json({ data: { id, printed_at: printedAt }, message: 'تم تعليم الإيصال كمطبوع' });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث الإيصال', detail: err.message }, 500);
+  }
+});
+
 // GET /api/verify/receipt/:token
 // Public endpoint — no JWT required
 // ===========================================
@@ -5827,6 +5883,59 @@ app.get('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب الكتب الرسمية', detail: err.message }, 500);
+  }
+});
+
+// ===========================================
+// GET /api/official-books/:id
+// Single official book with RBAC and same-school enforcement
+// ===========================================
+app.get('/api/official-books/:id', requireSameSchoolOrAdmin(), async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+  const id = parseInt(c.req.param('id'), 10);
+
+  if (!user || !canViewOfficialBooks(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية عرض الكتب الرسمية' }, 403);
+  }
+
+  try {
+    const row = await db.prepare(`
+      SELECT ob.id, ob.school_id, ob.template_id, ob.document_number, ob.title, ob.body_text, ob.paper_size, ob.student_id, ob.employee_id, ob.status, ob.created_by_user_id, ob.created_at, ob.updated_at, ob.school_name_snapshot, ob.principal_name_snapshot, ob.logo_url_snapshot, ob.stamp_url_snapshot, ob.use_logo_snapshot, ob.use_stamp_snapshot, ob.header_text_snapshot, ob.footer_text_snapshot, ob.verification_note_snapshot, ob.date_format_snapshot, ob.use_arabic_indic_digits_snapshot, ob.settings_snapshot_json, ob.verification_token, obt.title as template_title, st.full_name as student_name, emp.full_name as employee_name, u.full_name as created_by_name
+      FROM official_books ob
+      LEFT JOIN official_book_templates obt ON ob.template_id = obt.id
+      LEFT JOIN students st ON ob.student_id = st.id
+      LEFT JOIN employees emp ON ob.employee_id = emp.id
+      LEFT JOIN users u ON ob.created_by_user_id = u.id
+      WHERE ob.id = ?
+    `).bind(id).first<any>();
+
+    if (!row) {
+      return c.json({ error: 'الكتاب الرسمي غير موجود' }, 404);
+    }
+
+    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح' }, 403);
+    }
+
+    if (user.role_key === 'teacher' && row.student_id === null) {
+      return c.json({ error: 'غير مسموح: المعلم يمكنه فقط الوصول إلى الكتب المرتبطة بالطلاب' }, 403);
+    }
+
+    if (['accountant', 'parent'].includes(user.role_key)) {
+      return c.json({ error: 'غير مسموح: لا تملك صلاحية عرض الكتب الرسمية' }, 403);
+    }
+
+    let data = row;
+    try {
+      data = { ...row, settings_snapshot: JSON.parse(row.settings_snapshot_json || '{}') };
+    } catch { /* leave as-is */ }
+
+    return c.json({ data });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب الكتاب الرسمي', detail: err.message }, 500);
   }
 });
 

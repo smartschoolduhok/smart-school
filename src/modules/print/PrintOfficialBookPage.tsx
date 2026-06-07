@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
-import { getOfficialBooks, printOfficialBook } from '../../lib/api';
+import { getOfficialBook, printOfficialBook } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
   PrintLayout,
@@ -82,24 +82,20 @@ export default function PrintOfficialBookPage() {
     setLoading(true);
     setError(null);
     try {
-      // Use list API and filter client-side since no single GET exists
-      const res = await getOfficialBooks(user?.school_id);
+      const res = await getOfficialBook(id);
       if (res.error) {
         setError(res.error);
       } else if (res.data) {
-        const found = (res.data as BookRecord[]).find((b) => String(b.id) === id);
-        if (found) {
-          setBook(found);
-        } else {
-          setError('الكتاب الرسمي غير موجود');
-        }
+        setBook(res.data as BookRecord);
+      } else {
+        setError('الكتاب الرسمي غير موجود');
       }
     } catch (err: any) {
       setError(err.message || 'فشل في جلب البيانات');
     } finally {
       setLoading(false);
     }
-  }, [id, user?.school_id]);
+  }, [id]);
 
   useEffect(() => {
     if (authLoading) return;

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
-import { getFeeReceipt } from '../../lib/api';
+import { getFeeReceipt, markReceiptPrinted } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
   PrintLayout,
@@ -62,6 +62,14 @@ export default function PrintReceiptPage() {
 
   const { handlePrint, isPrinting } = usePrintExport({
     documentTitle: receipt?.receipt_number ? `إيصال ${receipt.receipt_number}` : 'إيصال مالي',
+    onBeforePrint: async () => {
+      if (!receipt || receipt.status === 'cancelled') return;
+      try {
+        await markReceiptPrinted(receipt.id);
+      } catch {
+        // Non-blocking: print record is best-effort
+      }
+    },
   });
 
   const fetchReceipt = useCallback(async () => {
