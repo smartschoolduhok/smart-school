@@ -21,6 +21,9 @@ import ReceiptVerificationPage from './modules/verification/ReceiptVerificationP
 import OfficialBookVerificationPage from './modules/verification/OfficialBookVerificationPage';
 import OfficialBooksPage from './modules/officialBooks/OfficialBooksPage';
 import PrintRecordsPage from './modules/printRecords/PrintRecordsPage';
+import PrintResultCardPage from './modules/print/PrintResultCardPage';
+import PrintReceiptPage from './modules/print/PrintReceiptPage';
+import PrintOfficialBookPage from './modules/print/PrintOfficialBookPage';
 import ImportExportPage from './modules/importExport/ImportExportPage';
 
 import SettingsPage from './modules/settings/SettingsPage';
@@ -71,6 +74,9 @@ export default function App() {
           <Route path="/official-books" element={<Layout><OfficialBooksPage /></Layout>} />
           <Route path="/print-records" element={<Layout><PrintRecordsPage /></Layout>} />
           <Route path="/employees" element={<Layout><EmployeesPage /></Layout>} />
+          <Route path="/print/result-card/:id" element={<PrintResultCardPage />} />
+          <Route path="/print/receipt/:id" element={<PrintReceiptPage />} />
+          <Route path="/print/official-book/:id" element={<PrintOfficialBookPage />} />
           <Route path="/import-export" element={<Layout><ImportExportPage /></Layout>} />
           <Route path="/transport" element={<Layout><DisabledModulePage moduleName="النقل المدرسي" /></Layout>} />
           <Route path="/teacher-portal" element={<Layout><DisabledModulePage moduleName="بوابة المدرس" /></Layout>} />

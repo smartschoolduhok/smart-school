@@ -273,6 +273,15 @@ function GenerateStudentTab() {
               <Printer size={14} />
               طباعة
             </button>
+            <a
+              href={`/print/result-card/${card!.id}`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition-colors print:hidden"
+            >
+              <Printer size={14} />
+              تصدير PDF
+            </a>
           </div>
           <div ref={printRef} className="bg-white rounded-xl border border-gray-200 overflow-hidden print:border-black print:rounded-none">
             <CardPreview card={card} details={cardDetails} student={selectedStudent} />
@@ -535,6 +544,15 @@ function ListTab() {
                             <button onClick={() => handleMarkPrinted(c.id)} title="تعليم كمطبوع" className="p-1.5 rounded-md hover:bg-blue-50 text-blue-600 transition-colors">
                               <Printer size={14} />
                             </button>
+                            <a
+                              href={`/print/result-card/${c.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="طباعة / تصدير PDF"
+                              className="p-1.5 rounded-md hover:bg-indigo-50 text-indigo-600 transition-colors"
+                            >
+                              <Printer size={14} />
+                            </a>
                             <button onClick={() => handleCancel(c.id)} title="إلغاء" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
                               <XCircle size={14} />
                             </button>

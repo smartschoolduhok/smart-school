@@ -804,6 +804,15 @@ export default function FeesPage() {
                             >
                               <QrCode size={16} />
                             </button>
+                            <a
+                              href={`/print/receipt/${r.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg"
+                              title="طباعة / تصدير PDF"
+                            >
+                              <Printer size={16} />
+                            </a>
                             {r.status === 'active' && (
                               <button
                                 onClick={() => handleCancelReceipt(r.id)}

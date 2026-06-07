@@ -436,6 +436,7 @@ function ListTab({ user }: { user: any }) {
                {canManageBooks(user?.role_key) && b.status === 'active' && (
                  <>
                    <button onClick={() => handlePrint(b)} className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg" title="طباعة / حفظ PDF"><Printer size={16} /></button>
+                   <a href={`/print/official-book/${b.id}`} target="_blank" rel="noreferrer" className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg inline-flex items-center" title="تصدير PDF مخصص"><Printer size={16} /></a>
                    <button onClick={() => handleCancel(b.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-lg" title="إلغاء"><XCircle size={16} /></button>
                  </>
                )}
