@@ -18,14 +18,16 @@ INSERT INTO academic_years (id, school_id, name, starts_at, ends_at, is_active, 
   (3, 3, '٢٠٢٤-٢٠٢٥', '2024-09-01', '2025-06-30', 1, unixepoch())
 ON CONFLICT(id) DO NOTHING;
 
--- Users (passwords: admin123, school123, teacher123, owner123, accountant123, registrar123)
+-- Users (passwords: admin123, school123, teacher123, owner123, accountant123, registrar123, vp123)
 INSERT INTO users (id, school_id, full_name, email, password_hash, role_id, status, created_at, updated_at) VALUES
   (1, NULL, 'أحمد عبدالله', 'admin@smart-school.iq', 'fec40b1064ee33fb17ea5d6741ff7a1f73c56fc789e2ce5dca8a246f934eb0c3', 1, 'active', unixepoch(), unixepoch()),
   (2, 1, 'سارة محمود', 'principal@nukhba.iq', '89ff5406d1bdd9a60014f2fd79e4397897d9bb17c692c48a6164f114fd97a281', 3, 'active', unixepoch(), unixepoch()),
   (3, 1, 'خالد العامري', 'teacher@nukhba.iq', '0cd4dc8d9533d88450058f4afdf147dce7f7d1ec0b5daf83c703935ec3ff22ee', 5, 'active', unixepoch(), unixepoch()),
   (4, 2, 'فاطمة الزهراء', 'owner@rafidain.iq', '2856c1e528be93bb2c261755eb71bb3e1c1ef9f4c9f4f65031ba28a52de7563a', 2, 'active', unixepoch(), unixepoch()),
   (5, 2, 'محمد حسين', 'accountant@rafidain.iq', '80d02588132ccedfc7f6b15e1b162e512a2164fe50e8873fe85039376dd65e17', 6, 'active', unixepoch(), unixepoch()),
-  (6, 3, 'نور الدين', 'registrar@eman.iq', '6fec04712803c852f0a7cae4ea971a31f24fb0305623894edef5c2b27db30045', 7, 'inactive', unixepoch(), unixepoch())
+  (6, 3, 'نور الدين', 'registrar@eman.iq', '6fec04712803c852f0a7cae4ea971a31f24fb0305623894edef5c2b27db30045', 7, 'inactive', unixepoch(), unixepoch()),
+  (7, 1, 'المعاون المدير', 'vp@nukhba.iq', '84d05686b79e958a7c661df33c4b13268ac6525b031af6a9e3a5521128bfe165', 4, 'active', unixepoch(), unixepoch()),
+  (8, 1, 'مسؤول التسجيل', 'registrar@nukhba.iq', '39728486499a7e15b2e6e396af12cb535a971cfc2bc956206b59559253c68200', 7, 'active', unixepoch(), unixepoch())
 ON CONFLICT(id) DO NOTHING;
 
 -- School Modules
