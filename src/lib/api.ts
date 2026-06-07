@@ -757,3 +757,30 @@ export function getPrintRecords(filters?: Record<string, any>, schoolId?: number
 export function verifyOfficialBook(token: string) {
   return fetchApi<Record<string, any>>(`/api/verify/official-book/${token}`);
 }
+
+// ===========================================
+// Phase 13A: Import / Export API
+// ===========================================
+
+export function previewImport(type: string, data: { school_id: number; rows: any[]; mode?: string; mapping?: Record<string, string> }) {
+  return fetchApi<Record<string, any>>(`/api/import-export/${type}/preview`, { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function confirmImport(type: string, data: { school_id: number; rows: any[]; mode?: string; file_name?: string }) {
+  return fetchApi<Record<string, any>>(`/api/import-export/${type}/confirm`, { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function getExportData(type: string, schoolId?: number | null) {
+  const params = new URLSearchParams();
+  if (schoolId != null) params.append('school_id', String(schoolId));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<Record<string, any>>(`/api/import-export/${type}/export${qs}`);
+}
+
+export function getImportJobs() {
+  return fetchApi<Array<Record<string, any>>>('/api/import-export/jobs');
+}
+
+export function getImportJob(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/import-export/jobs/${id}`);
+}

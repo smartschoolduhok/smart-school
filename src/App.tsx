@@ -21,6 +21,7 @@ import ReceiptVerificationPage from './modules/verification/ReceiptVerificationP
 import OfficialBookVerificationPage from './modules/verification/OfficialBookVerificationPage';
 import OfficialBooksPage from './modules/officialBooks/OfficialBooksPage';
 import PrintRecordsPage from './modules/printRecords/PrintRecordsPage';
+import ImportExportPage from './modules/importExport/ImportExportPage';
 
 import SettingsPage from './modules/settings/SettingsPage';
 
@@ -70,6 +71,7 @@ export default function App() {
           <Route path="/official-books" element={<Layout><OfficialBooksPage /></Layout>} />
           <Route path="/print-records" element={<Layout><PrintRecordsPage /></Layout>} />
           <Route path="/employees" element={<Layout><EmployeesPage /></Layout>} />
+          <Route path="/import-export" element={<Layout><ImportExportPage /></Layout>} />
           <Route path="/transport" element={<Layout><DisabledModulePage moduleName="النقل المدرسي" /></Layout>} />
           <Route path="/teacher-portal" element={<Layout><DisabledModulePage moduleName="بوابة المدرس" /></Layout>} />
           <Route path="/parent-portal" element={<Layout><DisabledModulePage moduleName="بوابة ولي الأمر" /></Layout>} />

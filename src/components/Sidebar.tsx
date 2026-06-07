@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, School, Users, Shield, Settings, GraduationCap, BookOpen, Calculator, CreditCard, Wallet, FileText, Printer, Bus, Globe, Brain, BookMarked, Layers, UserCheck, HeartHandshake, BarChart3 } from 'lucide-react';
+import { LayoutDashboard, School, Users, Shield, Settings, GraduationCap, BookOpen, Calculator, CreditCard, Wallet, FileText, Printer, Bus, Globe, Brain, BookMarked, Layers, UserCheck, HeartHandshake, BarChart3, ArrowDownUp } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 
 interface NavItem {
@@ -29,6 +29,8 @@ const activeModules: NavItem[] = [
   { label: 'الخزنة', path: '/treasury', icon: <Wallet size={20} />, active: true },
   // Phase 9 modules — enabled
   { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true },
+  // Phase 13A modules — enabled
+  { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={20} />, active: true },
   // Phase 12 modules — enabled
   { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={20} />, active: true },
   { label: 'السجلات المطبوعة', path: '/print-records', icon: <Printer size={20} />, active: true },
