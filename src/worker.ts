@@ -6634,10 +6634,17 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             `).bind(d.subject_type || 'core', d.counts_in_average ?? 1, d.appears_in_report_card ?? 1, d.passing_grade || null, d.exemption_grade || null, d.order_index || 0, d.status || 'active', existingSubj.id).run();
             updated++;
           } else {
+            const subjType = isValidSubjectType(d.subject_type) || 'core';
+            const countsAvg = d.counts_in_average != null ? (d.counts_in_average ? 1 : 0) : 1;
+            const appearsRC = d.appears_in_report_card != null ? (d.appears_in_report_card ? 1 : 0) : 1;
+            const passGrade = normalizeNumber(d.passing_grade) ?? 50;
+            const exemptGrade = normalizeNumber(d.exemption_grade) ?? 25;
+            const orderIdx = normalizeNumber(d.order_index) ?? 0;
+            const subjStatus = isValidStatus(d.status) || 'active';
             await db.prepare(`
-              INSERT INTO subjects (class_id, section_id, name, subject_type, counts_in_average, appears_in_report_card, passing_grade, exemption_grade, order_index, status, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
-            `).bind(classId, sectionId || null, subjectName, d.subject_type || 'core', d.counts_in_average ?? 1, d.appears_in_report_card ?? 1, d.passing_grade || null, d.exemption_grade || null, d.order_index || 0).run();
+              INSERT INTO subjects (school_id, class_id, section_id, name, subject_type, counts_in_average, appears_in_report_card, passing_grade, exemption_grade, order_index, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+            `).bind(school_id, classId, sectionId || null, subjectName, subjType, countsAvg, appearsRC, passGrade, exemptGrade, orderIdx, subjStatus).run();
             imported++;
           }
         } else if (type === 'employees') {
@@ -6645,6 +6652,12 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           if (!fullName) { rowError(i, 'full_name', 'اسم الموظف مطلوب'); continue; }
           const email = isValidEmail(d.email);
           const phone = isValidPhone(d.phone);
+          const gender = isValidGender(d.gender);
+          const employeeType = isValidEmployeeType(d.employee_type) || 'other';
+          const salaryType = isValidSalaryType(d.salary_type) || 'monthly';
+          const salaryAmount = normalizeNumber(d.salary_amount) ?? 0;
+          const hireDate = normalizeDate(d.hire_date);
+          const empStatus = isValidStatus(d.status) || 'active';
           let dup = null;
           if (email && employeeEmailMap.has(email)) dup = employeeEmailMap.get(email);
           else if (phone && employeePhoneMap.has(phone)) dup = employeePhoneMap.get(phone);
@@ -6658,13 +6671,13 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             await db.prepare(`
               UPDATE employees SET full_name = ?, gender = ?, phone = ?, email = ?, address = ?, job_title = ?, employee_type = ?, salary_type = ?, salary_amount = ?, hire_date = ?, status = ?, notes = ?, updated_at = unixepoch()
               WHERE id = ?
-            `).bind(fullName, d.gender || null, d.phone || null, d.email || null, d.address || null, d.job_title || null, d.employee_type || 'other', d.salary_type || 'monthly', d.salary_amount || null, d.hire_date || null, d.status || 'active', d.notes || null, dup.id).run();
+            `).bind(fullName, gender || null, phone || null, email || null, d.address || null, d.job_title || null, employeeType, salaryType, salaryAmount, hireDate || null, empStatus, d.notes || null, dup.id).run();
             updated++;
           } else {
             await db.prepare(`
               INSERT INTO employees (school_id, full_name, employee_number, gender, phone, email, address, job_title, role, employee_type, salary_type, salary_amount, hire_date, status, notes, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'staff', ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-            `).bind(school_id, fullName, null, d.gender || null, d.phone || null, d.email || null, d.address || null, d.job_title || null, d.employee_type || 'other', d.salary_type || 'monthly', d.salary_amount || null, d.hire_date || null, d.status || 'active', d.notes || null).run();
+            `).bind(school_id, fullName, null, gender || null, phone || null, email || null, d.address || null, d.job_title || null, employeeType, salaryType, salaryAmount, hireDate || null, empStatus, d.notes || null).run();
             imported++;
           }
         }
