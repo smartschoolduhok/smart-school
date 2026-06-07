@@ -7,9 +7,10 @@ import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, X
 // Phase 13A: Excel Import/Export Page
 // ===========================================
 
-type ImportType = 'students' | 'classes-sections' | 'subjects' | 'employees';
+type ImportType = 'students' | 'classes-sections' | 'subjects' | 'employees' | 'grades' | 'student-subjects';
 type ImportMode = 'skip_existing' | 'update_existing' | 'error_on_existing';
-type SheetType = 'students' | 'subjects' | 'summary' | 'unknown';
+type AssignmentMode = 'strict_existing_assignments' | 'auto_assign_missing_subjects';
+type SheetType = 'students' | 'subjects' | 'grade_sheet' | 'summary' | 'unknown';
 
 interface SheetInfo {
   name: string;
@@ -51,6 +52,8 @@ const TYPE_OPTIONS: { value: ImportType; label: string; icon: React.ReactNode }[
   { value: 'classes-sections', label: 'الصفوف والشعب', icon: <Layers size={18} /> },
   { value: 'subjects', label: 'المواد', icon: <BookOpen size={18} /> },
   { value: 'employees', label: 'الموظفون', icon: <Users size={18} /> },
+  { value: 'grades', label: 'الدرجات', icon: <FileText size={18} /> },
+  { value: 'student-subjects', label: 'تسجيل الطلاب في المواد', icon: <BookOpen size={18} /> },
 ];
 
 const MODE_OPTIONS: { value: ImportMode; label: string; description: string }[] = [
@@ -110,6 +113,30 @@ const SYSTEM_FIELDS: Record<ImportType, { key: string; label: string; required?:
     { key: 'status', label: 'الحالة' },
     { key: 'notes', label: 'ملاحظات' },
   ],
+  grades: [
+    { key: 'student_number', label: 'رقم الطالب / القيد' },
+    { key: 'full_name', label: 'اسم الطالب' },
+    { key: 'class_name', label: 'الصف' },
+    { key: 'section_name', label: 'الشعبة' },
+    { key: 'subject_name', label: 'المادة' },
+    { key: 'first_month', label: 'درجة الفصل الأول / السعي الأول' },
+    { key: 'second_month', label: 'السعي الثاني' },
+    { key: 'mid_year_exam', label: 'درجة نصف السنة' },
+    { key: 'third_month', label: 'درجة الفصل الثاني / السعي الثالث' },
+    { key: 'fourth_month', label: 'السعي الرابع' },
+    { key: 'final_exam', label: 'امتحان نهاية السنة' },
+    { key: 'completion_exam', label: 'درجة الإكمال' },
+    { key: 'notes', label: 'ملاحظات' },
+  ],
+  'student-subjects': [
+    { key: 'student_number', label: 'رقم الطالب / القيد', required: true },
+    { key: 'full_name', label: 'اسم الطالب', required: true },
+    { key: 'class_name', label: 'الصف' },
+    { key: 'section_name', label: 'الشعبة' },
+    { key: 'subject_name', label: 'المادة', required: true },
+    { key: 'is_active', label: 'الحالة (نشط/غير نشط)' },
+    { key: 'notes', label: 'ملاحظات' },
+  ],
 };
 
 const AUTO_MAP_RULES: Record<string, string[]> = {
@@ -142,6 +169,13 @@ const AUTO_MAP_RULES: Record<string, string[]> = {
   hire_date: ['تاريخ التعيين', 'hire_date', 'hire'],
   salary_amount: ['الراتب', 'salary_amount', 'salary', 'الراتب الأساسي', 'basic salary'],
   salary_type: ['نوع الراتب', 'salary_type'],
+  first_month: ['درجة الفصل الاول', 'الفصل الاول', 'first_month', 'first term', 'السعي الاول'],
+  second_month: ['السعي الثاني', 'second_month', 'second term', 'الفصل الثاني'],
+  third_month: ['درجة الفصل الثاني', 'الفصل الثاني', 'third_month', 'third term', 'السعي الثالث'],
+  fourth_month: ['السعي الرابع', 'fourth_month', 'fourth term'],
+  mid_year_exam: ['نصف السنة', 'درجة نصف السنة', 'mid_year_exam', 'mid_year', 'mid year exam', 'mid'],
+  final_exam: ['امتحان نهاية السنة', 'درجة نهاية السنة', 'final_exam', 'final exam', 'final', 'نهاية السنة'],
+  completion_exam: ['الاكمال', 'درجة الاكمال', 'completion_exam', 'completion', 'complementary', 'الإكمال'],
 };
 
 function classifySheetName(name: string): SheetType {
@@ -198,12 +232,24 @@ export default function ImportExportPage() {
   const [schoolId, setSchoolId] = useState<number>(user?.school_id || 1);
   const fileRef = useRef<HTMLInputElement>(null);
   const [xlsxModule, setXlsxModule] = useState<any>(null);
+  const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>('strict_existing_assignments');
+  const [clearEmptyFields, setClearEmptyFields] = useState(false);
+  const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
+  const [selectedSectionId, setSelectedSectionId] = useState<number | null>(null);
+  const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(null);
 
   const canAccessEmployees = user?.role_key === 'system_admin' || user?.role_key === 'school_owner' || user?.role_key === 'principal';
+  const canAccessGrades = user?.role_key === 'system_admin' || user?.role_key === 'school_owner' || user?.role_key === 'principal';
+  const canAccessStudentSubjects = user?.role_key === 'system_admin' || user?.role_key === 'school_owner' || user?.role_key === 'principal' || user?.role_key === 'registrar';
   const canImportExport = user?.role_key === 'system_admin' || user?.role_key === 'school_owner' || user?.role_key === 'principal' || user?.role_key === 'registrar';
-  const canExport = canImportExport;
+  const canExport = canImportExport || user?.role_key === 'vice_principal';
 
-  const availableTypes = TYPE_OPTIONS.filter(t => t.value !== 'employees' || canAccessEmployees);
+  const availableTypes = TYPE_OPTIONS.filter(t => {
+    if (t.value === 'employees') return canAccessEmployees;
+    if (t.value === 'grades') return canAccessGrades;
+    if (t.value === 'student-subjects') return canAccessStudentSubjects;
+    return true;
+  });
 
   useEffect(() => {
     if (user?.school_id) setSchoolId(user.school_id);
@@ -260,7 +306,15 @@ export default function ImportExportPage() {
     setSelectedSheet(sheetName);
     const sheetType = info.type;
     let suggestedType: ImportType = 'students';
-    if (sheetType === 'subjects') suggestedType = 'subjects';
+    if (sheetType === 'subjects') {
+      // If sheet contains grade-like columns, suggest grades import
+      const gradeColumns = info.columnNames.filter(c => /درجة|نصف السنة|الاكمال|الفصل|السعي|النهائية|النتيجة|المعدل|القرار|mid|final|exam|grade/i.test(c));
+      if (gradeColumns.length > 0) {
+        suggestedType = 'grades';
+      } else {
+        suggestedType = 'subjects';
+      }
+    }
     setSelectedType(suggestedType);
     setMapping(autoMapColumns(info.columnNames, suggestedType));
     setStep('mapping');
@@ -302,7 +356,20 @@ export default function ImportExportPage() {
         return obj;
       }).filter(r => Object.values(r).some(v => v !== '' && v !== null));
 
-      const res = await previewImport(selectedType, { school_id: schoolId, rows: mappedData, mode, mapping });
+      const payload: any = { school_id: schoolId, rows: mappedData, mode, mapping };
+      if (selectedType === 'grades') {
+        payload.assignment_mode = assignmentMode;
+        payload.clear_empty_fields = clearEmptyFields;
+        payload.selected_subject_id = selectedSubjectId;
+        payload.selected_class_id = selectedClassId;
+        payload.selected_section_id = selectedSectionId;
+        payload.selected_sheet = selectedSheet;
+      }
+      if (selectedType === 'student-subjects') {
+        payload.selected_class_id = selectedClassId;
+        payload.selected_section_id = selectedSectionId;
+      }
+      const res = await previewImport(selectedType, payload);
       if (res.data) {
         setPreview(res.data as PreviewResult);
         setStep('preview');
@@ -320,7 +387,12 @@ export default function ImportExportPage() {
     setLoading(true);
     try {
       const rowsToSend = preview.valid.map((r: PreviewRow) => r.data);
-      const res = await confirmImport(selectedType, { school_id: schoolId, rows: rowsToSend, mode, file_name: file?.name || 'import.xlsx' });
+      const payload: any = { school_id: schoolId, rows: rowsToSend, mode, file_name: file?.name || 'import.xlsx' };
+      if (selectedType === 'grades') {
+        payload.assignment_mode = assignmentMode;
+        payload.clear_empty_fields = clearEmptyFields;
+      }
+      const res = await confirmImport(selectedType, payload);
       if (res.data) {
         setConfirmResult(res.data);
         setStep('confirm');
@@ -344,7 +416,8 @@ export default function ImportExportPage() {
         const dataRows = res.data.rows.map((r: any) => keys.map(k => r[k] ?? ''));
         const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, type === 'classes-sections' ? 'الصفوف والشعب' : type === 'students' ? 'الطلاب' : type === 'subjects' ? 'المواد' : 'الموظفون');
+        const sheetLabel = type === 'classes-sections' ? 'الصفوف والشعب' : type === 'students' ? 'الطلاب' : type === 'subjects' ? 'المواد' : type === 'grades' ? 'الدرجات' : type === 'student-subjects' ? 'تسجيل الطلاب' : 'الموظفون';
+        XLSX.utils.book_append_sheet(wb, ws, sheetLabel);
         const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
         const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
         const url = URL.createObjectURL(blob);
@@ -404,6 +477,18 @@ export default function ImportExportPage() {
         <FileSpreadsheet className="text-primary-600" />
         استيراد وتصدير Excel
       </h1>
+
+      {preview?.warnings && preview.warnings.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+          <h3 className="text-sm font-bold text-amber-800 mb-2">تحذيرات</h3>
+          <ul className="text-sm text-amber-700 space-y-1">
+            {preview.warnings.slice(0, 20).map((w, i) => (
+              <li key={i}>صف {w.row}: {w.message}</li>
+            ))}
+            {preview.warnings.length > 20 && <li>... و {preview.warnings.length - 20} تحذيرات أخرى</li>}
+          </ul>
+        </div>
+      )}
 
       <div className="flex gap-1 mb-6 bg-gray-100 p-1 rounded-xl overflow-x-auto">
         {TABS.map(t => (
@@ -489,6 +574,25 @@ export default function ImportExportPage() {
                   </button>
                 ))}
               </div>
+
+              {selectedType === 'grades' && (
+                <div className="mb-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <button onClick={() => setAssignmentMode('strict_existing_assignments')} className={`p-3 rounded-lg border text-sm text-center transition-colors ${assignmentMode === 'strict_existing_assignments' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:bg-gray-50'}`}>
+                      <p className="font-bold">التسجيلات الحالية فقط</p>
+                      <p className="text-xs text-gray-500 mt-1">خطأ إذا لم يكن الطالب مسجلاً في المادة</p>
+                    </button>
+                    <button onClick={() => setAssignmentMode('auto_assign_missing_subjects')} className={`p-3 rounded-lg border text-sm text-center transition-colors ${assignmentMode === 'auto_assign_missing_subjects' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:bg-gray-50'}`}>
+                      <p className="font-bold">تسجيل تلقائي</p>
+                      <p className="text-xs text-gray-500 mt-1">تسجيل الطالب تلقائياً في المادة المفقودة</p>
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                    <input id="clear_empty" type="checkbox" checked={clearEmptyFields} onChange={e => setClearEmptyFields(e.target.checked)} className="w-4 h-4 text-amber-600 border-gray-300 rounded focus:ring-amber-500" />
+                    <label htmlFor="clear_empty" className="text-sm text-amber-800 font-bold cursor-pointer">مسح الحقول الفارغة (تحذير: سيتم مسح الدرجات الموجودة في الحقول الفارغة)</label>
+                  </div>
+                </div>
+              )}
 
               <div className="overflow-auto border border-gray-200 rounded-lg mb-4">
                 <table className="w-full text-sm">

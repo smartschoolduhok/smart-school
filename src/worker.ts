@@ -6129,8 +6129,16 @@ function canImportEmployees(roleKey: RoleKey): boolean {
   return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
 }
 
-function canExport(roleKey: RoleKey): boolean {
+function canImportGrades(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+}
+
+function canImportStudentSubjects(roleKey: RoleKey): boolean {
   return ['system_admin', 'school_owner', 'principal', 'registrar'].includes(roleKey);
+}
+
+function canExport(roleKey: RoleKey): boolean {
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(roleKey);
 }
 
 function normalizeText(v: any): string | null {
@@ -6228,6 +6236,68 @@ function isValidSalaryType(v: any): string | null {
   return 'other';
 }
 
+function normalizeArabicSubjectName(v: any): string | null {
+  const s = normalizeText(v);
+  if (!s) return null;
+  return s
+    .replace(/^[\s\uFEFF]+|[\s\uFEFF]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^ال/, '')
+    .replace(/(^|[^\u0600-\u06FF])أ/g, '$1ا')
+    .replace(/(^|[^\u0600-\u06FF])إ/g, '$1ا')
+    .replace(/(^|[^\u0600-\u06FF])آ/g, '$1ا')
+    .toLowerCase();
+}
+
+function matchSubjectByName(subjectName: string, subjects: any[]): any | null {
+  const normalized = normalizeArabicSubjectName(subjectName);
+  if (!normalized) return null;
+  const candidates = subjects.filter((s: any) => {
+    const sn = normalizeArabicSubjectName(s.name);
+    if (!sn) return false;
+    return sn === normalized || sn === normalized.replace(/^ال/, '') || normalized === sn.replace(/^ال/, '');
+  });
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length > 1) return { _ambiguous: true, matches: candidates.length };
+  return null;
+}
+
+function findStudentByIdentifier(
+  identifier: any,
+  students: any[],
+  className?: string | null,
+  sectionName?: string | null,
+  classMap?: Map<string, number>,
+  sectionMap?: Map<string, number>
+): any | null {
+  const studentNumber = normalizeText(identifier);
+  if (studentNumber) {
+    const byNumber = students.find((s: any) => normalizeText(s.student_number) === studentNumber);
+    if (byNumber) return byNumber;
+  }
+  const fullName = normalizeText(identifier);
+  if (!fullName) return null;
+  const byName = students.filter((s: any) => normalizeText(s.full_name) === fullName);
+  if (byName.length === 1) return byName[0];
+  if (byName.length > 1 && className && classMap) {
+    const classId = classMap.get(className);
+    if (classId) {
+      const byClass = byName.filter((s: any) => s.class_id === classId);
+      if (sectionName && sectionMap && classId) {
+        const sectionKey = `${classId}:${sectionName}`;
+        const sectionId = sectionMap.get(sectionKey);
+        if (sectionId) {
+          const bySection = byClass.filter((s: any) => s.section_id === sectionId);
+          if (bySection.length === 1) return bySection[0];
+        }
+      }
+      if (byClass.length === 1) return byClass[0];
+    }
+  }
+  if (byName.length > 1) return { _ambiguous: true };
+  return null;
+}
+
 function isValidEmail(v: any): string | null {
   const s = normalizeText(v);
   if (!s) return null;
@@ -6243,7 +6313,7 @@ function isValidPhone(v: any): string | null {
   return phoneRegex.test(s) ? s : null;
 }
 
-const PHASE13A_TYPES = ['students', 'classes-sections', 'subjects', 'employees'];
+const PHASE13A_TYPES = ['students', 'classes-sections', 'subjects', 'employees', 'grades', 'student-subjects'];
 
 // ===========================================
 // POST /api/import-export/:type/preview
@@ -6266,11 +6336,20 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
   if (type === 'employees' && !canImportEmployees(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية استيراد الموظفين' }, 403);
   }
+  if (type === 'grades' && !canImportGrades(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية استيراد الدرجات' }, 403);
+  }
+  if (type === 'student-subjects' && !canImportStudentSubjects(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية استيراد تسجيل الطلاب في المواد' }, 403);
+  }
 
   try {
     const body = await c.req.json();
-    let { school_id, rows, mode, mapping } = body;
+    let { school_id, rows, mode, mapping, assignment_mode, clear_empty_fields, selected_subject_id, selected_class_id, selected_section_id, selected_sheet } = body;
     mode = mode || 'skip_existing';
+    if (type === 'grades') mode = mode || 'update_existing'; // default for grades
+    const assignmentMode = assignment_mode || 'strict_existing_assignments';
+    const clearEmpty = clear_empty_fields === true;
     if (scope === 'single' && resolvedSchoolId != null) {
       school_id = resolvedSchoolId;
     }
@@ -6448,6 +6527,240 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         }
 
         record.data = { full_name: fullName, gender, phone, email, address, job_title: jobTitle, employee_type: employeeType, hire_date: hireDate, salary_amount: salaryAmount, salary_type: salaryType, status, notes };
+      } else if (type === 'grades') {
+        // Grade import preview
+        const gradeSettings = await getGradeSettings(db, school_id);
+        const maxGrade = gradeSettings?.max_grade ?? 100;
+        const studentIdentifier = normalizeText(mapped.student_number || mapped['القيد'] || mapped['رقم الطالب'] || mapped['student_number'] || mapped['full_name'] || mapped['اسم الطالب'] || mapped['الاسم']);
+        const className = normalizeText(mapped.class_name || mapped['الصف'] || mapped['class'] || selected_class_id ? (classIdMap.get(selected_class_id) || null) : null);
+        const sectionName = normalizeText(mapped.section_name || mapped['الشعبة'] || mapped['section'] || selected_section_id ? (() => { const sec = (existingSections.results || []).find((s: any) => s.id === selected_section_id); return sec?.name || null; })() : null);
+        const subjectName = normalizeText(mapped.subject_name || mapped['المادة'] || mapped['اسم المادة'] || mapped['subject']);
+        const sheetNameAsSubject = selected_sheet || null;
+
+        // Resolve student
+        let student = null;
+        if (studentIdentifier) {
+          student = findStudentByIdentifier(studentIdentifier, existingStudents.results || [], className, sectionName, classMap, sectionMap);
+        }
+        if (!student) {
+          rowError(i, 'student', 'الطالب غير موجود'); hasFatal = true;
+        } else if (student && student._ambiguous) {
+          rowError(i, 'student', 'يوجد أكثر من طالب بنفس الاسم، يرجى إضافة رقم الطالب'); hasFatal = true;
+          student = null;
+        }
+
+        // Resolve subject
+        let subject = null;
+        if (selected_subject_id) {
+          subject = (existingSubjects.results || []).find((s: any) => s.id === selected_subject_id) || null;
+        }
+        if (!subject && subjectName) {
+          subject = matchSubjectByName(subjectName, existingSubjects.results || []);
+        }
+        if (!subject && sheetNameAsSubject) {
+          subject = matchSubjectByName(sheetNameAsSubject, existingSubjects.results || []);
+        }
+        if (!subject && !hasFatal) {
+          rowError(i, 'subject', 'المادة غير موجودة'); hasFatal = true;
+        } else if (subject && subject._ambiguous) {
+          rowError(i, 'subject', 'يوجد أكثر من مادة مطابقة، يرجى اختيار المادة يدوياً'); hasFatal = true;
+          subject = null;
+        }
+
+        // Validate grade fields (raw marks only)
+        const gradeFields: Record<string, string> = {
+          first_month: mapped.first_month || mapped['درجة الفصل الاول'] || mapped['الفصل الاول'] || mapped['first'] || mapped['first_month'] || null,
+          second_month: mapped.second_month || mapped['الفصل الثاني'] || mapped['second'] || mapped['second_month'] || null,
+          third_month: mapped.third_month || mapped['درجة الفصل الثاني'] || mapped['third'] || mapped['third_month'] || null,
+          fourth_month: mapped.fourth_month || mapped['fourth'] || mapped['fourth_month'] || null,
+          mid_year_exam: mapped.mid_year_exam || mapped['نصف السنة'] || mapped['درجة نصف السنة'] || mapped['mid_year'] || mapped['mid_year_exam'] || null,
+          final_exam: mapped.final_exam || mapped['امتحان نهاية السنة'] || mapped['درجة نهاية السنة'] || mapped['final'] || mapped['final_exam'] || null,
+          completion_exam: mapped.completion_exam || mapped['الاكمال'] || mapped['درجة الاكمال'] || mapped['completion'] || mapped['completion_exam'] || null,
+          notes: mapped.notes || mapped['ملاحظات'] || mapped['notes'] || null,
+        };
+
+        // Term-score mapping warnings
+        const hasTerm1 = normalizeText(mapped['درجة الفصل الاول']) || normalizeText(mapped['الفصل الاول']);
+        const hasTerm2 = normalizeText(mapped['درجة الفصل الثاني']) || normalizeText(mapped['الفصل الثاني']);
+        if (hasTerm1) rowWarn(i, 'term_mapping', 'سيتم اعتبار درجة الفصل الأول كقيمة واحدة للسعي الأول');
+        if (hasTerm2) rowWarn(i, 'term_mapping', 'سيتم اعتبار درجة الفصل الثاني كقيمة واحدة للسعي الثاني');
+
+        // Detect ignored calculated columns
+        const ignoredCalculatedColumns = ['السعي السنوي', 'الدرجة النهائية', 'النتيجة', 'المعدل', 'القرار'];
+        for (const col of ignoredCalculatedColumns) {
+          if (raw[col] !== undefined && raw[col] !== '' && raw[col] !== null) {
+            rowWarn(i, 'ignored_calculated', `سيتم تجاهل العمود المحسوب: ${col}`);
+          }
+        }
+
+        // Validate each numeric grade field
+        const validatedGrades: Record<string, number | null> = {};
+        for (const [field, value] of Object.entries(gradeFields)) {
+          if (field === 'notes') continue;
+          const val = normalizeNumber(value);
+          if (val !== null) {
+            const v = validateGradeValue(val, maxGrade, field);
+            if (!v.ok) { rowError(i, field, v.error || 'خطأ في الدرجة'); hasFatal = true; }
+            else validatedGrades[field] = v.numeric ?? null;
+          } else {
+            validatedGrades[field] = null;
+          }
+        }
+
+        // Check for existing grade and assignment
+        let existingGrade = null;
+        let existingAssignment = null;
+        if (student && subject && !student._ambiguous && !subject._ambiguous) {
+          const assignment = await db.prepare(`SELECT id, is_active FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, student.id, subject.id).first<any>();
+          if (assignment) {
+            existingAssignment = assignment;
+            if (assignment.is_active) {
+              const grade = await db.prepare(`SELECT id, first_month, second_month, third_month, fourth_month, mid_year_exam, final_exam, completion_exam, notes FROM grades WHERE student_subject_id = ?`).bind(assignment.id).first<any>();
+              if (grade) existingGrade = grade;
+            }
+          }
+        }
+
+        // Assignment handling
+        let assignmentWillCreate = false;
+        let assignmentWillReactivate = false;
+        if (!existingAssignment || !existingAssignment.is_active) {
+          if (assignmentMode === 'strict_existing_assignments') {
+            if (!existingAssignment) {
+              rowError(i, 'assignment', 'الطالب غير مسجل في هذه المادة'); hasFatal = true;
+            } else if (!existingAssignment.is_active) {
+              rowError(i, 'assignment', 'التسجيل في المادة غير نشط'); hasFatal = true;
+            }
+          } else if (assignmentMode === 'auto_assign_missing_subjects') {
+            if (!existingAssignment) {
+              assignmentWillCreate = true;
+            } else if (!existingAssignment.is_active) {
+              assignmentWillReactivate = true;
+            }
+          }
+        }
+
+        // Duplicate grade behavior
+        if (existingGrade && !hasFatal) {
+          if (mode === 'error_on_existing') {
+            rowError(i, 'grade', 'درجة موجودة مسبقاً لهذا الطالب في هذه المادة'); hasFatal = true;
+          } else if (mode === 'skip_existing') {
+            duplicates.push({ row: i + 1, student_id: student.id, subject_id: subject.id, existing_grade_id: existingGrade.id });
+            continue;
+          }
+          // update_existing: continue with validation
+        }
+
+        // clear_empty_fields warning
+        if (clearEmpty) {
+          rowWarn(i, 'clear_empty_fields', 'سيتم مسح الدرجات الموجودة في الحقول الفارغة');
+        }
+
+        if (!hasFatal && student && subject) {
+          record.data = {
+            student_id: student.id,
+            subject_id: subject.id,
+            class_id: student.class_id || null,
+            section_id: student.section_id || null,
+            first_month: validatedGrades.first_month,
+            second_month: validatedGrades.second_month,
+            third_month: validatedGrades.third_month,
+            fourth_month: validatedGrades.fourth_month,
+            mid_year_exam: validatedGrades.mid_year_exam,
+            final_exam: validatedGrades.final_exam,
+            completion_exam: validatedGrades.completion_exam,
+            notes: gradeFields.notes || null,
+            existing_grade_id: existingGrade?.id || null,
+            assignment_will_create: assignmentWillCreate,
+            assignment_will_reactivate: assignmentWillReactivate,
+            existing_assignment_id: existingAssignment?.id || null,
+            clear_empty_fields: clearEmpty,
+          };
+          record._student_name = student.full_name;
+          record._subject_name = subject.name;
+          record._existing_grade = existingGrade ? true : false;
+        }
+      } else if (type === 'student-subjects') {
+        const studentNumber = normalizeText(mapped.student_number || mapped['القيد'] || mapped['رقم الطالب'] || mapped['student_number']);
+        const fullName = normalizeText(mapped.full_name || mapped['اسم الطالب'] || mapped['الاسم'] || mapped['student_name']);
+        const className = normalizeText(mapped.class_name || mapped['الصف'] || mapped['class']);
+        const sectionName = normalizeText(mapped.section_name || mapped['الشعبة'] || mapped['section']);
+        const subjectName = normalizeText(mapped.subject_name || mapped['المادة'] || mapped['اسم المادة'] || mapped['subject']);
+        const isActive = normalizeBoolean(mapped.is_active || mapped['الحالة'] || mapped['active']) !== false;
+        const notes = normalizeText(mapped.notes || mapped['ملاحظات'] || mapped['notes']);
+
+        // Resolve student
+        let student = null;
+        if (studentNumber) {
+          student = findStudentByIdentifier(studentNumber, existingStudents.results || [], className, sectionName, classMap, sectionMap);
+        } else if (fullName) {
+          student = findStudentByIdentifier(fullName, existingStudents.results || [], className, sectionName, classMap, sectionMap);
+        }
+        if (!student) {
+          rowError(i, 'student', 'الطالب غير موجود'); hasFatal = true;
+        } else if (student && student._ambiguous) {
+          rowError(i, 'student', 'يوجد أكثر من طالب بنفس الاسم، يرجى إضافة رقم الطالب'); hasFatal = true;
+          student = null;
+        }
+
+        // Resolve class and section
+        let classId = className ? classMap.get(className) : (student ? student.class_id : null);
+        let sectionId = null;
+        if (sectionName && classId) {
+          const sKey = `${classId}:${sectionName}`;
+          sectionId = sectionMap.get(sKey) || (student ? student.section_id : null);
+        } else if (student) {
+          sectionId = student.section_id;
+        }
+        if (className && !classId) { rowError(i, 'class_name', `الصف "${className}" غير موجود`); hasFatal = true; }
+        if (sectionName && classId && !sectionId) { rowError(i, 'section_name', `الشعبة "${sectionName}" غير موجودة`); hasFatal = true; }
+
+        // Resolve subject
+        let subject = null;
+        if (subjectName) {
+          subject = matchSubjectByName(subjectName, existingSubjects.results || []);
+        }
+        if (!subject && !hasFatal) { rowError(i, 'subject', 'المادة غير موجودة'); hasFatal = true; }
+        else if (subject && subject._ambiguous) { rowError(i, 'subject', 'يوجد أكثر من مادة مطابقة، يرجى اختيار المادة يدوياً'); hasFatal = true; subject = null; }
+
+        // Check for existing assignment
+        let existingAssignment = null;
+        if (student && subject && !student._ambiguous && !subject._ambiguous) {
+          const assignment = await db.prepare(`SELECT id, is_active, assigned_at FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, student.id, subject.id).first<any>();
+          if (assignment) existingAssignment = assignment;
+        }
+
+        if (existingAssignment && !hasFatal) {
+          if (existingAssignment.is_active) {
+            if (mode === 'error_on_existing') { rowError(i, 'assignment', 'التسجيل في المادة موجود مسبقاً'); hasFatal = true; }
+            else if (mode === 'skip_existing') { duplicates.push({ row: i + 1, student_id: student.id, subject_id: subject.id, existing_assignment_id: existingAssignment.id }); continue; }
+            // update_existing: reactivation not needed since already active, but we can update notes
+          } else {
+            // Inactive assignment
+            if (mode === 'update_existing') {
+              // Will reactivate
+            } else if (mode === 'skip_existing') {
+              duplicates.push({ row: i + 1, student_id: student.id, subject_id: subject.id, existing_assignment_id: existingAssignment.id }); continue;
+            } else if (mode === 'error_on_existing') {
+              rowError(i, 'assignment', 'التسجيل في المادة موجود مسبقاً (غير نشط)'); hasFatal = true;
+            }
+          }
+        }
+
+        if (!hasFatal && student && subject) {
+          record.data = {
+            student_id: student.id,
+            subject_id: subject.id,
+            class_id: classId || student.class_id || null,
+            section_id: sectionId || student.section_id || null,
+            is_active: isActive,
+            notes: notes || null,
+            existing_assignment_id: existingAssignment?.id || null,
+            existing_assignment_is_active: existingAssignment?.is_active || false,
+          };
+          record._student_name = student.full_name;
+          record._subject_name = subject.name;
+        }
       }
 
       if (!hasFatal) {
@@ -6492,6 +6805,12 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
   }
   if (type === 'employees' && !canImportEmployees(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية استيراد الموظفين' }, 403);
+  }
+  if (type === 'grades' && !canImportGrades(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية استيراد الدرجات' }, 403);
+  }
+  if (type === 'student-subjects' && !canImportStudentSubjects(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية استيراد تسجيل الطلاب في المواد' }, 403);
   }
 
   try {
@@ -6680,6 +6999,160 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             `).bind(school_id, fullName, null, gender || null, phone || null, email || null, d.address || null, d.job_title || null, employeeType, salaryType, salaryAmount, hireDate || null, empStatus, d.notes || null).run();
             imported++;
           }
+        } else if (type === 'grades') {
+          const gradeSettings = await getGradeSettings(db, school_id);
+          const studentId = d.student_id;
+          const subjectId = d.subject_id;
+          if (!studentId || !subjectId) { rowError(i, 'general', 'بيانات الدرجة غير كاملة'); continue; }
+
+          let assignment = await db.prepare(`SELECT id, is_active FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, studentId, subjectId).first<any>();
+
+          if (!assignment) {
+            if (d.assignment_will_create) {
+              const assignmentRes = await db.prepare(`
+                INSERT INTO student_subjects (school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, unixepoch(), ?, unixepoch(), unixepoch())
+              `).bind(school_id, studentId, subjectId, d.class_id || null, d.section_id || null, user?.id || null, d.notes || null).run();
+              assignment = { id: assignmentRes.meta.last_row_id, is_active: 1 };
+            } else {
+              rowError(i, 'assignment', 'الطالب غير مسجل في هذه المادة'); continue;
+            }
+          } else if (!assignment.is_active && d.assignment_will_reactivate) {
+            await db.prepare(`
+              UPDATE student_subjects SET is_active = 1, assigned_by_user_id = ?, assigned_at = unixepoch(), updated_at = unixepoch() WHERE id = ?
+            `).bind(user?.id || null, assignment.id).run();
+            assignment.is_active = 1;
+          }
+
+          const existingGrade = await db.prepare(`SELECT id, first_month, second_month, third_month, fourth_month, mid_year_exam, final_exam, completion_exam, notes FROM grades WHERE student_subject_id = ?`).bind(assignment.id).first<any>();
+
+          if (existingGrade) {
+            if (mode === 'skip_existing') { skipped++; continue; }
+            if (mode === 'error_on_existing') { rowError(i, 'grade', 'درجة موجودة مسبقاً لهذا الطالب في هذه المادة'); continue; }
+
+            const clearEmpty = d.clear_empty_fields === true;
+            const newGrades: Record<string, any> = {};
+            const rawFields = ['first_month', 'second_month', 'third_month', 'fourth_month', 'mid_year_exam', 'final_exam', 'completion_exam', 'notes'];
+            for (const f of rawFields) {
+              if (f === 'notes') {
+                if (d[f] !== undefined && d[f] !== null) newGrades[f] = d[f] || null;
+                else if (clearEmpty) newGrades[f] = null;
+                else newGrades[f] = existingGrade[f] ?? null;
+              } else {
+                if (d[f] !== undefined && d[f] !== null) newGrades[f] = d[f];
+                else if (clearEmpty) newGrades[f] = null;
+                else newGrades[f] = existingGrade[f] ?? null;
+              }
+            }
+
+            // Calculate derived grades
+            const calc = calculateGrades(
+              {
+                first_month: newGrades.first_month,
+                second_month: newGrades.second_month,
+                third_month: newGrades.third_month,
+                fourth_month: newGrades.fourth_month,
+                mid_year_exam: newGrades.mid_year_exam,
+                final_exam: newGrades.final_exam,
+                completion_exam: newGrades.completion_exam,
+              },
+              gradeSettings
+            );
+
+            // Update grade row
+            await db.prepare(`
+              UPDATE grades SET
+                first_month = ?, second_month = ?, third_month = ?, fourth_month = ?,
+                mid_year_exam = ?, final_exam = ?, completion_exam = ?,
+                first_term_average = ?, second_term_average = ?, annual_effort = ?,
+                final_grade = ?, grade_after_completion = ?, effective_grade = ?,
+                result_status = ?, exemption_status = ?, notes = ?,
+                updated_at = unixepoch(), updated_by_user_id = ?
+              WHERE id = ?
+            `).bind(
+              newGrades.first_month, newGrades.second_month, newGrades.third_month, newGrades.fourth_month,
+              newGrades.mid_year_exam, newGrades.final_exam, newGrades.completion_exam,
+              calc.first_term_average, calc.second_term_average, calc.annual_effort,
+              calc.final_grade, calc.grade_after_completion, calc.effective_grade,
+              calc.result_status, calc.exemption_status, newGrades.notes,
+              user?.id || null, existingGrade.id
+            ).run();
+
+            // Write grade_change_logs for changed raw fields only
+            for (const f of rawFields) {
+              const oldVal = existingGrade[f] ?? null;
+              const newVal = newGrades[f] ?? null;
+              if (oldVal !== newVal) {
+                await db.prepare(`
+                  INSERT INTO grade_change_logs (school_id, grade_id, field_name, old_value, new_value, changed_by_user_id, change_reason, created_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+                `).bind(school_id, existingGrade.id, f, oldVal !== null ? String(oldVal) : null, newVal !== null ? String(newVal) : null, user?.id || null, 'استيراد Excel').run();
+              }
+            }
+            updated++;
+            continue;
+          }
+
+          // New grade
+          const calc = calculateGrades(
+            {
+              first_month: d.first_month ?? null,
+              second_month: d.second_month ?? null,
+              third_month: d.third_month ?? null,
+              fourth_month: d.fourth_month ?? null,
+              mid_year_exam: d.mid_year_exam ?? null,
+              final_exam: d.final_exam ?? null,
+              completion_exam: d.completion_exam ?? null,
+            },
+            gradeSettings
+          );
+
+          await db.prepare(`
+            INSERT INTO grades (school_id, student_subject_id, first_month, second_month, third_month, fourth_month,
+              mid_year_exam, final_exam, completion_exam, first_term_average, second_term_average, annual_effort,
+              final_grade, grade_after_completion, effective_grade, result_status, exemption_status, notes, is_active, created_at, updated_at, updated_by_user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, unixepoch(), unixepoch(), ?)
+          `).bind(
+            school_id, assignment.id,
+            d.first_month ?? null, d.second_month ?? null, d.third_month ?? null, d.fourth_month ?? null,
+            d.mid_year_exam ?? null, d.final_exam ?? null, d.completion_exam ?? null,
+            calc.first_term_average, calc.second_term_average, calc.annual_effort,
+            calc.final_grade, calc.grade_after_completion, calc.effective_grade,
+            calc.result_status, calc.exemption_status, d.notes || null,
+            user?.id || null
+          ).run();
+          imported++;
+        } else if (type === 'student-subjects') {
+          const studentId = d.student_id;
+          const subjectId = d.subject_id;
+          if (!studentId || !subjectId) { rowError(i, 'general', 'بيانات التسجيل غير كاملة'); continue; }
+
+          const existingAssignment = await db.prepare(`SELECT id, is_active FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, studentId, subjectId).first<any>();
+
+          if (existingAssignment) {
+            if (existingAssignment.is_active) {
+              if (mode === 'error_on_existing') { rowError(i, 'assignment', 'التسجيل في المادة موجود مسبقاً'); continue; }
+              if (mode === 'skip_existing') { skipped++; continue; }
+              // update_existing: update notes only
+              await db.prepare(`UPDATE student_subjects SET notes = ?, updated_at = unixepoch() WHERE id = ?`).bind(d.notes || null, existingAssignment.id).run();
+              updated++;
+            } else {
+              if (mode === 'error_on_existing') { rowError(i, 'assignment', 'التسجيل في المادة موجود مسبقاً (غير نشط)'); continue; }
+              if (mode === 'skip_existing') { skipped++; continue; }
+              // update_existing: reactivate
+              await db.prepare(`
+                UPDATE student_subjects SET is_active = 1, assigned_by_user_id = ?, assigned_at = unixepoch(), updated_at = unixepoch(), notes = ?
+                WHERE id = ?
+              `).bind(user?.id || null, d.notes || null, existingAssignment.id).run();
+              updated++;
+            }
+          } else {
+            await db.prepare(`
+              INSERT INTO student_subjects (school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, notes, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch(), ?, unixepoch(), unixepoch())
+            `).bind(school_id, studentId, subjectId, d.class_id || null, d.section_id || null, d.is_active !== false ? 1 : 0, user?.id || null, d.notes || null).run();
+            imported++;
+          }
         }
       } catch (err: any) {
         rowError(i, 'general', err.message || 'خطأ غير متوقع');
@@ -6764,6 +7237,34 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
         FROM employees
         WHERE school_id = ? AND status != 'archived'
         ORDER BY id
+      `).bind(schoolId).all<any>();
+      rows = res.results || [];
+    } else if (type === 'grades') {
+      const res = await db.prepare(`
+        SELECT st.student_number, st.full_name as student_name, c.name as class_name, sec.name as section_name, s.name as subject_name,
+               g.first_month, g.second_month, g.third_month, g.fourth_month, g.mid_year_exam, g.final_exam, g.completion_exam,
+               g.first_term_average, g.second_term_average, g.annual_effort, g.final_grade, g.grade_after_completion, g.effective_grade, g.result_status, g.exemption_status, g.notes
+        FROM grades g
+        JOIN student_subjects ss ON g.student_subject_id = ss.id
+        JOIN students st ON ss.student_id = st.id
+        JOIN subjects s ON ss.subject_id = s.id
+        LEFT JOIN classes c ON st.class_id = c.id
+        LEFT JOIN sections sec ON st.section_id = sec.id
+        WHERE g.school_id = ? AND g.is_active = 1 AND st.status != 'archived'
+        ORDER BY st.id, s.name
+      `).bind(schoolId).all<any>();
+      rows = res.results || [];
+    } else if (type === 'student-subjects') {
+      const res = await db.prepare(`
+        SELECT st.student_number, st.full_name as student_name, c.name as class_name, sec.name as section_name, s.name as subject_name,
+               ss.is_active, ss.assigned_at, ss.notes
+        FROM student_subjects ss
+        JOIN students st ON ss.student_id = st.id
+        JOIN subjects s ON ss.subject_id = s.id
+        LEFT JOIN classes c ON st.class_id = c.id
+        LEFT JOIN sections sec ON st.section_id = sec.id
+        WHERE ss.school_id = ? AND st.status != 'archived'
+        ORDER BY st.id, s.name
       `).bind(schoolId).all<any>();
       rows = res.results || [];
     }
