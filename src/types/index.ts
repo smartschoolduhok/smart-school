@@ -10,9 +10,17 @@ export type RoleKey = 'system_admin' | 'school_owner' | 'principal' | 'vice_prin
 export interface School {
   id: number;
   name: string;
+  name_en?: string;
   logo_url: string | null;
+  official_stamp_url?: string | null;
   school_type: SchoolType;
   city: string;
+  province?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+  principal_name?: string;
   status: UserStatus;
   created_at: string;
 }
@@ -75,6 +83,9 @@ export interface SchoolModule {
 export interface UserWithSchoolAndRole extends User {
   school_name?: string;
   role_name?: string;
+  role_key?: RoleKey;
+  phone?: string;
+  password?: string;
 }
 
 export interface RoleWithPermissions extends Role {

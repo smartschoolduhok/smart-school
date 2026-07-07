@@ -267,6 +267,19 @@ function requireSameSchoolOrAdmin() {
   };
 }
 
+function requireAdmin() {
+  return async (c: any, next: () => Promise<void>) => {
+    const user: UserContext | null = c.get('user') || null;
+    if (!user) {
+      return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401);
+    }
+    if (user.role_key !== 'system_admin') {
+      return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة المدارس' }, 403);
+    }
+    await next();
+  };
+}
+
 // ===========================================
 // Middleware: CORS + JWT Auth
 // ===========================================
@@ -449,6 +462,91 @@ app.get('/api/schools/:id', async (c) => {
   }
 })
 
+app.post('/api/schools', requireAdmin(), async (c) => {
+  const db = c.env.DB
+  try {
+    const body = await c.req.json()
+    const {
+      name, name_en, school_type, city, province, address,
+      phone, email, website, principal_name, logo_url, official_stamp_url
+    } = body
+
+    if (!name) {
+      return c.json({ error: 'اسم المدرسة مطلوب' }, 400)
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return c.json({ error: 'البريد الإلكتروني غير صحيح' }, 400)
+    }
+
+    const result = await db.prepare(`
+      INSERT INTO schools (
+        name, name_en, school_type, city, province, address,
+        phone, email, website, principal_name, logo_url, official_stamp_url,
+        status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
+    `).bind(
+      name, name_en || null, school_type || null, city || null, province || null, address || null,
+      phone || null, email || null, website || null, principal_name || null, logo_url || null, official_stamp_url || null
+    ).run()
+
+    return c.json({ data: { id: result.meta.last_row_id, name, status: 'active' } }, 201)
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إنشاء المدرسة', detail: err.message }, 500)
+  }
+})
+
+app.put('/api/schools/:id', requireAdmin(), async (c) => {
+  const db = c.env.DB
+  const id = c.req.param('id')
+  try {
+    const body = await c.req.json()
+    const {
+      name, name_en, school_type, city, province, address,
+      phone, email, website, principal_name, logo_url, official_stamp_url, status
+    } = body
+
+    const existing = await db.prepare(`SELECT id FROM schools WHERE id = ?`).bind(id).first<{ id: number }>()
+    if (!existing) return c.json({ error: 'المدرسة غير موجودة' }, 404)
+
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return c.json({ error: 'البريد الإلكتروني غير صحيح' }, 400)
+    }
+    if (!name) {
+      return c.json({ error: 'اسم المدرسة مطلوب' }, 400)
+    }
+
+    await db.prepare(`
+      UPDATE schools SET
+        name = ?, name_en = ?, school_type = ?, city = ?, province = ?, address = ?,
+        phone = ?, email = ?, website = ?, principal_name = ?, logo_url = ?, official_stamp_url = ?,
+        status = ?, updated_at = unixepoch()
+      WHERE id = ?
+    `).bind(
+      name, name_en || null, school_type || null, city || null, province || null, address || null,
+      phone || null, email || null, website || null, principal_name || null, logo_url || null, official_stamp_url || null,
+      status || 'active', id
+    ).run()
+
+    return c.json({ data: { id, name, status: status || 'active' } })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث المدرسة', detail: err.message }, 500)
+  }
+})
+
+app.put('/api/schools/:id/archive', requireAdmin(), async (c) => {
+  const db = c.env.DB
+  const id = c.req.param('id')
+  try {
+    const existing = await db.prepare(`SELECT id FROM schools WHERE id = ?`).bind(id).first<{ id: number }>()
+    if (!existing) return c.json({ error: 'المدرسة غير موجودة' }, 404)
+
+    await db.prepare(`UPDATE schools SET status = 'archived', updated_at = unixepoch() WHERE id = ?`).bind(id).run()
+    return c.json({ data: { id, status: 'archived' } })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في أرشفة المدرسة', detail: err.message }, 500)
+  }
+})
+
 // ===========================================
 // API ROUTES: Users (with RBAC + school_id filtering)
 // ===========================================
@@ -513,6 +611,163 @@ app.get('/api/users/:id', async (c) => {
     return c.json({ data: row })
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب المستخدم', detail: err.message }, 500)
+  }
+})
+
+app.post('/api/users', requireAdmin(), async (c) => {
+  const db = c.env.DB
+  try {
+    const body = await c.req.json()
+    const { full_name, email, password, role_id, role_key, school_id, phone } = body
+
+    if (!full_name || !email || !password) {
+      return c.json({ error: 'الاسم والبريد الإلكتروني وكلمة المرور مطلوبة' }, 400)
+    }
+    if (!role_id && !role_key) {
+      return c.json({ error: 'الدور مطلوب' }, 400)
+    }
+
+    // Determine role_id from role_key if needed
+    let finalRoleId = role_id
+    if (!finalRoleId && role_key) {
+      const roleRow = await db.prepare(`SELECT id FROM roles WHERE key = ?`).bind(role_key).first<{ id: number }>()
+      if (!roleRow) return c.json({ error: 'الدور غير موجود' }, 400)
+      finalRoleId = roleRow.id
+    }
+
+    // Get role key for validation
+    const roleRow = await db.prepare(`SELECT key FROM roles WHERE id = ?`).bind(finalRoleId).first<{ key: string }>()
+    if (!roleRow) return c.json({ error: 'الدور غير موجود' }, 400)
+    const finalRoleKey = roleRow.key
+
+    // School roles require school_id
+    const schoolRoles = ['school_owner', 'principal', 'vice_principal', 'teacher', 'accountant', 'registrar', 'parent']
+    if (schoolRoles.includes(finalRoleKey) && !school_id) {
+      return c.json({ error: 'معرف المدرسة مطلوب لهذا الدور' }, 400)
+    }
+    // system_admin can have null school_id
+    if (finalRoleKey === 'system_admin' && school_id) {
+      // allowed but optional
+    }
+
+    // Check duplicate email
+    const existing = await db.prepare(`SELECT id FROM users WHERE email = ?`).bind(email).first<{ id: number }>()
+    if (existing) {
+      return c.json({ error: 'البريد الإلكتروني مستخدم مسبقاً' }, 409)
+    }
+
+    const passwordHash = await hashPassword(password, email)
+
+    const result = await db.prepare(`
+      INSERT INTO users (school_id, full_name, email, password_hash, role_id, phone, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
+    `).bind(
+      school_id || null, full_name, email, passwordHash, finalRoleId, phone || null
+    ).run()
+
+    return c.json({ data: { id: result.meta.last_row_id, full_name, email, role_id: finalRoleId, school_id: school_id || null, status: 'active' } }, 201)
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إنشاء المستخدم', detail: err.message }, 500)
+  }
+})
+
+app.put('/api/users/:id', requireAdmin(), async (c) => {
+  const db = c.env.DB
+  const id = c.req.param('id')
+  try {
+    const body = await c.req.json()
+    const { full_name, email, role_id, role_key, school_id, phone } = body
+
+    const existing = await db.prepare(`SELECT * FROM users WHERE id = ?`).bind(id).first<{
+      id: number; school_id: number | null; full_name: string; email: string; role_id: number; phone: string | null; status: string
+    }>()
+    if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
+
+    // Determine role_id
+    let finalRoleId = role_id || existing.role_id
+    if (role_key && !role_id) {
+      const roleRow = await db.prepare(`SELECT id FROM roles WHERE key = ?`).bind(role_key).first<{ id: number }>()
+      if (!roleRow) return c.json({ error: 'الدور غير موجود' }, 400)
+      finalRoleId = roleRow.id
+    }
+
+    const roleRow = await db.prepare(`SELECT key FROM roles WHERE id = ?`).bind(finalRoleId).first<{ key: string }>()
+    if (!roleRow) return c.json({ error: 'الدور غير موجود' }, 400)
+    const finalRoleKey = roleRow.key
+
+    const schoolRoles = ['school_owner', 'principal', 'vice_principal', 'teacher', 'accountant', 'registrar', 'parent']
+    if (schoolRoles.includes(finalRoleKey) && !school_id) {
+      return c.json({ error: 'معرف المدرسة مطلوب لهذا الدور' }, 400)
+    }
+
+    // Check duplicate email if changed
+    if (email && email !== existing.email) {
+      const dup = await db.prepare(`SELECT id FROM users WHERE email = ?`).bind(email).first<{ id: number }>()
+      if (dup) {
+        return c.json({ error: 'البريد الإلكتروني مستخدم مسبقاً' }, 409)
+      }
+    }
+
+    await db.prepare(`
+      UPDATE users SET
+        school_id = ?, full_name = ?, email = ?, role_id = ?, phone = ?, updated_at = unixepoch()
+      WHERE id = ?
+    `).bind(
+      school_id !== undefined ? (school_id || null) : existing.school_id,
+      full_name || existing.full_name,
+      email || existing.email,
+      finalRoleId,
+      phone !== undefined ? (phone || null) : existing.phone,
+      id
+    ).run()
+
+    return c.json({ data: { id, full_name: full_name || existing.full_name, email: email || existing.email, role_id: finalRoleId, school_id: school_id !== undefined ? (school_id || null) : existing.school_id } })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث المستخدم', detail: err.message }, 500)
+  }
+})
+
+app.put('/api/users/:id/status', requireAdmin(), async (c) => {
+  const db = c.env.DB
+  const id = c.req.param('id')
+  try {
+    const body = await c.req.json()
+    const { status } = body
+
+    if (!status || !['active', 'inactive'].includes(status)) {
+      return c.json({ error: 'الحالة يجب أن تكون active أو inactive' }, 400)
+    }
+
+    const existing = await db.prepare(`SELECT id FROM users WHERE id = ?`).bind(id).first<{ id: number }>()
+    if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
+
+    await db.prepare(`UPDATE users SET status = ?, updated_at = unixepoch() WHERE id = ?`).bind(status, id).run()
+    return c.json({ data: { id, status } })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث حالة المستخدم', detail: err.message }, 500)
+  }
+})
+
+app.put('/api/users/:id/reset-password', requireAdmin(), async (c) => {
+  const db = c.env.DB
+  const id = c.req.param('id')
+  try {
+    const body = await c.req.json()
+    const { password } = body
+
+    if (!password) {
+      return c.json({ error: 'كلمة المرور مطلوبة' }, 400)
+    }
+
+    const existing = await db.prepare(`SELECT email FROM users WHERE id = ?`).bind(id).first<{ email: string }>()
+    if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
+
+    const passwordHash = await hashPassword(password, existing.email)
+    await db.prepare(`UPDATE users SET password_hash = ?, updated_at = unixepoch() WHERE id = ?`).bind(passwordHash, id).run()
+
+    return c.json({ data: { id, success: true } })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إعادة تعيين كلمة المرور', detail: err.message }, 500)
   }
 })
 

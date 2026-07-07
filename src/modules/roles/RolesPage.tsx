@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Shield, Users, CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react';
+import { Shield, Users, CheckCircle2, XCircle, Loader2, AlertCircle, Info } from 'lucide-react';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { getRoles, getRolePermissions } from '../../lib/api';
 import { useAuth } from '../../hooks/useAuth';
@@ -15,7 +15,6 @@ export default function RolesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Only system_admin can edit roles; others see read-only view
   const isAdmin = user?.role_key === 'system_admin';
 
   useEffect(() => {
@@ -70,6 +69,19 @@ export default function RolesPage() {
             ? 'إدارة الأدوار وصلاحيات الوصول لكل مستوى'
             : 'عرض الأدوار وصلاحيات الوصول (قراءة فقط)'}
         </p>
+      </div>
+
+      {/* Option A: Read-only notice banner */}
+      <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-start gap-3">
+        <Info size={20} className="text-blue-600 mt-0.5 flex-shrink-0" />
+        <div>
+          <p className="text-sm font-medium text-blue-800">
+            هذه الصفحة للعرض فقط حالياً.
+          </p>
+          <p className="text-xs text-blue-600 mt-0.5">
+            تعديل مصفوفة الصلاحيات سيُضاف لاحقاً.
+          </p>
+        </div>
       </div>
 
       {loading && (
