@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { LayoutDashboard, School, Users, Shield, Settings, GraduationCap, BookOpen, Calculator, CreditCard, Wallet, FileText, Printer, Bus, Globe, Brain, BookMarked, Layers, UserCheck, HeartHandshake, BarChart3, ArrowDownUp } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
+import type { RoleKey } from '../types';
 
 interface NavItem {
   label: string;
@@ -9,32 +10,58 @@ interface NavItem {
   active: boolean;
   disabled?: boolean;
   section?: string;
+  // Role visibility: which roles can see this item
+  // If undefined/empty, visible to all authenticated users
+  allowedRoles?: RoleKey[];
 }
 
+// ===========================================
+// RBAC Sidebar Rules
+// ===========================================
+// system_admin: sees everything (all modules + admin-only)
+// school_owner, principal, vice_principal: sees school management modules
+// teacher: sees academic modules only
+// accountant: sees finance modules
+// registrar: sees student/academic modules
+// parent: sees parent portal (future)
+//
+// Admin-only modules: المدارس, المستخدمون, الأدوار والصلاحيات
+// ===========================================
+
 const activeModules: NavItem[] = [
+  // Core - visible to all authenticated users
   { label: 'لوحة التحكم', path: '/', icon: <LayoutDashboard size={20} />, active: true },
-  { label: 'المدارس', path: '/schools', icon: <School size={20} />, active: true },
-  { label: 'المستخدمون', path: '/users', icon: <Users size={20} />, active: true },
-  { label: 'الأدوار والصلاحيات', path: '/roles', icon: <Shield size={20} />, active: true },
-  // Phase 2 modules — enabled
-  { label: 'الطلاب', path: '/students', icon: <GraduationCap size={20} />, active: true },
-  { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={20} />, active: true },
-  { label: 'المواد', path: '/subjects', icon: <BookOpen size={20} />, active: true },
-  { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={20} />, active: true },
-  { label: 'الدرجات', path: '/grades', icon: <Calculator size={20} />, active: true },
-  { label: 'التحليل', path: '/analytics', icon: <BarChart3 size={20} />, active: true },
-  { label: 'كارتات النتائج', path: '/result-cards', icon: <FileText size={20} />, active: true },
-  // Phase 7 modules — enabled
-  { label: 'الأقساط', path: '/fees', icon: <CreditCard size={20} />, active: true },
-  { label: 'الخزنة', path: '/treasury', icon: <Wallet size={20} />, active: true },
-  // Phase 9 modules — enabled
-  { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true },
-  // Phase 13A modules — enabled
-  { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={20} />, active: true },
-  // Phase 12 modules — enabled
-  { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={20} />, active: true },
-  { label: 'السجلات المطبوعة', path: '/print-records', icon: <Printer size={20} />, active: true },
-  { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true },
+
+  // Admin-only: system_admin only
+  { label: 'المدارس', path: '/schools', icon: <School size={20} />, active: true, allowedRoles: ['system_admin'] },
+  { label: 'المستخدمون', path: '/users', icon: <Users size={20} />, active: true, allowedRoles: ['system_admin'] },
+  { label: 'الأدوار والصلاحيات', path: '/roles', icon: <Shield size={20} />, active: true, allowedRoles: ['system_admin'] },
+
+  // Phase 2 modules - academic (admin + school staff)
+  { label: 'الطلاب', path: '/students', icon: <GraduationCap size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
+  { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
+  { label: 'المواد', path: '/subjects', icon: <BookOpen size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
+  { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
+  { label: 'الدرجات', path: '/grades', icon: <Calculator size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
+  { label: 'التحليل', path: '/analytics', icon: <BarChart3 size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar', 'accountant'] },
+  { label: 'كارتات النتائج', path: '/result-cards', icon: <FileText size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
+
+  // Phase 7 modules - finance (admin + accountant)
+  { label: 'الأقساط', path: '/fees', icon: <CreditCard size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant'] },
+  { label: 'الخزنة', path: '/treasury', icon: <Wallet size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant'] },
+
+  // Phase 9 modules - HR (admin + principal)
+  { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
+
+  // Phase 13A modules - data (admin only for now)
+  { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal'] },
+
+  // Phase 12 modules - official books (admin + registrar)
+  { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'] },
+  { label: 'السجلات المطبوعة', path: '/print-records', icon: <Printer size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'] },
+
+  // Settings - admin + school management
+  { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
 ];
 
 const futureModules: NavItem[] = [
@@ -44,10 +71,21 @@ const futureModules: NavItem[] = [
   { label: 'المساعد الذكي', path: '#', icon: <Brain size={20} />, active: false, disabled: true },
 ];
 
+function isModuleVisible(item: NavItem, roleKey?: RoleKey | null): boolean {
+  // Not authenticated - show only public items (none in activeModules)
+  if (!roleKey) return false;
+  // No role restriction - visible to all authenticated users
+  if (!item.allowedRoles || item.allowedRoles.length === 0) return true;
+  // Check if user's role is in allowed list
+  return item.allowedRoles.includes(roleKey);
+}
+
 export default function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
+
+  const visibleModules = activeModules.filter(item => isModuleVisible(item, user?.role_key));
 
   return (
     <aside className="fixed right-0 top-0 h-full w-64 bg-sidebar-bg text-white z-50 overflow-y-auto">
@@ -64,7 +102,7 @@ export default function Sidebar() {
 
         <nav className="space-y-1">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-3">القائمة الرئيسية</p>
-          {activeModules.map((item) => (
+          {visibleModules.map((item) => (
             <button
               key={item.path}
               onClick={() => navigate(item.path)}

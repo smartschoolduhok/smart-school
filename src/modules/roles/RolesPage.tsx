@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Shield, Users, CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { getRoles, getRolePermissions } from '../../lib/api';
+import { useAuth } from '../../hooks/useAuth';
 import type { Role, Permission } from '../../types';
 
 interface RoleWithPermissions extends Role {
@@ -9,9 +10,13 @@ interface RoleWithPermissions extends Role {
 }
 
 export default function RolesPage() {
+  const { user } = useAuth();
   const [roles, setRoles] = useState<RoleWithPermissions[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Only system_admin can edit roles; others see read-only view
+  const isAdmin = user?.role_key === 'system_admin';
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +65,11 @@ export default function RolesPage() {
     <div>
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">الأدوار والصلاحيات</h1>
-        <p className="text-sm text-gray-500 mt-1">إدارة الأدوار وصلاحيات الوصول لكل مستوى</p>
+        <p className="text-sm text-gray-500 mt-1">
+          {isAdmin
+            ? 'إدارة الأدوار وصلاحيات الوصول لكل مستوى'
+            : 'عرض الأدوار وصلاحيات الوصول (قراءة فقط)'}
+        </p>
       </div>
 
       {loading && (

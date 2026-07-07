@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
 import { School, Users, Calendar, Puzzle, TrendingUp, Activity, Loader2, AlertCircle } from 'lucide-react';
-import { toArabicDigits, formatArabicNumber } from '../../lib/arabicDigits';
+import { toArabicDigits, formatArabicNumber }  from '../../lib/arabicDigits';
 import { useAuth } from '../../hooks/useAuth';
-import { getDashboardStats, getSchools } from '../../lib/api';
-import type { School as SchoolType } from '../../types';
+import { getDashboardStats } from '../../lib/api';
 
 function DashboardCard({ title, value, icon, color, subtitle }: {
   title: string;
@@ -39,35 +38,29 @@ function DashboardCard({ title, value, icon, color, subtitle }: {
 export default function DashboardPage() {
   const { user } = useAuth();
   const [stats, setStats] = useState({
-    active_schools: 0,
+    active_schools: 1,
     active_users: 0,
     total_users: 0,
     current_academic_year: '---',
     total_modules: 0,
     core_modules: 0,
   });
-  const [schools, setSchools] = useState<SchoolType[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const isSystemAdmin = user?.role_key === 'system_admin';
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       setLoading(true);
       setError(null);
-      const [{ data: statsData, error: statsErr }, { data: schoolsData, error: schoolsErr }] = await Promise.all([
-        getDashboardStats(),
-        getSchools(),
-      ]);
+      const { data: statsData, error: statsErr } = await getDashboardStats();
       if (!cancelled) {
-        if (statsErr || schoolsErr) {
-          setError(statsErr || schoolsErr || 'فشل في جلب البيانات');
-        } else {
-          if (statsData) setStats(statsData);
-          if (schoolsData) setSchools(schoolsData.map((s: any) => ({
-            ...s,
-            created_at: s.created_at ? new Date(s.created_at * 1000).toISOString().split('T')[0] : '',
-          })) as SchoolType[]);
+        if (statsErr) {
+          setError(statsErr);
+        } else if (statsData) {
+          setStats(statsData);
         }
         setLoading(false);
       }
@@ -100,8 +93,6 @@ export default function DashboardPage() {
     );
   }
 
-  const activeSchoolsList = schools.filter(s => s.status === 'active');
-
   return (
     <div>
       <div className="mb-6">
@@ -112,13 +103,15 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <DashboardCard
-          title="عدد المدارس"
-          value={formatArabicNumber(stats.active_schools)}
-          icon={<School size={24} />}
-          color="blue"
-          subtitle="المدارس النشطة"
-        />
+        {isSystemAdmin && (
+          <DashboardCard
+            title="عدد المدارس"
+            value={formatArabicNumber(stats.active_schools)}
+            icon={<School size={24} />}
+            color="blue"
+            subtitle="المدارس النشطة"
+          />
+        )}
         <DashboardCard
           title="عدد المستخدمين"
           value={formatArabicNumber(stats.active_users)}
@@ -143,75 +136,63 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-6">
+        <div className={`bg-white rounded-xl border border-gray-200 p-6 ${isSystemAdmin ? 'lg:col-span-2' : 'lg:col-span-3'}`}>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-gray-900">المدارس النشطة</h2>
+            <h2 className="text-lg font-bold text-gray-900">المدرسة</h2>
             <span className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-full font-medium">
-              {formatArabicNumber(schools.length)} مدرسة
+              {user?.school_name || '---'}
             </span>
           </div>
-          <div className="space-y-3">
-            {activeSchoolsList.length === 0 && (
-              <p className="text-sm text-gray-400 text-center py-8">لا توجد مدارس نشطة</p>
-            )}
-            {activeSchoolsList.map(school => (
-              <div key={school.id} className="flex items-center justify-between p-4 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-primary-100 text-primary-700 rounded-lg flex items-center justify-center font-bold text-sm">
-                    {school.name.charAt(0)}
-                  </div>
-                  <div>
-                    <p className="font-semibold text-gray-900 text-sm">{school.name}</p>
-                    <p className="text-xs text-gray-500">{school.city} · {school.school_type}</p>
-                  </div>
-                </div>
-                <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-                  school.status === 'active'
-                    ? 'bg-emerald-50 text-emerald-600'
-                    : 'bg-gray-100 text-gray-500'
-                }`}>
-                  {school.status === 'active' ? 'نشط' : 'غير نشط'}
-                </span>
+          <div className="p-4 rounded-lg bg-gray-50">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-primary-100 text-primary-700 rounded-lg flex items-center justify-center font-bold text-sm">
+                {user?.school_name ? user.school_name.charAt(1) : 'م'}
               </div>
-            ))}
+              <div>
+                <p className="font-semibold text-gray-900 text-sm">{user?.school_name || '---'}</p>
+                <p className="text-xs text-gray-500">{user?.role_name || '---'}</p>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="text-lg font-bold text-gray-900 mb-4">نشاطات حديثة</h2>
-          <div className="space-y-4">
-            <div className="flex gap-3">
-              <div className="w-8 h-8 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center shrink-0">
-                <TrendingUp size={14} />
+        {isSystemAdmin && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-4">نشاطات حديثة</h2>
+            <div className="space-y-4">
+              <div className="flex gap-3">
+                <div className="w-8 h-8 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center shrink-0">
+                  <TrendingUp size={14} />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900">تم تفعيل مدرسة جديدة</p>
+                  <p className="text-xs text-gray-500">مدرسة الرافدين الدولية</p>
+                  <p className="text-xs text-gray-400 mt-1">منذ ٢ ساعة</p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm font-medium text-gray-900">تم تفعيل مدرسة جديدة</p>
-                <p className="text-xs text-gray-500">مدرسة الرافدين الدولية</p>
-                <p className="text-xs text-gray-400 mt-1">منذ ٢ ساعة</p>
+              <div className="flex gap-3">
+                <div className="w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center shrink-0">
+                  <Users size={14} />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900">مستخدم جديد تمت إضافته</p>
+                  <p className="text-xs text-gray-500">خالد العامري - مدرس</p>
+                  <p className="text-xs text-gray-400 mt-1">منذ ٥ ساعات</p>
+                </div>
               </div>
-            </div>
-            <div className="flex gap-3">
-              <div className="w-8 h-8 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center shrink-0">
-                <Users size={14} />
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-900">مستخدم جديد تمت إضافته</p>
-                <p className="text-xs text-gray-500">خالد العامري - مدرس</p>
-                <p className="text-xs text-gray-400 mt-1">منذ ٥ ساعات</p>
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <div className="w-8 h-8 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center shrink-0">
-                <Activity size={14} />
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-900">تحديث النظام</p>
-                <p className="text-xs text-gray-500">تم تحديث إعدادات النظام</p>
-                <p className="text-xs text-gray-400 mt-1">منذ يوم</p>
+              <div className="flex gap-3">
+                <div className="w-8 h-8 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center shrink-0">
+                  <Activity size={14} />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900">تحديث النظام</p>
+                  <p className="text-xs text-gray-500">تم تحديث إعدادات النظام</p>
+                  <p className="text-xs text-gray-400 mt-1">منذ يوم</p>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

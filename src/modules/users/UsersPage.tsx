@@ -12,6 +12,9 @@ export default function UsersPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
+  // Only system_admin can add users
+  const canAddUser = user?.role_key === 'system_admin';
+
   // school_id filter placeholder for future multi-tenant auth
   const schoolId = user?.school_id ?? null;
 
@@ -49,10 +52,12 @@ export default function UsersPage() {
           <h1 className="text-2xl font-bold text-gray-900">المستخدمون</h1>
           <p className="text-sm text-gray-500 mt-1">إدارة مستخدمي النظام والموظفين</p>
         </div>
-        <button className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors">
-          <Plus size={18} />
-          <span>إضافة مستخدم</span>
-        </button>
+        {canAddUser && (
+          <button className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors">
+            <Plus size={18} />
+            <span>إضافة مستخدم</span>
+          </button>
+        )}
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">

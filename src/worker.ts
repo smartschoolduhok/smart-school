@@ -408,15 +408,27 @@ function applySchoolFilter(query: string, resolvedSchoolId: number | null, scope
 // ===========================================
 // API ROUTES: Schools
 // ===========================================
-app.get('/api/schools', async (c) => {
+app.get('/api/schools', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB
+  const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
+  const scope: 'all' | 'single' = c.get('scope')
+
   try {
-    const { results } = await db.prepare(`
+    let query = `
       SELECT id, name, logo_url, school_type, city, status,
              created_at, updated_at
       FROM schools
-      ORDER BY id
-    `).all()
+    `
+    let params: any[] = []
+
+    if (scope === 'single' && resolvedSchoolId) {
+      query += ' WHERE id = ?'
+      params = [resolvedSchoolId]
+    }
+
+    query += ' ORDER BY id'
+
+    const { results } = await db.prepare(query).bind(...params).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب المدارس', detail: err.message }, 500)

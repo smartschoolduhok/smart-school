@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './hooks/useAuth';
+import { AuthProvider, useAuth } from './hooks/useAuth';
 import Layout from './components/Layout';
 import LoginPage from './modules/auth/LoginPage';
 import DashboardPage from './modules/dashboard/DashboardPage';
@@ -27,9 +27,56 @@ import PrintOfficialBookPage from './modules/print/PrintOfficialBookPage';
 import ImportExportPage from './modules/importExport/ImportExportPage';
 
 import SettingsPage from './modules/settings/SettingsPage';
+import type { RoleKey } from './types';
+
+// ===========================================
+// RBAC Route Guards
+// ===========================================
+
+interface RouteGuardProps {
+  children: React.ReactNode;
+  allowedRoles: RoleKey[];
+  fallback?: React.ReactNode;
+}
+
+function RoleGuard({ children, allowedRoles, fallback }: RouteGuardProps) {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="p-12 flex flex-col items-center justify-center gap-3 text-gray-500">
+        <div className="w-8 h-8 border-2 border-primary-600 border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm">جاري التحميل...</p>
+      </div>
+    );
+  }
+
+  if (!user || !allowedRoles.includes(user.role_key)) {
+    return (
+      <>
+        {fallback || (
+          <div className="p-12 flex flex-col items-center justify-center gap-3 text-red-600">
+            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-2">
+              <span className="text-2xl">🚫</span>
+            </div>
+            <h2 className="text-lg font-bold text-gray-900">غير مسموح بالوصول</h2>
+            <p className="text-sm text-gray-500">ليس لديك الصلاحية للوصول إلى هذه الصفحة</p>
+            <button
+              onClick={() => window.location.href = '/'}
+              className="px-4 py-2 bg-primary-50 hover:bg-primary-100 text-primary-700 rounded-lg text-sm font-medium transition-colors"
+            >
+              العودة للرئيسية
+            </button>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  return <>{children}</>;
+}
 
 // Disabled module placeholder - redirects to dashboard
-// Phase 1: these modules are NOT implemented (students, classes, fees, transport, etc.)
 function DisabledModulePage({ moduleName }: { moduleName: string }) {
   return (
     <div>
@@ -45,6 +92,42 @@ function DisabledModulePage({ moduleName }: { moduleName: string }) {
   );
 }
 
+// Admin-only route wrapper
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  return (
+    <RoleGuard allowedRoles={['system_admin']}>
+      {children}
+    </RoleGuard>
+  );
+}
+
+// School staff route wrapper (admin + school management)
+function SchoolStaffRoute({ children }: { children: React.ReactNode }) {
+  return (
+    <RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal']}>
+      {children}
+    </RoleGuard>
+  );
+}
+
+// Academic route wrapper (teaching staff)
+function AcademicRoute({ children }: { children: React.ReactNode }) {
+  return (
+    <RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar']}>
+      {children}
+    </RoleGuard>
+  );
+}
+
+// Finance route wrapper
+function FinanceRoute({ children }: { children: React.ReactNode }) {
+  return (
+    <RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant']}>
+      {children}
+    </RoleGuard>
+  );
+}
+
 export default function App() {
   return (
     <AuthProvider>
@@ -52,36 +135,56 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/" element={<Layout><DashboardPage /></Layout>} />
-          <Route path="/schools" element={<Layout><SchoolsPage /></Layout>} />
-          <Route path="/users" element={<Layout><UsersPage /></Layout>} />
-          <Route path="/roles" element={<Layout><RolesPage /></Layout>} />
-          <Route path="/settings" element={<Layout><SettingsPage /></Layout>} />
-          {/* Active Phase 2+ module routes */}
-          <Route path="/students" element={<Layout><StudentsPage /></Layout>} />
-          <Route path="/classes" element={<Layout><ClassesPage /></Layout>} />
-          <Route path="/subjects" element={<Layout><SubjectsPage /></Layout>} />
-          <Route path="/student-subjects" element={<Layout><StudentSubjectsPage /></Layout>} />
-          <Route path="/grades" element={<Layout><GradesPage /></Layout>} />
-          <Route path="/analytics" element={<Layout><AnalyticsPage /></Layout>} />
-          <Route path="/result-cards" element={<Layout><ResultCardsPage /></Layout>} />
-          {/* Public verification route - no auth, no layout */}
+
+          {/* Admin-only routes */}
+          <Route path="/schools" element={<Layout><AdminRoute><SchoolsPage /></AdminRoute></Layout>} />
+          <Route path="/users" element={<Layout><AdminRoute><UsersPage /></AdminRoute></Layout>} />
+          <Route path="/roles" element={<Layout><AdminRoute><RolesPage /></AdminRoute></Layout>} />
+
+          {/* Academic routes */}
+          <Route path="/students" element={<Layout><AcademicRoute><StudentsPage /></AcademicRoute></Layout>} />
+          <Route path="/classes" element={<Layout><AcademicRoute><ClassesPage /></AcademicRoute></Layout>} />
+          <Route path="/subjects" element={<Layout><AcademicRoute><SubjectsPage /></AcademicRoute></Layout>} />
+          <Route path="/student-subjects" element={<Layout><AcademicRoute><StudentSubjectsPage /></AcademicRoute></Layout>} />
+          <Route path="/grades" element={<Layout><AcademicRoute><GradesPage /></AcademicRoute></Layout>} />
+          <Route path="/result-cards" element={<Layout><AcademicRoute><ResultCardsPage /></AcademicRoute></Layout>} />
+
+          {/* Analytics - wider access */}
+          <Route path="/analytics" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar', 'accountant']}><AnalyticsPage /></RoleGuard></Layout>} />
+
+          {/* Finance routes */}
+          <Route path="/fees" element={<Layout><FinanceRoute><FeesPage /></FinanceRoute></Layout>} />
+          <Route path="/treasury" element={<Layout><FinanceRoute><TreasuryPage /></FinanceRoute></Layout>} />
+
+          {/* HR routes */}
+          <Route path="/employees" element={<Layout><SchoolStaffRoute><EmployeesPage /></SchoolStaffRoute></Layout>} />
+
+          {/* Official books - admin + registrar */}
+          <Route path="/official-books" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar']}><OfficialBooksPage /></RoleGuard></Layout>} />
+          <Route path="/print-records" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar']}><PrintRecordsPage /></RoleGuard></Layout>} />
+
+          {/* Import/Export - admin + principal */}
+          <Route path="/import-export" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal']}><ImportExportPage /></RoleGuard></Layout>} />
+
+          {/* Settings - school staff */}
+          <Route path="/settings" element={<Layout><SchoolStaffRoute><SettingsPage /></SchoolStaffRoute></Layout>} />
+
           {/* Public verification routes — no auth, no layout */}
           <Route path="/verify/result-card/:token" element={<ResultCardVerificationPage />} />
           <Route path="/verify/receipt/:token" element={<ReceiptVerificationPage />} />
           <Route path="/verify/official-book/:token" element={<OfficialBookVerificationPage />} />
-          <Route path="/fees" element={<Layout><FeesPage /></Layout>} />
-          <Route path="/treasury" element={<Layout><TreasuryPage /></Layout>} />
-          <Route path="/official-books" element={<Layout><OfficialBooksPage /></Layout>} />
-          <Route path="/print-records" element={<Layout><PrintRecordsPage /></Layout>} />
-          <Route path="/employees" element={<Layout><EmployeesPage /></Layout>} />
+
+          {/* Print routes - no layout */}
           <Route path="/print/result-card/:id" element={<PrintResultCardPage />} />
           <Route path="/print/receipt/:id" element={<PrintReceiptPage />} />
           <Route path="/print/official-book/:id" element={<PrintOfficialBookPage />} />
-          <Route path="/import-export" element={<Layout><ImportExportPage /></Layout>} />
+
+          {/* Disabled/future modules */}
           <Route path="/transport" element={<Layout><DisabledModulePage moduleName="النقل المدرسي" /></Layout>} />
           <Route path="/teacher-portal" element={<Layout><DisabledModulePage moduleName="بوابة المدرس" /></Layout>} />
           <Route path="/parent-portal" element={<Layout><DisabledModulePage moduleName="بوابة ولي الأمر" /></Layout>} />
           <Route path="/ai-assistant" element={<Layout><DisabledModulePage moduleName="المساعد الذكي" /></Layout>} />
+
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
