@@ -648,29 +648,29 @@ export function createEmployee(_data: Record<string, any>) { return fetchApi<Rec
 export function updateEmployee(_id: number | string, _data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/employees', { method: 'PUT', body: '{}' }); }
 export function archiveEmployee(_id: number | string) { return fetchApi<Record<string, any>>('/api/employees', { method: 'PUT', body: '{}' }); }
 export function getEmployee(_id: number | string) { return fetchApi<Record<string, any>>('/api/employees'); }
-export function getSalaries(_schoolId?: number | null) { return fetchApi<Array<Record<string, any>>>('/api/salaries'); }
+export function getSalaries(filters?: { school_id?: number | null; limit?: number; offset?: number }) { const params = new URLSearchParams(); if (filters?.school_id != null) params.append('school_id', String(filters.school_id)); if (filters?.limit != null) params.append('limit', String(filters.limit)); if (filters?.offset != null) params.append('offset', String(filters.offset)); const qs = params.toString() ? `?${params.toString()}` : ''; return fetchApi<Array<Record<string, any>>>(`/api/salaries${qs}`); }
 export function generateSalary(_data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/salaries', { method: 'POST', body: '{}' }); }
 export function generateAllSalaries(_data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/salaries', { method: 'POST', body: '{}' }); }
-export function paySalary(_id: number | string) { return fetchApi<Record<string, any>>('/api/salaries', { method: 'PUT', body: '{}' }); }
-export function cancelSalary(_id: number | string) { return fetchApi<Record<string, any>>('/api/salaries', { method: 'PUT', body: '{}' }); }
-export function getSalaryMonthlyReport(_schoolId?: number | null, _month?: string) { return fetchApi<Record<string, any>>('/api/salaries'); }
+export function paySalary(id: number | string, date?: string) { return fetchApi<Record<string, any>>(`/api/salaries/${id}/pay`, { method: 'PUT', body: JSON.stringify({ date }) }); }
+export function cancelSalary(id: number | string, reason?: string) { return fetchApi<Record<string, any>>(`/api/salaries/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ reason }) }); }
+export function getSalaryMonthlyReport(schoolId?: number | null, month?: string, year?: string) { const params = new URLSearchParams(); if (schoolId != null) params.append('school_id', String(schoolId)); if (month != null) params.append('month', month); if (year != null) params.append('year', year); const qs = params.toString() ? `?${params.toString()}` : ''; return fetchApi<Record<string, any>>(`/api/salaries/monthly-report${qs}`); }
 export function getOfficialBookTemplates(_schoolId?: number | null) { return fetchApi<Array<Record<string, any>>>('/api/official-books/templates'); }
-export function createOfficialBookTemplate(_data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/official-books/templates', { method: 'POST', body: '{}' }); }
-export function updateOfficialBookTemplate(_id: number | string, _data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/official-books/templates', { method: 'PUT', body: '{}' }); }
+export function createOfficialBookTemplate(data: Record<string, any>, schoolId?: number | null) { return fetchApi<Record<string, any>>('/api/official-books/templates', { method: 'POST', body: JSON.stringify({ ...data, school_id: schoolId }) }); }
+export function updateOfficialBookTemplate(id: number | string, data: Record<string, any>, schoolId?: number | null) { return fetchApi<Record<string, any>>(`/api/official-books/templates/${id}`, { method: 'PUT', body: JSON.stringify({ ...data, school_id: schoolId }) }); }
 export function getOfficialBooks(_filters?: Record<string, any>) { return fetchApi<Array<Record<string, any>>>('/api/official-books'); }
-export function createOfficialBook(_data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/official-books', { method: 'POST', body: '{}' }); }
-export function cancelOfficialBook(_id: number | string) { return fetchApi<Record<string, any>>('/api/official-books', { method: 'PUT', body: '{}' }); }
-export function printOfficialBook(_id: number | string) { return fetchApi<Record<string, any>>('/api/official-books', { method: 'POST', body: '{}' }); }
+export function createOfficialBook(data: Record<string, any>, schoolId?: number | null) { return fetchApi<Record<string, any>>('/api/official-books', { method: 'POST', body: JSON.stringify({ ...data, school_id: schoolId }) }); }
+export function cancelOfficialBook(id: number | string, schoolId?: number | null) { return fetchApi<Record<string, any>>(`/api/official-books/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ school_id: schoolId }) }); }
+export function printOfficialBook(id: number | string, schoolId?: number | null) { return fetchApi<Record<string, any>>(`/api/official-books/${id}/print`, { method: 'POST', body: JSON.stringify({ school_id: schoolId }) }); }
 export function getOfficialBook(_id: number | string) { return fetchApi<Record<string, any>>('/api/official-books'); }
 export function verifyOfficialBook(_id: number | string) { return fetchApi<Record<string, any>>('/api/official-books', { method: 'PUT', body: '{}' }); }
-export function getPrintRecords(_schoolId?: number | null) { return fetchApi<Array<Record<string, any>>>('/api/print-records'); }
+export function getPrintRecords(filters?: Record<string, any>, schoolId?: number | null) { const params = new URLSearchParams(); if (schoolId != null) params.append('school_id', String(schoolId)); Object.entries(filters || {}).forEach(([k, v]) => { if (v != null) params.append(k, String(v)); }); const qs = params.toString() ? `?${params.toString()}` : ''; return fetchApi<Array<Record<string, any>>>(`/api/print-records${qs}`); }
 export function getTreasuryClosings(_schoolId?: number | null) { return fetchApi<Array<Record<string, any>>>('/api/treasury/closings'); }
 export function closeTreasuryDay(_data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/treasury/close-day', { method: 'POST', body: '{}' }); }
-export function getTreasuryDailyReport(_schoolId?: number | null) { return fetchApi<Record<string, any>>('/api/treasury/daily-report'); }
+export function getTreasuryDailyReport(schoolId?: number | null, date?: string) { const params = new URLSearchParams(); if (schoolId != null) params.append('school_id', String(schoolId)); if (date != null) params.append('date', date); const qs = params.toString() ? `?${params.toString()}` : ''; return fetchApi<Record<string, any>>(`/api/treasury/daily-report${qs}`); }
 export function getTreasuryMonthlyReport(_schoolId?: number | null, _month?: string) { return fetchApi<Record<string, any>>('/api/treasury/monthly-report'); }
-export function getSchoolSettings(_schoolId?: number | null) { return fetchApi<Record<string, any>>('/api/settings/school'); }
-export function getDocumentSettings(_schoolId?: number | null) { return fetchApi<Record<string, any>>('/api/settings/document'); }
-export function getSystemSettings() { return fetchApi<Record<string, any>>('/api/settings/system'); }
-export function updateSchoolProfile(_data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/settings/school', { method: 'PUT', body: '{}' }); }
-export function updateDocumentSettings(_data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/settings/document', { method: 'PUT', body: '{}' }); }
-export function updateSystemSettings(_data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/settings/system', { method: 'PUT', body: '{}' }); }
+export function getSchoolSettings(schoolId?: number | null) { const qs = schoolId != null ? `?school_id=${schoolId}` : ''; return fetchApi<Record<string, any>>(`/api/settings/school${qs}`); }
+export function getDocumentSettings(schoolId?: number | null) { const qs = schoolId != null ? `?school_id=${schoolId}` : ''; return fetchApi<Record<string, any>>(`/api/settings/document${qs}`); }
+export function getSystemSettings(schoolId?: number | null) { const qs = schoolId != null ? `?school_id=${schoolId}` : ''; return fetchApi<Record<string, any>>(`/api/settings/system${qs}`); }
+export function updateSchoolProfile(data: Record<string, any>, schoolId?: number | null) { return fetchApi<Record<string, any>>('/api/settings/school', { method: 'PUT', body: JSON.stringify({ ...data, school_id: schoolId }) }); }
+export function updateDocumentSettings(data: Record<string, any>, schoolId?: number | null) { return fetchApi<Record<string, any>>('/api/settings/document', { method: 'PUT', body: JSON.stringify({ ...data, school_id: schoolId }) }); }
+export function updateSystemSettings(data: Record<string, any>, schoolId?: number | null) { return fetchApi<Record<string, any>>('/api/settings/system', { method: 'PUT', body: JSON.stringify({ ...data, school_id: schoolId }) }); }

@@ -1,15 +1,8 @@
 -- Add missing columns to users and schools tables
 -- Required for Step 2 CRUD functionality
+-- NOTE: schools profile columns (name_en, official_stamp_url, province, address,
+-- phone, email, website, principal_name) are already added in migration 0011.
+-- This migration only adds users.phone which is needed for user CRUD.
 
 -- Add phone to users
 ALTER TABLE users ADD COLUMN phone TEXT;
-
--- Add missing columns to schools
-ALTER TABLE schools ADD COLUMN name_en TEXT;
-ALTER TABLE schools ADD COLUMN official_stamp_url TEXT;
-ALTER TABLE schools ADD COLUMN province TEXT;
-ALTER TABLE schools ADD COLUMN address TEXT;
-ALTER TABLE schools ADD COLUMN phone TEXT;
-ALTER TABLE schools ADD COLUMN email TEXT;
-ALTER TABLE schools ADD COLUMN website TEXT;
-ALTER TABLE schools ADD COLUMN principal_name TEXT;
