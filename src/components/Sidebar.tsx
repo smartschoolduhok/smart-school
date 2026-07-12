@@ -53,8 +53,8 @@ const activeModules: NavItem[] = [
   // Phase 9 modules - HR (admin + principal)
   { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
 
-  // Phase 13A modules - data (admin only for now)
-  { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal'] },
+  // Phase 13A modules - data (admin + school staff)
+  { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
 
   // Phase 12 modules - official books (admin + registrar)
   { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'] },

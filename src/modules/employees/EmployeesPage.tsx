@@ -86,8 +86,8 @@ interface ReportRow {
 export default function EmployeesPage() {
   const { user } = useAuth();
   const isAccountant = user?.role_key === 'accountant';
-  const isManageEmployee = ['system_admin', 'school_owner', 'principal'].includes(user?.role_key || '');
-  const isManageSalary = ['system_admin', 'school_owner', 'principal', 'accountant'].includes(user?.role_key || '');
+  const isManageEmployee = ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
+  const isManageSalary = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant'].includes(user?.role_key || '');
 
   const [activeTab, setActiveTab] = useState<TabKey>('list');
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);

@@ -163,8 +163,8 @@ export default function App() {
           <Route path="/official-books" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar']}><OfficialBooksPage /></RoleGuard></Layout>} />
           <Route path="/print-records" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar']}><PrintRecordsPage /></RoleGuard></Layout>} />
 
-          {/* Import/Export - admin + principal */}
-          <Route path="/import-export" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal']}><ImportExportPage /></RoleGuard></Layout>} />
+          {/* Import/Export - admin + school staff */}
+          <Route path="/import-export" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal']}><ImportExportPage /></RoleGuard></Layout>} />
 
           {/* Settings - school staff */}
           <Route path="/settings" element={<Layout><SchoolStaffRoute><SettingsPage /></SchoolStaffRoute></Layout>} />

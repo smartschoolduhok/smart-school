@@ -40,6 +40,8 @@ interface UserContext {
   role_key: RoleKey;
   role_name: string;
   school_id: number | null;
+  school_name: string | null;
+  status: string;
 }
 
 type Variables = {
@@ -141,10 +143,12 @@ async function hashPassword(password: string, email: string): Promise<string> {
 
 async function getCurrentUserContext(db: D1Database, email: string): Promise<UserContext | null> {
   const row = await db.prepare(`
-    SELECT u.id, u.email, u.full_name, u.role_id, u.school_id,
-           r.key AS role_key, r.name AS role_name
+    SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status,
+           r.key AS role_key, r.name AS role_name,
+           s.name AS school_name
     FROM users u
     LEFT JOIN roles r ON u.role_id = r.id
+    LEFT JOIN schools s ON u.school_id = s.id
     WHERE u.email = ? AND u.status = 'active'
   `).bind(email).first<{
     id: number;
@@ -152,8 +156,10 @@ async function getCurrentUserContext(db: D1Database, email: string): Promise<Use
     full_name: string;
     role_id: number;
     school_id: number | null;
+    status: string;
     role_key: string;
     role_name: string;
+    school_name: string | null;
   }>();
 
   if (!row) return null;
@@ -169,6 +175,8 @@ async function getCurrentUserContext(db: D1Database, email: string): Promise<Use
     role_key,
     role_name: row.role_name || role_key,
     school_id: row.school_id,
+    school_name: row.school_name || null,
+    status: row.status,
   };
 }
 

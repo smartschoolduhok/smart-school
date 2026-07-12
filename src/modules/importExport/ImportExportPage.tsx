@@ -238,11 +238,10 @@ export default function ImportExportPage() {
   const [selectedSectionId, setSelectedSectionId] = useState<number | null>(null);
   const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(null);
 
-  const canAccessEmployees = user?.role_key === 'system_admin' || user?.role_key === 'school_owner' || user?.role_key === 'principal';
-  const canAccessGrades = user?.role_key === 'system_admin' || user?.role_key === 'school_owner' || user?.role_key === 'principal';
-  const canAccessStudentSubjects = user?.role_key === 'system_admin' || user?.role_key === 'school_owner' || user?.role_key === 'principal' || user?.role_key === 'registrar';
-  const canImportExport = user?.role_key === 'system_admin' || user?.role_key === 'school_owner' || user?.role_key === 'principal' || user?.role_key === 'registrar';
-  const canExport = canImportExport || user?.role_key === 'vice_principal';
+  const canAccessEmployees = ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
+  const canAccessGrades = ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
+  const canAccessStudentSubjects = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(user?.role_key || '');
+  const canImportExport = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(user?.role_key || '');
 
   const availableTypes = TYPE_OPTIONS.filter(t => {
     if (t.value === 'employees') return canAccessEmployees;

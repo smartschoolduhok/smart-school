@@ -14,7 +14,7 @@ import { QRCodeSVG } from 'qrcode.react';
 
 /* ─── Helpers ─── */
 function canManageTemplates(roleKey?: string): boolean {
-  return ['system_admin', 'school_owner', 'principal'].includes(roleKey || '');
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(roleKey || '');
 }
 function canManageBooks(roleKey?: string): boolean {
   return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(roleKey || '');

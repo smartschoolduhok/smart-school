@@ -29,7 +29,7 @@ const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
 ];
 
 function canManageSettings(roleKey: string): boolean {
-  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(roleKey);
 }
 
 export default function SettingsPage() {
