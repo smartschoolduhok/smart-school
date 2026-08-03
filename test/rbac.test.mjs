@@ -10,6 +10,9 @@ import {
   FINANCE_ACCESS_ROLES,
   GRADE_MANAGEMENT_ROLES,
   IMPORT_EXPORT_ROLES,
+  RESULT_CARD_MANAGEMENT_ROLES,
+  RESULT_CARD_PRINT_ROLES,
+  RESULT_CARD_VIEW_ROLES,
   SCHOOL_MANAGEMENT_ROLES,
   USER_DIRECTORY_ROLES,
   hasRole,
@@ -74,4 +77,17 @@ test('school staff roles cannot read the user directory', () => {
   for (const role of ['registrar', 'teacher', 'accountant']) {
     assert.equal(hasRole(role, USER_DIRECTORY_ROLES), false);
   }
+});
+
+test('result-card creation and cancellation are limited to school management', () => {
+  assert.deepEqual(RESULT_CARD_MANAGEMENT_ROLES, schoolManagers);
+  assert.equal(hasRole('teacher', RESULT_CARD_MANAGEMENT_ROLES), false);
+  assert.equal(hasRole('registrar', RESULT_CARD_MANAGEMENT_ROLES), false);
+});
+
+test('registrar can register result-card printing without managing cards', () => {
+  assert.equal(hasRole('registrar', RESULT_CARD_PRINT_ROLES), true);
+  assert.equal(hasRole('registrar', RESULT_CARD_VIEW_ROLES), true);
+  assert.equal(hasRole('registrar', RESULT_CARD_MANAGEMENT_ROLES), false);
+  assert.equal(hasRole('teacher', RESULT_CARD_PRINT_ROLES), false);
 });

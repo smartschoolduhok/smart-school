@@ -33,6 +33,15 @@ export const GRADE_MANAGEMENT_ROLES: readonly RoleKey[] = [
   'registrar',
 ];
 
+export const RESULT_CARD_VIEW_ROLES: readonly RoleKey[] = ACADEMIC_ACCESS_ROLES;
+
+export const RESULT_CARD_MANAGEMENT_ROLES: readonly RoleKey[] = SCHOOL_MANAGEMENT_ROLES;
+
+export const RESULT_CARD_PRINT_ROLES: readonly RoleKey[] = [
+  ...SCHOOL_MANAGEMENT_ROLES,
+  'registrar',
+];
+
 export const FINANCE_ACCESS_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,
   'accountant',

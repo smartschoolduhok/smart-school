@@ -18,10 +18,21 @@ import {
   GRADE_MANAGEMENT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
   OFFICIAL_BOOK_VIEW_ROLES,
+  RESULT_CARD_MANAGEMENT_ROLES,
+  RESULT_CARD_PRINT_ROLES,
+  RESULT_CARD_VIEW_ROLES,
   SCHOOL_MANAGEMENT_ROLES,
   USER_DIRECTORY_ROLES,
   hasRole,
 } from './lib/rbac'
+import {
+  evaluateResultCard,
+  type ResultCardAcademicYear,
+  type ResultCardEvaluation,
+  type ResultCardGrade,
+  type ResultCardSettings,
+  type ResultCardSubject,
+} from './lib/resultCards'
 
 // ===========================================
 // Types & Extended Bindings
@@ -1107,8 +1118,8 @@ app.put('/api/classes/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MA
 
     await db.prepare(`
       UPDATE classes SET name = ?, stage = ?, order_index = ?, status = ?, updated_at = unixepoch()
-      WHERE id = ?
-    `).bind(name, stage, order_index || 0, status || 'active', id).run()
+      WHERE id = ? AND school_id = ?
+    `).bind(name, stage, order_index || 0, status || 'active', id, existing.school_id).run()
     return c.json({ data: { id, name, stage, order_index, status } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الصف', detail: err.message }, 500)
@@ -1126,11 +1137,11 @@ app.put('/api/classes/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACA
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة صف في مدرسة أخرى' }, 403)
     }
 
-    const students = await db.prepare(`SELECT COUNT(*) as count FROM students WHERE class_id = ? AND status = 'active'`).bind(id).first<{ count: number }>()
+    const students = await db.prepare(`SELECT COUNT(*) as count FROM students WHERE school_id = ? AND class_id = ? AND status = 'active'`).bind(existing.school_id, id).first<{ count: number }>()
     if (students && students.count > 0) {
       return c.json({ error: 'لا يمكن أرشفة الصف لأنه يحتوي على طلاب نشطين', detail: `عدد الطلاب: ${students.count}` }, 400)
     }
-    await db.prepare(`UPDATE classes SET status = 'archived', updated_at = unixepoch() WHERE id = ?`).bind(id).run()
+    await db.prepare(`UPDATE classes SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, existing.school_id).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الصف', detail: err.message }, 500)
@@ -1148,9 +1159,9 @@ app.get('/api/sections', requireSameSchoolOrAdmin(), async (c) => {
   try {
     let query = `
       SELECT s.*, c.name as class_name,
-        (SELECT COUNT(*) FROM students WHERE section_id = s.id AND status = 'active') as students_count
+        (SELECT COUNT(*) FROM students WHERE school_id = s.school_id AND section_id = s.id AND status = 'active') as students_count
       FROM sections s
-      JOIN classes c ON s.class_id = c.id
+      JOIN classes c ON s.class_id = c.id AND c.school_id = s.school_id
     `
     const conditions: string[] = []
     const binds: (string | number)[] = []
@@ -1188,10 +1199,11 @@ app.post('/api/sections', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       return c.json({ error: 'غير مسموح: لا يمكنك إنشاء شعبة في مدرسة أخرى' }, 403)
     }
 
-    const cls = await db.prepare(`SELECT school_id FROM classes WHERE id = ?`).bind(class_id).first<{ school_id: number }>()
-    if (!cls) return c.json({ error: 'الصف غير موجود' }, 404)
-    if (user && user.role_key !== 'system_admin' && cls.school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح: الصف لا ينتمي إلى مدرستك' }, 403)
+    school_id = Number(school_id)
+    class_id = Number(class_id)
+    const placement = await validateStudentPlacement(db, school_id, class_id, null)
+    if (!placement.ok) {
+      return c.json({ error: placement.error }, placement.status)
     }
 
     const result = await db.prepare(`
@@ -1218,18 +1230,16 @@ app.put('/api/sections/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل شعبة في مدرسة أخرى' }, 403)
     }
 
-    if (class_id && class_id !== existing.class_id) {
-      const cls = await db.prepare(`SELECT school_id FROM classes WHERE id = ?`).bind(class_id).first<{ school_id: number }>()
-      if (!cls) return c.json({ error: 'الصف غير موجود' }, 404)
-      if (user && user.role_key !== 'system_admin' && cls.school_id !== user.school_id) {
-        return c.json({ error: 'غير مسموح: الصف لا ينتمي إلى مدرستك' }, 403)
-      }
+    const nextClassId = Number(class_id)
+    const placement = await validateStudentPlacement(db, existing.school_id, nextClassId, null)
+    if (!placement.ok) {
+      return c.json({ error: placement.error }, placement.status)
     }
 
     await db.prepare(`
       UPDATE sections SET class_id = ?, name = ?, capacity = ?, status = ?, updated_at = unixepoch()
-      WHERE id = ?
-    `).bind(class_id, name, capacity || 30, status || 'active', id).run()
+      WHERE id = ? AND school_id = ?
+    `).bind(nextClassId, name, capacity || 30, status || 'active', id, existing.school_id).run()
     return c.json({ data: { id, class_id, name, capacity, status } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الشعبة', detail: err.message }, 500)
@@ -1247,11 +1257,11 @@ app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة شعبة في مدرسة أخرى' }, 403)
     }
 
-    const students = await db.prepare(`SELECT COUNT(*) as count FROM students WHERE section_id = ? AND status = 'active'`).bind(id).first<{ count: number }>()
+    const students = await db.prepare(`SELECT COUNT(*) as count FROM students WHERE school_id = ? AND section_id = ? AND status = 'active'`).bind(existing.school_id, id).first<{ count: number }>()
     if (students && students.count > 0) {
       return c.json({ error: 'لا يمكن أرشفة الشعبة لأنها تحتوي على طلاب نشطين', detail: `عدد الطلاب: ${students.count}` }, 400)
     }
-    await db.prepare(`UPDATE sections SET status = 'archived', updated_at = unixepoch() WHERE id = ?`).bind(id).run()
+    await db.prepare(`UPDATE sections SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, existing.school_id).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الشعبة', detail: err.message }, 500)
@@ -1271,8 +1281,8 @@ app.get('/api/students', requireSameSchoolOrAdmin(), async (c) => {
     let query = `
       SELECT st.*, c.name as class_name, s.name as section_name
       FROM students st
-      LEFT JOIN classes c ON st.class_id = c.id
-      LEFT JOIN sections s ON st.section_id = s.id
+      LEFT JOIN classes c ON st.class_id = c.id AND c.school_id = st.school_id
+      LEFT JOIN sections s ON st.section_id = s.id AND s.school_id = st.school_id
     `
     const conditions: string[] = []
     const binds: (string | number)[] = []
@@ -1298,8 +1308,8 @@ app.get('/api/students/:id', requireAuthEnforced(), async (c) => {
     const student = await db.prepare(`
       SELECT st.*, c.name as class_name, s.name as section_name
       FROM students st
-      LEFT JOIN classes c ON st.class_id = c.id
-      LEFT JOIN sections s ON st.section_id = s.id
+      LEFT JOIN classes c ON st.class_id = c.id AND c.school_id = st.school_id
+      LEFT JOIN sections s ON st.section_id = s.id AND s.school_id = st.school_id
       WHERE st.id = ?
     `).bind(id).first()
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404)
@@ -1339,6 +1349,14 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
 
     if (user && user.role_key !== 'system_admin' && school_id !== user.school_id) {
       return c.json({ error: 'غير مسموح: لا يمكنك إنشاء طالب في مدرسة أخرى' }, 403)
+    }
+
+    school_id = Number(school_id)
+    class_id = class_id == null || class_id === '' ? null : Number(class_id)
+    section_id = section_id == null || section_id === '' ? null : Number(section_id)
+    const placement = await validateStudentPlacement(db, school_id, class_id, section_id)
+    if (!placement.ok) {
+      return c.json({ error: placement.error }, placement.status)
     }
 
     const result = await db.prepare(`
@@ -1386,11 +1404,20 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     const guardian_name = body.guardian_name !== undefined ? body.guardian_name : existing.guardian_name
     const guardian_phone = body.guardian_phone !== undefined ? body.guardian_phone : existing.guardian_phone
     const address = body.address !== undefined ? body.address : existing.address
-    const class_id = body.class_id !== undefined ? body.class_id : existing.class_id
-    const section_id = body.section_id !== undefined ? body.section_id : existing.section_id
+    const class_id = body.class_id !== undefined
+      ? (body.class_id == null || body.class_id === '' ? null : Number(body.class_id))
+      : existing.class_id
+    const section_id = body.section_id !== undefined
+      ? (body.section_id == null || body.section_id === '' ? null : Number(body.section_id))
+      : existing.section_id
     const photo_url = body.photo_url !== undefined ? body.photo_url : existing.photo_url
     const notes = body.notes !== undefined ? body.notes : existing.notes
     const status = body.status ?? existing.status
+
+    const placement = await validateStudentPlacement(db, existing.school_id, class_id, section_id)
+    if (!placement.ok) {
+      return c.json({ error: placement.error }, placement.status)
+    }
 
     await db.prepare(`
       UPDATE students SET
@@ -1398,11 +1425,11 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
         gender = ?, birth_date = ?, phone = ?, guardian_name = ?, guardian_phone = ?,
         address = ?, class_id = ?, section_id = ?, photo_url = ?, notes = ?, status = ?,
         updated_at = unixepoch()
-      WHERE id = ?
+      WHERE id = ? AND school_id = ?
     `).bind(
       student_number, full_name, father_name, mother_name,
       gender, birth_date, phone, guardian_name, guardian_phone,
-      address, class_id, section_id, photo_url, notes, status, id
+      address, class_id, section_id, photo_url, notes, status, id, existing.school_id
     ).run()
     return c.json({ data: { id, student_number, full_name, status } })
   } catch (err: any) {
@@ -1421,7 +1448,7 @@ app.put('/api/students/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة طالب في مدرسة أخرى' }, 403)
     }
 
-    await db.prepare(`UPDATE students SET status = 'archived', updated_at = unixepoch() WHERE id = ?`).bind(id).run()
+    await db.prepare(`UPDATE students SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, existing.school_id).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الطالب', detail: err.message }, 500)
@@ -1441,8 +1468,8 @@ app.get('/api/subjects', requireSameSchoolOrAdmin(), async (c) => {
     let query = `
       SELECT sb.*, c.name as class_name, s.name as section_name
       FROM subjects sb
-      JOIN classes c ON sb.class_id = c.id
-      LEFT JOIN sections s ON sb.section_id = s.id
+      JOIN classes c ON sb.class_id = c.id AND c.school_id = sb.school_id
+      LEFT JOIN sections s ON sb.section_id = s.id AND s.school_id = sb.school_id
     `
     const conditions: string[] = []
     const binds: (string | number)[] = []
@@ -1485,10 +1512,12 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       return c.json({ error: 'غير مسموح: لا يمكنك إنشاء مادة في مدرسة أخرى' }, 403)
     }
 
-    const cls = await db.prepare(`SELECT school_id FROM classes WHERE id = ?`).bind(class_id).first<{ school_id: number }>()
-    if (!cls) return c.json({ error: 'الصف غير موجود' }, 404)
-    if (user && user.role_key !== 'system_admin' && cls.school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح: الصف لا ينتمي إلى مدرستك' }, 403)
+    school_id = Number(school_id)
+    class_id = Number(class_id)
+    section_id = section_id == null || section_id === '' ? null : Number(section_id)
+    const placement = await validateStudentPlacement(db, school_id, class_id, section_id)
+    if (!placement.ok) {
+      return c.json({ error: placement.error }, placement.status)
     }
 
     const result = await db.prepare(`
@@ -1528,12 +1557,16 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل مادة في مدرسة أخرى' }, 403)
     }
 
-    if (class_id && class_id !== existing.class_id) {
-      const cls = await db.prepare(`SELECT school_id FROM classes WHERE id = ?`).bind(class_id).first<{ school_id: number }>()
-      if (!cls) return c.json({ error: 'الصف غير موجود' }, 404)
-      if (user && user.role_key !== 'system_admin' && cls.school_id !== user.school_id) {
-        return c.json({ error: 'غير مسموح: الصف لا ينتمي إلى مدرستك' }, 403)
-      }
+    const nextClassId = Number(class_id)
+    const nextSectionId = section_id == null || section_id === '' ? null : Number(section_id)
+    const placement = await validateStudentPlacement(
+      db,
+      existing.school_id,
+      nextClassId,
+      nextSectionId,
+    )
+    if (!placement.ok) {
+      return c.json({ error: placement.error }, placement.status)
     }
 
     await db.prepare(`
@@ -1542,12 +1575,12 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
         counts_in_average = ?, appears_in_report_card = ?,
         passing_grade = ?, exemption_grade = ?, order_index = ?, status = ?,
         updated_at = unixepoch()
-      WHERE id = ?
+      WHERE id = ? AND school_id = ?
     `).bind(
-      class_id, section_id || null, name, subject_type || 'أساسية',
+      nextClassId, nextSectionId, name, subject_type || 'أساسية',
       counts_in_average !== undefined ? (counts_in_average ? 1 : 0) : 1,
       appears_in_report_card !== undefined ? (appears_in_report_card ? 1 : 0) : 1,
-      passing_grade || 50, exemption_grade || 25, order_index || 0, status || 'active', id
+      passing_grade || 50, exemption_grade || 25, order_index || 0, status || 'active', id, existing.school_id
     ).run()
     return c.json({ data: { id, name, status: status || 'active' } })
   } catch (err: any) {
@@ -1566,7 +1599,7 @@ app.put('/api/subjects/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة مادة في مدرسة أخرى' }, 403)
     }
 
-    await db.prepare(`UPDATE subjects SET status = 'archived', updated_at = unixepoch() WHERE id = ?`).bind(id).run()
+    await db.prepare(`UPDATE subjects SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, existing.school_id).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة المادة', detail: err.message }, 500)
@@ -1600,6 +1633,53 @@ async function getStudentClassSection(db: D1Database, student_id: number) {
   return db.prepare('SELECT class_id, section_id FROM students WHERE id = ?').bind(student_id).first<{ class_id: number | null; section_id: number | null }>();
 }
 
+type StudentSubjectAssignmentValidation =
+  | { ok: true; class_id: number | null; section_id: number | null }
+  | { ok: false; status: 400 | 403 | 404; error: string };
+
+async function validateStudentSubjectAssignment(
+  db: D1Database,
+  schoolId: number,
+  studentId: number,
+  subjectId: number,
+): Promise<StudentSubjectAssignmentValidation> {
+  const student = await db.prepare(
+    'SELECT school_id, class_id, section_id FROM students WHERE id = ?',
+  ).bind(studentId).first<{
+    school_id: number;
+    class_id: number | null;
+    section_id: number | null;
+  }>();
+  if (!student) return { ok: false, status: 404, error: 'الطالب غير موجود' };
+
+  const subject = await db.prepare(
+    'SELECT school_id, class_id, section_id FROM subjects WHERE id = ?',
+  ).bind(subjectId).first<{
+    school_id: number;
+    class_id: number | null;
+    section_id: number | null;
+  }>();
+  if (!subject) return { ok: false, status: 404, error: 'المادة غير موجودة' };
+  if (student.school_id !== schoolId || subject.school_id !== schoolId) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'الطالب والمادة يجب أن ينتميا إلى مدرسة الاستيراد',
+    };
+  }
+  if (subject.class_id != null && subject.class_id !== student.class_id) {
+    return { ok: false, status: 400, error: 'المادة لا تتبع صف الطالب' };
+  }
+  if (subject.section_id != null && subject.section_id !== student.section_id) {
+    return { ok: false, status: 400, error: 'المادة لا تتبع شعبة الطالب' };
+  }
+  return {
+    ok: true,
+    class_id: student.class_id,
+    section_id: student.section_id,
+  };
+}
+
 // GET /api/student-subjects - list assignments with filters
 app.get('/api/student-subjects', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
@@ -1619,10 +1699,10 @@ app.get('/api/student-subjects', requireSameSchoolOrAdmin(), async (c) => {
         c.name as class_name, se.name as section_name,
         u.full_name as assigned_by_name
       FROM student_subjects ss
-      JOIN students st ON ss.student_id = st.id
-      JOIN subjects su ON ss.subject_id = su.id
-      LEFT JOIN classes c ON ss.class_id = c.id
-      LEFT JOIN sections se ON ss.section_id = se.id
+      JOIN students st ON ss.student_id = st.id AND st.school_id = ss.school_id
+      JOIN subjects su ON ss.subject_id = su.id AND su.school_id = ss.school_id
+      LEFT JOIN classes c ON ss.class_id = c.id AND c.school_id = ss.school_id
+      LEFT JOIN sections se ON ss.section_id = se.id AND se.school_id = ss.school_id
       LEFT JOIN users u ON ss.assigned_by_user_id = u.id
     `;
     const conditions: string[] = [];
@@ -1656,12 +1736,12 @@ app.get('/api/students/:id/subjects', requireAuthEnforced(), async (c) => {
     const { results } = await db.prepare(`
       SELECT ss.*, su.name as subject_name, su.subject_type, su.counts_in_average, su.appears_in_report_card, c.name as class_name, se.name as section_name
       FROM student_subjects ss
-      JOIN subjects su ON ss.subject_id = su.id
-      LEFT JOIN classes c ON ss.class_id = c.id
-      LEFT JOIN sections se ON ss.section_id = se.id
-      WHERE ss.student_id = ? AND ss.is_active = 1
+      JOIN subjects su ON ss.subject_id = su.id AND su.school_id = ss.school_id
+      LEFT JOIN classes c ON ss.class_id = c.id AND c.school_id = ss.school_id
+      LEFT JOIN sections se ON ss.section_id = se.id AND se.school_id = ss.school_id
+      WHERE ss.student_id = ? AND ss.school_id = ? AND ss.is_active = 1
       ORDER BY su.order_index, su.name
-    `).bind(id).all();
+    `).bind(id, student.school_id).all();
     return c.json({ data: results || [] });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب مواد الطالب', detail: err.message }, 500);
@@ -1686,7 +1766,7 @@ app.post('/api/student-subjects/assign-class', requireSameSchoolOrAdmin(), requi
     }
 
     const school_id = cls.school_id;
-    const { results: students } = await db.prepare('SELECT id, section_id FROM students WHERE class_id = ? AND status = \'active\'').bind(class_id).all<{ id: number; section_id: number | null }>();
+    const { results: students } = await db.prepare('SELECT id, section_id FROM students WHERE school_id = ? AND class_id = ? AND status = \'active\'').bind(school_id, class_id).all<{ id: number; section_id: number | null }>();
     if (!students || students.length === 0) return c.json({ error: 'لا يوجد طلاب نشطون في هذا الصف' }, 400);
 
     // Validate all subjects belong to this school and class
@@ -1735,7 +1815,7 @@ app.post('/api/student-subjects/assign-section', requireSameSchoolOrAdmin(), req
       return c.json({ error: 'غير مسموح: الشعبة لا تنتمي إلى مدرستك' }, 403);
     }
 
-    const { results: students } = await db.prepare('SELECT id FROM students WHERE section_id = ? AND status = \'active\'').bind(section_id).all<{ id: number }>();
+    const { results: students } = await db.prepare('SELECT id FROM students WHERE school_id = ? AND section_id = ? AND status = \'active\'').bind(sec.school_id, section_id).all<{ id: number }>();
     if (!students || students.length === 0) return c.json({ error: 'لا يوجد طلاب نشطون في هذه الشعبة' }, 400);
 
     // Validate all subjects belong to this school, class, and section
@@ -1793,7 +1873,11 @@ app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), re
         return c.json({ error: 'غير مسموح: أحد الطلاب لا ينتمي إلى مدرستك' }, 403);
       }
       for (const suId of subject_ids) {
-        const su = await db.prepare('SELECT class_id, section_id FROM subjects WHERE id = ?').bind(Number(suId)).first<{ class_id: number | null; section_id: number | null }>();
+        const su = await db.prepare('SELECT school_id, class_id, section_id FROM subjects WHERE id = ?').bind(Number(suId)).first<{ school_id: number; class_id: number | null; section_id: number | null }>();
+        if (!su) { skipped.push(Number(sid)); continue; }
+        if (su.school_id !== school_id) {
+          return c.json({ error: 'غير مسموح: المادة والطالب لا ينتميان إلى المدرسة نفسها' }, 403);
+        }
         if (su && su.class_id != null && String(su.class_id) !== String(st.class_id)) { skipped.push(Number(sid)); continue; }
         if (su && su.section_id != null && String(su.section_id) !== String(st.section_id)) { skipped.push(Number(sid)); continue; }
         const existing = await db.prepare('SELECT id FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ? AND is_active = 1').bind(school_id, sid, suId).first();
@@ -1847,7 +1931,7 @@ app.post('/api/student-subjects/assign-one', requireSameSchoolOrAdmin(), require
 });
 
 // PUT /api/student-subjects/:id/reactivate - reactivate a deactivated assignment
-app.put('/api/student-subjects/:id/reactivate', requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+app.put('/api/student-subjects/:id/reactivate', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const id = Number(c.req.param('id'));
@@ -1865,7 +1949,7 @@ app.put('/api/student-subjects/:id/reactivate', requireRoles(ACADEMIC_MANAGEMENT
       return c.json({ error: 'لا يمكن إعادة التفعيل: يوجد تعيين نشط آخر للطالب في نفس المادة' }, 409);
     }
 
-    await db.prepare(`UPDATE student_subjects SET is_active = 1, removed_at = NULL, updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    await db.prepare(`UPDATE student_subjects SET is_active = 1, removed_at = NULL, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
     return c.json({ data: { id, is_active: 1, message: 'تم إعادة تفعيل التعيين بنجاح' } });
   } catch (err: any) {
     return c.json({ error: 'فشل في إعادة تفعيل التعيين', detail: err.message }, 500);
@@ -1873,7 +1957,7 @@ app.put('/api/student-subjects/:id/reactivate', requireRoles(ACADEMIC_MANAGEMENT
 });
 
 // PUT /api/student-subjects/:id/deactivate - deactivate one assignment
-app.put('/api/student-subjects/:id/deactivate', requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+app.put('/api/student-subjects/:id/deactivate', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const id = Number(c.req.param('id'));
@@ -1883,7 +1967,7 @@ app.put('/api/student-subjects/:id/deactivate', requireRoles(ACADEMIC_MANAGEMENT
     if (user && user.role_key !== 'system_admin' && row.school_id !== user.school_id) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل تعيين في مدرسة أخرى' }, 403);
     }
-    await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
     return c.json({ data: { id, is_active: 0 } });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء التعيين', detail: err.message }, 500);
@@ -1891,7 +1975,7 @@ app.put('/api/student-subjects/:id/deactivate', requireRoles(ACADEMIC_MANAGEMENT
 });
 
 // POST /api/student-subjects/bulk-deactivate - deactivate multiple assignments
-app.post('/api/student-subjects/bulk-deactivate', requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+app.post('/api/student-subjects/bulk-deactivate', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -1903,7 +1987,7 @@ app.post('/api/student-subjects/bulk-deactivate', requireRoles(ACADEMIC_MANAGEME
       const row = await db.prepare('SELECT school_id FROM student_subjects WHERE id = ?').bind(id).first<{ school_id: number }>();
       if (!row) continue;
       if (user && user.role_key !== 'system_admin' && row.school_id !== user.school_id) continue;
-      await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+      await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
       affected++;
     }
     return c.json({ data: { affected } });
@@ -2290,8 +2374,8 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), async (c) => {
     const rows = await db.prepare(`
       SELECT g.*, s.name as subject_name, s.id as subject_id
       FROM grades g
-      JOIN student_subjects ss ON g.student_subject_id = ss.id
-      JOIN subjects s ON ss.subject_id = s.id
+      JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.school_id = g.school_id
+      JOIN subjects s ON ss.subject_id = s.id AND s.school_id = g.school_id
       WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1 AND ss.is_active = 1 AND s.status = 'active'
       ORDER BY s.name
     `).bind(studentId, student.school_id).all<any>();
@@ -2485,9 +2569,9 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
       setParts.push(`${k} = ?`);
       bindVals.push(v);
     }
-    bindVals.push(gradeId);
+    bindVals.push(gradeId, gradeRow.school_id);
 
-    await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ?`).bind(...bindVals).run();
+    await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ? AND school_id = ?`).bind(...bindVals).run();
 
     // Audit log for changed scalar fields
     const auditFields = ['first_month', 'second_month', 'third_month', 'fourth_month',
@@ -2505,7 +2589,7 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
       }
     }
 
-    const updated = await db.prepare('SELECT * FROM grades WHERE id = ?').bind(gradeId).first<any>();
+    const updated = await db.prepare('SELECT * FROM grades WHERE id = ? AND school_id = ?').bind(gradeId, gradeRow.school_id).first<any>();
     return c.json({ data: updated });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الدرجة', detail: err.message }, 500);
@@ -2599,8 +2683,8 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
         setParts.push(`${k} = ?`);
         bindVals.push(v);
       }
-      bindVals.push(Number(grade_id));
-      await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ?`).bind(...bindVals).run();
+      bindVals.push(Number(grade_id), gradeRow.school_id);
+      await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ? AND school_id = ?`).bind(...bindVals).run();
 
       // Audit log
       const auditFields = ['first_month', 'second_month', 'third_month', 'fourth_month',
@@ -3203,10 +3287,6 @@ app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), asy
 // Phase 6: Result Cards + QR Verification
 // ===========================================
 
-function canGenerateResultCards(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(roleKey);
-}
-
 function generateVerificationToken(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let token = '';
@@ -3231,9 +3311,333 @@ function generateCardNumber(schoolId: number, studentId: number): string {
   return `RC-${schoolId}-${studentId}-${ts}`;
 }
 
+interface StudentPlacementRecord {
+  id: number;
+  school_id: number;
+  name: string;
+  status: string;
+  class_id?: number | null;
+}
+
+type StudentPlacementValidation =
+  | {
+      ok: true;
+      classRecord: StudentPlacementRecord | null;
+      sectionRecord: StudentPlacementRecord | null;
+    }
+  | { ok: false; status: 400 | 403; error: string };
+
+async function validateStudentPlacement(
+  db: D1Database,
+  schoolId: number,
+  classId: number | null,
+  sectionId: number | null,
+): Promise<StudentPlacementValidation> {
+  let classRecord: StudentPlacementRecord | null = null;
+  let sectionRecord: StudentPlacementRecord | null = null;
+
+  if (sectionId != null && classId == null) {
+    return { ok: false, status: 400, error: 'يجب تحديد الصف عند تحديد الشعبة' };
+  }
+
+  if (classId != null) {
+    classRecord = await db.prepare(
+      'SELECT id, school_id, name, status FROM classes WHERE id = ?',
+    ).bind(classId).first<StudentPlacementRecord>();
+    if (!classRecord) {
+      return { ok: false, status: 400, error: 'الصف المحدد غير موجود' };
+    }
+    if (classRecord.school_id !== schoolId) {
+      return { ok: false, status: 403, error: 'الصف المحدد ينتمي إلى مدرسة أخرى' };
+    }
+    if (classRecord.status !== 'active') {
+      return { ok: false, status: 400, error: 'الصف المحدد غير فعال' };
+    }
+  }
+
+  if (sectionId != null) {
+    sectionRecord = await db.prepare(
+      'SELECT id, school_id, class_id, name, status FROM sections WHERE id = ?',
+    ).bind(sectionId).first<StudentPlacementRecord>();
+    if (!sectionRecord) {
+      return { ok: false, status: 400, error: 'الشعبة المحددة غير موجودة' };
+    }
+    if (sectionRecord.school_id !== schoolId) {
+      return { ok: false, status: 403, error: 'الشعبة المحددة تنتمي إلى مدرسة أخرى' };
+    }
+    if (sectionRecord.status !== 'active') {
+      return { ok: false, status: 400, error: 'الشعبة المحددة غير فعالة' };
+    }
+    if (sectionRecord.class_id !== classId) {
+      return { ok: false, status: 400, error: 'الشعبة المحددة لا تتبع الصف المحدد' };
+    }
+  }
+
+  return { ok: true, classRecord, sectionRecord };
+}
+
+interface ResultCardStudentSnapshot {
+  id: number;
+  school_id: number;
+  full_name: string;
+  student_number: string;
+  class_id: number | null;
+  section_id: number | null;
+  class_name: string | null;
+  section_name: string | null;
+  school_name: string;
+}
+
+type ResultCardCreation =
+  | { ok: true; card: any; cardNumber: string }
+  | {
+      ok: false;
+      status: 400 | 403 | 409;
+      code: string;
+      error: string;
+      subjects?: string[];
+    };
+
+async function loadResultCardStudent(
+  db: D1Database,
+  studentId: number,
+): Promise<ResultCardStudentSnapshot | null> {
+  return db.prepare(`
+    SELECT s.id, s.school_id, s.full_name, s.student_number, s.class_id, s.section_id,
+           c.name AS class_name, sec.name AS section_name, sch.name AS school_name
+    FROM students s
+    LEFT JOIN classes c ON s.class_id = c.id AND c.school_id = s.school_id
+    LEFT JOIN sections sec ON s.section_id = sec.id AND sec.school_id = s.school_id
+    INNER JOIN schools sch ON s.school_id = sch.id
+    WHERE s.id = ? AND s.status = 'active'
+  `).bind(studentId).first<ResultCardStudentSnapshot>();
+}
+
+async function loadResultCardEvaluation(
+  db: D1Database,
+  studentId: number,
+  schoolId: number,
+): Promise<{ evaluation: ResultCardEvaluation; settings: ResultCardSettings }> {
+  const subjectRows = await db.prepare(`
+    SELECT su.id, su.name AS subject_name
+    FROM student_subjects ss
+    INNER JOIN subjects su
+      ON ss.subject_id = su.id AND su.school_id = ss.school_id
+    WHERE ss.student_id = ? AND ss.school_id = ?
+      AND ss.is_active = 1 AND su.status = 'active'
+    ORDER BY su.name
+  `).bind(studentId, schoolId).all<ResultCardSubject>();
+
+  const gradeRows = await db.prepare(`
+    SELECT
+      su.id AS subject_id,
+      su.name AS subject_name,
+      g.annual_effort,
+      g.final_exam,
+      g.final_grade,
+      g.completion_exam,
+      g.grade_after_completion,
+      g.effective_grade,
+      g.result_status,
+      g.exemption_status,
+      g.first_month,
+      g.second_month,
+      g.third_month,
+      g.fourth_month,
+      g.mid_year_exam
+    FROM grades g
+    INNER JOIN student_subjects ss
+      ON g.student_subject_id = ss.id
+      AND ss.is_active = 1
+      AND ss.school_id = g.school_id
+    INNER JOIN subjects su
+      ON ss.subject_id = su.id
+      AND su.school_id = ss.school_id
+      AND su.status = 'active'
+    WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1
+    ORDER BY su.name
+  `).bind(studentId, schoolId).all<ResultCardGrade>();
+
+  const gradeSettings = await getGradeSettings(db, schoolId);
+  const settings: ResultCardSettings = {
+    passing_grade: gradeSettings.passing_grade,
+    exemption_grade: gradeSettings.exemption_grade,
+    general_exemption_average_grade:
+      gradeSettings.general_exemption_average_grade ?? 85,
+    general_exemption_min_subject_grade:
+      gradeSettings.general_exemption_min_subject_grade ?? 75,
+  };
+  const academicYear = await db.prepare(`
+    SELECT id, name
+    FROM academic_years
+    WHERE school_id = ? AND is_active = 1
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(schoolId).first<ResultCardAcademicYear>();
+
+  return {
+    evaluation: evaluateResultCard(
+      subjectRows.results || [],
+      gradeRows.results || [],
+      settings,
+      academicYear,
+    ),
+    settings,
+  };
+}
+
+function resultCardEvaluationFailure(
+  evaluation: Extract<ResultCardEvaluation, { ok: false }>,
+): ResultCardCreation {
+  const messages: Record<typeof evaluation.code, string> = {
+    no_active_academic_year: 'لا توجد سنة دراسية فعالة لهذه المدرسة',
+    no_active_subjects: 'لا توجد مواد مفعلة مسندة لهذا الطالب',
+    missing_grade_records: 'توجد مواد فعالة بلا سجل درجات',
+    incomplete_grades: 'توجد درجات لازمة غير مكتملة',
+  };
+  return {
+    ok: false,
+    status: 400,
+    code: evaluation.code,
+    error: messages[evaluation.code],
+    subjects: evaluation.subjects,
+  };
+}
+
+async function createResultCardForStudent(
+  db: D1Database,
+  user: UserContext,
+  student: ResultCardStudentSnapshot,
+): Promise<ResultCardCreation> {
+  const placement = await validateStudentPlacement(
+    db,
+    student.school_id,
+    student.class_id,
+    student.section_id,
+  );
+  if (!placement.ok) {
+    return {
+      ok: false,
+      status: placement.status,
+      code: 'invalid_student_placement',
+      error: placement.error,
+    };
+  }
+
+  const { evaluation, settings } = await loadResultCardEvaluation(
+    db,
+    student.id,
+    student.school_id,
+  );
+  if (!evaluation.ok) {
+    return resultCardEvaluationFailure(evaluation);
+  }
+
+  const existingActive = await db.prepare(`
+    SELECT id FROM result_cards
+    WHERE school_id = ? AND student_id = ? AND academic_year_id = ? AND status = 'active'
+    LIMIT 1
+  `).bind(student.school_id, student.id, evaluation.academicYear.id).first<any>();
+  if (existingActive) {
+    return {
+      ok: false,
+      status: 409,
+      code: 'active_card_exists',
+      error: 'يوجد كارت نتيجة فعّال بالفعل لهذا الطالب في نفس السنة الدراسية',
+    };
+  }
+
+  const token = generateVerificationToken();
+  const tokenHash = await hashToken(token);
+  const cardNumber = generateCardNumber(student.school_id, student.id);
+  const schoolSettings = await db.prepare(`
+    SELECT result_card_header_text, result_card_footer_text, verification_note_text,
+           use_school_logo_on_docs, use_school_stamp_on_docs
+    FROM school_settings WHERE school_id = ?
+  `).bind(student.school_id).first<any>();
+  const schoolLogoInfo = await db.prepare(`
+    SELECT logo_url, official_stamp_url FROM schools WHERE id = ?
+  `).bind(student.school_id).first<any>();
+
+  const cardData = {
+    school: { id: student.school_id, name: student.school_name },
+    student: {
+      id: student.id,
+      name: student.full_name,
+      student_number: student.student_number,
+    },
+    class: { id: student.class_id, name: student.class_name },
+    section: { id: student.section_id, name: student.section_name },
+    academic_year: evaluation.academicYear,
+    settings,
+    subjects: evaluation.grades,
+    summary: evaluation.summary,
+    document_settings: {
+      result_card_header_text: schoolSettings?.result_card_header_text || null,
+      result_card_footer_text: schoolSettings?.result_card_footer_text || null,
+      verification_note_text: schoolSettings?.verification_note_text || null,
+      use_school_logo_on_docs: schoolSettings?.use_school_logo_on_docs === 1,
+      use_school_stamp_on_docs: schoolSettings?.use_school_stamp_on_docs === 1,
+      logo_url:
+        schoolSettings?.use_school_logo_on_docs === 1 && schoolLogoInfo?.logo_url
+          ? schoolLogoInfo.logo_url
+          : null,
+      official_stamp_url:
+        schoolSettings?.use_school_stamp_on_docs === 1 &&
+        schoolLogoInfo?.official_stamp_url
+          ? schoolLogoInfo.official_stamp_url
+          : null,
+    },
+    generated_by: user.id,
+    generated_at: Math.floor(Date.now() / 1000),
+  };
+
+  await db.prepare(`
+    INSERT INTO result_cards (
+      school_id, student_id, class_id, section_id, academic_year_id,
+      card_number, verification_token, verification_hash,
+      student_name_snapshot, class_name_snapshot, section_name_snapshot,
+      school_name_snapshot, academic_year_snapshot,
+      general_exemption_status, annual_effort_average, min_annual_effort,
+      overall_result_status, card_data_json,
+      generated_by_user_id, generated_at, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
+  `).bind(
+    student.school_id,
+    student.id,
+    student.class_id,
+    student.section_id,
+    evaluation.academicYear.id,
+    cardNumber,
+    token,
+    tokenHash,
+    student.full_name,
+    student.class_name,
+    student.section_name,
+    student.school_name,
+    evaluation.academicYear.name,
+    evaluation.summary.general_exemption_eligible ? 1 : 0,
+    evaluation.summary.annual_effort_average,
+    evaluation.summary.min_annual_effort,
+    evaluation.summary.overall_result_status,
+    JSON.stringify(cardData),
+    user.id,
+    Math.floor(Date.now() / 1000),
+  ).run();
+
+  const card = await db.prepare(`
+    SELECT * FROM result_cards WHERE verification_token = ? AND school_id = ?
+  `).bind(token, student.school_id).first<any>();
+  return { ok: true, card, cardNumber };
+}
+
 // GET /api/result-cards
 // ===========================================
-app.get('/api/result-cards', requireSameSchoolOrAdmin(), async (c) => {
+app.get(
+  '/api/result-cards',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_VIEW_ROLES),
+  async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
   const scope = c.get('scope') as 'all' | 'single';
@@ -3270,11 +3674,16 @@ app.get('/api/result-cards', requireSameSchoolOrAdmin(), async (c) => {
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب كارتات النتائج', detail: err.message }, 500);
   }
-});
+  },
+);
 
 // GET /api/result-cards/:id
 // ===========================================
-app.get('/api/result-cards/:id', requireSameSchoolOrAdmin(), async (c) => {
+app.get(
+  '/api/result-cards/:id',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_VIEW_ROLES),
+  async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
   const scope = c.get('scope') as 'all' | 'single';
@@ -3297,376 +3706,220 @@ app.get('/api/result-cards/:id', requireSameSchoolOrAdmin(), async (c) => {
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب كارت النتيجة', detail: err.message }, 500);
   }
-});
+  },
+);
 
 // POST /api/result-cards/generate-student/:student_id
 // ===========================================
-app.post('/api/result-cards/generate-student/:student_id', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+app.post(
+  '/api/result-cards/generate-student/:student_id',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_MANAGEMENT_ROLES),
+  async (c) => {
+    const db = c.env.DB;
+    const user = c.get('user') as UserContext;
+    const scope = c.get('scope') as 'all' | 'single';
+    const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+    const studentId = parseInt(c.req.param('student_id'), 10);
 
-  if (!user || !canGenerateResultCards(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إنشاء كارتات النتائج' }, 403);
-  }
-
-  const studentId = parseInt(c.req.param('student_id'), 10);
-
-  try {
-    // Fetch student with class/section/school names
-    const student = await db.prepare(`
-      SELECT s.id, s.school_id, s.full_name, s.student_number, s.class_id, s.section_id,
-             c.name AS class_name, sec.name AS section_name, sch.name AS school_name
-      FROM students s
-      LEFT JOIN classes c ON s.class_id = c.id
-      LEFT JOIN sections sec ON s.section_id = sec.id
-      LEFT JOIN schools sch ON s.school_id = sch.id
-      WHERE s.id = ? AND s.status = 'active'
-    `).bind(studentId).first<any>();
-
-    if (!student) {
-      return c.json({ error: 'الطالب غير موجود أو غير فعال' }, 404);
+    if (!Number.isInteger(studentId)) {
+      return c.json({ error: 'معرّف الطالب غير صالح' }, 400);
     }
 
-    if (scope === 'single' && resolvedSchoolId && student.school_id !== resolvedSchoolId) {
-      return c.json({ error: 'غير مسموح: لا يمكنك إنشاء كارت لطالب من مدرسة أخرى' }, 403);
-    }
+    try {
+      const student = await loadResultCardStudent(db, studentId);
+      if (!student) {
+        return c.json({ error: 'الطالب غير موجود أو غير فعال' }, 404);
+      }
+      if (
+        scope === 'single' &&
+        resolvedSchoolId &&
+        student.school_id !== resolvedSchoolId
+      ) {
+        return c.json(
+          { error: 'غير مسموح: لا يمكنك إنشاء كارت لطالب من مدرسة أخرى' },
+          403,
+        );
+      }
 
-    // Active assigned subjects
-    const subjectRows = await db.prepare(`
-      SELECT su.id, su.name AS subject_name
-      FROM student_subjects ss
-      INNER JOIN subjects su ON ss.subject_id = su.id
-      WHERE ss.student_id = ? AND ss.is_active = 1 AND su.status = 'active'
-      ORDER BY su.name
-    `).bind(studentId).all<any>();
-    const activeSubjects = subjectRows.results || [];
+      const created = await createResultCardForStudent(db, user, student);
+      if (!created.ok) {
+        return c.json(
+          {
+            error: created.error,
+            code: created.code,
+            subjects: created.subjects,
+          },
+          created.status,
+        );
+      }
 
-    if (activeSubjects.length === 0) {
-      return c.json({ error: 'لا توجد مواد مفعلة مسندة لهذا الطالب' }, 400);
-    }
-
-    // Grades for active subjects
-    const gradeRows = await db.prepare(`
-      SELECT
-        su.id AS subject_id,
-        su.name AS subject_name,
-        g.annual_effort,
-        g.final_exam,
-        g.final_grade,
-        g.completion_exam,
-        g.grade_after_completion,
-        g.effective_grade,
-        g.result_status,
-        g.exemption_status,
-        g.first_month,
-        g.second_month,
-        g.third_month,
-        g.fourth_month,
-        g.mid_year_exam
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN subjects su ON ss.subject_id = su.id
-      WHERE ss.student_id = ? AND g.is_active = 1
-      ORDER BY su.name
-    `).bind(studentId).all<any>();
-    const grades = gradeRows.results || [];
-
-    // Missing subjects check
-    const gradedSubjectIds = new Set(grades.map((g: any) => g.subject_id));
-    const missingSubjects = activeSubjects.filter((s: any) => !gradedSubjectIds.has(s.id));
-    if (missingSubjects.length > 0) {
       return c.json({
-        error: 'درجات ناقصة: لا يمكن إنشاء الكارت حتى يتم إكمال درجات المواد التالية',
-        missing_subjects: missingSubjects.map((s: any) => s.subject_name),
-      }, 400);
+        data: {
+          card: created.card,
+          verification_url: `/verify/result-card/${created.card.verification_token}`,
+        },
+        message: 'تم إنشاء كارت النتيجة بنجاح',
+      });
+    } catch (err: any) {
+      return c.json(
+        { error: 'فشل في إنشاء كارت النتيجة', detail: err.message },
+        500,
+      );
     }
+  },
+);
 
-    // Grade settings
-    let passingGrade = 50;
-    let exemptionGrade = 90;
-    let genAvg = 85;
-    let genMin = 75;
-    const gs = await db.prepare(`
-      SELECT passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade
-      FROM grade_settings WHERE school_id = ?
-    `).bind(student.school_id).first<any>();
-    if (gs) {
-      passingGrade = gs.passing_grade;
-      exemptionGrade = gs.exemption_grade;
-      genAvg = gs.general_exemption_average_grade ?? 85;
-      genMin = gs.general_exemption_min_subject_grade ?? 75;
-    }
-
-    // Academic year
-    const ay = await db.prepare(`SELECT id, name FROM academic_years WHERE school_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1`).bind(student.school_id).first<any>();
-
-    // Compute general exemption based on annual_effort only
-    const annualEfforts = grades.map((r: any) => r.annual_effort).filter((v: any) => v !== null && v !== undefined && !isNaN(v)) as number[];
-    const avgAnnualEffort = annualEfforts.length > 0 ? Math.round(annualEfforts.reduce((a: number, b: number) => a + b, 0) / annualEfforts.length) : null;
-    const minAnnualEffort = annualEfforts.length > 0 ? Math.min(...annualEfforts) : null;
-    const generalExemptionEligible = annualEfforts.length === grades.length && avgAnnualEffort !== null && avgAnnualEffort >= genAvg && minAnnualEffort !== null && minAnnualEffort >= genMin;
-
-    // Overall result status
-    const failCount = grades.filter((g: any) => g.result_status === 'راسب').length;
-    const incompleteCount = grades.filter((g: any) => g.result_status === 'مكمل').length;
-    const overallStatus = failCount > 0 ? 'راسب' : (incompleteCount > 0 ? 'مكمل' : 'ناجح');
-
-    // Block duplicate active card for same student + academic year
-    const existingActive = await db.prepare(`
-      SELECT id FROM result_cards
-      WHERE student_id = ? AND academic_year_id = ? AND status = 'active'
-      LIMIT 1
-    `).bind(studentId, ay?.id || 0).first<any>();
-    if (existingActive) {
-      return c.json({ error: 'يوجد كارت نتيجة فعّال بالفعل لهذا الطالب في نفس السنة الدراسية. يجب إلغاؤه أولاً أو استخدام خيار التجديد.' }, 409);
-    }
-
-    const token = generateVerificationToken();
-    const tokenHash = await hashToken(token);
-    const cardNumber = generateCardNumber(student.school_id, studentId);
-
-    const schoolSettings = await db.prepare(`
-      SELECT result_card_header_text, result_card_footer_text, verification_note_text,
-             use_school_logo_on_docs, use_school_stamp_on_docs
-      FROM school_settings WHERE school_id = ?
-    `).bind(student.school_id).first<any>();
-
-    const schoolLogoInfo = await db.prepare(`
-      SELECT logo_url, official_stamp_url FROM schools WHERE id = ?
-    `).bind(student.school_id).first<any>();
-
-    const cardData = {
-      school: { id: student.school_id, name: student.school_name },
-      student: { id: studentId, name: student.full_name, student_number: student.student_number },
-      class: { id: student.class_id, name: student.class_name },
-      section: { id: student.section_id, name: student.section_name },
-      academic_year: ay ? { id: ay.id, name: ay.name } : null,
-      settings: { passing_grade: passingGrade, exemption_grade: exemptionGrade, general_exemption_average_grade: genAvg, general_exemption_min_subject_grade: genMin },
-      subjects: grades,
-      summary: {
-        total_subjects: grades.length,
-        annual_effort_average: avgAnnualEffort,
-        min_annual_effort: minAnnualEffort,
-        general_exemption_eligible: generalExemptionEligible,
-        overall_result_status: overallStatus,
-      },
-      document_settings: {
-        result_card_header_text: schoolSettings?.result_card_header_text || null,
-        result_card_footer_text: schoolSettings?.result_card_footer_text || null,
-        verification_note_text: schoolSettings?.verification_note_text || null,
-        use_school_logo_on_docs: schoolSettings?.use_school_logo_on_docs === 1,
-        use_school_stamp_on_docs: schoolSettings?.use_school_stamp_on_docs === 1,
-        logo_url: (schoolSettings?.use_school_logo_on_docs === 1 && schoolLogoInfo?.logo_url) ? schoolLogoInfo.logo_url : null,
-        official_stamp_url: (schoolSettings?.use_school_stamp_on_docs === 1 && schoolLogoInfo?.official_stamp_url) ? schoolLogoInfo.official_stamp_url : null,
-      },
-      generated_by: user.id,
-      generated_at: Math.floor(Date.now() / 1000),
-    };
-
-    await db.prepare(`
-      INSERT INTO result_cards (
-        school_id, student_id, class_id, section_id, academic_year_id,
-        card_number, verification_token, verification_hash,
-        student_name_snapshot, class_name_snapshot, section_name_snapshot,
-        school_name_snapshot, academic_year_snapshot,
-        general_exemption_status, annual_effort_average, min_annual_effort,
-        overall_result_status, card_data_json,
-        generated_by_user_id, generated_at, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
-    `).bind(
-      student.school_id, studentId, student.class_id || null, student.section_id || null, ay?.id || null,
-      cardNumber, token, tokenHash,
-      student.full_name, student.class_name || null, student.section_name || null,
-      student.school_name || null, ay?.name || null,
-      generalExemptionEligible ? 1 : 0, avgAnnualEffort, minAnnualEffort,
-      overallStatus, JSON.stringify(cardData),
-      user.id, Math.floor(Date.now() / 1000)
-    ).run();
-
-    const newCard = await db.prepare(`SELECT * FROM result_cards WHERE verification_token = ?`).bind(token).first<any>();
-
-    return c.json({
-      data: {
-        card: newCard,
-        verification_url: `/verify/result-card/${token}`,
-      },
-      message: 'تم إنشاء كارت النتيجة بنجاح',
-    });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء كارت النتيجة', detail: err.message }, 500);
-  }
-});
 
 // POST /api/result-cards/generate-section
 // ===========================================
-app.post('/api/result-cards/generate-section', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  if (!user || !canGenerateResultCards(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إنشاء كارتات النتائج' }, 403);
-  }
-
-  try {
+app.post(
+  '/api/result-cards/generate-section',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_MANAGEMENT_ROLES),
+  async (c) => {
+    const db = c.env.DB;
+    const user = c.get('user') as UserContext;
+    const scope = c.get('scope') as 'all' | 'single';
+    const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
     const body = await c.req.json();
-    const classId = body.class_id ? parseInt(body.class_id, 10) : null;
-    const sectionId = body.section_id ? parseInt(body.section_id, 10) : null;
+    const classId = Number(body.class_id);
+    const sectionId = Number(body.section_id);
 
-    if (!classId || !sectionId) {
-      return c.json({ error: 'معرف الصف والشعبة مطلوبان' }, 400);
+    if (!Number.isInteger(classId) || !Number.isInteger(sectionId)) {
+      return c.json({ error: 'الصف والشعبة مطلوبان' }, 400);
     }
 
-    // Verify section belongs to school
-    if (scope === 'single' && resolvedSchoolId) {
-      const secCheck = await db.prepare(`SELECT school_id FROM sections WHERE id = ?`).bind(sectionId).first<{ school_id: number }>();
-      if (!secCheck || secCheck.school_id !== resolvedSchoolId) {
-        return c.json({ error: 'غير مسموح: الشعبة لا تنتمي إلى مدرستك' }, 403);
+    try {
+      const section = await db.prepare(`
+        SELECT id, school_id, class_id, status
+        FROM sections
+        WHERE id = ?
+      `).bind(sectionId).first<any>();
+      if (!section || section.status !== 'active') {
+        return c.json({ error: 'الشعبة غير موجودة أو غير فعالة' }, 404);
       }
-    }
-
-    // Fetch active students in section
-    const studentsRows = await db.prepare(`
-      SELECT s.id, s.school_id, s.full_name, s.student_number, s.class_id, s.section_id,
-             c.name AS class_name, sec.name AS section_name, sch.name AS school_name
-      FROM students s
-      LEFT JOIN classes c ON s.class_id = c.id
-      LEFT JOIN sections sec ON s.section_id = sec.id
-      LEFT JOIN schools sch ON s.school_id = sch.id
-      WHERE s.class_id = ? AND s.section_id = ? AND s.status = 'active'
-    `).bind(classId, sectionId).all<any>();
-    const students = studentsRows.results || [];
-
-    const generated: any[] = [];
-    const skipped: { student_id: number; student_name: string; reason: string; missing_subjects?: string[] }[] = [];
-
-    for (const student of students) {
-      // Active subjects
-      const subjectRows = await db.prepare(`
-        SELECT su.id, su.name AS subject_name
-        FROM student_subjects ss
-        INNER JOIN subjects su ON ss.subject_id = su.id
-        WHERE ss.student_id = ? AND ss.is_active = 1 AND su.status = 'active'
-      `).bind(student.id).all<any>();
-      const activeSubjects = subjectRows.results || [];
-
-      if (activeSubjects.length === 0) {
-        skipped.push({ student_id: student.id, student_name: student.full_name, reason: 'لا توجد مواد مفعلة' });
-        continue;
+      if (section.class_id !== classId) {
+        return c.json({ error: 'الشعبة لا تتبع الصف المحدد' }, 400);
+      }
+      if (
+        scope === 'single' &&
+        resolvedSchoolId &&
+        section.school_id !== resolvedSchoolId
+      ) {
+        return c.json(
+          { error: 'غير مسموح: لا يمكنك إنشاء كارتات لشعبة من مدرسة أخرى' },
+          403,
+        );
       }
 
-      // Grades
-      const gradeRows = await db.prepare(`
-        SELECT su.id AS subject_id, su.name AS subject_name, g.annual_effort
-        FROM grades g
-        INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-        INNER JOIN subjects su ON ss.subject_id = su.id
-        WHERE ss.student_id = ? AND g.is_active = 1
-      `).bind(student.id).all<any>();
-      const grades = gradeRows.results || [];
-
-      const gradedIds = new Set(grades.map((g: any) => g.subject_id));
-      const missing = activeSubjects.filter((s: any) => !gradedIds.has(s.id));
-      if (missing.length > 0) {
-        skipped.push({ student_id: student.id, student_name: student.full_name, reason: 'درجات ناقصة', missing_subjects: missing.map((s: any) => s.subject_name) });
-        continue;
+      const classRow = await db.prepare(`
+        SELECT id, school_id, status
+        FROM classes
+        WHERE id = ?
+      `).bind(classId).first<any>();
+      if (
+        !classRow ||
+        classRow.status !== 'active' ||
+        classRow.school_id !== section.school_id
+      ) {
+        return c.json({ error: 'الصف غير موجود أو لا يتبع مدرسة الشعبة' }, 400);
       }
 
-      // Compute eligibility using annual_effort only
-      const annualEfforts = grades.map((r: any) => r.annual_effort).filter((v: any) => v !== null && !isNaN(v)) as number[];
-      const avgAE = annualEfforts.length > 0 ? Math.round(annualEfforts.reduce((a: number, b: number) => a + b, 0) / annualEfforts.length) : null;
-      const minAE = annualEfforts.length > 0 ? Math.min(...annualEfforts) : null;
-
-      let genAvg = 85;
-      let genMin = 75;
-      const gs = await db.prepare(`SELECT general_exemption_average_grade, general_exemption_min_subject_grade FROM grade_settings WHERE school_id = ?`).bind(student.school_id).first<any>();
-      if (gs) { genAvg = gs.general_exemption_average_grade ?? 85; genMin = gs.general_exemption_min_subject_grade ?? 75; }
-
-      const generalExemptionEligible = annualEfforts.length === grades.length && avgAE !== null && avgAE >= genAvg && minAE !== null && minAE >= genMin;
-
-      const failCount = grades.filter((g: any) => g.result_status === 'راسب').length;
-      const incompleteCount = grades.filter((g: any) => g.result_status === 'مكمل').length;
-      const overallStatus = failCount > 0 ? 'راسب' : (incompleteCount > 0 ? 'مكمل' : 'ناجح');
-
-      const ay = await db.prepare(`SELECT id, name FROM academic_years WHERE school_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1`).bind(student.school_id).first<any>();
-
-      // Block duplicate active card for same student + academic year
-      const existingActive = await db.prepare(`
-        SELECT id FROM result_cards
-        WHERE student_id = ? AND academic_year_id = ? AND status = 'active'
+      const academicYear = await db.prepare(`
+        SELECT id
+        FROM academic_years
+        WHERE school_id = ? AND is_active = 1
+        ORDER BY id DESC
         LIMIT 1
-      `).bind(student.id, ay?.id || 0).first<any>();
-      if (existingActive) {
-        skipped.push({ student_id: student.id, student_name: student.full_name, reason: 'يوجد كارت نتيجة فعّال بالفعل في نفس السنة الدراسية' });
-        continue;
+      `).bind(section.school_id).first<any>();
+      if (!academicYear) {
+        return c.json(
+          { error: 'لا توجد سنة دراسية فعالة لهذه المدرسة' },
+          400,
+        );
       }
 
-      const token = generateVerificationToken();
-      const tokenHash = await hashToken(token);
-      const cardNumber = generateCardNumber(student.school_id, student.id);
+      const studentRows = await db.prepare(`
+        SELECT id
+        FROM students
+        WHERE school_id = ? AND class_id = ? AND section_id = ? AND status = 'active'
+        ORDER BY full_name
+      `).bind(section.school_id, classId, sectionId).all<{ id: number }>();
+      const students = studentRows.results || [];
 
-      const cardData = {
-        school: { id: student.school_id, name: student.school_name },
-        student: { id: student.id, name: student.full_name, student_number: student.student_number },
-        class: { id: student.class_id, name: student.class_name },
-        section: { id: student.section_id, name: student.section_name },
-        academic_year: ay ? { id: ay.id, name: ay.name } : null,
-        settings: { general_exemption_average_grade: genAvg, general_exemption_min_subject_grade: genMin },
-        subjects: grades,
-        summary: {
-          total_subjects: grades.length,
-          annual_effort_average: avgAE,
-          min_annual_effort: minAE,
-          general_exemption_eligible: generalExemptionEligible,
-          overall_result_status: overallStatus,
+      if (students.length === 0) {
+        return c.json({ error: 'لا يوجد طلاب فعالون في هذه الشعبة' }, 400);
+      }
+
+      const generated: Array<{
+        student_id: number;
+        student_name: string;
+        card_number: string;
+      }> = [];
+      const skipped: Array<{
+        student_id: number;
+        student_name?: string;
+        reason: string;
+        code: string;
+        subjects?: string[];
+      }> = [];
+
+      for (const row of students) {
+        const student = await loadResultCardStudent(db, row.id);
+        if (!student || student.school_id !== section.school_id) {
+          skipped.push({
+            student_id: row.id,
+            reason: 'بيانات الطالب أو تبعيته المدرسية غير صالحة',
+            code: 'invalid_student',
+          });
+          continue;
+        }
+
+        const created = await createResultCardForStudent(db, user, student);
+        if (!created.ok) {
+          skipped.push({
+            student_id: row.id,
+            student_name: student.full_name,
+            reason: created.error,
+            code: created.code,
+            subjects: created.subjects,
+          });
+          continue;
+        }
+        generated.push({
+          student_id: row.id,
+          student_name: student.full_name,
+          card_number: created.cardNumber,
+        });
+      }
+
+      return c.json({
+        data: {
+          generated_count: generated.length,
+          skipped_count: skipped.length,
+          generated,
+          skipped,
         },
-        generated_by: user.id,
-        generated_at: Math.floor(Date.now() / 1000),
-      };
-
-      await db.prepare(`
-        INSERT INTO result_cards (
-          school_id, student_id, class_id, section_id, academic_year_id,
-          card_number, verification_token, verification_hash,
-          student_name_snapshot, class_name_snapshot, section_name_snapshot,
-          school_name_snapshot, academic_year_snapshot,
-          general_exemption_status, annual_effort_average, min_annual_effort,
-          overall_result_status, card_data_json,
-          generated_by_user_id, generated_at, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
-      `).bind(
-        student.school_id, student.id, student.class_id || null, student.section_id || null, ay?.id || null,
-        cardNumber, token, tokenHash,
-        student.full_name, student.class_name || null, student.section_name || null,
-        student.school_name || null, ay?.name || null,
-        generalExemptionEligible ? 1 : 0, avgAE, minAE,
-        overallStatus, JSON.stringify(cardData),
-        user.id, Math.floor(Date.now() / 1000)
-      ).run();
-
-      generated.push({ student_id: student.id, student_name: student.full_name, card_number: cardNumber });
+        message: 'تمت معالجة إنشاء كارتات الشعبة',
+      });
+    } catch (err: any) {
+      return c.json(
+        { error: 'فشل في إنشاء كارتات الشعبة', detail: err.message },
+        500,
+      );
     }
+  },
+);
 
-    return c.json({
-      data: {
-        generated_count: generated.length,
-        skipped_count: skipped.length,
-        generated,
-        skipped,
-      },
-      message: `تم إنشاء ${generated.length} كارت وتم تخطي ${skipped.length} طالب`,
-    });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء كارتات الشعبة', detail: err.message }, 500);
-  }
-});
 
 // PUT /api/result-cards/:id/mark-printed
 // ===========================================
-app.put('/api/result-cards/:id/mark-printed', requireSameSchoolOrAdmin(), async (c) => {
+app.put(
+  '/api/result-cards/:id/mark-printed',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_PRINT_ROLES),
+  async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
   const scope = c.get('scope') as 'all' | 'single';
@@ -3682,16 +3935,21 @@ app.put('/api/result-cards/:id/mark-printed', requireSameSchoolOrAdmin(), async 
     if (row.status !== 'active') {
       return c.json({ error: 'لا يمكن تعليم كارت غير فعال كمطبوع' }, 400);
     }
-    await db.prepare(`UPDATE result_cards SET printed_at = unixepoch(), updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    await db.prepare(`UPDATE result_cards SET printed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
     return c.json({ data: { id, printed_at: Math.floor(Date.now() / 1000) }, message: 'تم تعليم الكارت كمطبوع' });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الكارت', detail: err.message }, 500);
   }
-});
+  },
+);
 
 // PUT /api/result-cards/:id/cancel
 // ===========================================
-app.put('/api/result-cards/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
+app.put(
+  '/api/result-cards/:id/cancel',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_MANAGEMENT_ROLES),
+  async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
   const scope = c.get('scope') as 'all' | 'single';
@@ -3704,12 +3962,13 @@ app.put('/api/result-cards/:id/cancel', requireSameSchoolOrAdmin(), async (c) =>
     if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
-    await db.prepare(`UPDATE result_cards SET status = 'cancelled', updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    await db.prepare(`UPDATE result_cards SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
     return c.json({ data: { id, status: 'cancelled' }, message: 'تم إلغاء الكارت' });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء الكارت', detail: err.message }, 500);
   }
-});
+  },
+);
 
 // GET /api/verify/result-card/:token
 // Public endpoint — no JWT required
@@ -6061,7 +6320,7 @@ app.get('/api/official-book-templates', requireSameSchoolOrAdmin(), async (c) =>
   const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
 
   try {
-    let sql = `SELECT obt.id, obt.school_id, obt.title, obt.body_text, obt.paper_size, obt.requires_student, obt.requires_employee, obt.status, obt.created_by_user_id, obt.created_at, obt.updated_at, u.full_name as created_by_name FROM official_book_templates obt LEFT JOIN users u ON obt.created_by_user_id = u.id WHERE 1=1`;
+    let sql = `SELECT obt.id, obt.school_id, obt.title, obt.body_text, obt.paper_size, obt.requires_student, obt.requires_employee, obt.status, obt.created_by_user_id, obt.created_at, obt.updated_at, u.full_name as created_by_name FROM official_book_templates obt LEFT JOIN users u ON obt.created_by_user_id = u.id AND (u.school_id = obt.school_id OR u.school_id IS NULL) WHERE 1=1`;
     const params: any[] = [];
 
     if (scope === 'single' && resolvedSchoolId) {
@@ -6101,11 +6360,18 @@ app.post('/api/official-book-templates', requireSameSchoolOrAdmin(), async (c) =
       return c.json({ error: 'العنوان ونص الكتاب مطلوبان' }, 400);
     }
 
+    const school = await db.prepare(
+      'SELECT id FROM schools WHERE id = ?',
+    ).bind(Number(schoolId)).first<{ id: number }>();
+    if (!school) {
+      return c.json({ error: 'المدرسة غير موجودة' }, 404);
+    }
+
     const paperSize = body.paper_size || 'A4';
     const result = await db.prepare(`
       INSERT INTO official_book_templates (school_id, title, body_text, paper_size, requires_student, requires_employee, status, created_by_user_id)
       VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
-    `).bind(schoolId, body.title, body.body_text, paperSize, body.requires_student ? 1 : 0, body.requires_employee ? 1 : 0, user.id).run();
+    `).bind(school.id, body.title, body.body_text, paperSize, body.requires_student ? 1 : 0, body.requires_employee ? 1 : 0, user.id).run();
 
     const id = result.meta?.last_row_id;
     return c.json({ data: { id, message: 'تم إنشاء القالب بنجاح' } }, 201);
@@ -6120,6 +6386,8 @@ app.post('/api/official-book-templates', requireSameSchoolOrAdmin(), async (c) =
 app.put('/api/official-book-templates/:id', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
 
   if (!user || !canManageOfficialBookTemplates(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة قوالب الكتب الرسمية' }, 403);
@@ -6128,6 +6396,19 @@ app.put('/api/official-book-templates/:id', requireSameSchoolOrAdmin(), async (c
   try {
     const id = parseInt(c.req.param('id'), 10);
     const body = await c.req.json();
+    const template = await db.prepare(
+      'SELECT school_id FROM official_book_templates WHERE id = ?',
+    ).bind(id).first<{ school_id: number }>();
+    if (!template) {
+      return c.json({ error: 'القالب غير موجود' }, 404);
+    }
+    if (
+      scope === 'single' &&
+      resolvedSchoolId &&
+      template.school_id !== resolvedSchoolId
+    ) {
+      return c.json({ error: 'غير مسموح: القالب تابع لمدرسة أخرى' }, 403);
+    }
     const allowed = ['title', 'body_text', 'paper_size', 'requires_student', 'requires_employee', 'status'];
     const updates: string[] = [];
     const params: any[] = [];
@@ -6142,9 +6423,9 @@ app.put('/api/official-book-templates/:id', requireSameSchoolOrAdmin(), async (c
       return c.json({ error: 'لا توجد بيانات للتحديث' }, 400);
     }
     updates.push('updated_at = unixepoch()');
-    params.push(id);
+    params.push(id, template.school_id);
 
-    await db.prepare(`UPDATE official_book_templates SET ${updates.join(', ')} WHERE id = ?`).bind(...params).run();
+    await db.prepare(`UPDATE official_book_templates SET ${updates.join(', ')} WHERE id = ? AND school_id = ?`).bind(...params).run();
     return c.json({ data: { message: 'تم تحديث القالب بنجاح' } });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث القالب', detail: err.message }, 500);
@@ -6165,7 +6446,7 @@ app.get('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
   }
 
   try {
-    let sql = `SELECT ob.id, ob.school_id, ob.template_id, ob.document_number, ob.title, ob.body_text, ob.paper_size, ob.student_id, ob.employee_id, ob.status, ob.created_by_user_id, ob.created_at, ob.updated_at, obt.title as template_title, st.full_name as student_name, emp.full_name as employee_name, u.full_name as created_by_name FROM official_books ob LEFT JOIN official_book_templates obt ON ob.template_id = obt.id LEFT JOIN students st ON ob.student_id = st.id LEFT JOIN employees emp ON ob.employee_id = emp.id LEFT JOIN users u ON ob.created_by_user_id = u.id WHERE 1=1`;
+    let sql = `SELECT ob.id, ob.school_id, ob.template_id, ob.document_number, ob.title, ob.body_text, ob.paper_size, ob.student_id, ob.employee_id, ob.status, ob.created_by_user_id, ob.created_at, ob.updated_at, obt.title as template_title, st.full_name as student_name, emp.full_name as employee_name, u.full_name as created_by_name FROM official_books ob LEFT JOIN official_book_templates obt ON ob.template_id = obt.id AND obt.school_id = ob.school_id LEFT JOIN students st ON ob.student_id = st.id AND st.school_id = ob.school_id LEFT JOIN employees emp ON ob.employee_id = emp.id AND emp.school_id = ob.school_id LEFT JOIN users u ON ob.created_by_user_id = u.id AND (u.school_id = ob.school_id OR u.school_id IS NULL) WHERE 1=1`;
     const params: any[] = [];
 
     if (scope === 'single' && resolvedSchoolId) {
@@ -6203,10 +6484,10 @@ app.get('/api/official-books/:id', requireSameSchoolOrAdmin(), async (c) => {
     const row = await db.prepare(`
       SELECT ob.id, ob.school_id, ob.template_id, ob.document_number, ob.title, ob.body_text, ob.paper_size, ob.student_id, ob.employee_id, ob.status, ob.created_by_user_id, ob.created_at, ob.updated_at, ob.school_name_snapshot, ob.principal_name_snapshot, ob.logo_url_snapshot, ob.stamp_url_snapshot, ob.use_logo_snapshot, ob.use_stamp_snapshot, ob.header_text_snapshot, ob.footer_text_snapshot, ob.verification_note_snapshot, ob.date_format_snapshot, ob.use_arabic_indic_digits_snapshot, ob.settings_snapshot_json, ob.verification_token, obt.title as template_title, st.full_name as student_name, emp.full_name as employee_name, u.full_name as created_by_name
       FROM official_books ob
-      LEFT JOIN official_book_templates obt ON ob.template_id = obt.id
-      LEFT JOIN students st ON ob.student_id = st.id
-      LEFT JOIN employees emp ON ob.employee_id = emp.id
-      LEFT JOIN users u ON ob.created_by_user_id = u.id
+      LEFT JOIN official_book_templates obt ON ob.template_id = obt.id AND obt.school_id = ob.school_id
+      LEFT JOIN students st ON ob.student_id = st.id AND st.school_id = ob.school_id
+      LEFT JOIN employees emp ON ob.employee_id = emp.id AND emp.school_id = ob.school_id
+      LEFT JOIN users u ON ob.created_by_user_id = u.id AND (u.school_id = ob.school_id OR u.school_id IS NULL)
       WHERE ob.id = ?
     `).bind(id).first<any>();
 
@@ -6253,19 +6534,37 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
 
   try {
     const body = await c.req.json();
-    const schoolId = scope === 'all' ? (body.school_id || user.school_id) : resolvedSchoolId;
-    const templateId = body.template_id;
-    const studentId = body.student_id || null;
-    const employeeId = body.employee_id || null;
+    const rawSchoolId = scope === 'all' ? (body.school_id || user.school_id) : resolvedSchoolId;
+    const schoolId = rawSchoolId == null ? null : Number(rawSchoolId);
+    const templateId = Number(body.template_id);
+    const studentId = body.student_id ? Number(body.student_id) : null;
+    const employeeId = body.employee_id ? Number(body.employee_id) : null;
 
     if (!schoolId || !templateId) {
       return c.json({ error: 'معرف المدرسة والقالب مطلوبان' }, 400);
     }
 
-    // Fetch template
-    const template = await db.prepare(`SELECT * FROM official_book_templates WHERE id = ? AND school_id = ?`).bind(templateId, schoolId).first<any>();
+    const school = await db.prepare(`
+      SELECT name, principal_name, logo_url, official_stamp_url
+      FROM schools
+      WHERE id = ?
+    `).bind(schoolId).first<any>();
+    if (!school) {
+      return c.json({ error: 'المدرسة غير موجودة' }, 404);
+    }
+
+    // Fetch by ID first so a cross-school reference is distinguishable from a missing template.
+    const template = await db.prepare(
+      `SELECT * FROM official_book_templates WHERE id = ?`,
+    ).bind(templateId).first<any>();
     if (!template) {
       return c.json({ error: 'القالب غير موجود' }, 404);
+    }
+    if (template.school_id !== schoolId) {
+      return c.json({ error: 'غير مسموح: القالب تابع لمدرسة أخرى' }, 403);
+    }
+    if (template.status !== 'active') {
+      return c.json({ error: 'القالب غير فعال' }, 400);
     }
 
     // Validate required entities
@@ -6276,30 +6575,58 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'هذا القالب يتطلب اختيار موظف' }, 400);
     }
 
-    // Fetch school + settings for snapshot
-    const school = await db.prepare(`SELECT name, principal_name, logo_url, official_stamp_url FROM schools WHERE id = ?`).bind(schoolId).first<any>();
+    // Fetch settings for snapshot
     const settings = await db.prepare(`SELECT official_book_header_text, official_book_footer_text, verification_note_text, use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, date_format, use_arabic_indic_digits FROM school_settings WHERE school_id = ?`).bind(schoolId).first<any>();
 
     // Fetch student/employee if needed
     let studentName = null, studentNumber = null, className = null, sectionName = null;
     let employeeName = null, employeePosition = null;
     if (studentId) {
-      const st = await db.prepare(`SELECT full_name, student_number, class_id, section_id FROM students WHERE id = ?`).bind(studentId).first<any>();
-      if (st) {
-        studentName = st.full_name;
-        studentNumber = st.student_number;
-        const cls = await db.prepare(`SELECT name FROM classes WHERE id = ?`).bind(st.class_id).first<any>();
-        const sec = await db.prepare(`SELECT name FROM sections WHERE id = ?`).bind(st.section_id).first<any>();
-        className = cls?.name || null;
-        sectionName = sec?.name || null;
+      const st = await db.prepare(`
+        SELECT id, school_id, full_name, student_number, class_id, section_id, status
+        FROM students
+        WHERE id = ?
+      `).bind(studentId).first<any>();
+      if (!st) {
+        return c.json({ error: 'الطالب غير موجود' }, 404);
       }
+      if (st.school_id !== schoolId) {
+        return c.json({ error: 'غير مسموح: الطالب تابع لمدرسة أخرى' }, 403);
+      }
+      if (st.status !== 'active') {
+        return c.json({ error: 'الطالب غير فعال' }, 400);
+      }
+      const placement = await validateStudentPlacement(
+        db,
+        schoolId,
+        st.class_id,
+        st.section_id,
+      );
+      if (!placement.ok) {
+        return c.json({ error: placement.error }, placement.status);
+      }
+      studentName = st.full_name;
+      studentNumber = st.student_number;
+      className = placement.classRecord?.name || null;
+      sectionName = placement.sectionRecord?.name || null;
     }
     if (employeeId) {
-      const emp = await db.prepare(`SELECT full_name, job_title FROM employees WHERE id = ?`).bind(employeeId).first<any>();
-      if (emp) {
-        employeeName = emp.full_name;
-        employeePosition = emp.job_title;
+      const emp = await db.prepare(`
+        SELECT school_id, full_name, job_title, status
+        FROM employees
+        WHERE id = ?
+      `).bind(employeeId).first<any>();
+      if (!emp) {
+        return c.json({ error: 'الموظف غير موجود' }, 404);
       }
+      if (emp.school_id !== schoolId) {
+        return c.json({ error: 'غير مسموح: الموظف تابع لمدرسة أخرى' }, 403);
+      }
+      if (emp.status !== 'active') {
+        return c.json({ error: 'الموظف غير فعال' }, 400);
+      }
+      employeeName = emp.full_name;
+      employeePosition = emp.job_title;
     }
 
     // Build snapshot JSON
@@ -6359,11 +6686,11 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
     const documentNumber = `BOOK-${schoolId}-${bookId}-${ts}`;
 
     // Step 2: Update document number
-    await db.prepare(`UPDATE official_books SET document_number = ? WHERE id = ?`).bind(documentNumber, bookId).run();
+    await db.prepare(`UPDATE official_books SET document_number = ? WHERE id = ? AND school_id = ?`).bind(documentNumber, bookId, schoolId).run();
 
     // Final placeholder replacement for document number
     bodyText = bodyText.replace(/\{\{document_number\}\}/g, documentNumber);
-    await db.prepare(`UPDATE official_books SET body_text = ? WHERE id = ?`).bind(bodyText, bookId).run();
+    await db.prepare(`UPDATE official_books SET body_text = ? WHERE id = ? AND school_id = ?`).bind(bodyText, bookId, schoolId).run();
 
     return c.json({ data: { id: bookId, document_number: documentNumber, verification_token: token, message: 'تم إنشاء الكتاب الرسمي بنجاح' } }, 201);
   } catch (err: any) {
@@ -6384,7 +6711,16 @@ app.put('/api/official-books/:id/cancel', requireSameSchoolOrAdmin(), async (c) 
 
   try {
     const id = parseInt(c.req.param('id'), 10);
-    await db.prepare(`UPDATE official_books SET status = 'cancelled', updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    const book = await db.prepare(
+      'SELECT school_id FROM official_books WHERE id = ?',
+    ).bind(id).first<{ school_id: number }>();
+    if (!book) {
+      return c.json({ error: 'الكتاب غير موجود' }, 404);
+    }
+    if (user.role_key !== 'system_admin' && book.school_id !== user.school_id) {
+      return c.json({ error: 'غير مسموح: الكتاب تابع لمدرسة أخرى' }, 403);
+    }
+    await db.prepare(`UPDATE official_books SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, book.school_id).run();
     return c.json({ data: { message: 'تم إلغاء الكتاب بنجاح' } });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء الكتاب', detail: err.message }, 500);
@@ -6407,6 +6743,9 @@ app.post('/api/official-books/:id/print', requireSameSchoolOrAdmin(), async (c) 
     const book = await db.prepare(`SELECT school_id, status FROM official_books WHERE id = ?`).bind(id).first<any>();
     if (!book) {
       return c.json({ error: 'الكتاب غير موجود' }, 404);
+    }
+    if (user.role_key !== 'system_admin' && book.school_id !== user.school_id) {
+      return c.json({ error: 'غير مسموح: الكتاب تابع لمدرسة أخرى' }, 403);
     }
     if (book.status === 'cancelled') {
       return c.json({ error: 'هذا الكتاب ملغى ولا يمكن طباعته' }, 400);
@@ -6439,7 +6778,7 @@ app.get('/api/print-records', requireSameSchoolOrAdmin(), async (c) => {
     const toDate = query.to_date ? parseInt(query.to_date, 10) : null;
     const userId = query.user_id ? parseInt(query.user_id, 10) : null;
 
-    let sql = `SELECT pr.id, pr.school_id, pr.document_id, pr.print_type, pr.printed_at, pr.printed_by_user_id, pr.printer_info_json, pr.created_at, u.full_name as printed_by_name FROM print_records pr LEFT JOIN users u ON pr.printed_by_user_id = u.id WHERE 1=1`;
+    let sql = `SELECT pr.id, pr.school_id, pr.document_id, pr.print_type, pr.printed_at, pr.printed_by_user_id, pr.printer_info_json, pr.created_at, u.full_name as printed_by_name FROM print_records pr LEFT JOIN users u ON pr.printed_by_user_id = u.id AND (u.school_id = pr.school_id OR u.school_id IS NULL) WHERE 1=1`;
     const params: any[] = [];
 
     if (scope === 'single' && resolvedSchoolId) {
@@ -7298,6 +7637,18 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           if (d.section_name && classId && !sectionId) {
             rowError(i, 'section_name', `الشعبة "${d.section_name}" غير موجودة في الصف`); continue;
           }
+          if (sectionId && !classId) {
+            rowError(i, 'section_id', 'لا يمكن تحديد شعبة بدون صف'); continue;
+          }
+          const placement = await validateStudentPlacement(
+            db,
+            school_id,
+            classId ? Number(classId) : null,
+            sectionId ? Number(sectionId) : null,
+          );
+          if (!placement.ok) {
+            rowError(i, 'class_section', placement.error); continue;
+          }
           const existing = studentMap.get(studentNumber);
           if (existing) {
             if (mode === 'skip_existing') { skipped++; continue; }
@@ -7305,8 +7656,8 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             // update_existing
             await db.prepare(`
               UPDATE students SET full_name = ?, father_name = ?, mother_name = ?, gender = ?, birth_date = ?, phone = ?, guardian_name = ?, guardian_phone = ?, address = ?, class_id = ?, section_id = ?, notes = ?, status = ?, updated_at = unixepoch()
-              WHERE id = ?
-            `).bind(fullName, d.father_name || null, d.mother_name || null, gender, d.birth_date || null, d.phone || null, d.guardian_name || null, d.guardian_phone || null, d.address || null, classId || null, sectionId || null, d.notes || null, d.status || 'active', existing.id).run();
+              WHERE id = ? AND school_id = ?
+            `).bind(fullName, d.father_name || null, d.mother_name || null, gender, d.birth_date || null, d.phone || null, d.guardian_name || null, d.guardian_phone || null, d.address || null, classId || null, sectionId || null, d.notes || null, d.status || 'active', existing.id, school_id).run();
             updated++;
             continue;
           }
@@ -7324,7 +7675,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             if (mode === 'skip_existing') { skipped++; continue; }
             if (mode === 'error_on_existing') { rowError(i, 'class_name', 'الصف موجود مسبقاً'); continue; }
             // Update class
-            await db.prepare(`UPDATE classes SET stage = ?, order_index = ?, status = ?, updated_at = unixepoch() WHERE id = ?`).bind(stage, d.order_index || 0, d.status || 'active', existingClass.id).run();
+            await db.prepare(`UPDATE classes SET stage = ?, order_index = ?, status = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(stage, d.order_index || 0, d.status || 'active', existingClass.id, school_id).run();
             updated++;
           } else {
             const clsRes = await db.prepare(`INSERT INTO classes (school_id, name, stage, order_index, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', unixepoch(), unixepoch())`).bind(school_id, className, stage, d.order_index || 0).run();
@@ -7335,7 +7686,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             const existingSection = await db.prepare(`SELECT id FROM sections WHERE school_id = ? AND class_id = ? AND name = ? AND status != 'archived'`).bind(school_id, existingClass.id, d.section_name).first<any>();
             if (existingSection) {
               if (mode === 'update_existing') {
-                await db.prepare(`UPDATE sections SET capacity = ?, status = ?, updated_at = unixepoch() WHERE id = ?`).bind(d.capacity || null, d.status || 'active', existingSection.id).run();
+                await db.prepare(`UPDATE sections SET capacity = ?, status = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(d.capacity || null, d.status || 'active', existingSection.id, school_id).run();
               } else {
                 skipped++; // section already exists
               }
@@ -7350,14 +7701,23 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           if (!subjectName || !classId) { rowError(i, 'general', 'اسم المادة والصف مطلوبان'); continue; }
           const sectionKey = classId && d.section_name ? `${classId}:${d.section_name}` : null;
           const sectionId = sectionKey ? sectionMap.get(sectionKey) : (d.section_id || null);
-          const existingSubj = await db.prepare(`SELECT id FROM subjects WHERE class_id = ? AND (section_id IS ?) AND name = ? AND status != 'archived'`).bind(classId, sectionId || null, subjectName).first<any>();
+          const placement = await validateStudentPlacement(
+            db,
+            school_id,
+            Number(classId),
+            sectionId ? Number(sectionId) : null,
+          );
+          if (!placement.ok) {
+            rowError(i, 'class_section', placement.error); continue;
+          }
+          const existingSubj = await db.prepare(`SELECT id FROM subjects WHERE school_id = ? AND class_id = ? AND (section_id IS ?) AND name = ? AND status != 'archived'`).bind(school_id, classId, sectionId || null, subjectName).first<any>();
           if (existingSubj) {
             if (mode === 'skip_existing') { skipped++; continue; }
             if (mode === 'error_on_existing') { rowError(i, 'subject_name', 'المادة موجودة مسبقاً'); continue; }
             await db.prepare(`
               UPDATE subjects SET subject_type = ?, counts_in_average = ?, appears_in_report_card = ?, passing_grade = ?, exemption_grade = ?, order_index = ?, status = ?, updated_at = unixepoch()
-              WHERE id = ?
-            `).bind(d.subject_type || 'core', d.counts_in_average ?? 1, d.appears_in_report_card ?? 1, d.passing_grade || null, d.exemption_grade || null, d.order_index || 0, d.status || 'active', existingSubj.id).run();
+              WHERE id = ? AND school_id = ?
+            `).bind(d.subject_type || 'core', d.counts_in_average ?? 1, d.appears_in_report_card ?? 1, d.passing_grade || null, d.exemption_grade || null, d.order_index || 0, d.status || 'active', existingSubj.id, school_id).run();
             updated++;
           } else {
             const subjType = isValidSubjectType(d.subject_type) || 'core';
@@ -7396,8 +7756,8 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             if (mode === 'error_on_existing') { rowError(i, 'full_name', 'موظف بنفس البيانات موجود مسبقاً'); continue; }
             await db.prepare(`
               UPDATE employees SET full_name = ?, gender = ?, phone = ?, email = ?, address = ?, job_title = ?, employee_type = ?, salary_type = ?, salary_amount = ?, hire_date = ?, status = ?, notes = ?, updated_at = unixepoch()
-              WHERE id = ?
-            `).bind(fullName, gender || null, phone || null, email || null, d.address || null, d.job_title || null, employeeType, salaryType, salaryAmount, hireDate || null, empStatus, d.notes || null, dup.id).run();
+              WHERE id = ? AND school_id = ?
+            `).bind(fullName, gender || null, phone || null, email || null, d.address || null, d.job_title || null, employeeType, salaryType, salaryAmount, hireDate || null, empStatus, d.notes || null, dup.id, school_id).run();
             updated++;
           } else {
             await db.prepare(`
@@ -7412,6 +7772,16 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           const subjectId = d.subject_id;
           if (!studentId || !subjectId) { rowError(i, 'general', 'بيانات الدرجة غير كاملة'); continue; }
 
+          const assignmentValidation = await validateStudentSubjectAssignment(
+            db,
+            school_id,
+            Number(studentId),
+            Number(subjectId),
+          );
+          if (!assignmentValidation.ok) {
+            rowError(i, 'assignment', assignmentValidation.error); continue;
+          }
+
           let assignment = await db.prepare(`SELECT id, is_active FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, studentId, subjectId).first<any>();
 
           if (!assignment) {
@@ -7419,15 +7789,15 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
               const assignmentRes = await db.prepare(`
                 INSERT INTO student_subjects (school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, notes, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, 1, ?, unixepoch(), ?, unixepoch(), unixepoch())
-              `).bind(school_id, studentId, subjectId, d.class_id || null, d.section_id || null, user?.id || null, d.notes || null).run();
+              `).bind(school_id, studentId, subjectId, assignmentValidation.class_id, assignmentValidation.section_id, user?.id || null, d.notes || null).run();
               assignment = { id: assignmentRes.meta.last_row_id, is_active: 1 };
             } else {
               rowError(i, 'assignment', 'الطالب غير مسجل في هذه المادة'); continue;
             }
           } else if (!assignment.is_active && d.assignment_will_reactivate) {
             await db.prepare(`
-              UPDATE student_subjects SET is_active = 1, assigned_by_user_id = ?, assigned_at = unixepoch(), updated_at = unixepoch() WHERE id = ?
-            `).bind(user?.id || null, assignment.id).run();
+              UPDATE student_subjects SET is_active = 1, assigned_by_user_id = ?, assigned_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?
+            `).bind(user?.id || null, assignment.id, school_id).run();
             assignment.is_active = 1;
           }
 
@@ -7475,14 +7845,14 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
                 final_grade = ?, grade_after_completion = ?, effective_grade = ?,
                 result_status = ?, exemption_status = ?, notes = ?,
                 updated_at = unixepoch(), updated_by_user_id = ?
-              WHERE id = ?
+              WHERE id = ? AND school_id = ?
             `).bind(
               newGrades.first_month, newGrades.second_month, newGrades.third_month, newGrades.fourth_month,
               newGrades.mid_year_exam, newGrades.final_exam, newGrades.completion_exam,
               calc.first_term_average, calc.second_term_average, calc.annual_effort,
               calc.final_grade, calc.grade_after_completion, calc.effective_grade,
               calc.result_status, calc.exemption_status, newGrades.notes,
-              user?.id || null, existingGrade.id
+              user?.id || null, existingGrade.id, school_id
             ).run();
 
             // Write grade_change_logs for changed raw fields only
@@ -7534,6 +7904,16 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           const subjectId = d.subject_id;
           if (!studentId || !subjectId) { rowError(i, 'general', 'بيانات التسجيل غير كاملة'); continue; }
 
+          const assignmentValidation = await validateStudentSubjectAssignment(
+            db,
+            school_id,
+            Number(studentId),
+            Number(subjectId),
+          );
+          if (!assignmentValidation.ok) {
+            rowError(i, 'assignment', assignmentValidation.error); continue;
+          }
+
           const existingAssignment = await db.prepare(`SELECT id, is_active FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, studentId, subjectId).first<any>();
 
           if (existingAssignment) {
@@ -7541,7 +7921,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
               if (mode === 'error_on_existing') { rowError(i, 'assignment', 'التسجيل في المادة موجود مسبقاً'); continue; }
               if (mode === 'skip_existing') { skipped++; continue; }
               // update_existing: update notes only
-              await db.prepare(`UPDATE student_subjects SET notes = ?, updated_at = unixepoch() WHERE id = ?`).bind(d.notes || null, existingAssignment.id).run();
+              await db.prepare(`UPDATE student_subjects SET notes = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(d.notes || null, existingAssignment.id, school_id).run();
               updated++;
             } else {
               if (mode === 'error_on_existing') { rowError(i, 'assignment', 'التسجيل في المادة موجود مسبقاً (غير نشط)'); continue; }
@@ -7549,15 +7929,15 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
               // update_existing: reactivate
               await db.prepare(`
                 UPDATE student_subjects SET is_active = 1, assigned_by_user_id = ?, assigned_at = unixepoch(), updated_at = unixepoch(), notes = ?
-                WHERE id = ?
-              `).bind(user?.id || null, d.notes || null, existingAssignment.id).run();
+                WHERE id = ? AND school_id = ?
+              `).bind(user?.id || null, d.notes || null, existingAssignment.id, school_id).run();
               updated++;
             }
           } else {
             await db.prepare(`
               INSERT INTO student_subjects (school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, notes, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch(), ?, unixepoch(), unixepoch())
-            `).bind(school_id, studentId, subjectId, d.class_id || null, d.section_id || null, d.is_active !== false ? 1 : 0, user?.id || null, d.notes || null).run();
+            `).bind(school_id, studentId, subjectId, assignmentValidation.class_id, assignmentValidation.section_id, d.is_active !== false ? 1 : 0, user?.id || null, d.notes || null).run();
             imported++;
           }
         }
@@ -7576,8 +7956,8 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
 
     await db.prepare(`
       UPDATE import_jobs SET status = ?, valid_rows = ?, imported_rows = ?, skipped_rows = ?, updated_rows = ?, error_rows = ?, summary_json = ?, completed_at = unixepoch()
-      WHERE id = ?
-    `).bind(errorCount > 0 ? 'completed' : 'completed', rows.length - errorCount, imported, skipped, updated, errorCount, JSON.stringify(summary), jobId).run();
+      WHERE id = ? AND school_id = ?
+    `).bind(errorCount > 0 ? 'completed' : 'completed', rows.length - errorCount, imported, skipped, updated, errorCount, JSON.stringify(summary), jobId, school_id).run();
 
     return c.json({ data: { job_id: jobId, ...summary } });
   } catch (err: any) {
@@ -7715,6 +8095,8 @@ app.get('/api/import-export/jobs', requireSameSchoolOrAdmin(), async (c) => {
 app.get('/api/import-export/jobs/:id', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
   const id = c.req.param('id');
 
   if (!user || !canImportExport(user.role_key)) {
@@ -7724,6 +8106,9 @@ app.get('/api/import-export/jobs/:id', requireSameSchoolOrAdmin(), async (c) => 
   try {
     const row = await db.prepare(`SELECT * FROM import_jobs WHERE id = ?`).bind(id).first<any>();
     if (!row) return c.json({ error: 'السجل غير موجود' }, 404);
+    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: السجل تابع لمدرسة أخرى' }, 403);
+    }
     return c.json({ data: row });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب تفاصيل السجل', detail: err.message }, 500);
