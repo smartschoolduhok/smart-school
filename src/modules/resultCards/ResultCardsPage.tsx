@@ -9,6 +9,12 @@ import {
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
+  hasRole,
+  RESULT_CARD_MANAGEMENT_ROLES,
+  RESULT_CARD_PRINT_ROLES,
+} from '../../lib/rbac';
+import type { RoleKey } from '../../types';
+import {
   FileText, Printer, Search, User, Users, CheckCircle, AlertCircle,
   Loader2, QrCode, XCircle, Eye, Trash2, CheckSquare, Globe
 } from 'lucide-react';
@@ -19,8 +25,8 @@ function displayNum(n: number | null | undefined): string {
   return toArabicDigits(String(n));
 }
 
-function canGenerate(roleKey?: string): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(roleKey || '');
+function canGenerate(roleKey?: RoleKey): boolean {
+  return hasRole(roleKey, RESULT_CARD_MANAGEMENT_ROLES);
 }
 
 function statusBadge(status: string | null) {
@@ -541,9 +547,11 @@ function ListTab() {
                       <div className="flex items-center justify-center gap-1">
                         {c.status === 'active' && (
                           <>
-                            <button onClick={() => handleMarkPrinted(c.id)} title="تعليم كمطبوع" className="p-1.5 rounded-md hover:bg-blue-50 text-blue-600 transition-colors">
-                              <Printer size={14} />
-                            </button>
+                            {hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && (
+                              <button onClick={() => handleMarkPrinted(c.id)} title="تعليم كمطبوع" className="p-1.5 rounded-md hover:bg-blue-50 text-blue-600 transition-colors">
+                                <Printer size={14} />
+                              </button>
+                            )}
                             <a
                               href={`/print/result-card/${c.id}`}
                               target="_blank"
@@ -553,9 +561,11 @@ function ListTab() {
                             >
                               <Printer size={14} />
                             </a>
-                            <button onClick={() => handleCancel(c.id)} title="إلغاء" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
-                              <XCircle size={14} />
-                            </button>
+                            {hasRole(user?.role_key, RESULT_CARD_MANAGEMENT_ROLES) && (
+                              <button onClick={() => handleCancel(c.id)} title="إلغاء" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
+                                <XCircle size={14} />
+                              </button>
+                            )}
                           </>
                         )}
                         <a

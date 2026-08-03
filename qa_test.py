@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """QA Test Suite for Step 2 Core Admin CRUD"""
-import json, urllib.request, urllib.error, sys
+import json, urllib.request, urllib.error, sys, time
 
 BASE = "http://localhost:3000"
 FAILURES = 0
+RUN_ID = str(int(time.time()))
+TEST_USER_EMAIL = f"testuser+{RUN_ID}@school.iq"
 
 def api_with_status(method, path, headers=None, body=None):
     url = f"{BASE}{path}"
@@ -78,16 +80,16 @@ if not admin_tok:
 print("\n=== USERS CRUD TESTS ===")
 
 r = api("POST", "/api/users", headers={"Authorization": f"Bearer {admin_tok}"},
-        body={"full_name": "مستخدم اختبار", "email": "testuser@school.iq", "password": "testpass123",
+        body={"full_name": "مستخدم اختبار", "email": TEST_USER_EMAIL, "password": "testpass123",
               "role_id": 5, "school_id": 1, "phone": "07801112233", "status": "active"})
 user_id = r.get("data", {}).get("id") if "data" in r else None
 check("7. Admin creates user (teacher)", user_id is not None, str(r)[:100])
 
-r = login("testuser@school.iq", "testpass123")
+r = login(TEST_USER_EMAIL, "testpass123")
 check("8. New user login", r is not None)
 
 r = api("POST", "/api/users", headers={"Authorization": f"Bearer {admin_tok}"},
-        body={"full_name": "مستخدم مكرر", "email": "testuser@school.iq", "password": "duppass123",
+        body={"full_name": "مستخدم مكرر", "email": TEST_USER_EMAIL, "password": "duppass123",
               "role_id": 5, "school_id": 1, "status": "active"})
 check("9. Duplicate email blocked", "error" in r, str(r)[:100])
 
@@ -101,21 +103,21 @@ if user_id:
             body={"password": "newpassword456"})
     check("11. Reset password", "data" in r, str(r)[:100])
 
-    r = login("testuser@school.iq", "newpassword456")
+    r = login(TEST_USER_EMAIL, "newpassword456")
     check("12. New password login works", r is not None)
 
     r = api("PUT", f"/api/users/{user_id}/status", headers={"Authorization": f"Bearer {admin_tok}"},
             body={"status": "inactive"})
     check("13. Deactivate user", "data" in r, str(r)[:100])
 
-    r = login("testuser@school.iq", "newpassword456")
+    r = login(TEST_USER_EMAIL, "newpassword456")
     check("14. Deactivated user cannot login", r is None, str(r)[:100] if r else "")
 
     r = api("PUT", f"/api/users/{user_id}/status", headers={"Authorization": f"Bearer {admin_tok}"},
             body={"status": "active"})
     check("15. Reactivate user", "data" in r, str(r)[:100])
 
-    r = login("testuser@school.iq", "newpassword456")
+    r = login(TEST_USER_EMAIL, "newpassword456")
     check("16. Reactivated user can login", r is not None, str(r)[:100] if r else "")
 else:
     print("SKIP tests 11-16: user_id not available")
@@ -260,6 +262,271 @@ check("D4. Accountant sees only own school", True, f"{acc_count} schools")
 print("\n=== ROLES PAGE TEST ===")
 r = api("GET", "/api/roles", headers={"Authorization": f"Bearer {admin_tok}"})
 check("R1. Admin can view roles", "data" in r and len(r.get("data", [])) > 0, str(r)[:100])
+
+# === P0 RESULT CARD INTEGRITY + RBAC ===
+print("\n=== P0 RESULT CARD TESTS ===")
+principal_headers = {"Authorization": f"Bearer {principal_tok}"}
+teacher_headers = {"Authorization": f"Bearer {teacher_tok}"}
+registrar_headers = {"Authorization": f"Bearer {registrar_tok}"}
+owner_headers = {"Authorization": f"Bearer {owner_tok}"}
+
+create_status, create_result = api_with_status(
+    "POST", "/api/result-cards/generate-student/1", headers=principal_headers
+)
+if create_status == 200:
+    result_card_id = create_result.get("data", {}).get("card", {}).get("id")
+else:
+    _, active_cards = api_with_status(
+        "GET",
+        "/api/result-cards?student_id=1&status=active",
+        headers=principal_headers,
+    )
+    result_card_id = next(
+        (row.get("id") for row in active_cards.get("data", []) if row.get("student_name_snapshot")),
+        None,
+    )
+check(
+    "P0-RC1. Complete student has an active result card",
+    result_card_id is not None and create_status in (200, 409),
+    f"status={create_status}, response={str(create_result)[:120]}",
+)
+
+duplicate_status, duplicate_result = api_with_status(
+    "POST", "/api/result-cards/generate-student/1", headers=principal_headers
+)
+check(
+    "P0-RC2. Duplicate active card for the same academic year is rejected",
+    duplicate_status == 409,
+    f"status={duplicate_status}, response={str(duplicate_result)[:120]}",
+)
+
+section_status, section_result = api_with_status(
+    "POST",
+    "/api/result-cards/generate-section",
+    headers=principal_headers,
+    body={"class_id": 1, "section_id": 1},
+)
+student2_cards_status, student2_cards = api_with_status(
+    "GET",
+    "/api/result-cards?student_id=2&status=active",
+    headers=principal_headers,
+)
+student2_card = next(iter(student2_cards.get("data", [])), None)
+check(
+    "P0-RC2B. Section generation preserves the subject result status",
+    section_status == 200
+    and student2_cards_status == 200
+    and student2_card is not None
+    and student2_card.get("overall_result_status") == "مكمل",
+    f"section={str(section_result)[:100]}, card={str(student2_card)[:100]}",
+)
+
+cross_section_status, cross_section_result = api_with_status(
+    "POST",
+    "/api/result-cards/generate-section",
+    headers=owner_headers,
+    body={"class_id": 1, "section_id": 1},
+)
+check(
+    "P0-RC3. School owner cannot generate cards for another school's section",
+    cross_section_status == 403,
+    f"status={cross_section_status}, response={str(cross_section_result)[:120]}",
+)
+
+if result_card_id:
+    teacher_cancel_status, _ = api_with_status(
+        "PUT", f"/api/result-cards/{result_card_id}/cancel", headers=teacher_headers
+    )
+    registrar_cancel_status, _ = api_with_status(
+        "PUT", f"/api/result-cards/{result_card_id}/cancel", headers=registrar_headers
+    )
+    registrar_print_status, registrar_print_result = api_with_status(
+        "PUT", f"/api/result-cards/{result_card_id}/mark-printed", headers=registrar_headers
+    )
+    owner_read_status, _ = api_with_status(
+        "GET", f"/api/result-cards/{result_card_id}", headers=owner_headers
+    )
+    owner_cancel_status, _ = api_with_status(
+        "PUT", f"/api/result-cards/{result_card_id}/cancel", headers=owner_headers
+    )
+    owner_print_status, _ = api_with_status(
+        "PUT", f"/api/result-cards/{result_card_id}/mark-printed", headers=owner_headers
+    )
+    check("P0-RC4. Teacher cannot cancel result cards", teacher_cancel_status == 403)
+    check("P0-RC5. Registrar cannot cancel result cards", registrar_cancel_status == 403)
+    check(
+        "P0-RC6. Registrar can register printing for their school's result card",
+        registrar_print_status == 200,
+        str(registrar_print_result)[:100],
+    )
+    check(
+        "P0-RC7. Cross-school result-card read and writes are rejected",
+        owner_read_status == owner_cancel_status == owner_print_status == 403,
+        f"read={owner_read_status}, cancel={owner_cancel_status}, print={owner_print_status}",
+    )
+else:
+    check("P0-RC4. Teacher cannot cancel result cards", False, "No result card")
+    check("P0-RC5. Registrar cannot cancel result cards", False, "No result card")
+    check("P0-RC6. Registrar can register printing for their school's result card", False, "No result card")
+    check("P0-RC7. Cross-school result-card read and writes are rejected", False, "No result card")
+
+# === P0 TENANT ISOLATION: STUDENTS + OFFICIAL BOOKS ===
+print("\n=== P0 TENANT ISOLATION TESTS ===")
+cross_student_status, cross_student_result = api_with_status(
+    "POST",
+    "/api/students",
+    headers=owner_headers,
+    body={
+        "student_number": f"P0-CROSS-{RUN_ID}",
+        "full_name": "Cross School Student",
+        "gender": "ذكر",
+        "class_id": 1,
+        "section_id": 1,
+    },
+)
+check(
+    "P0-T1. Student cannot be created with another school's class and section",
+    cross_student_status == 403,
+    f"status={cross_student_status}, response={str(cross_student_result)[:120]}",
+)
+
+before_status, before_student = api_with_status("GET", "/api/students/11", headers=owner_headers)
+cross_update_status, cross_update_result = api_with_status(
+    "PUT",
+    "/api/students/11",
+    headers=owner_headers,
+    body={"class_id": 1, "section_id": 1},
+)
+after_status, after_student = api_with_status("GET", "/api/students/11", headers=owner_headers)
+check(
+    "P0-T2. Cross-school class IDs cannot mutate an existing student",
+    before_status == after_status == 200
+    and cross_update_status == 403
+    and before_student.get("data", {}).get("class_id") == after_student.get("data", {}).get("class_id")
+    and before_student.get("data", {}).get("section_id") == after_student.get("data", {}).get("section_id"),
+    f"update={cross_update_status}, response={str(cross_update_result)[:100]}",
+)
+
+template_status, template_result = api_with_status(
+    "POST",
+    "/api/official-book-templates",
+    headers=owner_headers,
+    body={
+        "title": f"P0 Student Template {RUN_ID}",
+        "body_text": "Student: {{student_name}} / {{document_number}}",
+        "requires_student": True,
+    },
+)
+student_template_id = template_result.get("data", {}).get("id")
+check(
+    "P0-T3. School owner creates an own-school official-book template",
+    template_status == 201 and student_template_id is not None,
+    str(template_result)[:120],
+)
+
+if student_template_id:
+    template_cross_update_status, _ = api_with_status(
+        "PUT",
+        f"/api/official-book-templates/{student_template_id}",
+        headers=principal_headers,
+        body={"title": "Cross-school overwrite"},
+    )
+    cross_book_status, cross_book_result = api_with_status(
+        "POST",
+        "/api/official-books",
+        headers=owner_headers,
+        body={"template_id": student_template_id, "student_id": 1},
+    )
+    own_book_status, own_book_result = api_with_status(
+        "POST",
+        "/api/official-books",
+        headers=owner_headers,
+        body={"template_id": student_template_id, "student_id": 11},
+    )
+    official_book_id = own_book_result.get("data", {}).get("id")
+    check("P0-T4. Another school cannot update the template by ID", template_cross_update_status == 403)
+    check(
+        "P0-T5. Official book rejects a student from another school",
+        cross_book_status == 403,
+        f"status={cross_book_status}, response={str(cross_book_result)[:100]}",
+    )
+    check(
+        "P0-T6. Official book accepts a valid same-school student",
+        own_book_status == 201 and official_book_id is not None,
+        str(own_book_result)[:120],
+    )
+else:
+    official_book_id = None
+    check("P0-T4. Another school cannot update the template by ID", False, "No template")
+    check("P0-T5. Official book rejects a student from another school", False, "No template")
+    check("P0-T6. Official book accepts a valid same-school student", False, "No template")
+
+employee_template_status, employee_template_result = api_with_status(
+    "POST",
+    "/api/official-book-templates",
+    headers=owner_headers,
+    body={
+        "title": f"P0 Employee Template {RUN_ID}",
+        "body_text": "Employee: {{employee_name}}",
+        "requires_employee": True,
+    },
+)
+employee_template_id = employee_template_result.get("data", {}).get("id")
+if employee_template_status == 201 and employee_template_id:
+    cross_employee_status, cross_employee_result = api_with_status(
+        "POST",
+        "/api/official-books",
+        headers=owner_headers,
+        body={"template_id": employee_template_id, "employee_id": 1},
+    )
+    missing_employee_status, _ = api_with_status(
+        "POST",
+        "/api/official-books",
+        headers=owner_headers,
+        body={"template_id": employee_template_id, "employee_id": 999999},
+    )
+    check(
+        "P0-T7. Official book rejects an employee from another school",
+        cross_employee_status == 403,
+        f"status={cross_employee_status}, response={str(cross_employee_result)[:100]}",
+    )
+    check("P0-T8. Official book returns 404 for a missing employee", missing_employee_status == 404)
+else:
+    check("P0-T7. Official book rejects an employee from another school", False, "No employee template")
+    check("P0-T8. Official book returns 404 for a missing employee", False, "No employee template")
+
+if official_book_id:
+    cross_read_status, _ = api_with_status(
+        "GET", f"/api/official-books/{official_book_id}", headers=principal_headers
+    )
+    cross_cancel_status, _ = api_with_status(
+        "PUT", f"/api/official-books/{official_book_id}/cancel", headers=principal_headers
+    )
+    cross_print_status, _ = api_with_status(
+        "POST", f"/api/official-books/{official_book_id}/print", headers=registrar_headers
+    )
+    own_print_status, own_print_result = api_with_status(
+        "POST", f"/api/official-books/{official_book_id}/print", headers=owner_headers
+    )
+    _, school1_prints = api_with_status("GET", "/api/print-records", headers=principal_headers)
+    _, school2_prints = api_with_status("GET", "/api/print-records", headers=owner_headers)
+    school1_document_ids = {row.get("document_id") for row in school1_prints.get("data", [])}
+    school2_document_ids = {row.get("document_id") for row in school2_prints.get("data", [])}
+    check(
+        "P0-T9. Cross-school official-book read, cancel, and print are rejected",
+        cross_read_status == cross_cancel_status == cross_print_status == 403,
+        f"read={cross_read_status}, cancel={cross_cancel_status}, print={cross_print_status}",
+    )
+    check(
+        "P0-T10. Same-school print is recorded and isolated in print-record lists",
+        own_print_status == 200
+        and official_book_id in school2_document_ids
+        and official_book_id not in school1_document_ids,
+        str(own_print_result)[:100],
+    )
+else:
+    check("P0-T9. Cross-school official-book read, cancel, and print are rejected", False, "No book")
+    check("P0-T10. Same-school print is recorded and isolated in print-record lists", False, "No book")
 
 print("\n=== QA COMPLETE ===")
 if FAILURES:

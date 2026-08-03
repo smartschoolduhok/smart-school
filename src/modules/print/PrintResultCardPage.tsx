@@ -4,6 +4,12 @@ import { useAuth } from '../../hooks/useAuth';
 import { getResultCard, markResultCardPrinted } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
+  hasRole,
+  RESULT_CARD_PRINT_ROLES,
+  RESULT_CARD_VIEW_ROLES,
+} from '../../lib/rbac';
+import type { RoleKey } from '../../types';
+import {
   PrintLayout,
   DocumentHeader,
   DocumentFooter,
@@ -52,8 +58,8 @@ interface CardRecord {
   settings_snapshot_json?: string;
 }
 
-function canViewResultCards(roleKey?: string) {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar', 'parent'].includes(roleKey || '');
+function canViewResultCards(roleKey?: RoleKey) {
+  return hasRole(roleKey, RESULT_CARD_VIEW_ROLES);
 }
 
 export default function PrintResultCardPage() {
@@ -78,7 +84,11 @@ export default function PrintResultCardPage() {
   const { handlePrint, isPrinting } = usePrintExport({
     documentTitle: card?.card_number ? `كارت نتيجة ${card.card_number}` : 'كارت نتيجة',
     onBeforePrint: async () => {
-      if (!card || card.status === 'cancelled') return;
+      if (
+        !card ||
+        card.status === 'cancelled' ||
+        !hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES)
+      ) return;
       try {
         await markResultCardPrinted(String(card.id));
       } catch {
