@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import type { RoleKey } from '../../types';
+import { SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
   getGrades, getStudentGrades, initializeStudentGrades, initializeSectionGrades,
   updateGrade, bulkUpdateGrades, getGradeHistory, getGradeSettings, updateGradeSettings,
@@ -87,16 +89,16 @@ interface AuditRecord {
 
 type TabKey = 'student' | 'section' | 'settings' | 'history';
 
-const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; roles?: string[] }[] = [
+const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; roles?: readonly RoleKey[] }[] = [
   { key: 'student', label: 'إدخال درجات طالب', icon: <User size={18} /> },
   { key: 'section', label: 'إدخال درجات شعبة', icon: <Users size={18} /> },
-  { key: 'settings', label: 'إعدادات الدرجات', icon: <Settings size={18} />, roles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
+  { key: 'settings', label: 'إعدادات الدرجات', icon: <Settings size={18} />, roles: SCHOOL_MANAGEMENT_ROLES },
   { key: 'history', label: 'سجل تعديل الدرجات', icon: <History size={18} /> },
 ];
 
-function canAccessTab(userRole: string | undefined, tabRoles?: string[]): boolean {
+function canAccessTab(userRole: RoleKey | undefined, tabRoles?: readonly RoleKey[]): boolean {
   if (!tabRoles || tabRoles.length === 0) return true;
-  return tabRoles.includes(userRole || '');
+  return hasRole(userRole, tabRoles);
 }
 
 export default function GradesPage() {
@@ -712,7 +714,7 @@ function SettingsTab() {
   const { user } = useAuth();
   const isAdmin = user?.role_key === 'system_admin';
   const isTeacher = user?.role_key === 'teacher';
-  const canEdit = isAdmin || ['school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
+  const canEdit = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
   const jwtSchoolId = user?.school_id;
   const [selectedSchoolId, setSelectedSchoolId] = useState<number | null>(jwtSchoolId ?? null);
   const [schools, setSchools] = useState<Array<Record<string, any>>>([]);

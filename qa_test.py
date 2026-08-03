@@ -135,7 +135,7 @@ if school_id:
             body={"name": "مدرسة اختبار محدثة", "name_en": "Updated Test School", "school_type": "دولي", "city": "النجف",
                   "province": "النجف", "address": "شارع ٢٠", "phone": "07809998888", "email": "updated@school.iq",
                   "website": "https://updated.school.iq", "principal_name": "مدير محدث", "status": "active"})
-    check("S2. Admin edits school", "data" in r and "مدرسة اختبار محدثة" in json.dumps(r), str(r)[:100])
+    check("S2. Admin edits school", r.get("data", {}).get("name") == "مدرسة اختبار محدثة", str(r)[:100])
 
     r = api("PUT", f"/api/schools/{school_id}/archive", headers={"Authorization": f"Bearer {admin_tok}"})
     check("S3. Admin archives school", "data" in r and ("archived" in json.dumps(r) or "inactive" in json.dumps(r)), str(r)[:100])

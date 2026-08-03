@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { getClasses, getSections, createClass, updateClass, archiveClass, createSection, updateSection, archiveSection } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import { Search, Plus, Filter, Archive, Edit2, X, Check, Layers, Users, BookOpen, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 
 interface ClassRecord {
@@ -38,7 +39,7 @@ const emptySectionForm = { class_id: '' as string | number, name: '', capacity: 
 export default function ClassesPage() {
   const { user } = useAuth();
   const schoolId = user?.school_id;
-  const canManage = user?.role_key === 'system_admin' || user?.role_key === 'principal' || user?.role_key === 'registrar';
+  const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
 
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [sections, setSections] = useState<SectionRecord[]>([]);

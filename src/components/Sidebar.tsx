@@ -2,6 +2,16 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { LayoutDashboard, School, Users, Shield, Settings, GraduationCap, BookOpen, Calculator, CreditCard, Wallet, FileText, Printer, Bus, Globe, Brain, BookMarked, Layers, UserCheck, HeartHandshake, BarChart3, ArrowDownUp } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import type { RoleKey } from '../types';
+import {
+  ACADEMIC_ACCESS_ROLES,
+  ANALYTICS_ACCESS_ROLES,
+  FINANCE_ACCESS_ROLES,
+  IMPORT_EXPORT_ROLES,
+  OFFICIAL_BOOK_ACCESS_ROLES,
+  SCHOOL_MANAGEMENT_ROLES,
+  SYSTEM_ADMIN_ROLES,
+  hasRole,
+} from '../lib/rbac';
 
 interface NavItem {
   label: string;
@@ -12,7 +22,7 @@ interface NavItem {
   section?: string;
   // Role visibility: which roles can see this item
   // If undefined/empty, visible to all authenticated users
-  allowedRoles?: RoleKey[];
+  allowedRoles?: readonly RoleKey[];
 }
 
 // ===========================================
@@ -33,35 +43,35 @@ const activeModules: NavItem[] = [
   { label: 'لوحة التحكم', path: '/', icon: <LayoutDashboard size={20} />, active: true },
 
   // Admin-only: system_admin only
-  { label: 'المدارس', path: '/schools', icon: <School size={20} />, active: true, allowedRoles: ['system_admin'] },
-  { label: 'المستخدمون', path: '/users', icon: <Users size={20} />, active: true, allowedRoles: ['system_admin'] },
-  { label: 'الأدوار والصلاحيات', path: '/roles', icon: <Shield size={20} />, active: true, allowedRoles: ['system_admin'] },
+  { label: 'المدارس', path: '/schools', icon: <School size={20} />, active: true, allowedRoles: SYSTEM_ADMIN_ROLES },
+  { label: 'المستخدمون', path: '/users', icon: <Users size={20} />, active: true, allowedRoles: SYSTEM_ADMIN_ROLES },
+  { label: 'الأدوار والصلاحيات', path: '/roles', icon: <Shield size={20} />, active: true, allowedRoles: SYSTEM_ADMIN_ROLES },
 
   // Phase 2 modules - academic (admin + school staff)
-  { label: 'الطلاب', path: '/students', icon: <GraduationCap size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
-  { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
-  { label: 'المواد', path: '/subjects', icon: <BookOpen size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
-  { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
-  { label: 'الدرجات', path: '/grades', icon: <Calculator size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
-  { label: 'التحليل', path: '/analytics', icon: <BarChart3 size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar', 'accountant'] },
-  { label: 'كارتات النتائج', path: '/result-cards', icon: <FileText size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar'] },
+  { label: 'الطلاب', path: '/students', icon: <GraduationCap size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
+  { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
+  { label: 'المواد', path: '/subjects', icon: <BookOpen size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
+  { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
+  { label: 'الدرجات', path: '/grades', icon: <Calculator size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
+  { label: 'التحليل', path: '/analytics', icon: <BarChart3 size={20} />, active: true, allowedRoles: ANALYTICS_ACCESS_ROLES },
+  { label: 'كارتات النتائج', path: '/result-cards', icon: <FileText size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
 
   // Phase 7 modules - finance (admin + accountant)
-  { label: 'الأقساط', path: '/fees', icon: <CreditCard size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant'] },
-  { label: 'الخزنة', path: '/treasury', icon: <Wallet size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant'] },
+  { label: 'الأقساط', path: '/fees', icon: <CreditCard size={20} />, active: true, allowedRoles: FINANCE_ACCESS_ROLES },
+  { label: 'الخزنة', path: '/treasury', icon: <Wallet size={20} />, active: true, allowedRoles: FINANCE_ACCESS_ROLES },
 
   // Phase 9 modules - HR (admin + principal)
-  { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
+  { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true, allowedRoles: SCHOOL_MANAGEMENT_ROLES },
 
   // Phase 13A modules - data (admin + school staff)
-  { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
+  { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={20} />, active: true, allowedRoles: IMPORT_EXPORT_ROLES },
 
   // Phase 12 modules - official books (admin + registrar)
-  { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'] },
-  { label: 'السجلات المطبوعة', path: '/print-records', icon: <Printer size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'] },
+  { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={20} />, active: true, allowedRoles: OFFICIAL_BOOK_ACCESS_ROLES },
+  { label: 'السجلات المطبوعة', path: '/print-records', icon: <Printer size={20} />, active: true, allowedRoles: OFFICIAL_BOOK_ACCESS_ROLES },
 
   // Settings - admin + school management
-  { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true, allowedRoles: ['system_admin', 'school_owner', 'principal', 'vice_principal'] },
+  { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true, allowedRoles: SCHOOL_MANAGEMENT_ROLES },
 ];
 
 const futureModules: NavItem[] = [
@@ -77,7 +87,7 @@ function isModuleVisible(item: NavItem, roleKey?: RoleKey | null): boolean {
   // No role restriction - visible to all authenticated users
   if (!item.allowedRoles || item.allowedRoles.length === 0) return true;
   // Check if user's role is in allowed list
-  return item.allowedRoles.includes(roleKey);
+  return hasRole(roleKey, item.allowedRoles);
 }
 
 export default function Sidebar() {
@@ -88,8 +98,8 @@ export default function Sidebar() {
   const visibleModules = activeModules.filter(item => isModuleVisible(item, user?.role_key));
 
   return (
-    <aside className="fixed right-0 top-0 h-full w-64 bg-sidebar-bg text-white z-50 overflow-y-auto">
-      <div className="p-6">
+    <aside className="fixed right-0 top-0 h-full w-64 bg-sidebar-bg text-white z-50 flex flex-col">
+      <div className="p-6 flex-1 min-h-0 overflow-y-auto">
         <div className="flex items-center gap-3 mb-8">
           <div className="w-10 h-10 bg-primary-600 rounded-lg flex items-center justify-center">
             <School size={24} className="text-white" />
@@ -137,7 +147,7 @@ export default function Sidebar() {
         </nav>
       </div>
 
-      <div className="absolute bottom-0 right-0 left-0 p-4 border-t border-gray-800 bg-sidebar-bg">
+      <div className="shrink-0 p-4 border-t border-gray-800 bg-sidebar-bg">
         <div className="flex items-center gap-3 mb-3">
           <div className="w-8 h-8 bg-primary-700 rounded-full flex items-center justify-center text-sm font-bold">
             {user?.full_name?.charAt(0) || 'م'}

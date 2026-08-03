@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { IMPORT_EXPORT_ROLES, hasRole } from '../../lib/rbac';
 import { previewImport, confirmImport, getExportData, getImportJobs } from '../../lib/api';
 import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, XCircle, FileText, History, ChevronRight, ArrowLeft, ArrowRight, Loader2, BookOpen, Layers, GraduationCap, Users } from 'lucide-react';
 
@@ -238,10 +239,10 @@ export default function ImportExportPage() {
   const [selectedSectionId, setSelectedSectionId] = useState<number | null>(null);
   const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(null);
 
-  const canAccessEmployees = ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
-  const canAccessGrades = ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
-  const canAccessStudentSubjects = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(user?.role_key || '');
-  const canImportExport = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(user?.role_key || '');
+  const canAccessEmployees = hasRole(user?.role_key, IMPORT_EXPORT_ROLES);
+  const canAccessGrades = hasRole(user?.role_key, IMPORT_EXPORT_ROLES);
+  const canAccessStudentSubjects = hasRole(user?.role_key, IMPORT_EXPORT_ROLES);
+  const canImportExport = hasRole(user?.role_key, IMPORT_EXPORT_ROLES);
 
   const availableTypes = TYPE_OPTIONS.filter(t => {
     if (t.value === 'employees') return canAccessEmployees;
@@ -558,7 +559,7 @@ export default function ImportExportPage() {
               <p className="text-sm text-gray-500 mb-4">اختر الأعمدة المناسبة من ملف Excel لكل حقل من حقول النظام. يمكن ترك الحقول غير المستخدمة فارغة.</p>
 
               <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                {TYPE_OPTIONS.map(t => (
+                {availableTypes.map(t => (
                   <button key={t.value} onClick={() => { setSelectedType(t.value); setMapping(autoMapColumns(sheets.find(s => s.name === selectedSheet)?.columnNames || [], t.value)); }} className={`flex items-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${selectedType === t.value ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:bg-gray-50'}`}>
                     {t.icon} {t.label}
                   </button>

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { getSubjects, getClasses, getSections, createSubject, updateSubject, archiveSubject } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import { Search, Plus, Filter, Archive, Edit2, X, Check, BookOpen, ListOrdered, Tag, Users } from 'lucide-react';
 
 interface SubjectRecord {
@@ -49,7 +50,7 @@ const emptyForm = {
 export default function SubjectsPage() {
   const { user } = useAuth();
   const schoolId = user?.school_id;
-  const canManage = user?.role_key === 'system_admin' || user?.role_key === 'principal' || user?.role_key === 'registrar';
+  const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
 
   const [subjects, setSubjects] = useState<SubjectRecord[]>([]);
   const [classes, setClasses] = useState<ClassRecord[]>([]);

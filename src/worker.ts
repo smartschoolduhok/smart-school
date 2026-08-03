@@ -7,6 +7,18 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/cloudflare-workers'
+import type { RoleKey } from './types'
+import {
+  ACADEMIC_MANAGEMENT_ROLES,
+  EMPLOYEE_VIEW_ROLES,
+  FINANCE_ACCESS_ROLES,
+  GRADE_MANAGEMENT_ROLES,
+  OFFICIAL_BOOK_ACCESS_ROLES,
+  OFFICIAL_BOOK_VIEW_ROLES,
+  SCHOOL_MANAGEMENT_ROLES,
+  USER_DIRECTORY_ROLES,
+  hasRole,
+} from './lib/rbac'
 
 // ===========================================
 // Types & Extended Bindings
@@ -29,8 +41,6 @@ type Bindings = {
   JWT_SECRET: string;
   ASSETS?: { fetch(url: URL): Promise<{ status: number; body: ReadableStream | null }> };
 }
-
-type RoleKey = 'system_admin' | 'school_owner' | 'principal' | 'vice_principal' | 'teacher' | 'accountant' | 'registrar' | 'parent';
 
 interface UserContext {
   id: number;
@@ -283,6 +293,19 @@ function requireAdmin() {
     }
     if (user.role_key !== 'system_admin') {
       return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة المدارس' }, 403);
+    }
+    await next();
+  };
+}
+
+function requireRoles(allowedRoles: readonly RoleKey[], message = 'غير مسموح: لا تملك الصلاحية المطلوبة') {
+  return async (c: any, next: () => Promise<void>) => {
+    const user: UserContext | null = c.get('user') || null;
+    if (!user) {
+      return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401);
+    }
+    if (!hasRole(user.role_key, allowedRoles)) {
+      return c.json({ error: message }, 403);
     }
     await next();
   };
@@ -558,7 +581,7 @@ app.put('/api/schools/:id/archive', requireAdmin(), async (c) => {
 // ===========================================
 // API ROUTES: Users (with RBAC + school_id filtering)
 // ===========================================
-app.get('/api/users', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/users', requireSameSchoolOrAdmin(), requireRoles(USER_DIRECTORY_ROLES), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   const scope: 'all' | 'single' = c.get('scope')
@@ -596,13 +619,15 @@ app.get('/api/users', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.get('/api/users/:id', async (c) => {
+app.get('/api/users/:id', requireRoles(USER_DIRECTORY_ROLES), async (c) => {
   const db = c.env.DB
   const id = c.req.param('id')
   const user: UserContext | null = c.get('user') || null
   try {
     const row = await db.prepare(`
-      SELECT u.*, r.name as role_name, r.key as role_key, s.name as school_name
+      SELECT u.id, u.school_id, u.full_name, u.email, u.role_id, u.phone,
+             u.status, u.created_at, u.updated_at,
+             r.name as role_name, r.key as role_key, s.name as school_name
       FROM users u
       LEFT JOIN roles r ON u.role_id = r.id
       LEFT JOIN schools s ON u.school_id = s.id
@@ -1032,7 +1057,7 @@ app.get('/api/classes', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.post('/api/classes', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/classes', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
@@ -1063,7 +1088,7 @@ app.post('/api/classes', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.put('/api/classes/:id', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/classes/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
@@ -1087,7 +1112,7 @@ app.put('/api/classes/:id', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.put('/api/classes/:id/archive', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/classes/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
@@ -1139,7 +1164,7 @@ app.get('/api/sections', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.post('/api/sections', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/sections', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
@@ -1176,7 +1201,7 @@ app.post('/api/sections', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.put('/api/sections/:id', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/sections/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
@@ -1208,7 +1233,7 @@ app.put('/api/sections/:id', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
@@ -1262,7 +1287,7 @@ app.get('/api/students', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.get('/api/students/:id', async (c) => {
+app.get('/api/students/:id', requireAuthEnforced(), async (c) => {
   const db = c.env.DB
   const id = c.req.param('id')
   const user: UserContext | null = c.get('user') || null
@@ -1288,7 +1313,7 @@ app.get('/api/students/:id', async (c) => {
   }
 })
 
-app.post('/api/students', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
@@ -1331,7 +1356,7 @@ app.post('/api/students', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.put('/api/students/:id', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
@@ -1382,7 +1407,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.put('/api/students/:id/archive', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/students/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
@@ -1432,7 +1457,7 @@ app.get('/api/subjects', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.post('/api/subjects', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
@@ -1482,7 +1507,7 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
@@ -1527,7 +1552,7 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.put('/api/subjects/:id/archive', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/subjects/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
@@ -1641,7 +1666,7 @@ app.get('/api/students/:id/subjects', requireAuthEnforced(), async (c) => {
 });
 
 // POST /api/student-subjects/assign-class - assign to all active students in a class
-app.post('/api/student-subjects/assign-class', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/student-subjects/assign-class', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId');
@@ -1692,7 +1717,7 @@ app.post('/api/student-subjects/assign-class', requireSameSchoolOrAdmin(), async
 });
 
 // POST /api/student-subjects/assign-section - assign to all active students in a section
-app.post('/api/student-subjects/assign-section', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/student-subjects/assign-section', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -1744,7 +1769,7 @@ app.post('/api/student-subjects/assign-section', requireSameSchoolOrAdmin(), asy
 });
 
 // POST /api/student-subjects/assign-students - assign to a chosen list of students
-app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -1784,7 +1809,7 @@ app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), as
 });
 
 // POST /api/student-subjects/assign-one - assign to a single student
-app.post('/api/student-subjects/assign-one', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/student-subjects/assign-one', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -1819,7 +1844,7 @@ app.post('/api/student-subjects/assign-one', requireSameSchoolOrAdmin(), async (
 });
 
 // PUT /api/student-subjects/:id/reactivate - reactivate a deactivated assignment
-app.put('/api/student-subjects/:id/reactivate', requireAuthEnforced(), async (c) => {
+app.put('/api/student-subjects/:id/reactivate', requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const id = Number(c.req.param('id'));
@@ -1845,7 +1870,7 @@ app.put('/api/student-subjects/:id/reactivate', requireAuthEnforced(), async (c)
 });
 
 // PUT /api/student-subjects/:id/deactivate - deactivate one assignment
-app.put('/api/student-subjects/:id/deactivate', requireAuthEnforced(), async (c) => {
+app.put('/api/student-subjects/:id/deactivate', requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const id = Number(c.req.param('id'));
@@ -1863,7 +1888,7 @@ app.put('/api/student-subjects/:id/deactivate', requireAuthEnforced(), async (c)
 });
 
 // POST /api/student-subjects/bulk-deactivate - deactivate multiple assignments
-app.post('/api/student-subjects/bulk-deactivate', requireAuthEnforced(), async (c) => {
+app.post('/api/student-subjects/bulk-deactivate', requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -2040,7 +2065,7 @@ app.get('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
   }
 });
 
-app.put('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -2049,11 +2074,6 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
       general_exemption_average_grade, general_exemption_min_subject_grade,
       first_term_formula, second_term_formula, annual_effort_formula,
       final_grade_formula, completion_formula, effective_formula } = body;
-
-    // Role-based permission: only admin, owner, principal, vice_principal can update
-    if (user && !['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user.role_key)) {
-      return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات الدرجات' }, 403);
-    }
 
     const scope = c.get('scope');
     const resolvedSchoolId = c.get('resolvedSchoolId');
@@ -2284,7 +2304,7 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), async (c) => {
 // Create empty grade rows for all active student_subjects
 // ===========================================
 
-app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(), requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const studentId = Number(c.req.param('student_id'));
@@ -2324,7 +2344,7 @@ app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(
 // Initialize grades for all students in a section for given subjects
 // ===========================================
 
-app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), async (c) => {
+app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -2373,7 +2393,7 @@ app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), async (c)
 // PUT /api/grades/:id - update grade fields with calculations & audit log
 // ===========================================
 
-app.put('/api/grades/:id', requireAuthEnforced(), async (c) => {
+app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const gradeId = Number(c.req.param('id'));
@@ -2494,7 +2514,7 @@ app.put('/api/grades/:id', requireAuthEnforced(), async (c) => {
 // Body: { entries: [{ grade_id, first_month?, second_month?, ... }] }
 // ===========================================
 
-app.post('/api/grades/bulk-entry', requireAuthEnforced(), async (c) => {
+app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -3762,19 +3782,19 @@ function generateReceiptNumber(schoolId: number, studentId: number): string {
 }
 
 function canManageOfficialBookTemplates(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+  return hasRole(roleKey, SCHOOL_MANAGEMENT_ROLES);
 }
 
 function canManageOfficialBooks(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(roleKey);
+  return hasRole(roleKey, OFFICIAL_BOOK_ACCESS_ROLES);
 }
 
 function canViewOfficialBooks(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar', 'teacher'].includes(roleKey);
+  return hasRole(roleKey, OFFICIAL_BOOK_VIEW_ROLES);
 }
 
 function canViewPrintRecords(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar', 'teacher'].includes(roleKey);
+  return hasRole(roleKey, OFFICIAL_BOOK_VIEW_ROLES);
 }
 
 function canManageFees(roleKey: RoleKey): boolean {
@@ -3782,27 +3802,27 @@ function canManageFees(roleKey: RoleKey): boolean {
 }
 
 function canAccessTreasury(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'accountant'].includes(roleKey);
+  return hasRole(roleKey, FINANCE_ACCESS_ROLES);
 }
 
 function canManageTreasury(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'accountant'].includes(roleKey);
+  return hasRole(roleKey, FINANCE_ACCESS_ROLES);
 }
 
 function canViewEmployees(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'accountant'].includes(roleKey);
+  return hasRole(roleKey, EMPLOYEE_VIEW_ROLES);
 }
 
 function canManageEmployees(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+  return hasRole(roleKey, SCHOOL_MANAGEMENT_ROLES);
 }
 
 function canManageSalaries(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'accountant'].includes(roleKey);
+  return hasRole(roleKey, FINANCE_ACCESS_ROLES);
 }
 
 function canManageSettings(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+  return hasRole(roleKey, SCHOOL_MANAGEMENT_ROLES);
 }
 
 // GET /api/student-fees
@@ -6506,19 +6526,19 @@ app.get('/api/verify/official-book/:token', async (c) => {
 // ===========================================
 
 function canImportExport(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'registrar'].includes(roleKey);
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(roleKey);
 }
 
 function canImportEmployees(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(roleKey);
 }
 
 function canImportGrades(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal'].includes(roleKey);
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(roleKey);
 }
 
 function canImportStudentSubjects(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'registrar'].includes(roleKey);
+  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(roleKey);
 }
 
 function canExport(roleKey: RoleKey): boolean {

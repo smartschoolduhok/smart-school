@@ -11,16 +11,23 @@ import {
   Loader2, QrCode, XCircle, Eye, Archive, BookOpen, CheckSquare, Globe
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+import type { RoleKey } from '../../types';
+import {
+  OFFICIAL_BOOK_ACCESS_ROLES,
+  OFFICIAL_BOOK_VIEW_ROLES,
+  SCHOOL_MANAGEMENT_ROLES,
+  hasRole,
+} from '../../lib/rbac';
 
 /* ─── Helpers ─── */
-function canManageTemplates(roleKey?: string): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(roleKey || '');
+function canManageTemplates(roleKey?: RoleKey): boolean {
+  return hasRole(roleKey, SCHOOL_MANAGEMENT_ROLES);
 }
-function canManageBooks(roleKey?: string): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar'].includes(roleKey || '');
+function canManageBooks(roleKey?: RoleKey): boolean {
+  return hasRole(roleKey, OFFICIAL_BOOK_ACCESS_ROLES);
 }
-function canViewBooks(roleKey?: string): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar', 'teacher'].includes(roleKey || '');
+function canViewBooks(roleKey?: RoleKey): boolean {
+  return hasRole(roleKey, OFFICIAL_BOOK_VIEW_ROLES);
 }
 
 function statusBadge(status: string | null) {

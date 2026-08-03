@@ -6,6 +6,7 @@ import {
   deactivateStudentSubject, reactivateStudentSubject, bulkDeactivateStudentSubject
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
   Search, Filter, Plus, X, Check, BookMarked, GraduationCap, Users, User,
   Layers, BookOpen, ToggleLeft, ToggleRight, AlertCircle, Loader2, ChevronDown, ChevronUp
@@ -43,8 +44,7 @@ interface SubjectRec { id: number; name: string; subject_type: string; class_id:
 export default function StudentSubjectsPage() {
   const { user } = useAuth();
   const schoolId = user?.school_id;
-  const isAdmin = user?.role_key === 'system_admin';
-  const canManage = isAdmin || user?.role_key === 'principal' || user?.role_key === 'registrar';
+  const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
 
   // Data
   const [assignments, setAssignments] = useState<AssignmentRecord[]>([]);

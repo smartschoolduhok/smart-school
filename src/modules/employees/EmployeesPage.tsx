@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { FINANCE_ACCESS_ROLES, SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
   getEmployees, createEmployee, updateEmployee, archiveEmployee,
   getSalaries, generateSalary, generateAllSalaries, paySalary, cancelSalary,
@@ -86,8 +87,8 @@ interface ReportRow {
 export default function EmployeesPage() {
   const { user } = useAuth();
   const isAccountant = user?.role_key === 'accountant';
-  const isManageEmployee = ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
-  const isManageSalary = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant'].includes(user?.role_key || '');
+  const isManageEmployee = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
+  const isManageSalary = hasRole(user?.role_key, FINANCE_ACCESS_ROLES);
 
   const [activeTab, setActiveTab] = useState<TabKey>('list');
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
