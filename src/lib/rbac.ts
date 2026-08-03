@@ -38,15 +38,23 @@ export const FINANCE_ACCESS_ROLES: readonly RoleKey[] = [
   'accountant',
 ];
 
+// Fee management is a finance responsibility; registrars are intentionally excluded.
+export const FEE_MANAGEMENT_ROLES: readonly RoleKey[] = FINANCE_ACCESS_ROLES;
+
 export const ANALYTICS_ACCESS_ROLES: readonly RoleKey[] = [
   ...ACADEMIC_ACCESS_ROLES,
   'accountant',
 ];
 
-export const EMPLOYEE_VIEW_ROLES: readonly RoleKey[] = [
+// Accountants need the employee roster for salary workflows, but not record mutation rights.
+export const EMPLOYEE_ACCESS_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,
   'accountant',
 ];
+
+export const EMPLOYEE_MANAGEMENT_ROLES: readonly RoleKey[] = SCHOOL_MANAGEMENT_ROLES;
+
+export const EMPLOYEE_SALARY_ROLES: readonly RoleKey[] = EMPLOYEE_ACCESS_ROLES;
 
 export const OFFICIAL_BOOK_ACCESS_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,

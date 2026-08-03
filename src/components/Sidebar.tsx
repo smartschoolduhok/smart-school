@@ -5,6 +5,8 @@ import type { RoleKey } from '../types';
 import {
   ACADEMIC_ACCESS_ROLES,
   ANALYTICS_ACCESS_ROLES,
+  EMPLOYEE_ACCESS_ROLES,
+  FEE_MANAGEMENT_ROLES,
   FINANCE_ACCESS_ROLES,
   IMPORT_EXPORT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
@@ -57,11 +59,11 @@ const activeModules: NavItem[] = [
   { label: 'كارتات النتائج', path: '/result-cards', icon: <FileText size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
 
   // Phase 7 modules - finance (admin + accountant)
-  { label: 'الأقساط', path: '/fees', icon: <CreditCard size={20} />, active: true, allowedRoles: FINANCE_ACCESS_ROLES },
+  { label: 'الأقساط', path: '/fees', icon: <CreditCard size={20} />, active: true, allowedRoles: FEE_MANAGEMENT_ROLES },
   { label: 'الخزنة', path: '/treasury', icon: <Wallet size={20} />, active: true, allowedRoles: FINANCE_ACCESS_ROLES },
 
-  // Phase 9 modules - HR (admin + principal)
-  { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true, allowedRoles: SCHOOL_MANAGEMENT_ROLES },
+  // Phase 9 modules - HR (school management + accountant salary access)
+  { label: 'الموظفون', path: '/employees', icon: <UserCheck size={20} />, active: true, allowedRoles: EMPLOYEE_ACCESS_ROLES },
 
   // Phase 13A modules - data (admin + school staff)
   { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={20} />, active: true, allowedRoles: IMPORT_EXPORT_ROLES },

@@ -31,6 +31,8 @@ import type { RoleKey } from './types';
 import {
   ACADEMIC_ACCESS_ROLES,
   ANALYTICS_ACCESS_ROLES,
+  EMPLOYEE_ACCESS_ROLES,
+  FEE_MANAGEMENT_ROLES,
   FINANCE_ACCESS_ROLES,
   IMPORT_EXPORT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
@@ -163,11 +165,11 @@ export default function App() {
           <Route path="/analytics" element={<Layout><RoleGuard allowedRoles={ANALYTICS_ACCESS_ROLES}><AnalyticsPage /></RoleGuard></Layout>} />
 
           {/* Finance routes */}
-          <Route path="/fees" element={<Layout><FinanceRoute><FeesPage /></FinanceRoute></Layout>} />
+          <Route path="/fees" element={<Layout><RoleGuard allowedRoles={FEE_MANAGEMENT_ROLES}><FeesPage /></RoleGuard></Layout>} />
           <Route path="/treasury" element={<Layout><FinanceRoute><TreasuryPage /></FinanceRoute></Layout>} />
 
           {/* HR routes */}
-          <Route path="/employees" element={<Layout><SchoolStaffRoute><EmployeesPage /></SchoolStaffRoute></Layout>} />
+          <Route path="/employees" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><EmployeesPage /></RoleGuard></Layout>} />
 
           {/* Official books - admin + registrar */}
           <Route path="/official-books" element={<Layout><RoleGuard allowedRoles={OFFICIAL_BOOK_ACCESS_ROLES}><OfficialBooksPage /></RoleGuard></Layout>} />

@@ -10,7 +10,10 @@ import { serveStatic } from 'hono/cloudflare-workers'
 import type { RoleKey } from './types'
 import {
   ACADEMIC_MANAGEMENT_ROLES,
-  EMPLOYEE_VIEW_ROLES,
+  EMPLOYEE_ACCESS_ROLES,
+  EMPLOYEE_MANAGEMENT_ROLES,
+  EMPLOYEE_SALARY_ROLES,
+  FEE_MANAGEMENT_ROLES,
   FINANCE_ACCESS_ROLES,
   GRADE_MANAGEMENT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
@@ -3798,7 +3801,7 @@ function canViewPrintRecords(roleKey: RoleKey): boolean {
 }
 
 function canManageFees(roleKey: RoleKey): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant', 'registrar'].includes(roleKey);
+  return hasRole(roleKey, FEE_MANAGEMENT_ROLES);
 }
 
 function canAccessTreasury(roleKey: RoleKey): boolean {
@@ -3810,15 +3813,15 @@ function canManageTreasury(roleKey: RoleKey): boolean {
 }
 
 function canViewEmployees(roleKey: RoleKey): boolean {
-  return hasRole(roleKey, EMPLOYEE_VIEW_ROLES);
+  return hasRole(roleKey, EMPLOYEE_ACCESS_ROLES);
 }
 
 function canManageEmployees(roleKey: RoleKey): boolean {
-  return hasRole(roleKey, SCHOOL_MANAGEMENT_ROLES);
+  return hasRole(roleKey, EMPLOYEE_MANAGEMENT_ROLES);
 }
 
 function canManageSalaries(roleKey: RoleKey): boolean {
-  return hasRole(roleKey, FINANCE_ACCESS_ROLES);
+  return hasRole(roleKey, EMPLOYEE_SALARY_ROLES);
 }
 
 function canManageSettings(roleKey: RoleKey): boolean {
