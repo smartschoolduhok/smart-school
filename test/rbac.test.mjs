@@ -66,10 +66,12 @@ test('import/export page is available to the four approved management roles', ()
   assert.equal(hasRole('registrar', IMPORT_EXPORT_ROLES), false);
 });
 
-test('user directory remains read-only for the intended administrative roles', () => {
-  assert.equal(hasRole('system_admin', USER_DIRECTORY_ROLES), true);
-  assert.equal(hasRole('school_owner', USER_DIRECTORY_ROLES), true);
-  assert.equal(hasRole('registrar', USER_DIRECTORY_ROLES), true);
-  assert.equal(hasRole('principal', USER_DIRECTORY_ROLES), false);
-  assert.equal(hasRole('teacher', USER_DIRECTORY_ROLES), false);
+test('user directory is limited to system admins and school owners', () => {
+  assert.deepEqual(USER_DIRECTORY_ROLES, ['system_admin', 'school_owner']);
+});
+
+test('school staff roles cannot read the user directory', () => {
+  for (const role of ['registrar', 'teacher', 'accountant']) {
+    assert.equal(hasRole(role, USER_DIRECTORY_ROLES), false);
+  }
 });

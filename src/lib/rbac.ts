@@ -5,7 +5,6 @@ export const SYSTEM_ADMIN_ROLES: readonly RoleKey[] = ['system_admin'];
 export const USER_DIRECTORY_ROLES: readonly RoleKey[] = [
   'system_admin',
   'school_owner',
-  'registrar',
 ];
 
 export const SCHOOL_MANAGEMENT_ROLES: readonly RoleKey[] = [
@@ -26,7 +25,8 @@ export const ACADEMIC_MANAGEMENT_ROLES: readonly RoleKey[] = [
   'registrar',
 ];
 
-// Teachers and registrars can enter grades, but cannot manage academic structure.
+// Teachers may enter grades without managing classes, sections, or subjects.
+// Registrars keep their defined academic-management permissions and may also enter grades.
 export const GRADE_MANAGEMENT_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,
   'teacher',
