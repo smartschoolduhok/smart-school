@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { evaluateResultCard } from '../src/lib/resultCards.ts';
+import {
+  formatExemptionStatus,
+  formatUnixSecondsDate,
+  shouldRegisterResultCardPrint,
+  unixSecondsToDate,
+} from '../src/lib/resultCardPrint.ts';
 
 const settings = {
   passing_grade: 50,
@@ -101,4 +107,96 @@ test('rejects a partially entered grade even if derived status exists', () => {
 test('rejects generation without an active academic year', () => {
   const result = evaluateResultCard([subject(1)], [grade(1)], settings, null);
   assert.deepEqual(result, { ok: false, code: 'no_active_academic_year' });
+});
+
+test('accepts an individually exempt subject without a final exam', () => {
+  const result = evaluateResultCard(
+    [subject(1)],
+    [grade(1, 'ناجح', {
+      annual_effort: 80,
+      final_exam: null,
+      final_grade: 80,
+      effective_grade: 80,
+      exemption_status: 1,
+    })],
+    settings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.general_exemption_eligible, false);
+});
+
+test('accepts missing final exams when the student has general exemption', () => {
+  const result = evaluateResultCard(
+    [subject(1), subject(2)],
+    [
+      grade(1, 'ناجح', { final_exam: null, exemption_status: 1 }),
+      grade(2, 'ناجح', {
+        annual_effort: 80,
+        final_exam: null,
+        final_grade: 80,
+        effective_grade: 80,
+        exemption_status: 0,
+      }),
+    ],
+    settings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.general_exemption_eligible, true);
+});
+
+test('rejects a missing final exam for a non-exempt student', () => {
+  const result = evaluateResultCard(
+    [subject(1)],
+    [grade(1, 'ناجح', {
+      annual_effort: 70,
+      final_exam: null,
+      final_grade: 70,
+      effective_grade: 70,
+      exemption_status: 0,
+    })],
+    settings,
+    academicYear,
+  );
+  assert.deepEqual(result, {
+    ok: false,
+    code: 'incomplete_grades',
+    subjects: ['Subject 1'],
+  });
+});
+
+test('accepts complete grades for a non-exempt student', () => {
+  const result = evaluateResultCard(
+    [subject(1)],
+    [grade(1, 'ناجح', {
+      annual_effort: 70,
+      final_exam: 60,
+      final_grade: 65,
+      effective_grade: 65,
+      exemption_status: 0,
+    })],
+    settings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.general_exemption_eligible, false);
+});
+
+test('formats exemption flags from numeric result-card values', () => {
+  assert.equal(formatExemptionStatus(1, 'individual'), 'معفى');
+  assert.equal(formatExemptionStatus(1, 'general'), 'معفى عام');
+  assert.equal(formatExemptionStatus(0, 'individual'), 'غير معفى');
+});
+
+test('converts Unix seconds to JavaScript dates', () => {
+  assert.equal(unixSecondsToDate(1)?.getTime(), 1000);
+  assert.equal(unixSecondsToDate('1710000000')?.toISOString(), '2024-03-09T16:00:00.000Z');
+  assert.equal(formatUnixSecondsDate('invalid'), '-');
+});
+
+test('cancelled result cards are never registered as printed', () => {
+  assert.equal(shouldRegisterResultCardPrint('cancelled', true), false);
+  assert.equal(shouldRegisterResultCardPrint('active', true), true);
+  assert.equal(shouldRegisterResultCardPrint('active', false), false);
 });

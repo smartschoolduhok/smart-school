@@ -3315,6 +3315,7 @@ interface StudentPlacementRecord {
   id: number;
   school_id: number;
   name: string;
+  status: string;
   class_id?: number | null;
 }
 
@@ -3335,30 +3336,40 @@ async function validateStudentPlacement(
   let classRecord: StudentPlacementRecord | null = null;
   let sectionRecord: StudentPlacementRecord | null = null;
 
+  if (sectionId != null && classId == null) {
+    return { ok: false, status: 400, error: 'يجب تحديد الصف عند تحديد الشعبة' };
+  }
+
   if (classId != null) {
     classRecord = await db.prepare(
-      'SELECT id, school_id, name FROM classes WHERE id = ?',
+      'SELECT id, school_id, name, status FROM classes WHERE id = ?',
     ).bind(classId).first<StudentPlacementRecord>();
     if (!classRecord) {
-      return { ok: false, status: 400, error: 'الصف المرتبط بالطالب غير موجود' };
+      return { ok: false, status: 400, error: 'الصف المحدد غير موجود' };
     }
     if (classRecord.school_id !== schoolId) {
-      return { ok: false, status: 403, error: 'الصف المرتبط بالطالب ينتمي إلى مدرسة أخرى' };
+      return { ok: false, status: 403, error: 'الصف المحدد ينتمي إلى مدرسة أخرى' };
+    }
+    if (classRecord.status !== 'active') {
+      return { ok: false, status: 400, error: 'الصف المحدد غير فعال' };
     }
   }
 
   if (sectionId != null) {
     sectionRecord = await db.prepare(
-      'SELECT id, school_id, class_id, name FROM sections WHERE id = ?',
+      'SELECT id, school_id, class_id, name, status FROM sections WHERE id = ?',
     ).bind(sectionId).first<StudentPlacementRecord>();
     if (!sectionRecord) {
-      return { ok: false, status: 400, error: 'الشعبة المرتبطة بالطالب غير موجودة' };
+      return { ok: false, status: 400, error: 'الشعبة المحددة غير موجودة' };
     }
     if (sectionRecord.school_id !== schoolId) {
-      return { ok: false, status: 403, error: 'الشعبة المرتبطة بالطالب تنتمي إلى مدرسة أخرى' };
+      return { ok: false, status: 403, error: 'الشعبة المحددة تنتمي إلى مدرسة أخرى' };
     }
-    if (classId != null && sectionRecord.class_id !== classId) {
-      return { ok: false, status: 400, error: 'الشعبة لا تنتمي إلى صف الطالب' };
+    if (sectionRecord.status !== 'active') {
+      return { ok: false, status: 400, error: 'الشعبة المحددة غير فعالة' };
+    }
+    if (sectionRecord.class_id !== classId) {
+      return { ok: false, status: 400, error: 'الشعبة المحددة لا تتبع الصف المحدد' };
     }
   }
 

@@ -407,6 +407,150 @@ check(
     f"update={cross_update_status}, response={str(cross_update_result)[:100]}",
 )
 
+# Student placement must always preserve an active, same-school class/section pair.
+section_without_class_status, section_without_class_result = api_with_status(
+    "POST",
+    "/api/students",
+    headers=owner_headers,
+    body={
+        "student_number": f"P0-NO-CLASS-{RUN_ID}",
+        "full_name": "Section Without Class",
+        "gender": "ذكر",
+        "section_id": 15,
+    },
+)
+check(
+    "P0-SP1. Student cannot be created with a section but no class",
+    section_without_class_status == 400,
+    f"status={section_without_class_status}, response={str(section_without_class_result)[:100]}",
+)
+
+before_no_class_status, before_no_class_student = api_with_status(
+    "GET", "/api/students/11", headers=owner_headers
+)
+update_without_class_status, update_without_class_result = api_with_status(
+    "PUT",
+    "/api/students/11",
+    headers=owner_headers,
+    body={"class_id": None, "section_id": 15},
+)
+after_no_class_status, after_no_class_student = api_with_status(
+    "GET", "/api/students/11", headers=owner_headers
+)
+check(
+    "P0-SP2. Student cannot be updated to a section without a class",
+    before_no_class_status == after_no_class_status == 200
+    and update_without_class_status == 400
+    and before_no_class_student.get("data", {}).get("class_id")
+    == after_no_class_student.get("data", {}).get("class_id")
+    and before_no_class_student.get("data", {}).get("section_id")
+    == after_no_class_student.get("data", {}).get("section_id"),
+    f"status={update_without_class_status}, response={str(update_without_class_result)[:100]}",
+)
+
+archived_class_status, archived_class_result = api_with_status(
+    "POST",
+    "/api/classes",
+    headers=principal_headers,
+    body={"name": f"P0 Archived Class {RUN_ID}", "stage": "ابتدائي"},
+)
+archived_class_id = archived_class_result.get("data", {}).get("id")
+archive_class_status, _ = api_with_status(
+    "PUT", f"/api/classes/{archived_class_id}/archive", headers=principal_headers
+) if archived_class_id else (0, {})
+archived_class_student_status, archived_class_student_result = api_with_status(
+    "POST",
+    "/api/students",
+    headers=principal_headers,
+    body={
+        "student_number": f"P0-ARCHIVED-CLASS-{RUN_ID}",
+        "full_name": "Archived Class Student",
+        "gender": "ذكر",
+        "class_id": archived_class_id,
+    },
+) if archived_class_id else (0, {})
+check(
+    "P0-SP3. Archived classes cannot be used for student placement",
+    archived_class_status == 201
+    and archive_class_status == 200
+    and archived_class_student_status == 400,
+    f"status={archived_class_student_status}, response={str(archived_class_student_result)[:100]}",
+)
+
+active_class_status, active_class_result = api_with_status(
+    "POST",
+    "/api/classes",
+    headers=principal_headers,
+    body={"name": f"P0 Section Class {RUN_ID}", "stage": "ابتدائي"},
+)
+active_class_id = active_class_result.get("data", {}).get("id")
+archived_section_status, archived_section_result = api_with_status(
+    "POST",
+    "/api/sections",
+    headers=principal_headers,
+    body={"class_id": active_class_id, "name": f"P0 Archived Section {RUN_ID}"},
+) if active_class_id else (0, {})
+archived_section_id = archived_section_result.get("data", {}).get("id")
+archive_section_status, _ = api_with_status(
+    "PUT", f"/api/sections/{archived_section_id}/archive", headers=principal_headers
+) if archived_section_id else (0, {})
+archived_section_student_status, archived_section_student_result = api_with_status(
+    "POST",
+    "/api/students",
+    headers=principal_headers,
+    body={
+        "student_number": f"P0-ARCHIVED-SECTION-{RUN_ID}",
+        "full_name": "Archived Section Student",
+        "gender": "ذكر",
+        "class_id": active_class_id,
+        "section_id": archived_section_id,
+    },
+) if archived_section_id else (0, {})
+check(
+    "P0-SP4. Archived sections cannot be used for student placement",
+    active_class_status == 201
+    and archived_section_status == 201
+    and archive_section_status == 200
+    and archived_section_student_status == 400,
+    f"status={archived_section_student_status}, response={str(archived_section_student_result)[:100]}",
+)
+
+wrong_class_status, wrong_class_result = api_with_status(
+    "POST",
+    "/api/students",
+    headers=principal_headers,
+    body={
+        "student_number": f"P0-WRONG-CLASS-{RUN_ID}",
+        "full_name": "Wrong Class Section",
+        "gender": "ذكر",
+        "class_id": 2,
+        "section_id": 1,
+    },
+)
+check(
+    "P0-SP5. A section from the wrong class returns 400",
+    wrong_class_status == 400,
+    f"status={wrong_class_status}, response={str(wrong_class_result)[:100]}",
+)
+
+cross_section_only_status, cross_section_only_result = api_with_status(
+    "POST",
+    "/api/students",
+    headers=owner_headers,
+    body={
+        "student_number": f"P0-CROSS-SECTION-{RUN_ID}",
+        "full_name": "Cross School Section",
+        "gender": "ذكر",
+        "class_id": 8,
+        "section_id": 1,
+    },
+)
+check(
+    "P0-SP6. A section from another school returns 403",
+    cross_section_only_status == 403,
+    f"status={cross_section_only_status}, response={str(cross_section_only_result)[:100]}",
+)
+
 template_status, template_result = api_with_status(
     "POST",
     "/api/official-book-templates",

@@ -4,6 +4,12 @@ import { useAuth } from '../../hooks/useAuth';
 import { getResultCard, markResultCardPrinted } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
+  formatExemptionStatus,
+  formatUnixSecondsDate,
+  shouldRegisterResultCardPrint,
+  type ExemptionStatus,
+} from '../../lib/resultCardPrint';
+import {
   hasRole,
   RESULT_CARD_PRINT_ROLES,
   RESULT_CARD_VIEW_ROLES,
@@ -25,19 +31,27 @@ interface SubjectRow {
   final_exam: number | null;
   effective_grade: number | null;
   result_status: string;
-  exemption_status: string;
+  exemption_status: ExemptionStatus;
 }
 
 interface CardSummary {
   annual_effort_average?: number | null;
   min_annual_effort?: number | null;
-  overall_result?: string;
-  general_exemption_status?: string;
+  overall_result_status?: string;
+}
+
+interface ResultCardDocumentSettings {
+  result_card_header_text?: string | null;
+  result_card_footer_text?: string | null;
+  verification_note_text?: string | null;
+  logo_url?: string | null;
+  official_stamp_url?: string | null;
 }
 
 interface CardData {
   subjects?: SubjectRow[];
   summary?: CardSummary;
+  document_settings?: ResultCardDocumentSettings;
 }
 
 interface CardRecord {
@@ -48,14 +62,13 @@ interface CardRecord {
   section_name_snapshot: string;
   school_name_snapshot: string;
   academic_year_snapshot: string;
-  general_exemption_status: string;
+  general_exemption_status: ExemptionStatus;
   overall_result_status: string;
-  generated_at: string;
-  printed_at: string | null;
+  generated_at: number | string;
+  printed_at: number | string | null;
   status: string;
   verification_token: string;
   card_data_parsed?: CardData;
-  settings_snapshot_json?: string;
 }
 
 function canViewResultCards(roleKey?: RoleKey) {
@@ -70,11 +83,7 @@ export default function PrintResultCardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const snapshot = card?.settings_snapshot_json
-    ? (() => {
-        try { return JSON.parse(card.settings_snapshot_json); } catch { return {}; }
-      })()
-    : {};
+  const documentSettings = card?.card_data_parsed?.document_settings ?? {};
 
   const base = typeof window !== 'undefined' ? window.location.origin : '';
   const verificationUrl = card?.verification_token
@@ -84,11 +93,10 @@ export default function PrintResultCardPage() {
   const { handlePrint, isPrinting } = usePrintExport({
     documentTitle: card?.card_number ? `كارت نتيجة ${card.card_number}` : 'كارت نتيجة',
     onBeforePrint: async () => {
-      if (
-        !card ||
-        card.status === 'cancelled' ||
-        !hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES)
-      ) return;
+      if (!card || !shouldRegisterResultCardPrint(
+        card.status,
+        hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES),
+      )) return;
       try {
         await markResultCardPrinted(String(card.id));
       } catch {
@@ -133,7 +141,7 @@ export default function PrintResultCardPage() {
     { key: 'final_exam', header: 'النهائي', align: 'center', render: (r) => toArabicDigits(String(r.final_exam ?? '-')) },
     { key: 'effective_grade', header: 'الدرجة الفعّالة', align: 'center', render: (r) => toArabicDigits(String(r.effective_grade ?? '-')) },
     { key: 'result_status', header: 'الحالة', align: 'center' },
-    { key: 'exemption_status', header: 'إعفاء', align: 'center', render: (r) => r.exemption_status === 'exempt' ? 'معفى' : '-' },
+    { key: 'exemption_status', header: 'إعفاء', align: 'center', render: (r) => formatExemptionStatus(r.exemption_status, 'individual') },
   ];
 
   if (loading) {
@@ -181,10 +189,9 @@ export default function PrintResultCardPage() {
       }
     >
       <DocumentHeader
-        schoolName={snapshot.school_name || card.school_name_snapshot}
-        principalName={snapshot.principal_name}
-        logoUrl={snapshot.use_logo ? snapshot.logo_url : null}
-        headerText={snapshot.official_book_header_text || null}
+        schoolName={card.school_name_snapshot}
+        logoUrl={documentSettings.logo_url ?? null}
+        headerText={documentSettings.result_card_header_text ?? null}
         title="كارت النتيجة"
         subtitle={`العام الدراسي: ${toArabicDigits(card.academic_year_snapshot)}`}
       />
@@ -213,24 +220,24 @@ export default function PrintResultCardPage() {
       <div className="grid grid-cols-2 gap-4 text-sm mb-4">
         <div><span className="font-semibold">متوسط السعي السنوي:</span> {toArabicDigits(String(summary.annual_effort_average ?? '-'))}</div>
         <div><span className="font-semibold">أدنى سعي سنوي:</span> {toArabicDigits(String(summary.min_annual_effort ?? '-'))}</div>
-        <div><span className="font-semibold">النتيجة العامة:</span> {summary.overall_result || card.overall_result_status || '-'}</div>
-        <div><span className="font-semibold">حالة الإعفاء العام:</span> {card.general_exemption_status === 'exempt' ? 'معفى عام' : 'غير معفى'}</div>
+        <div><span className="font-semibold">النتيجة العامة:</span> {summary.overall_result_status || card.overall_result_status || '-'}</div>
+        <div><span className="font-semibold">حالة الإعفاء العام:</span> {formatExemptionStatus(card.general_exemption_status, 'general')}</div>
       </div>
 
       <div className="flex items-center justify-between mt-6">
         <QRBlock url={verificationUrl} label="امسح للتحقق من صحة الكارت" />
         <div className="text-sm text-gray-600">
-          <div>تاريخ الإصدار: {toArabicDigits(new Date(card.generated_at).toLocaleDateString('ar-SA'))}</div>
+          <div>تاريخ الإصدار: {toArabicDigits(formatUnixSecondsDate(card.generated_at))}</div>
           {card.printed_at && (
-            <div>تاريخ أول طباعة: {toArabicDigits(new Date(card.printed_at).toLocaleDateString('ar-SA'))}</div>
+            <div>تاريخ أول طباعة: {toArabicDigits(formatUnixSecondsDate(card.printed_at))}</div>
           )}
         </div>
       </div>
 
       <DocumentFooter
-        footerText={snapshot.official_book_footer_text || null}
-        stampUrl={snapshot.use_stamp ? snapshot.stamp_url : null}
-        verificationNote={snapshot.verification_note || null}
+        footerText={documentSettings.result_card_footer_text ?? null}
+        stampUrl={documentSettings.official_stamp_url ?? null}
+        verificationNote={documentSettings.verification_note_text ?? undefined}
       />
     </PrintLayout>
   );

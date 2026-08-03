@@ -64,7 +64,6 @@ const REQUIRED_NUMERIC_GRADE_FIELDS: Array<keyof ResultCardGrade> = [
   'third_month',
   'fourth_month',
   'mid_year_exam',
-  'final_exam',
   'annual_effort',
   'final_grade',
   'effective_grade',
@@ -131,6 +130,20 @@ export function evaluateResultCard(
   const generalExemptionEligible =
     annualEffortAverage >= settings.general_exemption_average_grade &&
     minAnnualEffort >= settings.general_exemption_min_subject_grade;
+
+  const subjectsMissingRequiredFinalExam = grades.filter(
+    (grade) =>
+      !isFiniteNumber(grade.final_exam) &&
+      grade.exemption_status !== 1 &&
+      !generalExemptionEligible,
+  );
+  if (subjectsMissingRequiredFinalExam.length > 0) {
+    return {
+      ok: false,
+      code: 'incomplete_grades',
+      subjects: subjectsMissingRequiredFinalExam.map((grade) => grade.subject_name),
+    };
+  }
 
   const hasFailure = grades.some((grade) => grade.result_status === 'راسب');
   const hasIncomplete = grades.some((grade) => grade.result_status === 'مكمل');
