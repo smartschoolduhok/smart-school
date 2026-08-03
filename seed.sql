@@ -27,7 +27,7 @@ INSERT INTO users (id, school_id, full_name, email, password_hash, role_id, stat
   (5, 2, 'محمد حسين', 'accountant@rafidain.iq', '80d02588132ccedfc7f6b15e1b162e512a2164fe50e8873fe85039376dd65e17', 6, 'active', unixepoch(), unixepoch()),
   (6, 3, 'نور الدين', 'registrar@eman.iq', '6fec04712803c852f0a7cae4ea971a31f24fb0305623894edef5c2b27db30045', 7, 'inactive', unixepoch(), unixepoch()),
   (7, 1, 'المعاون المدير', 'vp@nukhba.iq', '84d05686b79e958a7c661df33c4b13268ac6525b031af6a9e3a5521128bfe165', 4, 'active', unixepoch(), unixepoch()),
-  (8, 1, 'مسؤول التسجيل', 'registrar@nukhba.iq', '39728486499a7e15b2e6e396af12cb535a971cfc2bc956206b59559253c68200', 7, 'active', unixepoch(), unixepoch())
+  (8, 1, 'مسؤول التسجيل', 'registrar@nukhba.iq', 'a48481aea9d231128e5f5d7d2966d55150fda1879fe2b51c4fa4b891bbefb933', 7, 'active', unixepoch(), unixepoch())
 ON CONFLICT(id) DO NOTHING;
 
 -- School Modules

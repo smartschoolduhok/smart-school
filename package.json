@@ -3,6 +3,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test:rbac": "node --experimental-strip-types --test test/rbac.test.mjs",
     "build": "vite build && vite build --config vite.worker.config.ts",
     "build:fe": "vite build",
     "build:api": "vite build --config vite.worker.config.ts",

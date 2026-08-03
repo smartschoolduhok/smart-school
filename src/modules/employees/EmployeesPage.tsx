@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { EMPLOYEE_MANAGEMENT_ROLES, EMPLOYEE_SALARY_ROLES, hasRole } from '../../lib/rbac';
 import {
   getEmployees, createEmployee, updateEmployee, archiveEmployee,
   getSalaries, generateSalary, generateAllSalaries, paySalary, cancelSalary,
@@ -85,9 +86,8 @@ interface ReportRow {
 
 export default function EmployeesPage() {
   const { user } = useAuth();
-  const isAccountant = user?.role_key === 'accountant';
-  const isManageEmployee = ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(user?.role_key || '');
-  const isManageSalary = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant'].includes(user?.role_key || '');
+  const isManageEmployee = hasRole(user?.role_key, EMPLOYEE_MANAGEMENT_ROLES);
+  const isManageSalary = hasRole(user?.role_key, EMPLOYEE_SALARY_ROLES);
 
   const [activeTab, setActiveTab] = useState<TabKey>('list');
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
@@ -336,7 +336,7 @@ export default function EmployeesPage() {
                   <th className="px-4 py-3 text-right font-medium">المسمى الوظيفي</th>
                   <th className="px-4 py-3 text-right font-medium">الراتب</th>
                   <th className="px-4 py-3 text-right font-medium">الحالة</th>
-                  {!isAccountant && (
+                  {isManageEmployee && (
                     <th className="px-4 py-3 text-right font-medium">إجراءات</th>
                   )}
                 </tr>
@@ -359,7 +359,7 @@ export default function EmployeesPage() {
                         {emp.status === 'active' ? 'نشط' : 'مؤرشف'}
                       </span>
                     </td>
-                    {!isAccountant && (
+                    {isManageEmployee && (
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
                           <button
@@ -382,7 +382,7 @@ export default function EmployeesPage() {
                   </tr>
                 ))}
                 {filteredEmployees.length === 0 && (
-                  <tr><td colSpan={isAccountant ? 5 : 6} className="px-4 py-8 text-center text-gray-500">لا يوجد موظفون</td></tr>
+                  <tr><td colSpan={isManageEmployee ? 6 : 5} className="px-4 py-8 text-center text-gray-500">لا يوجد موظفون</td></tr>
                 )}
               </tbody>
             </table>

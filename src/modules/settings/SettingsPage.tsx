@@ -5,6 +5,7 @@ import {
   getSchools
 } from '../../lib/api';
 import type { AuthUser, School } from '../../types';
+import { SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
   Building2, GraduationCap, FileText, Globe, Shield, Database,
   Loader2, AlertCircle, Save, CheckCircle
@@ -28,10 +29,6 @@ const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'backup', label: 'النسخ الاحتياطي', icon: <Database size={18} /> },
 ];
 
-function canManageSettings(roleKey: string): boolean {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal'].includes(roleKey);
-}
-
 export default function SettingsPage() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<TabKey>('profile');
@@ -47,7 +44,7 @@ export default function SettingsPage() {
   const [systemData, setSystemData] = useState<Record<string, any>>({});
 
   const isAdmin = user?.role_key === 'system_admin';
-  const canEdit = user ? canManageSettings(user.role_key) : false;
+  const canEdit = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
   const effectiveSchoolId = isAdmin ? selectedSchoolId : (user?.school_id ?? null);
 
   const loadSettings = useCallback(async () => {

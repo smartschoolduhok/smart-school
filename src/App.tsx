@@ -28,6 +28,18 @@ import ImportExportPage from './modules/importExport/ImportExportPage';
 
 import SettingsPage from './modules/settings/SettingsPage';
 import type { RoleKey } from './types';
+import {
+  ACADEMIC_ACCESS_ROLES,
+  ANALYTICS_ACCESS_ROLES,
+  EMPLOYEE_ACCESS_ROLES,
+  FEE_MANAGEMENT_ROLES,
+  FINANCE_ACCESS_ROLES,
+  IMPORT_EXPORT_ROLES,
+  OFFICIAL_BOOK_ACCESS_ROLES,
+  SCHOOL_MANAGEMENT_ROLES,
+  SYSTEM_ADMIN_ROLES,
+  hasRole,
+} from './lib/rbac';
 
 // ===========================================
 // RBAC Route Guards
@@ -35,7 +47,7 @@ import type { RoleKey } from './types';
 
 interface RouteGuardProps {
   children: React.ReactNode;
-  allowedRoles: RoleKey[];
+  allowedRoles: readonly RoleKey[];
   fallback?: React.ReactNode;
 }
 
@@ -51,7 +63,7 @@ function RoleGuard({ children, allowedRoles, fallback }: RouteGuardProps) {
     );
   }
 
-  if (!user || !allowedRoles.includes(user.role_key)) {
+  if (!hasRole(user?.role_key, allowedRoles)) {
     return (
       <>
         {fallback || (
@@ -95,7 +107,7 @@ function DisabledModulePage({ moduleName }: { moduleName: string }) {
 // Admin-only route wrapper
 function AdminRoute({ children }: { children: React.ReactNode }) {
   return (
-    <RoleGuard allowedRoles={['system_admin']}>
+    <RoleGuard allowedRoles={SYSTEM_ADMIN_ROLES}>
       {children}
     </RoleGuard>
   );
@@ -104,7 +116,7 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 // School staff route wrapper (admin + school management)
 function SchoolStaffRoute({ children }: { children: React.ReactNode }) {
   return (
-    <RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal']}>
+    <RoleGuard allowedRoles={SCHOOL_MANAGEMENT_ROLES}>
       {children}
     </RoleGuard>
   );
@@ -113,7 +125,7 @@ function SchoolStaffRoute({ children }: { children: React.ReactNode }) {
 // Academic route wrapper (teaching staff)
 function AcademicRoute({ children }: { children: React.ReactNode }) {
   return (
-    <RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar']}>
+    <RoleGuard allowedRoles={ACADEMIC_ACCESS_ROLES}>
       {children}
     </RoleGuard>
   );
@@ -122,7 +134,7 @@ function AcademicRoute({ children }: { children: React.ReactNode }) {
 // Finance route wrapper
 function FinanceRoute({ children }: { children: React.ReactNode }) {
   return (
-    <RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant']}>
+    <RoleGuard allowedRoles={FINANCE_ACCESS_ROLES}>
       {children}
     </RoleGuard>
   );
@@ -150,21 +162,21 @@ export default function App() {
           <Route path="/result-cards" element={<Layout><AcademicRoute><ResultCardsPage /></AcademicRoute></Layout>} />
 
           {/* Analytics - wider access */}
-          <Route path="/analytics" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'teacher', 'registrar', 'accountant']}><AnalyticsPage /></RoleGuard></Layout>} />
+          <Route path="/analytics" element={<Layout><RoleGuard allowedRoles={ANALYTICS_ACCESS_ROLES}><AnalyticsPage /></RoleGuard></Layout>} />
 
           {/* Finance routes */}
-          <Route path="/fees" element={<Layout><FinanceRoute><FeesPage /></FinanceRoute></Layout>} />
+          <Route path="/fees" element={<Layout><RoleGuard allowedRoles={FEE_MANAGEMENT_ROLES}><FeesPage /></RoleGuard></Layout>} />
           <Route path="/treasury" element={<Layout><FinanceRoute><TreasuryPage /></FinanceRoute></Layout>} />
 
           {/* HR routes */}
-          <Route path="/employees" element={<Layout><SchoolStaffRoute><EmployeesPage /></SchoolStaffRoute></Layout>} />
+          <Route path="/employees" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><EmployeesPage /></RoleGuard></Layout>} />
 
           {/* Official books - admin + registrar */}
-          <Route path="/official-books" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar']}><OfficialBooksPage /></RoleGuard></Layout>} />
-          <Route path="/print-records" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal', 'registrar']}><PrintRecordsPage /></RoleGuard></Layout>} />
+          <Route path="/official-books" element={<Layout><RoleGuard allowedRoles={OFFICIAL_BOOK_ACCESS_ROLES}><OfficialBooksPage /></RoleGuard></Layout>} />
+          <Route path="/print-records" element={<Layout><RoleGuard allowedRoles={OFFICIAL_BOOK_ACCESS_ROLES}><PrintRecordsPage /></RoleGuard></Layout>} />
 
           {/* Import/Export - admin + school staff */}
-          <Route path="/import-export" element={<Layout><RoleGuard allowedRoles={['system_admin', 'school_owner', 'principal', 'vice_principal']}><ImportExportPage /></RoleGuard></Layout>} />
+          <Route path="/import-export" element={<Layout><RoleGuard allowedRoles={IMPORT_EXPORT_ROLES}><ImportExportPage /></RoleGuard></Layout>} />
 
           {/* Settings - school staff */}
           <Route path="/settings" element={<Layout><SchoolStaffRoute><SettingsPage /></SchoolStaffRoute></Layout>} />

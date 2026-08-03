@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { getStudents, getClasses, getSections, createStudent, updateStudent, archiveStudent } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import { Search, Plus, Filter, Archive, Edit2, X, Check, User, Users } from 'lucide-react';
 
 interface StudentRecord {
@@ -79,7 +80,7 @@ export default function StudentsPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  const canManage = user?.role_key === 'system_admin' || user?.role_key === 'principal' || user?.role_key === 'registrar';
+  const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
 
   useEffect(() => {
     loadData();

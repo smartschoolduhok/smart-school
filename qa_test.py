@@ -3,8 +3,9 @@
 import json, urllib.request, urllib.error, sys
 
 BASE = "http://localhost:3000"
+FAILURES = 0
 
-def api(method, path, headers=None, body=None):
+def api_with_status(method, path, headers=None, body=None):
     url = f"{BASE}{path}"
     req_headers = headers or {}
     data = None
@@ -14,14 +15,25 @@ def api(method, path, headers=None, body=None):
     req = urllib.request.Request(url, method=method, data=data, headers=req_headers, unverifiable=True)
     try:
         with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode('utf-8'))
+            return resp.status, json.loads(resp.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         try:
-            return json.loads(e.read().decode('utf-8'))
+            return e.code, json.loads(e.read().decode('utf-8'))
         except:
-            return {"error": f"HTTP {e.code}"}
+            return e.code, {"error": f"HTTP {e.code}"}
     except Exception as e:
-        return {"error": str(e)}
+        return 0, {"error": str(e)}
+
+def api(method, path, headers=None, body=None):
+    _, response = api_with_status(method, path, headers=headers, body=body)
+    return response
+
+def contains_key(value, key):
+    if isinstance(value, dict):
+        return key in value or any(contains_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_key(item, key) for item in value)
+    return False
 
 def login(email, password):
     r = api("POST", "/api/auth/login", body={"email": email, "password": password})
@@ -30,9 +42,12 @@ def login(email, password):
     return None
 
 def check(desc, condition, detail=""):
+    global FAILURES
     status = "PASS" if condition else "FAIL"
     detail_str = f" ({detail})" if detail else ""
     print(f"{status}: {desc}{detail_str}")
+    if not condition:
+        FAILURES += 1
     return condition
 
 # === AUTH ===
@@ -42,6 +57,9 @@ check("Admin login", admin_tok is not None)
 
 principal_tok = login("principal@nukhba.iq", "school123")
 check("Principal login", principal_tok is not None)
+
+owner_tok = login("owner@rafidain.iq", "owner123")
+check("School owner login", owner_tok is not None)
 
 teacher_tok = login("teacher@nukhba.iq", "teacher123")
 check("Teacher login", teacher_tok is not None)
@@ -105,20 +123,85 @@ else:
 # === ACCESS CONTROL ===
 print("\n=== ACCESS CONTROL TESTS ===")
 
-r = api("GET", "/api/users", headers={"Authorization": f"Bearer {principal_tok}"})
-check("AC1. Principal cannot access /api/users", "error" in r or "unauthorized" in json.dumps(r).lower(), str(r)[:100])
+admin_status, admin_users = api_with_status(
+    "GET", "/api/users", headers={"Authorization": f"Bearer {admin_tok}"}
+)
+admin_rows = admin_users.get("data", [])
+admin_detail_target_id = admin_rows[0].get("id") if admin_rows else 1
+admin_detail_status, admin_detail = api_with_status(
+    "GET", f"/api/users/{admin_detail_target_id}", headers={"Authorization": f"Bearer {admin_tok}"}
+)
+check(
+    "AC1. System admin can read user directory list and detail",
+    admin_status == 200 and len(admin_rows) > 0 and admin_detail_status == 200,
+    str(admin_users)[:100],
+)
+check(
+    "AC2. User directory responses omit password_hash",
+    not contains_key(admin_users, "password_hash") and not contains_key(admin_detail, "password_hash"),
+)
 
-r = api("GET", "/api/users", headers={"Authorization": f"Bearer {teacher_tok}"})
-check("AC2. Teacher cannot manage users", "error" in r or "unauthorized" in json.dumps(r).lower(), str(r)[:100])
+owner_status, owner_users = api_with_status(
+    "GET", "/api/users", headers={"Authorization": f"Bearer {owner_tok}"}
+)
+owner_rows = owner_users.get("data", [])
+check(
+    "AC3. School owner reads only users from their school",
+    owner_status == 200 and len(owner_rows) > 0 and all(row.get("school_id") == 2 for row in owner_rows),
+    str(owner_users)[:100],
+)
+check("AC4. School owner directory omits password_hash", not contains_key(owner_users, "password_hash"))
 
-r = api("GET", "/api/users", headers={"Authorization": f"Bearer {accountant_tok}"})
-check("AC3. Accountant cannot manage users", "error" in r or "unauthorized" in json.dumps(r).lower(), str(r)[:100])
+owner_user_id = owner_rows[0].get("id") if owner_rows else None
+if owner_user_id:
+    owner_detail_status, owner_detail = api_with_status(
+        "GET", f"/api/users/{owner_user_id}", headers={"Authorization": f"Bearer {owner_tok}"}
+    )
+    check(
+        "AC5. School owner can read a user in their school",
+        owner_detail_status == 200 and owner_detail.get("data", {}).get("school_id") == 2,
+        str(owner_detail)[:100],
+    )
+    check("AC6. User detail omits password_hash", not contains_key(owner_detail, "password_hash"))
+else:
+    check("AC5. School owner can read a user in their school", False, "No school user returned")
+    check("AC6. User detail omits password_hash", False, "No school user returned")
 
-r = api("GET", "/api/users", headers={"Authorization": f"Bearer {registrar_tok}"})
-check("AC4. Registrar can access /api/users", "data" in r, str(r)[:100])
+foreign_user_id = next(
+    (row.get("id") for row in admin_rows if row.get("school_id") not in (None, 2)),
+    None,
+)
+if foreign_user_id:
+    foreign_status, foreign_response = api_with_status(
+        "GET", f"/api/users/{foreign_user_id}", headers={"Authorization": f"Bearer {owner_tok}"}
+    )
+    check("AC7. School owner cannot read another school's user", foreign_status == 403, str(foreign_response)[:100])
+else:
+    check("AC7. School owner cannot read another school's user", False, "No foreign school user found")
 
-r = api("GET", "/api/users", headers={"Authorization": f"Bearer {admin_tok}"})
-check("AC5. Admin can manage all", "data" in r, str(r)[:100])
+principal_status, principal_response = api_with_status(
+    "GET", "/api/users", headers={"Authorization": f"Bearer {principal_tok}"}
+)
+check("AC8. Principal cannot read the user directory", principal_status == 403, str(principal_response)[:100])
+
+blocked_roles = [
+    ("Registrar", registrar_tok),
+    ("Teacher", teacher_tok),
+    ("Accountant", accountant_tok),
+]
+detail_target_id = admin_rows[0].get("id") if admin_rows else 1
+for index, (role_name, token) in enumerate(blocked_roles, start=9):
+    list_status, list_response = api_with_status(
+        "GET", "/api/users", headers={"Authorization": f"Bearer {token}"}
+    )
+    detail_status, detail_response = api_with_status(
+        "GET", f"/api/users/{detail_target_id}", headers={"Authorization": f"Bearer {token}"}
+    )
+    check(
+        f"AC{index}. {role_name} receives 403 from user directory endpoints",
+        list_status == 403 and detail_status == 403,
+        f"list={list_status}, detail={detail_status}, response={str(list_response or detail_response)[:80]}",
+    )
 
 # === SCHOOLS REGRESSION ===
 print("\n=== SCHOOLS REGRESSION TESTS ===")
@@ -135,7 +218,7 @@ if school_id:
             body={"name": "مدرسة اختبار محدثة", "name_en": "Updated Test School", "school_type": "دولي", "city": "النجف",
                   "province": "النجف", "address": "شارع ٢٠", "phone": "07809998888", "email": "updated@school.iq",
                   "website": "https://updated.school.iq", "principal_name": "مدير محدث", "status": "active"})
-    check("S2. Admin edits school", "data" in r and "مدرسة اختبار محدثة" in json.dumps(r), str(r)[:100])
+    check("S2. Admin edits school", r.get("data", {}).get("name") == "مدرسة اختبار محدثة", str(r)[:100])
 
     r = api("PUT", f"/api/schools/{school_id}/archive", headers={"Authorization": f"Bearer {admin_tok}"})
     check("S3. Admin archives school", "data" in r and ("archived" in json.dumps(r) or "inactive" in json.dumps(r)), str(r)[:100])
@@ -179,3 +262,6 @@ r = api("GET", "/api/roles", headers={"Authorization": f"Bearer {admin_tok}"})
 check("R1. Admin can view roles", "data" in r and len(r.get("data", [])) > 0, str(r)[:100])
 
 print("\n=== QA COMPLETE ===")
+if FAILURES:
+    print(f"QA FAILED: {FAILURES} check(s) failed")
+    sys.exit(1)
