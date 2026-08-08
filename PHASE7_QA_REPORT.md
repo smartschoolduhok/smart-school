@@ -243,7 +243,7 @@ https://3000-ijbktc3mi9qbkju5y7kbh-ad490db5.sandbox.novita.ai/api/verify/receipt
 1. **No frontend UI test automation** – Playwright browsers not installed in sandbox; UI verified via console capture and code review only. Manual browser testing recommended before production.
 2. **Test data dependency** – Some role tests returned 400/409 due to data constraints (e.g., student not in accountant's school, duplicate fee exists), not auth failures. This is expected behavior but means pure auth isolation tests require dedicated test fixtures.
 3. **Password hash migration** – All test user passwords were reset to `testpass123` (with proper salt+email hashing) for QA. **Production database must NOT use these hashes.**
-4. **Admin token secret** – Uses `default-dev-secret-change-me` in dev; production must set `JWT_SECRET` via wrangler secret.
+4. **Admin token secret** – The current implementation fails closed when `JWT_SECRET` is missing or unsafe. Configure a random secret of at least 32 characters locally and through `wrangler pages secret put JWT_SECRET` in production.
 5. **No D1 production migration applied** – Migration `0008_fees_discount.sql` applied locally only. Production deployment requires `wrangler d1 migrations apply` on the production D1 database.
 6. **Receipt print styling** – PDF/print stylesheet exists but not visually verified in actual browser print dialog.
 7. **QR code scanning** – QR codes generated via `qrcode.react` library. Actual camera scanning verification not performed (requires physical device).

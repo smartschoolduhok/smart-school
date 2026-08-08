@@ -1,34 +1,68 @@
 #!/usr/bin/env python3
 """QA Test Suite for Step 2 Core Admin CRUD"""
-import json, urllib.request, urllib.error, sys, time
+import base64, glob, hashlib, json, sqlite3, urllib.request, urllib.error, sys, time
 
 BASE = "http://localhost:3000"
 FAILURES = 0
 RUN_ID = str(int(time.time()))
 TEST_USER_EMAIL = f"testuser+{RUN_ID}@school.iq"
 
-def api_with_status(method, path, headers=None, body=None):
+def api_with_response(method, path, headers=None, body=None):
     url = f"{BASE}{path}"
-    req_headers = headers or {}
+    req_headers = dict(headers or {})
     data = None
-    if body:
+    if body is not None:
         data = json.dumps(body).encode('utf-8')
         req_headers.setdefault('Content-Type', 'application/json')
     req = urllib.request.Request(url, method=method, data=data, headers=req_headers, unverifiable=True)
     try:
         with urllib.request.urlopen(req) as resp:
-            return resp.status, json.loads(resp.read().decode('utf-8'))
+            raw = resp.read().decode('utf-8')
+            payload = json.loads(raw) if raw else {}
+            return resp.status, payload, dict(resp.headers.items())
     except urllib.error.HTTPError as e:
         try:
-            return e.code, json.loads(e.read().decode('utf-8'))
-        except:
-            return e.code, {"error": f"HTTP {e.code}"}
+            payload = json.loads(e.read().decode('utf-8'))
+        except Exception:
+            payload = {"error": f"HTTP {e.code}"}
+        return e.code, payload, dict(e.headers.items())
     except Exception as e:
-        return 0, {"error": str(e)}
+        return 0, {"error": str(e)}, {}
+
+def api_with_status(method, path, headers=None, body=None):
+    status, response, _ = api_with_response(method, path, headers=headers, body=body)
+    return status, response
 
 def api(method, path, headers=None, body=None):
     _, response = api_with_status(method, path, headers=headers, body=body)
     return response
+
+def local_db_path():
+    candidates = glob.glob('.wrangler/state/v3/d1/miniflare-D1DatabaseObject/*.sqlite')
+    candidates += glob.glob('.wrangler/**/miniflare-D1DatabaseObject/*.sqlite', recursive=True)
+    unique_candidates = [
+        item for item in dict.fromkeys(candidates)
+        if not item.endswith('metadata.sqlite')
+    ]
+    return max(unique_candidates, key=lambda item: __import__('os').path.getmtime(item)) if unique_candidates else None
+
+def local_db_execute(sql, params=(), fetchone=False):
+    path = local_db_path()
+    if not path:
+        raise RuntimeError('Local D1 SQLite database was not found')
+    with sqlite3.connect(path, timeout=10) as connection:
+        cursor = connection.execute(sql, params)
+        row = cursor.fetchone() if fetchone else None
+        connection.commit()
+        return row
+
+def decode_jwt_payload(token):
+    try:
+        payload = token.split('.')[1]
+        payload += '=' * ((4 - len(payload) % 4) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload.encode('ascii')).decode('utf-8'))
+    except Exception:
+        return {}
 
 def contains_key(value, key):
     if isinstance(value, dict):
@@ -76,6 +110,213 @@ if not admin_tok:
     print("FATAL: Cannot proceed without admin token")
     sys.exit(1)
 
+# === P0 AUTHENTICATION & API SECURITY ===
+print("\n=== P0 AUTHENTICATION & API SECURITY TESTS ===")
+
+protected_status, protected_response = api_with_status("GET", "/api/schools")
+me_unauth_status, _ = api_with_status("GET", "/api/auth/me")
+logout_unauth_status, _ = api_with_status("POST", "/api/auth/logout")
+check(
+    "SEC1. API routes are authenticated by default",
+    protected_status == me_unauth_status == logout_unauth_status == 401,
+    f"schools={protected_status}, me={me_unauth_status}, logout={logout_unauth_status}, response={str(protected_response)[:80]}",
+)
+
+public_statuses = [
+    api_with_status("GET", "/api/verify/result-card/not-a-real-token")[0],
+    api_with_status("GET", "/api/verify/receipt/not-a-real-token")[0],
+    api_with_status("GET", "/api/verify/official-book/not-a-real-token")[0],
+]
+check(
+    "SEC2. Public QR verification routes remain unauthenticated",
+    all(status != 401 for status in public_statuses),
+    f"statuses={public_statuses}",
+)
+
+cors_allowed_status, _, cors_allowed_headers = api_with_response(
+    "POST",
+    "/api/auth/login",
+    headers={"Origin": "http://localhost:3000", "CF-Connecting-IP": "198.51.100.20"},
+    body={"email": f"cors+{RUN_ID}@invalid.test", "password": "wrong-password"},
+)
+cors_allowed_origin = next(
+    (value for key, value in cors_allowed_headers.items() if key.lower() == "access-control-allow-origin"),
+    None,
+)
+cors_denied_status, _, cors_denied_headers = api_with_response(
+    "POST",
+    "/api/auth/login",
+    headers={"Origin": "https://unapproved.example", "CF-Connecting-IP": "198.51.100.21"},
+    body={"email": f"cors-denied+{RUN_ID}@invalid.test", "password": "wrong-password"},
+)
+cors_denied_origin = next(
+    (value for key, value in cors_denied_headers.items() if key.lower() == "access-control-allow-origin"),
+    None,
+)
+check(
+    "SEC3. CORS allows same-origin and rejects unapproved origins",
+    cors_allowed_status == 401
+    and cors_allowed_origin == "http://localhost:3000"
+    and cors_denied_status == 403
+    and cors_denied_origin is None,
+    f"allowed={cors_allowed_status}/{cors_allowed_origin}, denied={cors_denied_status}/{cors_denied_origin}",
+)
+
+local_database = local_db_path()
+check("SEC4. Local-only security QA found the D1 SQLite database", local_database is not None, str(local_database))
+
+legacy_email = f"legacy+{RUN_ID}@school.iq"
+legacy_password = "legacy-password-123"
+legacy_hash = hashlib.sha256(
+    (legacy_password + "smart-school-salt-2026" + legacy_email).encode("utf-8")
+).hexdigest()
+legacy_user_id = None
+legacy_token = None
+if local_database:
+    try:
+        local_db_execute(
+            "INSERT INTO users (school_id, full_name, email, password_hash, role_id, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 5, 'active', unixepoch(), unixepoch())",
+            (1, "Legacy Security User", legacy_email, legacy_hash),
+        )
+        legacy_user_id = local_db_execute(
+            "SELECT id FROM users WHERE email = ?", (legacy_email,), fetchone=True
+        )[0]
+        legacy_login_status, legacy_login_response, _ = api_with_response(
+            "POST",
+            "/api/auth/login",
+            headers={"CF-Connecting-IP": "198.51.100.30"},
+            body={"email": legacy_email, "password": legacy_password},
+        )
+        legacy_token = legacy_login_response.get("data", {}).get("token")
+        upgraded_hash = local_db_execute(
+            "SELECT password_hash FROM users WHERE id = ?", (legacy_user_id,), fetchone=True
+        )[0]
+        check(
+            "SEC5. Successful legacy login upgrades the stored password hash",
+            legacy_login_status == 200
+            and legacy_token is not None
+            and upgraded_hash.startswith("pbkdf2_sha256$"),
+            f"status={legacy_login_status}, hash_prefix={upgraded_hash[:18]}",
+        )
+    except Exception as error:
+        check("SEC5. Successful legacy login upgrades the stored password hash", False, str(error))
+else:
+    check("SEC5. Successful legacy login upgrades the stored password hash", False, "Local D1 unavailable")
+
+if legacy_token and legacy_user_id:
+    legacy_payload = decode_jwt_payload(legacy_token)
+    legacy_jti = legacy_payload.get("jti")
+    logout_status, _ = api_with_status(
+        "POST", "/api/auth/logout", headers={"Authorization": f"Bearer {legacy_token}"}
+    )
+    reused_status, _ = api_with_status(
+        "GET", "/api/auth/me", headers={"Authorization": f"Bearer {legacy_token}"}
+    )
+    revoked_row = local_db_execute(
+        "SELECT jti, user_id FROM revoked_sessions WHERE jti = ?", (legacy_jti,), fetchone=True
+    ) if legacy_jti else None
+    raw_token_count = local_db_execute(
+        "SELECT COUNT(*) FROM token_blacklist WHERE token = ?", (legacy_token,), fetchone=True
+    )[0]
+    check(
+        "SEC6. Logout revokes jti and never stores the raw bearer token",
+        logout_status == 200
+        and reused_status == 401
+        and revoked_row == (legacy_jti, legacy_user_id)
+        and raw_token_count == 0,
+        f"logout={logout_status}, reused={reused_status}, revoked={revoked_row}, raw_tokens={raw_token_count}",
+    )
+else:
+    check("SEC6. Logout revokes jti and never stores the raw bearer token", False, "Legacy session unavailable")
+
+throttle_email = f"throttle+{RUN_ID}@invalid.test"
+throttle_headers = {"CF-Connecting-IP": "198.51.100.40"}
+throttle_results = []
+throttle_retry_after = None
+for _ in range(5):
+    status, _, response_headers = api_with_response(
+        "POST",
+        "/api/auth/login",
+        headers=throttle_headers,
+        body={"email": throttle_email, "password": "wrong-password"},
+    )
+    throttle_results.append(status)
+    throttle_retry_after = next(
+        (value for key, value in response_headers.items() if key.lower() == "retry-after"),
+        throttle_retry_after,
+    )
+check(
+    "SEC7. Repeated failed logins are temporarily throttled",
+    throttle_results[:4] == [401, 401, 401, 401]
+    and throttle_results[4] == 429
+    and throttle_retry_after is not None
+    and int(throttle_retry_after) > 0,
+    f"statuses={throttle_results}, retry_after={throttle_retry_after}",
+)
+
+if local_database:
+    local_db_execute(
+        "UPDATE login_throttles SET locked_until = unixepoch() - 1, "
+        "window_started_at = unixepoch() - 1000, updated_at = unixepoch()"
+    )
+    recovered_status, _ = api_with_status(
+        "POST",
+        "/api/auth/login",
+        headers=throttle_headers,
+        body={"email": throttle_email, "password": "wrong-password"},
+    )
+    check("SEC8. Expired throttles recover automatically", recovered_status == 401, f"status={recovered_status}")
+else:
+    check("SEC8. Expired throttles recover automatically", False, "Local D1 unavailable")
+
+if legacy_user_id:
+    reset_ip_headers = {"CF-Connecting-IP": "198.51.100.41"}
+    reset_statuses = [
+        api_with_status(
+            "POST", "/api/auth/login", headers=reset_ip_headers,
+            body={"email": legacy_email, "password": "wrong-password"},
+        )[0]
+        for _ in range(2)
+    ]
+    successful_status, _ = api_with_status(
+        "POST", "/api/auth/login", headers=reset_ip_headers,
+        body={"email": legacy_email, "password": legacy_password},
+    )
+    after_success_status, _ = api_with_status(
+        "POST", "/api/auth/login", headers=reset_ip_headers,
+        body={"email": legacy_email, "password": "wrong-password"},
+    )
+    check(
+        "SEC9. Successful login clears the relevant failure state",
+        reset_statuses == [401, 401] and successful_status == 200 and after_success_status == 401,
+        f"failures={reset_statuses}, success={successful_status}, after={after_success_status}",
+    )
+else:
+    check("SEC9. Successful login clears the relevant failure state", False, "Legacy user unavailable")
+
+unknown_status, unknown_response = api_with_status(
+    "POST", "/api/auth/login",
+    headers={"CF-Connecting-IP": "198.51.100.50"},
+    body={"email": f"unknown+{RUN_ID}@invalid.test", "password": "wrong-password"},
+)
+wrong_status, wrong_response = api_with_status(
+    "POST", "/api/auth/login",
+    headers={"CF-Connecting-IP": "198.51.100.51"},
+    body={"email": "teacher@nukhba.iq", "password": "wrong-password"},
+)
+inactive_status, inactive_response = api_with_status(
+    "POST", "/api/auth/login",
+    headers={"CF-Connecting-IP": "198.51.100.52"},
+    body={"email": "registrar@eman.iq", "password": "registrar123"},
+)
+check(
+    "SEC10. Unknown, wrong-password, and inactive accounts share a generic response",
+    unknown_status == wrong_status == inactive_status == 401
+    and unknown_response.get("error") == wrong_response.get("error") == inactive_response.get("error"),
+    f"statuses={unknown_status}/{wrong_status}/{inactive_status}, errors={unknown_response}/{wrong_response}/{inactive_response}",
+)
+
 # === USERS CRUD ===
 print("\n=== USERS CRUD TESTS ===")
 
@@ -84,6 +325,17 @@ r = api("POST", "/api/users", headers={"Authorization": f"Bearer {admin_tok}"},
               "role_id": 5, "school_id": 1, "phone": "07801112233", "status": "active"})
 user_id = r.get("data", {}).get("id") if "data" in r else None
 check("7. Admin creates user (teacher)", user_id is not None, str(r)[:100])
+if user_id and local_database:
+    created_password_hash = local_db_execute(
+        "SELECT password_hash FROM users WHERE id = ?", (user_id,), fetchone=True
+    )[0]
+    check(
+        "SEC11. User creation stores only the new PBKDF2 format",
+        created_password_hash.startswith("pbkdf2_sha256$"),
+        created_password_hash[:24],
+    )
+else:
+    check("SEC11. User creation stores only the new PBKDF2 format", False, "User or local D1 unavailable")
 
 r = login(TEST_USER_EMAIL, "testpass123")
 check("8. New user login", r is not None)
@@ -102,6 +354,17 @@ if user_id:
     r = api("PUT", f"/api/users/{user_id}/reset-password", headers={"Authorization": f"Bearer {admin_tok}"},
             body={"password": "newpassword456"})
     check("11. Reset password", "data" in r, str(r)[:100])
+    if local_database:
+        reset_password_hash = local_db_execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user_id,), fetchone=True
+        )[0]
+        check(
+            "SEC12. Password reset stores only the new PBKDF2 format",
+            reset_password_hash.startswith("pbkdf2_sha256$") and reset_password_hash != created_password_hash,
+            reset_password_hash[:24],
+        )
+    else:
+        check("SEC12. Password reset stores only the new PBKDF2 format", False, "Local D1 unavailable")
 
     r = login(TEST_USER_EMAIL, "newpassword456")
     check("12. New password login works", r is not None)

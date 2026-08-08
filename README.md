@@ -21,7 +21,7 @@
 - **Backend**: Hono (Cloudflare Pages Worker)
 - **Database**: Cloudflare D1 (SQLite-compatible)
 - **Auth**: JWT Bearer Token via Web Crypto API (HMAC-SHA-256)
-- **Password Hash**: SHA-256(password + 'smart-school-salt-2026' + email)
+- **Password Hash**: Versioned PBKDF2-HMAC-SHA256 (210,000 iterations, random salt per password); legacy SHA-256 hashes migrate on successful login
 - **Deploy**: Cloudflare Pages via Wrangler
 
 ## Completed Phases
@@ -51,6 +51,8 @@ npm run dev
 
 ## Demo Login Credentials
 
+> Local development and QA only. Never seed these demo accounts or reuse these passwords in production.
+
 | Role | Email | Password |
 |------|-------|----------|
 | System Admin | admin@smart-school.iq | admin123 |
@@ -63,6 +65,7 @@ npm run dev
 ## Public Verification Routes (No Login Required)
 - Result Card: `/verify/result-card/:token`
 - Receipt: `/verify/receipt/:token`
+- Official Book: `/verify/official-book/:token`
 
 ## Deployment
 - **Platform**: Cloudflare Pages
