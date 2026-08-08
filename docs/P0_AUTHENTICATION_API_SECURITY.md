@@ -31,13 +31,16 @@ The known hashes in `seed.sql` intentionally remain legacy fixtures so local QA 
 - HS256 signing requires a validated `JWT_SECRET`; there is no fallback.
 - Secrets shorter than 32 characters and obvious placeholders are rejected.
 - Every session receives a cryptographically random 128-bit `jti`.
+- Every session carries the user's integer `auth_version` from D1.
 - Session lifetime is eight hours.
-- Every authenticated request verifies the signature/expiry, checks `jti` revocation, then reloads the active user, role, status, and school from D1.
+- Every authenticated request verifies the signature/expiry, checks `jti` revocation, then reloads the active user, role, status, school, and current `auth_version` from D1.
+- Password reset increments `users.auth_version`, so every previously issued JWT for that user fails with 401 immediately. A new password login receives the new version.
+- The automatic legacy-to-PBKDF2 upgrade does not increment `auth_version`, so the session created by that successful migration login remains valid.
 - Logout stores only `jti`, user ID, and expiry in `revoked_sessions`. Raw bearer tokens are never stored by the new flow.
-- Tokens issued before this migration do not contain `jti` and are intentionally rejected; users must sign in again once.
+- Tokens issued before this migration do not contain `jti` or `auth_version` and are intentionally rejected; users must sign in again once.
 - Expired revocations are cleaned during login/logout maintenance.
 
-Migration: `migrations/0016_auth_security.sql` creates `revoked_sessions`, `login_throttles`, and expiry/lookup indexes. Historical migrations and the old `token_blacklist` table are not modified.
+Migration: `migrations/0016_auth_security.sql` adds `users.auth_version`, creates `revoked_sessions` and `login_throttles`, and adds expiry/lookup indexes. Historical migrations and the old `token_blacklist` table are not modified.
 
 ## Authenticated-by-default API
 
@@ -65,16 +68,22 @@ Example production configuration:
 
 ## Login throttle policy
 
-The throttle key is a SHA-256 digest of normalized email plus client IP. The IP is read from `CF-Connecting-IP`, then the first `X-Forwarded-For` value, with a non-identifying fallback.
+Every login is checked against two independent, SHA-256-keyed D1 buckets. The IP is read from `CF-Connecting-IP`, then the first `X-Forwarded-For` value, with a non-identifying fallback.
 
-- Window: 15 minutes
-- Maximum failures: 5
-- Temporary lock: 15 minutes
-- Lock response: 429 with `Retry-After`
-- Success: clears the matching failure state
-- Expiry: resets automatically; stale rows are retained for at most 24 hours before cleanup
+| Bucket | Subject | Window | Failure limit | Temporary lock |
+|---|---|---:|---:|---:|
+| Account | Normalized email, independent of IP | 15 minutes | 5 | 15 minutes |
+| IP | Client IP, independent of email | 15 minutes | 40 | 15 minutes |
+
+The IP threshold is deliberately higher because staff and students may share one school/NAT address. Rotating IPs cannot reset an account's budget, while rotating account names cannot reset an attacking IP's budget. If either bucket is locked, the response is the same generic 429 and `Retry-After` reports the longest applicable remaining lock without identifying the bucket.
+
+Failure counting is atomic: one SQLite/D1 `INSERT ... ON CONFLICT DO UPDATE` statement increments `login_throttles.failed_attempts` from the database's current row and returns the stored result with `RETURNING`. No count computed by a preceding Worker `SELECT` is written back, so concurrent failures cannot overwrite one another.
+
+A successful login deletes only that normalized account's bucket. It never clears the IP bucket, preventing one successful credential from erasing address-wide abuse history. Expired windows recover automatically, and stale rows are retained for at most 24 hours before cleanup.
 
 Unknown email, incorrect password, and inactive account return the same public 401 message. Nonexistent accounts still perform an expensive PBKDF2 operation to reduce timing differences.
+
+PBKDF2 remains at 210,000 iterations. During review validation on the local Codex host, direct Web Crypto verification averaged 32.2 ms across five samples. Three end-to-end logins through local Wrangler/workerd took 678.9 ms cold and 217.2/210.5 ms warm. These are local development measurements, not Cloudflare production guarantees; final CPU/runtime validation must be performed on a real Cloudflare staging deployment before production.
 
 ## Required Cloudflare configuration
 

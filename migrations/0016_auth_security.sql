@@ -1,6 +1,9 @@
 -- P0 authentication and API security hardening.
 -- Raw bearer tokens are intentionally not stored in either table.
 
+-- Incrementing this value invalidates every JWT issued with the previous value.
+ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1;
+
 CREATE TABLE IF NOT EXISTS revoked_sessions (
   jti         TEXT PRIMARY KEY,
   user_id     INTEGER,
@@ -16,6 +19,7 @@ CREATE INDEX IF NOT EXISTS idx_revoked_sessions_user_id
 
 CREATE TABLE IF NOT EXISTS login_throttles (
   subject_hash       TEXT PRIMARY KEY,
+  bucket_type        TEXT NOT NULL CHECK (bucket_type IN ('account', 'ip')),
   failed_attempts    INTEGER NOT NULL DEFAULT 0,
   window_started_at  INTEGER NOT NULL,
   locked_until       INTEGER,
@@ -24,5 +28,7 @@ CREATE TABLE IF NOT EXISTS login_throttles (
 
 CREATE INDEX IF NOT EXISTS idx_login_throttles_locked_until
   ON login_throttles(locked_until);
+CREATE INDEX IF NOT EXISTS idx_login_throttles_bucket_type
+  ON login_throttles(bucket_type);
 CREATE INDEX IF NOT EXISTS idx_login_throttles_updated_at
   ON login_throttles(updated_at);

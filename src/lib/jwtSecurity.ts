@@ -10,6 +10,7 @@ export class AuthConfigurationError extends Error {
 
 export interface JwtPayload extends Record<string, unknown> {
   email: string;
+  auth_version: number;
   jti: string;
   iat: number;
   exp: number;
@@ -58,7 +59,7 @@ export function generateJwtId(): string {
 }
 
 export async function signJWT(
-  payload: Record<string, unknown> & { email: string },
+  payload: Record<string, unknown> & { email: string; auth_version: number },
   secretValue: unknown,
   options: SignJwtOptions = {},
 ): Promise<string> {
@@ -126,6 +127,8 @@ export async function verifyJWT(
     const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(payloadPart))) as JwtPayload;
     if (
       typeof payload.email !== 'string'
+      || !Number.isSafeInteger(payload.auth_version)
+      || payload.auth_version < 1
       || typeof payload.jti !== 'string'
       || payload.jti.length < 16
       || !Number.isSafeInteger(payload.iat)

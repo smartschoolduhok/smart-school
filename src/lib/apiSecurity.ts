@@ -5,12 +5,30 @@ export const PUBLIC_API_ROUTES = [
   'GET /api/verify/official-book/:token',
 ] as const;
 
-export const LOGIN_THROTTLE_POLICY = {
-  maxAttempts: 5,
-  windowSeconds: 15 * 60,
-  lockSeconds: 15 * 60,
-  retentionSeconds: 24 * 60 * 60,
-} as const;
+export type LoginThrottleBucketType = 'account' | 'ip';
+
+export interface LoginThrottlePolicy {
+  maxAttempts: number;
+  windowSeconds: number;
+  lockSeconds: number;
+  retentionSeconds: number;
+}
+
+export const LOGIN_THROTTLE_POLICIES: Record<LoginThrottleBucketType, LoginThrottlePolicy> = {
+  account: {
+    maxAttempts: 5,
+    windowSeconds: 15 * 60,
+    lockSeconds: 15 * 60,
+    retentionSeconds: 24 * 60 * 60,
+  },
+  ip: {
+    // A higher threshold avoids locking a shared school/NAT address after a few mistakes.
+    maxAttempts: 40,
+    windowSeconds: 15 * 60,
+    lockSeconds: 15 * 60,
+    retentionSeconds: 24 * 60 * 60,
+  },
+};
 
 export interface LoginThrottleRecord {
   failed_attempts: number;
@@ -80,8 +98,14 @@ export function getClientIp(headers: Headers): string {
   return (forwardedIp || 'unknown').slice(0, 64);
 }
 
-export async function createLoginThrottleKey(email: string, clientIp: string): Promise<string> {
-  const normalized = normalizeLoginEmail(email) + '\n' + clientIp.trim().toLowerCase();
+export async function createLoginThrottleKey(
+  bucketType: LoginThrottleBucketType,
+  subject: string,
+): Promise<string> {
+  const normalizedSubject = bucketType === 'account'
+    ? normalizeLoginEmail(subject)
+    : subject.trim().toLowerCase();
+  const normalized = bucketType + '\n' + normalizedSubject;
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized));
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
@@ -89,6 +113,7 @@ export async function createLoginThrottleKey(email: string, clientIp: string): P
 export function inspectLoginThrottle(
   record: LoginThrottleRecord | null,
   nowSeconds: number,
+  policy: LoginThrottlePolicy,
 ): LoginThrottleDecision {
   if (record?.locked_until && record.locked_until > nowSeconds) {
     return {
@@ -100,31 +125,12 @@ export function inspectLoginThrottle(
     };
   }
   const windowExpired = !record
-    || record.window_started_at + LOGIN_THROTTLE_POLICY.windowSeconds <= nowSeconds;
+    || record.window_started_at + policy.windowSeconds <= nowSeconds;
   return {
     limited: false,
     retryAfter: 0,
     failedAttempts: windowExpired ? 0 : record.failed_attempts,
     windowStartedAt: windowExpired ? nowSeconds : record.window_started_at,
     lockedUntil: null,
-  };
-}
-
-export function recordLoginFailure(
-  record: LoginThrottleRecord | null,
-  nowSeconds: number,
-): LoginThrottleDecision {
-  const current = inspectLoginThrottle(record, nowSeconds);
-  if (current.limited) return current;
-  const failedAttempts = current.failedAttempts + 1;
-  const lockedUntil = failedAttempts >= LOGIN_THROTTLE_POLICY.maxAttempts
-    ? nowSeconds + LOGIN_THROTTLE_POLICY.lockSeconds
-    : null;
-  return {
-    limited: lockedUntil !== null,
-    retryAfter: lockedUntil ? LOGIN_THROTTLE_POLICY.lockSeconds : 0,
-    failedAttempts,
-    windowStartedAt: current.windowStartedAt,
-    lockedUntil,
   };
 }

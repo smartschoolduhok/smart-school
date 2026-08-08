@@ -16,14 +16,13 @@ import {
   verifyJWT,
 } from '../src/lib/jwtSecurity.ts';
 import {
-  LOGIN_THROTTLE_POLICY,
+  LOGIN_THROTTLE_POLICIES,
   PUBLIC_API_ROUTES,
   createLoginThrottleKey,
   getAllowedCorsOrigins,
   inspectLoginThrottle,
   isCorsOriginAllowed,
   isPublicApiRequest,
-  recordLoginFailure,
 } from '../src/lib/apiSecurity.ts';
 
 const secureSecret = 'Q7v!2mZ9#pR4xL8cN6sT1wY5kF3hJ0dB';
@@ -70,19 +69,20 @@ test('missing and unsafe JWT secrets fail closed', () => {
 
 test('valid JWTs include a jti and are accepted', async () => {
   const token = await signJWT(
-    { email: 'admin@example.test', id: 1 },
+    { email: 'admin@example.test', id: 1, auth_version: 1 },
     secureSecret,
     { nowSeconds: 1_000, expiresInSeconds: 600, jti: 'abcdefghijklmnop' },
   );
   const payload = await verifyJWT(token, secureSecret, 1_001);
   assert.equal(payload?.email, 'admin@example.test');
+  assert.equal(payload?.auth_version, 1);
   assert.equal(payload?.jti, 'abcdefghijklmnop');
   assert.equal(decodeJwtPayloadUnsafe(token)?.exp, 1_600);
 });
 
 test('generated JWT identifiers are random per session', async () => {
-  const first = decodeJwtPayloadUnsafe(await signJWT({ email: 'admin@example.test' }, secureSecret));
-  const second = decodeJwtPayloadUnsafe(await signJWT({ email: 'admin@example.test' }, secureSecret));
+  const first = decodeJwtPayloadUnsafe(await signJWT({ email: 'admin@example.test', auth_version: 1 }, secureSecret));
+  const second = decodeJwtPayloadUnsafe(await signJWT({ email: 'admin@example.test', auth_version: 1 }, secureSecret));
   assert.ok(first?.jti);
   assert.ok(second?.jti);
   assert.notEqual(first?.jti, second?.jti);
@@ -90,13 +90,28 @@ test('generated JWT identifiers are random per session', async () => {
 
 test('expired, tampered, and malformed JWTs are rejected', async () => {
   const token = await signJWT(
-    { email: 'admin@example.test' },
+    { email: 'admin@example.test', auth_version: 1 },
     secureSecret,
     { nowSeconds: 1_000, expiresInSeconds: 60, jti: 'abcdefghijklmnop' },
   );
   assert.equal(await verifyJWT(token, secureSecret, 1_060), null);
   assert.equal(await verifyJWT(token.slice(0, -1) + 'x', secureSecret, 1_001), null);
   assert.equal(await verifyJWT('not-a-token', secureSecret, 1_001), null);
+});
+
+test('JWTs without a valid authentication version are rejected', async () => {
+  const missingVersion = await signJWT(
+    { email: 'admin@example.test' },
+    secureSecret,
+    { nowSeconds: 1_000, expiresInSeconds: 60, jti: 'abcdefghijklmnop' },
+  );
+  const invalidVersion = await signJWT(
+    { email: 'admin@example.test', auth_version: 0 },
+    secureSecret,
+    { nowSeconds: 1_000, expiresInSeconds: 60, jti: 'ponmlkjihgfedcba' },
+  );
+  assert.equal(await verifyJWT(missingVersion, secureSecret, 1_001), null);
+  assert.equal(await verifyJWT(invalidVersion, secureSecret, 1_001), null);
 });
 
 test('the public API allowlist contains only login and QR verification routes', () => {
@@ -139,45 +154,71 @@ test('unapproved and malformed CORS origins are rejected', () => {
   assert.equal(isCorsOriginAllowed('not-an-origin', 'https://school.example/api/students', allowed), false);
 });
 
-test('login throttle locks on the configured failed-attempt threshold', () => {
-  let record = null;
-  let decision;
-  for (let attempt = 1; attempt <= LOGIN_THROTTLE_POLICY.maxAttempts; attempt += 1) {
-    decision = recordLoginFailure(record, 10_000);
-    record = {
-      failed_attempts: decision.failedAttempts,
-      window_started_at: decision.windowStartedAt,
-      locked_until: decision.lockedUntil,
-    };
-  }
-  assert.equal(decision.limited, true);
-  assert.equal(decision.retryAfter, LOGIN_THROTTLE_POLICY.lockSeconds);
+test('account and IP throttle policies use independent failure budgets', () => {
+  assert.deepEqual(LOGIN_THROTTLE_POLICIES.account, {
+    maxAttempts: 5,
+    windowSeconds: 900,
+    lockSeconds: 900,
+    retentionSeconds: 86_400,
+  });
+  assert.equal(LOGIN_THROTTLE_POLICIES.ip.maxAttempts, 40);
+  assert.equal(LOGIN_THROTTLE_POLICIES.ip.windowSeconds, 900);
+  assert.ok(LOGIN_THROTTLE_POLICIES.ip.maxAttempts > LOGIN_THROTTLE_POLICIES.account.maxAttempts);
 });
 
 test('expired login throttles recover automatically', () => {
   const record = {
-    failed_attempts: LOGIN_THROTTLE_POLICY.maxAttempts,
+    failed_attempts: LOGIN_THROTTLE_POLICIES.account.maxAttempts,
     window_started_at: 1_000,
     locked_until: 1_100,
   };
-  const recovered = inspectLoginThrottle(record, 1_000 + LOGIN_THROTTLE_POLICY.windowSeconds + 1);
+  const recovered = inspectLoginThrottle(
+    record,
+    1_000 + LOGIN_THROTTLE_POLICIES.account.windowSeconds + 1,
+    LOGIN_THROTTLE_POLICIES.account,
+  );
   assert.equal(recovered.limited, false);
   assert.equal(recovered.failedAttempts, 0);
 });
 
-test('login throttle keys normalize email and include client IP', async () => {
-  const first = await createLoginThrottleKey(' Admin@Example.Test ', '192.0.2.1');
-  const normalized = await createLoginThrottleKey('admin@example.test', '192.0.2.1');
-  const differentIp = await createLoginThrottleKey('admin@example.test', '192.0.2.2');
-  assert.equal(first, normalized);
-  assert.notEqual(first, differentIp);
+test('account buckets cannot be bypassed by rotating IP addresses', async () => {
+  const keys = await Promise.all(
+    ['192.0.2.1', '192.0.2.2', '192.0.2.3'].map(() => (
+      createLoginThrottleKey('account', ' Admin@Example.Test ')
+    )),
+  );
+  assert.equal(new Set(keys).size, 1);
+  assert.equal(keys[0], await createLoginThrottleKey('account', 'admin@example.test'));
+});
+
+test('IP buckets aggregate failures across different account names', async () => {
+  const keys = await Promise.all(
+    ['first@example.test', 'second@example.test', 'third@example.test'].map(() => (
+      createLoginThrottleKey('ip', '192.0.2.50')
+    )),
+  );
+  assert.equal(new Set(keys).size, 1);
+  assert.notEqual(keys[0], await createLoginThrottleKey('ip', '192.0.2.51'));
+  assert.notEqual(keys[0], await createLoginThrottleKey('account', '192.0.2.50'));
+});
+
+test('failure recording uses a database-current atomic UPSERT', async () => {
+  const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
+  assert.match(worker, /ON CONFLICT\(subject_hash\) DO UPDATE SET/);
+  assert.match(worker, /login_throttles\.failed_attempts \+ 1/);
+  assert.match(worker, /RETURNING failed_attempts, window_started_at, locked_until/);
+  assert.doesNotMatch(worker, /recordLoginFailure/);
 });
 
 test('migration and worker store revoked jti values instead of raw JWTs', async () => {
   const migration = await readFile(new URL('../migrations/0016_auth_security.sql', import.meta.url), 'utf8');
   const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
   assert.match(migration, /CREATE TABLE IF NOT EXISTS revoked_sessions/);
+  assert.match(migration, /ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1/);
+  assert.match(migration, /bucket_type\s+TEXT NOT NULL/);
   assert.equal(worker.includes('INSERT OR IGNORE INTO revoked_sessions (jti, user_id, expires_at, revoked_at)'), true);
+  assert.match(worker, /payload\.auth_version !== authenticated\.authVersion/);
+  assert.match(worker, /auth_version = auth_version \+ 1/);
   assert.doesNotMatch(worker, /token_blacklist/);
   assert.doesNotMatch(worker, /default-dev-secret-change-me/);
 });

@@ -41,7 +41,7 @@ import {
   type JwtPayload,
 } from './lib/jwtSecurity'
 import {
-  LOGIN_THROTTLE_POLICY,
+  LOGIN_THROTTLE_POLICIES,
   createLoginThrottleKey,
   getAllowedCorsOrigins,
   getClientIp,
@@ -49,7 +49,8 @@ import {
   isCorsOriginAllowed,
   isPublicApiRequest,
   normalizeLoginEmail,
-  recordLoginFailure,
+  type LoginThrottleBucketType,
+  type LoginThrottlePolicy,
   type LoginThrottleRecord,
 } from './lib/apiSecurity'
 
@@ -89,6 +90,11 @@ interface UserContext {
   status: string;
 }
 
+interface AuthenticatedUserContext {
+  user: UserContext;
+  authVersion: number;
+}
+
 type Variables = {
   user: UserContext;
   session: JwtPayload;
@@ -102,9 +108,9 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 // Helper Functions
 // ===========================================
 
-async function getCurrentUserContext(db: D1Database, email: string): Promise<UserContext | null> {
+async function getCurrentUserContext(db: D1Database, email: string): Promise<AuthenticatedUserContext | null> {
   const row = await db.prepare(`
-    SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status,
+    SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status, u.auth_version,
            r.key AS role_key, r.name AS role_name,
            s.name AS school_name
     FROM users u
@@ -118,6 +124,7 @@ async function getCurrentUserContext(db: D1Database, email: string): Promise<Use
     role_id: number;
     school_id: number | null;
     status: string;
+    auth_version: number;
     role_key: string;
     role_name: string;
     school_name: string | null;
@@ -129,15 +136,18 @@ async function getCurrentUserContext(db: D1Database, email: string): Promise<Use
   const role_key = validRoles.includes(row.role_key as RoleKey) ? (row.role_key as RoleKey) : 'teacher';
 
   return {
-    id: row.id,
-    email: row.email,
-    full_name: row.full_name,
-    role_id: row.role_id,
-    role_key,
-    role_name: row.role_name || role_key,
-    school_id: row.school_id,
-    school_name: row.school_name || null,
-    status: row.status,
+    authVersion: row.auth_version,
+    user: {
+      id: row.id,
+      email: row.email,
+      full_name: row.full_name,
+      role_id: row.role_id,
+      role_key,
+      role_name: row.role_name || role_key,
+      school_id: row.school_id,
+      school_name: row.school_name || null,
+      status: row.status,
+    },
   };
 }
 
@@ -151,7 +161,10 @@ function extractBearerToken(c: any): string | null {
 async function cleanupExpiredAuthState(db: D1Database, nowSeconds: number): Promise<void> {
   await db.prepare('DELETE FROM revoked_sessions WHERE expires_at <= ?').bind(nowSeconds).run();
   await db.prepare('DELETE FROM login_throttles WHERE updated_at <= ?')
-    .bind(nowSeconds - LOGIN_THROTTLE_POLICY.retentionSeconds)
+    .bind(nowSeconds - Math.max(
+      LOGIN_THROTTLE_POLICIES.account.retentionSeconds,
+      LOGIN_THROTTLE_POLICIES.ip.retentionSeconds,
+    ))
     .run();
 }
 
@@ -167,24 +180,50 @@ async function getLoginThrottleRecord(
 async function saveLoginFailure(
   db: D1Database,
   subjectHash: string,
-  record: LoginThrottleRecord | null,
+  bucketType: LoginThrottleBucketType,
+  policy: LoginThrottlePolicy,
   nowSeconds: number,
 ) {
-  const decision = recordLoginFailure(record, nowSeconds);
-  await db.prepare(
-    'INSERT INTO login_throttles (subject_hash, failed_attempts, window_started_at, locked_until, updated_at) '
-    + 'VALUES (?, ?, ?, ?, ?) '
-    + 'ON CONFLICT(subject_hash) DO UPDATE SET failed_attempts = excluded.failed_attempts, '
-    + 'window_started_at = excluded.window_started_at, locked_until = excluded.locked_until, '
-    + 'updated_at = excluded.updated_at',
-  ).bind(
+  // The UPSERT reads and increments the current SQLite row in one statement. Concurrent
+  // Workers cannot overwrite each other with a count computed from a stale SELECT.
+  const record = await db.prepare(`
+    INSERT INTO login_throttles (
+      subject_hash, bucket_type, failed_attempts, window_started_at, locked_until, updated_at
+    ) VALUES (?1, ?2, 1, ?3, NULL, ?3)
+    ON CONFLICT(subject_hash) DO UPDATE SET
+      bucket_type = excluded.bucket_type,
+      failed_attempts = CASE
+        WHEN (login_throttles.locked_until IS NOT NULL AND login_throttles.locked_until <= ?3)
+          OR (login_throttles.locked_until IS NULL AND login_throttles.window_started_at <= ?3 - ?4)
+          THEN 1
+        ELSE login_throttles.failed_attempts + 1
+      END,
+      window_started_at = CASE
+        WHEN (login_throttles.locked_until IS NOT NULL AND login_throttles.locked_until <= ?3)
+          OR (login_throttles.locked_until IS NULL AND login_throttles.window_started_at <= ?3 - ?4)
+          THEN ?3
+        ELSE login_throttles.window_started_at
+      END,
+      locked_until = CASE
+        WHEN (login_throttles.locked_until IS NOT NULL AND login_throttles.locked_until <= ?3)
+          OR (login_throttles.locked_until IS NULL AND login_throttles.window_started_at <= ?3 - ?4)
+          THEN NULL
+        WHEN login_throttles.failed_attempts + 1 >= ?5
+          THEN MAX(COALESCE(login_throttles.locked_until, 0), ?3 + ?6)
+        ELSE login_throttles.locked_until
+      END,
+      updated_at = ?3
+    RETURNING failed_attempts, window_started_at, locked_until
+  `).bind(
     subjectHash,
-    decision.failedAttempts,
-    decision.windowStartedAt,
-    decision.lockedUntil,
+    bucketType,
     nowSeconds,
-  ).run();
-  return decision;
+    policy.windowSeconds,
+    policy.maxAttempts,
+    policy.lockSeconds,
+  ).first<LoginThrottleRecord>();
+  if (!record) throw new Error('Login throttle update failed');
+  return inspectLoginThrottle(record, nowSeconds, policy);
 }
 
 async function clearLoginThrottle(db: D1Database, subjectHash: string): Promise<void> {
@@ -335,12 +374,15 @@ app.use('/api/*', async (c, next) => {
       return c.json({ error: 'غير مصرح: انتهت الجلسة' }, 401);
     }
 
-    const user = await getCurrentUserContext(c.env.DB, payload.email);
-    if (!user) {
+    const authenticated = await getCurrentUserContext(c.env.DB, payload.email);
+    if (!authenticated) {
       return c.json({ error: 'غير مصرح: المستخدم غير موجود أو غير نشط' }, 401);
     }
+    if (payload.auth_version !== authenticated.authVersion) {
+      return c.json({ error: 'غير مصرح: انتهت الجلسة' }, 401);
+    }
 
-    c.set('user', user);
+    c.set('user', authenticated.user);
     c.set('session', payload);
     await next();
   } catch {
@@ -377,15 +419,26 @@ app.post('/api/auth/login', async (c) => {
   try {
     const nowSeconds = Math.floor(Date.now() / 1000);
     await cleanupExpiredAuthState(db, nowSeconds);
-    const throttleKey = await createLoginThrottleKey(email, getClientIp(c.req.raw.headers));
-    const throttleRecord = await getLoginThrottleRecord(db, throttleKey);
-    const throttleState = inspectLoginThrottle(throttleRecord, nowSeconds);
-    if (throttleState.limited) {
-      return rateLimitedResponse(c, throttleState.retryAfter);
+    const clientIp = getClientIp(c.req.raw.headers);
+    const throttleBuckets = await Promise.all(([
+      { bucketType: 'account', subject: email, policy: LOGIN_THROTTLE_POLICIES.account },
+      { bucketType: 'ip', subject: clientIp, policy: LOGIN_THROTTLE_POLICIES.ip },
+    ] as const).map(async bucket => ({
+      ...bucket,
+      subjectHash: await createLoginThrottleKey(bucket.bucketType, bucket.subject),
+    })));
+    let limitedRetryAfter = 0;
+    for (const bucket of throttleBuckets) {
+      const record = await getLoginThrottleRecord(db, bucket.subjectHash);
+      const state = inspectLoginThrottle(record, nowSeconds, bucket.policy);
+      if (state.limited) limitedRetryAfter = Math.max(limitedRetryAfter, state.retryAfter);
+    }
+    if (limitedRetryAfter > 0) {
+      return rateLimitedResponse(c, limitedRetryAfter);
     }
 
     const row = await db.prepare(
-      'SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.password_hash, u.status, '
+      'SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.password_hash, u.status, u.auth_version, '
       + 'r.key AS role_key, r.name AS role_name '
       + 'FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE LOWER(u.email) = ?',
     ).bind(email).first<{
@@ -396,6 +449,7 @@ app.post('/api/auth/login', async (c) => {
       school_id: number | null;
       password_hash: string | null;
       status: string;
+      auth_version: number;
       role_key: string;
       role_name: string;
     }>();
@@ -416,12 +470,24 @@ app.post('/api/auth/login', async (c) => {
     }
 
     if (!row || row.status !== 'active' || !passwordValid) {
-      const failure = await saveLoginFailure(db, throttleKey, throttleRecord, nowSeconds);
-      if (failure.limited) return rateLimitedResponse(c, failure.retryAfter);
+      let failureRetryAfter = 0;
+      for (const bucket of throttleBuckets) {
+        const failure = await saveLoginFailure(
+          db,
+          bucket.subjectHash,
+          bucket.bucketType,
+          bucket.policy,
+          nowSeconds,
+        );
+        if (failure.limited) failureRetryAfter = Math.max(failureRetryAfter, failure.retryAfter);
+      }
+      if (failureRetryAfter > 0) return rateLimitedResponse(c, failureRetryAfter);
       return c.json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' }, 401);
     }
 
-    await clearLoginThrottle(db, throttleKey);
+    // A successful login clears only this account's bucket. The IP bucket remains so
+    // one valid login cannot erase abuse history for a shared or attacking address.
+    await clearLoginThrottle(db, throttleBuckets[0].subjectHash);
     if (passwordNeedsUpgrade || passwordScheme === 'legacy_sha256') {
       const upgradedHash = await hashPassword(password);
       await db.prepare(
@@ -430,7 +496,13 @@ app.post('/api/auth/login', async (c) => {
     }
 
     const token = await signJWT(
-      { id: row.id, email: row.email, role_key: row.role_key, school_id: row.school_id },
+      {
+        id: row.id,
+        email: row.email,
+        role_key: row.role_key,
+        school_id: row.school_id,
+        auth_version: row.auth_version,
+      },
       secret,
       { expiresInSeconds: JWT_SESSION_TTL_SECONDS },
     );
@@ -850,7 +922,11 @@ app.put('/api/users/:id/reset-password', requireAdmin(), async (c) => {
     if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
 
     const passwordHash = await hashPassword(password)
-    await db.prepare(`UPDATE users SET password_hash = ?, updated_at = unixepoch() WHERE id = ?`).bind(passwordHash, id).run()
+    await db.prepare(`
+      UPDATE users
+      SET password_hash = ?, auth_version = auth_version + 1, updated_at = unixepoch()
+      WHERE id = ?
+    `).bind(passwordHash, id).run()
 
     return c.json({ data: { id, success: true } })
   } catch {

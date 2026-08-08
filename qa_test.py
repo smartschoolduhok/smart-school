@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """QA Test Suite for Step 2 Core Admin CRUD"""
 import base64, glob, hashlib, json, sqlite3, urllib.request, urllib.error, sys, time
+from concurrent.futures import ThreadPoolExecutor
 
 BASE = "http://localhost:3000"
 FAILURES = 0
@@ -63,6 +64,10 @@ def decode_jwt_payload(token):
         return json.loads(base64.urlsafe_b64decode(payload.encode('ascii')).decode('utf-8'))
     except Exception:
         return {}
+
+def throttle_subject_hash(bucket_type, subject):
+    normalized = subject.strip().lower()
+    return hashlib.sha256(f"{bucket_type}\n{normalized}".encode("utf-8")).hexdigest()
 
 def contains_key(value, key):
     if isinstance(value, dict):
@@ -231,14 +236,13 @@ else:
     check("SEC6. Logout revokes jti and never stores the raw bearer token", False, "Legacy session unavailable")
 
 throttle_email = f"throttle+{RUN_ID}@invalid.test"
-throttle_headers = {"CF-Connecting-IP": "198.51.100.40"}
 throttle_results = []
 throttle_retry_after = None
-for _ in range(5):
+for attempt in range(5):
     status, _, response_headers = api_with_response(
         "POST",
         "/api/auth/login",
-        headers=throttle_headers,
+        headers={"CF-Connecting-IP": f"198.51.100.{40 + attempt}"},
         body={"email": throttle_email, "password": "wrong-password"},
     )
     throttle_results.append(status)
@@ -247,7 +251,7 @@ for _ in range(5):
         throttle_retry_after,
     )
 check(
-    "SEC7. Repeated failed logins are temporarily throttled",
+    "SEC7. The account bucket throttles one account across rotating IP addresses",
     throttle_results[:4] == [401, 401, 401, 401]
     and throttle_results[4] == 429
     and throttle_retry_after is not None
@@ -256,22 +260,95 @@ check(
 )
 
 if local_database:
+    throttle_account_hash = throttle_subject_hash("account", throttle_email)
     local_db_execute(
         "UPDATE login_throttles SET locked_until = unixepoch() - 1, "
-        "window_started_at = unixepoch() - 1000, updated_at = unixepoch()"
+        "window_started_at = unixepoch() - 1000, updated_at = unixepoch() "
+        "WHERE subject_hash = ?",
+        (throttle_account_hash,),
     )
     recovered_status, _ = api_with_status(
         "POST",
         "/api/auth/login",
-        headers=throttle_headers,
+        headers={"CF-Connecting-IP": "198.51.100.49"},
         body={"email": throttle_email, "password": "wrong-password"},
     )
     check("SEC8. Expired throttles recover automatically", recovered_status == 401, f"status={recovered_status}")
 else:
     check("SEC8. Expired throttles recover automatically", False, "Local D1 unavailable")
 
+ip_attack_address = "198.51.100.80"
+ip_attack_statuses = []
+for attempt in range(40):
+    status, _ = api_with_status(
+        "POST",
+        "/api/auth/login",
+        headers={"CF-Connecting-IP": ip_attack_address},
+        body={"email": f"ip-attack-{RUN_ID}-{attempt}@invalid.test", "password": "wrong-password"},
+    )
+    ip_attack_statuses.append(status)
+check(
+    "SEC9. The IP bucket aggregates attacks across different account names",
+    ip_attack_statuses[:39] == [401] * 39 and ip_attack_statuses[39] == 429,
+    f"401={ip_attack_statuses.count(401)}, 429={ip_attack_statuses.count(429)}",
+)
+
+shared_ip = "198.51.100.81"
+shared_failure_statuses = [
+    api_with_status(
+        "POST",
+        "/api/auth/login",
+        headers={"CF-Connecting-IP": shared_ip},
+        body={"email": f"shared-{RUN_ID}-{attempt}@invalid.test", "password": "wrong-password"},
+    )[0]
+    for attempt in range(3)
+]
+shared_valid_status, _ = api_with_status(
+    "POST",
+    "/api/auth/login",
+    headers={"CF-Connecting-IP": shared_ip},
+    body={"email": "owner@rafidain.iq", "password": "owner123"},
+)
+check(
+    "SEC10. A few failures do not lock legitimate users behind a shared school IP",
+    shared_failure_statuses == [401, 401, 401] and shared_valid_status == 200,
+    f"failures={shared_failure_statuses}, valid={shared_valid_status}",
+)
+
+concurrent_email = f"concurrent+{RUN_ID}@invalid.test"
+def concurrent_failed_login(attempt):
+    return api_with_status(
+        "POST",
+        "/api/auth/login",
+        headers={"CF-Connecting-IP": f"203.0.113.{100 + attempt}"},
+        body={"email": concurrent_email, "password": "wrong-password"},
+    )[0]
+
+with ThreadPoolExecutor(max_workers=8) as executor:
+    concurrent_statuses = list(executor.map(concurrent_failed_login, range(8)))
+concurrent_followup, _ = api_with_status(
+    "POST",
+    "/api/auth/login",
+    headers={"CF-Connecting-IP": "203.0.113.120"},
+    body={"email": concurrent_email, "password": "wrong-password"},
+)
+concurrent_account_count = local_db_execute(
+    "SELECT failed_attempts FROM login_throttles WHERE subject_hash = ?",
+    (throttle_subject_hash("account", concurrent_email),),
+    fetchone=True,
+) if local_database else None
+check(
+    "SEC11. Concurrent failures cannot bypass atomic account counting",
+    concurrent_statuses.count(401) <= 4
+    and 429 in concurrent_statuses
+    and concurrent_followup == 429
+    and concurrent_account_count is not None
+    and concurrent_account_count[0] >= 5,
+    f"statuses={sorted(concurrent_statuses)}, followup={concurrent_followup}, row={concurrent_account_count}",
+)
+
 if legacy_user_id:
-    reset_ip_headers = {"CF-Connecting-IP": "198.51.100.41"}
+    reset_ip_headers = {"CF-Connecting-IP": "198.51.100.90"}
     reset_statuses = [
         api_with_status(
             "POST", "/api/auth/login", headers=reset_ip_headers,
@@ -279,21 +356,37 @@ if legacy_user_id:
         )[0]
         for _ in range(2)
     ]
+    account_hash = throttle_subject_hash("account", legacy_email)
+    ip_hash = throttle_subject_hash("ip", reset_ip_headers["CF-Connecting-IP"])
+    ip_before_success = local_db_execute(
+        "SELECT failed_attempts FROM login_throttles WHERE subject_hash = ?", (ip_hash,), fetchone=True
+    ) if local_database else None
     successful_status, _ = api_with_status(
         "POST", "/api/auth/login", headers=reset_ip_headers,
         body={"email": legacy_email, "password": legacy_password},
     )
+    account_after_success = local_db_execute(
+        "SELECT failed_attempts FROM login_throttles WHERE subject_hash = ?", (account_hash,), fetchone=True
+    ) if local_database else None
+    ip_after_success = local_db_execute(
+        "SELECT failed_attempts FROM login_throttles WHERE subject_hash = ?", (ip_hash,), fetchone=True
+    ) if local_database else None
     after_success_status, _ = api_with_status(
         "POST", "/api/auth/login", headers=reset_ip_headers,
         body={"email": legacy_email, "password": "wrong-password"},
     )
     check(
-        "SEC9. Successful login clears the relevant failure state",
-        reset_statuses == [401, 401] and successful_status == 200 and after_success_status == 401,
-        f"failures={reset_statuses}, success={successful_status}, after={after_success_status}",
+        "SEC12. Successful login clears only the account bucket and preserves IP abuse history",
+        reset_statuses == [401, 401]
+        and successful_status == 200
+        and account_after_success is None
+        and ip_before_success == ip_after_success == (2,)
+        and after_success_status == 401,
+        f"failures={reset_statuses}, success={successful_status}, account={account_after_success}, "
+        f"ip={ip_before_success}/{ip_after_success}, after={after_success_status}",
     )
 else:
-    check("SEC9. Successful login clears the relevant failure state", False, "Legacy user unavailable")
+    check("SEC12. Successful login clears only the account bucket and preserves IP abuse history", False, "Legacy user unavailable")
 
 unknown_status, unknown_response = api_with_status(
     "POST", "/api/auth/login",
@@ -311,7 +404,7 @@ inactive_status, inactive_response = api_with_status(
     body={"email": "registrar@eman.iq", "password": "registrar123"},
 )
 check(
-    "SEC10. Unknown, wrong-password, and inactive accounts share a generic response",
+    "SEC13. Unknown, wrong-password, and inactive accounts share a generic response",
     unknown_status == wrong_status == inactive_status == 401
     and unknown_response.get("error") == wrong_response.get("error") == inactive_response.get("error"),
     f"statuses={unknown_status}/{wrong_status}/{inactive_status}, errors={unknown_response}/{wrong_response}/{inactive_response}",
@@ -325,20 +418,26 @@ r = api("POST", "/api/users", headers={"Authorization": f"Bearer {admin_tok}"},
               "role_id": 5, "school_id": 1, "phone": "07801112233", "status": "active"})
 user_id = r.get("data", {}).get("id") if "data" in r else None
 check("7. Admin creates user (teacher)", user_id is not None, str(r)[:100])
+created_password_hash = None
+created_auth_version = None
 if user_id and local_database:
-    created_password_hash = local_db_execute(
-        "SELECT password_hash FROM users WHERE id = ?", (user_id,), fetchone=True
-    )[0]
+    created_row = local_db_execute(
+        "SELECT password_hash, auth_version FROM users WHERE id = ?", (user_id,), fetchone=True
+    )
+    created_password_hash, created_auth_version = created_row
     check(
-        "SEC11. User creation stores only the new PBKDF2 format",
-        created_password_hash.startswith("pbkdf2_sha256$"),
-        created_password_hash[:24],
+        "SEC14. User creation stores PBKDF2 and starts at auth version 1",
+        created_password_hash.startswith("pbkdf2_sha256$") and created_auth_version == 1,
+        f"hash={created_password_hash[:24]}, auth_version={created_auth_version}",
     )
 else:
-    check("SEC11. User creation stores only the new PBKDF2 format", False, "User or local D1 unavailable")
+    check("SEC14. User creation stores PBKDF2 and starts at auth version 1", False, "User or local D1 unavailable")
 
-r = login(TEST_USER_EMAIL, "testpass123")
-check("8. New user login", r is not None)
+token_a = login(TEST_USER_EMAIL, "testpass123")
+token_a_me_status = api_with_status(
+    "GET", "/api/auth/me", headers={"Authorization": f"Bearer {token_a}"}
+)[0] if token_a else 0
+check("8. New user login", token_a is not None and token_a_me_status == 200)
 
 r = api("POST", "/api/users", headers={"Authorization": f"Bearer {admin_tok}"},
         body={"full_name": "مستخدم مكرر", "email": TEST_USER_EMAIL, "password": "duppass123",
@@ -355,19 +454,42 @@ if user_id:
             body={"password": "newpassword456"})
     check("11. Reset password", "data" in r, str(r)[:100])
     if local_database:
-        reset_password_hash = local_db_execute(
-            "SELECT password_hash FROM users WHERE id = ?", (user_id,), fetchone=True
-        )[0]
+        reset_row = local_db_execute(
+            "SELECT password_hash, auth_version FROM users WHERE id = ?", (user_id,), fetchone=True
+        )
+        reset_password_hash, reset_auth_version = reset_row
         check(
-            "SEC12. Password reset stores only the new PBKDF2 format",
-            reset_password_hash.startswith("pbkdf2_sha256$") and reset_password_hash != created_password_hash,
-            reset_password_hash[:24],
+            "SEC15. Password reset stores PBKDF2 and increments auth version",
+            reset_password_hash.startswith("pbkdf2_sha256$")
+            and reset_password_hash != created_password_hash
+            and reset_auth_version == created_auth_version + 1,
+            f"hash={reset_password_hash[:24]}, auth_version={reset_auth_version}",
         )
     else:
-        check("SEC12. Password reset stores only the new PBKDF2 format", False, "Local D1 unavailable")
+        check("SEC15. Password reset stores PBKDF2 and increments auth version", False, "Local D1 unavailable")
 
-    r = login(TEST_USER_EMAIL, "newpassword456")
-    check("12. New password login works", r is not None)
+    token_a_after_reset_status = api_with_status(
+        "GET", "/api/auth/me", headers={"Authorization": f"Bearer {token_a}"}
+    )[0] if token_a else 0
+    old_password_status, _ = api_with_status(
+        "POST", "/api/auth/login",
+        headers={"CF-Connecting-IP": "203.0.113.200"},
+        body={"email": TEST_USER_EMAIL, "password": "testpass123"},
+    )
+    token_b = login(TEST_USER_EMAIL, "newpassword456")
+    token_b_me_status = api_with_status(
+        "GET", "/api/auth/me", headers={"Authorization": f"Bearer {token_b}"}
+    )[0] if token_b else 0
+    check(
+        "SEC16. Password reset invalidates token A and a new login issues working token B",
+        token_a_after_reset_status == 401
+        and old_password_status == 401
+        and token_b is not None
+        and token_b != token_a
+        and token_b_me_status == 200,
+        f"token_a={token_a_after_reset_status}, old_password={old_password_status}, token_b={token_b_me_status}",
+    )
+    check("12. New password login works", token_b is not None)
 
     r = api("PUT", f"/api/users/{user_id}/status", headers={"Authorization": f"Bearer {admin_tok}"},
             body={"status": "inactive"})
