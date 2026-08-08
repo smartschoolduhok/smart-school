@@ -5,7 +5,6 @@
 // ===========================================
 
 import { Hono } from 'hono'
-import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/cloudflare-workers'
 import type { RoleKey } from './types'
 import {
@@ -33,6 +32,27 @@ import {
   type ResultCardSettings,
   type ResultCardSubject,
 } from './lib/resultCards'
+import { hashPassword, verifyPassword } from './lib/authSecurity'
+import {
+  JWT_SESSION_TTL_SECONDS,
+  getValidatedJwtSecret,
+  signJWT,
+  verifyJWT,
+  type JwtPayload,
+} from './lib/jwtSecurity'
+import {
+  LOGIN_THROTTLE_POLICIES,
+  createLoginThrottleKey,
+  getAllowedCorsOrigins,
+  getClientIp,
+  inspectLoginThrottle,
+  isCorsOriginAllowed,
+  isPublicApiRequest,
+  normalizeLoginEmail,
+  type LoginThrottleBucketType,
+  type LoginThrottlePolicy,
+  type LoginThrottleRecord,
+} from './lib/apiSecurity'
 
 // ===========================================
 // Types & Extended Bindings
@@ -52,7 +72,9 @@ declare global {
 
 type Bindings = {
   DB: D1Database;
-  JWT_SECRET: string;
+  JWT_SECRET?: string;
+  ALLOWED_ORIGINS?: string;
+  APP_ENV?: string;
   ASSETS?: { fetch(url: URL): Promise<{ status: number; body: ReadableStream | null }> };
 }
 
@@ -68,8 +90,14 @@ interface UserContext {
   status: string;
 }
 
+interface AuthenticatedUserContext {
+  user: UserContext;
+  authVersion: number;
+}
+
 type Variables = {
   user: UserContext;
+  session: JwtPayload;
   resolvedSchoolId: number | null;
   scope: 'all' | 'single';
 };
@@ -77,97 +105,12 @@ type Variables = {
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 // ===========================================
-// JWT Utilities (Web Crypto API - Worker Safe)
-// ===========================================
-
-function encodeBase64Url(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function decodeBase64Url(str: string): ArrayBuffer {
-  const padding = '='.repeat((4 - (str.length % 4)) % 4);
-  const base64 = str.replace(/-/g, '+').replace(/_/g, '/') + padding;
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
-}
-
-function stringToBuffer(str: string): ArrayBuffer {
-  const encoder = new TextEncoder();
-  return encoder.encode(str).buffer;
-}
-
-function bufferToString(buf: ArrayBuffer): string {
-  const decoder = new TextDecoder();
-  return decoder.decode(buf);
-}
-
-async function importKey(secret: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    'raw',
-    stringToBuffer(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign', 'verify']
-  );
-}
-
-async function signJWT(payload: object, secret: string, expiresInSeconds: number = 86400): Promise<string> {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const now = Math.floor(Date.now() / 1000);
-  const fullPayload = { ...payload, iat: now, exp: now + expiresInSeconds };
-  const headerB64 = encodeBase64Url(stringToBuffer(JSON.stringify(header)));
-  const payloadB64 = encodeBase64Url(stringToBuffer(JSON.stringify(fullPayload)));
-  const signingInput = `${headerB64}.${payloadB64}`;
-  const key = await importKey(secret);
-  const signature = await crypto.subtle.sign('HMAC', key, stringToBuffer(signingInput));
-  const signatureB64 = encodeBase64Url(signature);
-  return `${signingInput}.${signatureB64}`;
-}
-
-async function verifyJWT(token: string, secret: string): Promise<any | null> {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const [headerB64, payloadB64, signatureB64] = parts;
-    const signingInput = `${headerB64}.${payloadB64}`;
-    const key = await importKey(secret);
-    const signature = decodeBase64Url(signatureB64);
-    const valid = await crypto.subtle.verify('HMAC', key, signature, stringToBuffer(signingInput));
-    if (!valid) return null;
-    const payload = JSON.parse(bufferToString(decodeBase64Url(payloadB64)));
-    const now = Math.floor(Date.now() / 1000);
-    if (payload.exp && payload.exp < now) return null;
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-async function hashPassword(password: string, email: string): Promise<string> {
-  const salt = 'smart-school-salt-2026';
-  const data = stringToBuffer(password + salt + email);
-  const hash = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hash))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-// ===========================================
 // Helper Functions
 // ===========================================
 
-async function getCurrentUserContext(db: D1Database, email: string): Promise<UserContext | null> {
+async function getCurrentUserContext(db: D1Database, email: string): Promise<AuthenticatedUserContext | null> {
   const row = await db.prepare(`
-    SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status,
+    SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status, u.auth_version,
            r.key AS role_key, r.name AS role_name,
            s.name AS school_name
     FROM users u
@@ -181,6 +124,7 @@ async function getCurrentUserContext(db: D1Database, email: string): Promise<Use
     role_id: number;
     school_id: number | null;
     status: string;
+    auth_version: number;
     role_key: string;
     role_name: string;
     school_name: string | null;
@@ -192,43 +136,19 @@ async function getCurrentUserContext(db: D1Database, email: string): Promise<Use
   const role_key = validRoles.includes(row.role_key as RoleKey) ? (row.role_key as RoleKey) : 'teacher';
 
   return {
-    id: row.id,
-    email: row.email,
-    full_name: row.full_name,
-    role_id: row.role_id,
-    role_key,
-    role_name: row.role_name || role_key,
-    school_id: row.school_id,
-    school_name: row.school_name || null,
-    status: row.status,
+    authVersion: row.auth_version,
+    user: {
+      id: row.id,
+      email: row.email,
+      full_name: row.full_name,
+      role_id: row.role_id,
+      role_key,
+      role_name: row.role_name || role_key,
+      school_id: row.school_id,
+      school_name: row.school_name || null,
+      status: row.status,
+    },
   };
-}
-
-async function requireAuth(c: any, enforce: boolean = false): Promise<UserContext | null> {
-  const token = extractBearerToken(c);
-  if (!token) {
-    if (enforce) {
-      return c.json({ error: 'غير مصرح: رمز المصادقة مفقود' }, 401);
-    }
-    return null;
-  }
-  const secret = c.env.JWT_SECRET || 'default-dev-secret-change-me';
-  const payload = await verifyJWT(token, secret);
-  if (!payload || !payload.email) {
-    if (enforce) {
-      return c.json({ error: 'غير مصرح: رمز غير صالح أو منتهي الصلاحية' }, 401);
-    }
-    return null;
-  }
-  const db = c.env.DB as D1Database;
-  const user = await getCurrentUserContext(db, payload.email);
-  if (!user && enforce) {
-    return c.json({ error: 'غير مصرح: المستخدم غير موجود أو غير نشط' }, 401);
-  }
-  if (user) {
-    c.set('user', user);
-  }
-  return user;
 }
 
 function extractBearerToken(c: any): string | null {
@@ -236,6 +156,83 @@ function extractBearerToken(c: any): string | null {
   if (!auth) return null;
   const match = auth.match(/^Bearer\s+(.+)$/i);
   return match ? match[1] : null;
+}
+
+async function cleanupExpiredAuthState(db: D1Database, nowSeconds: number): Promise<void> {
+  await db.prepare('DELETE FROM revoked_sessions WHERE expires_at <= ?').bind(nowSeconds).run();
+  await db.prepare('DELETE FROM login_throttles WHERE updated_at <= ?')
+    .bind(nowSeconds - Math.max(
+      LOGIN_THROTTLE_POLICIES.account.retentionSeconds,
+      LOGIN_THROTTLE_POLICIES.ip.retentionSeconds,
+    ))
+    .run();
+}
+
+async function getLoginThrottleRecord(
+  db: D1Database,
+  subjectHash: string,
+): Promise<LoginThrottleRecord | null> {
+  return db.prepare(
+    'SELECT failed_attempts, window_started_at, locked_until FROM login_throttles WHERE subject_hash = ?',
+  ).bind(subjectHash).first<LoginThrottleRecord>();
+}
+
+async function saveLoginFailure(
+  db: D1Database,
+  subjectHash: string,
+  bucketType: LoginThrottleBucketType,
+  policy: LoginThrottlePolicy,
+  nowSeconds: number,
+) {
+  // The UPSERT reads and increments the current SQLite row in one statement. Concurrent
+  // Workers cannot overwrite each other with a count computed from a stale SELECT.
+  const record = await db.prepare(`
+    INSERT INTO login_throttles (
+      subject_hash, bucket_type, failed_attempts, window_started_at, locked_until, updated_at
+    ) VALUES (?1, ?2, 1, ?3, NULL, ?3)
+    ON CONFLICT(subject_hash) DO UPDATE SET
+      bucket_type = excluded.bucket_type,
+      failed_attempts = CASE
+        WHEN (login_throttles.locked_until IS NOT NULL AND login_throttles.locked_until <= ?3)
+          OR (login_throttles.locked_until IS NULL AND login_throttles.window_started_at <= ?3 - ?4)
+          THEN 1
+        ELSE login_throttles.failed_attempts + 1
+      END,
+      window_started_at = CASE
+        WHEN (login_throttles.locked_until IS NOT NULL AND login_throttles.locked_until <= ?3)
+          OR (login_throttles.locked_until IS NULL AND login_throttles.window_started_at <= ?3 - ?4)
+          THEN ?3
+        ELSE login_throttles.window_started_at
+      END,
+      locked_until = CASE
+        WHEN (login_throttles.locked_until IS NOT NULL AND login_throttles.locked_until <= ?3)
+          OR (login_throttles.locked_until IS NULL AND login_throttles.window_started_at <= ?3 - ?4)
+          THEN NULL
+        WHEN login_throttles.failed_attempts + 1 >= ?5
+          THEN MAX(COALESCE(login_throttles.locked_until, 0), ?3 + ?6)
+        ELSE login_throttles.locked_until
+      END,
+      updated_at = ?3
+    RETURNING failed_attempts, window_started_at, locked_until
+  `).bind(
+    subjectHash,
+    bucketType,
+    nowSeconds,
+    policy.windowSeconds,
+    policy.maxAttempts,
+    policy.lockSeconds,
+  ).first<LoginThrottleRecord>();
+  if (!record) throw new Error('Login throttle update failed');
+  return inspectLoginThrottle(record, nowSeconds, policy);
+}
+
+async function clearLoginThrottle(db: D1Database, subjectHash: string): Promise<void> {
+  await db.prepare('DELETE FROM login_throttles WHERE subject_hash = ?').bind(subjectHash).run();
+}
+
+function rateLimitedResponse(c: any, retryAfter: number) {
+  c.header('Retry-After', String(Math.max(1, retryAfter)));
+  return c.json({ error: 'محاولات تسجيل دخول كثيرة، حاول مرة أخرى لاحقاً' }, 429);
 }
 
 function resolveSchoolScope(user: UserContext | null, querySchoolId: string | null): { schoolId: number | null; scope: 'all' | 'single'; forbidden: boolean } {
@@ -326,32 +323,71 @@ function requireRoles(allowedRoles: readonly RoleKey[], message = 'غير مسم
 }
 
 // ===========================================
-// Middleware: CORS + JWT Auth
+// Middleware: explicit CORS + authenticated-by-default API
 // ===========================================
 
-app.use('/api/*', cors({
-  origin: '*',
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowHeaders: ['Content-Type', 'Authorization'],
-}))
+function applyCorsResponseHeaders(c: any, origin: string): void {
+  c.header('Access-Control-Allow-Origin', origin);
+  c.header('Vary', 'Origin');
+  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  c.header('Access-Control-Max-Age', '86400');
+}
 
-// JWT Authentication middleware
 app.use('/api/*', async (c, next) => {
-  const token = extractBearerToken(c);
-  if (token) {
-    const secret = c.env.JWT_SECRET || 'default-dev-secret-change-me';
-    const payload = await verifyJWT(token, secret);
-    if (payload && payload.email) {
-      const blacklisted = await c.env.DB.prepare('SELECT id FROM token_blacklist WHERE token = ?').bind(token).first();
-      if (!blacklisted) {
-        const user = await getCurrentUserContext(c.env.DB, payload.email);
-        if (user) {
-          c.set('user', user);
-        }
-      }
-    }
+  const requestOrigin = c.req.header('Origin');
+  const allowedOrigins = getAllowedCorsOrigins(c.env.ALLOWED_ORIGINS, c.env.APP_ENV);
+  const originAllowed = isCorsOriginAllowed(requestOrigin, c.req.url, allowedOrigins);
+
+  if (requestOrigin && !originAllowed) {
+    return c.json({ error: 'مصدر الطلب غير مسموح' }, 403);
   }
+  if (requestOrigin) applyCorsResponseHeaders(c, requestOrigin);
+  if (c.req.method === 'OPTIONS') return c.body(null, 204);
+
   await next();
+});
+
+app.use('/api/*', async (c, next) => {
+  if (isPublicApiRequest(c.req.method, c.req.path)) {
+    await next();
+    return;
+  }
+
+  const token = extractBearerToken(c);
+  if (!token) {
+    return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401);
+  }
+
+  try {
+    const secret = getValidatedJwtSecret(c.env.JWT_SECRET);
+    const payload = await verifyJWT(token, secret);
+    if (!payload) {
+      return c.json({ error: 'غير مصرح: رمز غير صالح أو منتهي الصلاحية' }, 401);
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const revoked = await c.env.DB.prepare(
+      'SELECT jti FROM revoked_sessions WHERE jti = ? AND expires_at > ?',
+    ).bind(payload.jti, nowSeconds).first<{ jti: string }>();
+    if (revoked) {
+      return c.json({ error: 'غير مصرح: انتهت الجلسة' }, 401);
+    }
+
+    const authenticated = await getCurrentUserContext(c.env.DB, payload.email);
+    if (!authenticated) {
+      return c.json({ error: 'غير مصرح: المستخدم غير موجود أو غير نشط' }, 401);
+    }
+    if (payload.auth_version !== authenticated.authVersion) {
+      return c.json({ error: 'غير مصرح: انتهت الجلسة' }, 401);
+    }
+
+    c.set('user', authenticated.user);
+    c.set('session', payload);
+    await next();
+  } catch {
+    return c.json({ error: 'خدمة المصادقة غير متاحة' }, 503);
+  }
 });
 
 // ===========================================
@@ -359,47 +395,117 @@ app.use('/api/*', async (c, next) => {
 // ===========================================
 
 app.post('/api/auth/login', async (c) => {
-  const db = c.env.DB
+  const db = c.env.DB;
+  let body: any;
   try {
-    const body = await c.req.json()
-    const { email, password } = body
-    if (!email || !password) {
-      return c.json({ error: 'البريد الإلكتروني وكلمة المرور مطلوبة' }, 400)
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'طلب تسجيل الدخول غير صالح' }, 400);
+  }
+
+  const email = typeof body?.email === 'string' ? normalizeLoginEmail(body.email) : '';
+  const password = typeof body?.password === 'string' ? body.password : '';
+  if (!email || !password || email.length > 320 || password.length > 1024) {
+    return c.json({ error: 'البريد الإلكتروني وكلمة المرور مطلوبة' }, 400);
+  }
+
+  let secret: string;
+  try {
+    secret = getValidatedJwtSecret(c.env.JWT_SECRET);
+  } catch {
+    return c.json({ error: 'خدمة المصادقة غير متاحة' }, 503);
+  }
+
+  try {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    await cleanupExpiredAuthState(db, nowSeconds);
+    const clientIp = getClientIp(c.req.raw.headers);
+    const throttleBuckets = await Promise.all(([
+      { bucketType: 'account', subject: email, policy: LOGIN_THROTTLE_POLICIES.account },
+      { bucketType: 'ip', subject: clientIp, policy: LOGIN_THROTTLE_POLICIES.ip },
+    ] as const).map(async bucket => ({
+      ...bucket,
+      subjectHash: await createLoginThrottleKey(bucket.bucketType, bucket.subject),
+    })));
+    let limitedRetryAfter = 0;
+    for (const bucket of throttleBuckets) {
+      const record = await getLoginThrottleRecord(db, bucket.subjectHash);
+      const state = inspectLoginThrottle(record, nowSeconds, bucket.policy);
+      if (state.limited) limitedRetryAfter = Math.max(limitedRetryAfter, state.retryAfter);
+    }
+    if (limitedRetryAfter > 0) {
+      return rateLimitedResponse(c, limitedRetryAfter);
     }
 
-    // Pre-check for inactive users to return clear message
-    const inactiveCheck = await db.prepare(`SELECT id, status FROM users WHERE email = ?`).bind(email).first<{ id: number; status: string }>();
-    if (inactiveCheck && inactiveCheck.status !== 'active') {
-      return c.json({ error: 'هذا الحساب غير فعال، يرجى التواصل مع الإدارة' }, 403);
+    const row = await db.prepare(
+      'SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.password_hash, u.status, u.auth_version, '
+      + 'r.key AS role_key, r.name AS role_name '
+      + 'FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE LOWER(u.email) = ?',
+    ).bind(email).first<{
+      id: number;
+      email: string;
+      full_name: string;
+      role_id: number;
+      school_id: number | null;
+      password_hash: string | null;
+      status: string;
+      auth_version: number;
+      role_key: string;
+      role_name: string;
+    }>();
+
+    let passwordValid = false;
+    let passwordNeedsUpgrade = false;
+    let passwordScheme: 'pbkdf2_sha256' | 'legacy_sha256' | 'unknown' = 'unknown';
+    if (row) {
+      const verification = await verifyPassword(password, row.password_hash, row.email);
+      passwordValid = verification.valid;
+      passwordNeedsUpgrade = verification.needsUpgrade;
+      passwordScheme = verification.scheme;
+      if ((!verification.valid || row.status !== 'active') && verification.scheme !== 'pbkdf2_sha256') {
+        await hashPassword(password);
+      }
+    } else {
+      await hashPassword(password);
     }
 
-    const row = await db.prepare(`
-      SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.password_hash,
-             r.key AS role_key, r.name AS role_name
-      FROM users u
-      LEFT JOIN roles r ON u.role_id = r.id
-      WHERE u.email = ? AND u.status = 'active'
-    `).bind(email).first<{
-      id: number; email: string; full_name: string; role_id: number; school_id: number | null;
-      password_hash: string | null; role_key: string; role_name: string;
-    }>()
-
-    if (!row) {
-      return c.json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' }, 401)
+    if (!row || row.status !== 'active' || !passwordValid) {
+      let failureRetryAfter = 0;
+      for (const bucket of throttleBuckets) {
+        const failure = await saveLoginFailure(
+          db,
+          bucket.subjectHash,
+          bucket.bucketType,
+          bucket.policy,
+          nowSeconds,
+        );
+        if (failure.limited) failureRetryAfter = Math.max(failureRetryAfter, failure.retryAfter);
+      }
+      if (failureRetryAfter > 0) return rateLimitedResponse(c, failureRetryAfter);
+      return c.json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' }, 401);
     }
 
-    const computedHash = await hashPassword(password, email)
-    const storedHash = row.password_hash || ''
-    if (computedHash !== storedHash) {
-      return c.json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' }, 401)
+    // A successful login clears only this account's bucket. The IP bucket remains so
+    // one valid login cannot erase abuse history for a shared or attacking address.
+    await clearLoginThrottle(db, throttleBuckets[0].subjectHash);
+    if (passwordNeedsUpgrade || passwordScheme === 'legacy_sha256') {
+      const upgradedHash = await hashPassword(password);
+      await db.prepare(
+        'UPDATE users SET password_hash = ?, updated_at = unixepoch() WHERE id = ? AND password_hash = ?',
+      ).bind(upgradedHash, row.id, row.password_hash).run();
     }
 
-    const secret = c.env.JWT_SECRET || 'default-dev-secret-change-me'
     const token = await signJWT(
-      { id: row.id, email: row.email, role_key: row.role_key, school_id: row.school_id },
+      {
+        id: row.id,
+        email: row.email,
+        role_key: row.role_key,
+        school_id: row.school_id,
+        auth_version: row.auth_version,
+      },
       secret,
-      86400
-    )
+      { expiresInSeconds: JWT_SESSION_TTL_SECONDS },
+    );
 
     return c.json({
       data: {
@@ -414,11 +520,11 @@ app.post('/api/auth/login', async (c) => {
           school_id: row.school_id,
         },
       },
-    })
-  } catch (err: any) {
-    return c.json({ error: 'فشل في تسجيل الدخول', detail: err.message }, 500)
+    });
+  } catch {
+    return c.json({ error: 'فشل في تسجيل الدخول' }, 500);
   }
-})
+});
 
 app.get('/api/auth/me', async (c) => {
   const user: UserContext | null = c.get('user') || null
@@ -429,17 +535,22 @@ app.get('/api/auth/me', async (c) => {
 })
 
 app.post('/api/auth/logout', async (c) => {
-  const token = extractBearerToken(c);
-  if (token) {
-    const secret = c.env.JWT_SECRET || 'default-dev-secret-change-me';
-    const payload = await verifyJWT(token, secret);
-    if (payload && payload.exp) {
-      await c.env.DB.prepare('INSERT INTO token_blacklist (token, expires_at) VALUES (?, ?)').bind(token, payload.exp).run();
-    } else {
-      await c.env.DB.prepare('INSERT INTO token_blacklist (token) VALUES (?)').bind(token).run();
-    }
+  const user: UserContext | null = c.get('user') || null;
+  const session: JwtPayload | null = c.get('session') || null;
+  if (!user || !session) {
+    return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401);
   }
-  return c.json({ data: { success: true } });
+
+  try {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    await c.env.DB.prepare('DELETE FROM revoked_sessions WHERE expires_at <= ?').bind(nowSeconds).run();
+    await c.env.DB.prepare(
+      'INSERT OR IGNORE INTO revoked_sessions (jti, user_id, expires_at, revoked_at) VALUES (?, ?, ?, ?)',
+    ).bind(session.jti, user.id, session.exp, nowSeconds).run();
+    return c.json({ data: { success: true } });
+  } catch {
+    return c.json({ error: 'فشل في تسجيل الخروج' }, 500);
+  }
 });
 
 // ===========================================
@@ -666,8 +777,9 @@ app.post('/api/users', requireAdmin(), async (c) => {
   try {
     const body = await c.req.json()
     const { full_name, email, password, role_id, role_key, school_id, phone } = body
+    const normalizedEmail = typeof email === 'string' ? normalizeLoginEmail(email) : ''
 
-    if (!full_name || !email || !password) {
+    if (!full_name || !normalizedEmail || !password) {
       return c.json({ error: 'الاسم والبريد الإلكتروني وكلمة المرور مطلوبة' }, 400)
     }
     if (!role_id && !role_key) {
@@ -698,23 +810,23 @@ app.post('/api/users', requireAdmin(), async (c) => {
     }
 
     // Check duplicate email
-    const existing = await db.prepare(`SELECT id FROM users WHERE email = ?`).bind(email).first<{ id: number }>()
+    const existing = await db.prepare(`SELECT id FROM users WHERE LOWER(email) = ?`).bind(normalizedEmail).first<{ id: number }>()
     if (existing) {
       return c.json({ error: 'البريد الإلكتروني مستخدم مسبقاً' }, 409)
     }
 
-    const passwordHash = await hashPassword(password, email)
+    const passwordHash = await hashPassword(password)
 
     const result = await db.prepare(`
       INSERT INTO users (school_id, full_name, email, password_hash, role_id, phone, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
     `).bind(
-      school_id || null, full_name, email, passwordHash, finalRoleId, phone || null
+      school_id || null, full_name, normalizedEmail, passwordHash, finalRoleId, phone || null
     ).run()
 
-    return c.json({ data: { id: result.meta.last_row_id, full_name, email, role_id: finalRoleId, school_id: school_id || null, status: 'active' } }, 201)
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء المستخدم', detail: err.message }, 500)
+    return c.json({ data: { id: result.meta.last_row_id, full_name, email: normalizedEmail, role_id: finalRoleId, school_id: school_id || null, status: 'active' } }, 201)
+  } catch {
+    return c.json({ error: 'فشل في إنشاء المستخدم' }, 500)
   }
 })
 
@@ -809,12 +921,16 @@ app.put('/api/users/:id/reset-password', requireAdmin(), async (c) => {
     const existing = await db.prepare(`SELECT email FROM users WHERE id = ?`).bind(id).first<{ email: string }>()
     if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
 
-    const passwordHash = await hashPassword(password, existing.email)
-    await db.prepare(`UPDATE users SET password_hash = ?, updated_at = unixepoch() WHERE id = ?`).bind(passwordHash, id).run()
+    const passwordHash = await hashPassword(password)
+    await db.prepare(`
+      UPDATE users
+      SET password_hash = ?, auth_version = auth_version + 1, updated_at = unixepoch()
+      WHERE id = ?
+    `).bind(passwordHash, id).run()
 
     return c.json({ data: { id, success: true } })
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إعادة تعيين كلمة المرور', detail: err.message }, 500)
+  } catch {
+    return c.json({ error: 'فشل في إعادة تعيين كلمة المرور' }, 500)
   }
 })
 
@@ -3299,7 +3415,7 @@ function generateVerificationToken(): string {
 }
 
 async function hashToken(token: string): Promise<string> {
-  const data = stringToBuffer(token + 'smart-school-verification-salt-2026');
+  const data = new TextEncoder().encode(token + 'smart-school-verification-salt-2026');
   const hash = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(hash))
     .map(b => b.toString(16).padStart(2, '0'))

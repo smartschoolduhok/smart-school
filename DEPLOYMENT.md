@@ -23,15 +23,19 @@ Replace with your real production ID before deploying.
 
 ## 2. Environment Variables
 
-Create `.dev.vars` for local development:
+Create an untracked `.dev.vars` for local development with a generated, non-placeholder secret:
 ```
-JWT_SECRET=your-local-dev-secret-min-32-chars-long
+JWT_SECRET=<random-value-at-least-32-characters>
+APP_ENV=development
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
-Set production secrets via Wrangler:
+Set the production signing key only through Wrangler:
 ```bash
 npx wrangler pages secret put JWT_SECRET
 ```
+
+Configure `APP_ENV=production` and the comma-separated `ALLOWED_ORIGINS` in the Cloudflare Pages environment. Never put the real signing key in `wrangler.jsonc`.
 
 ## 3. Run Migrations (Local)
 
@@ -50,8 +54,8 @@ npm run db:seed      # Run seed.sql demo data
 # Apply migrations to production D1
 npx wrangler d1 migrations apply smart-school-db
 
-# Seed production (optional — use only for demo instance)
-npx wrangler d1 execute smart-school-db --file=./seed.sql
+# Never run seed.sql against a production database.
+# It contains documented demo credentials and is for disposable local/demo D1 only.
 ```
 
 ## 5. Local Development
@@ -92,11 +96,12 @@ npm run deploy
 
 ## 8. Verify Deployment
 
-1. Visit `https://<your-project>.pages.dev/login`
-2. Login with `admin@smart-school.iq` / `admin123`
-3. Check `/api/auth/me` returns user data
-4. Verify `/api/schools` returns school list
-5. Test a public verification route: `/verify/result-card/test` (should show not found, not 404 page)
+1. Visit `https://<your-project>.pages.dev/login`.
+2. Sign in with a production administrator created through the approved provisioning process. The documented demo credentials are local/demo only.
+3. Check authenticated `/api/auth/me` returns user data and unauthenticated access returns 401.
+4. Verify authenticated `/api/schools` returns the permitted school list.
+5. Test a public verification route with an invalid token; it may return not found but must not return an authentication 401.
+6. Confirm an unapproved `Origin` receives no permissive CORS header.
 
 ## 9. Migration Files (in order)
 
@@ -112,6 +117,13 @@ npm run deploy
 | `migrations/0008_fees_discount.sql` | Fee discount support |
 | `migrations/0009_treasury.sql` | Treasury transactions, daily closings |
 | `migrations/0010_employees.sql` | Employees, salaries, salary payments |
+| `migrations/0011_settings_school_profile.sql` | School profile and settings |
+| `migrations/0012_receipt_settings_snapshot.sql` | Receipt settings snapshots |
+| `migrations/0013_official_books.sql` | Official books and templates |
+| `migrations/0014_excel_import_export.sql` | Excel import/export jobs |
+| `migrations/0014_print_records_extend.sql` | Extended print records |
+| `migrations/0015_add_missing_columns.sql` | Missing user/school columns |
+| `migrations/0016_auth_security.sql` | Revoked JWT identifiers and login throttles |
 
 ## 10. Database Reset (Danger — Local Only)
 
@@ -121,11 +133,12 @@ npm run db:reset
 
 This:
 1. Deletes `.wrangler/state/v3/d1/`
-2. Re-applies all 10 migrations
+2. Re-applies all numbered migrations
 3. Runs seed.sql with demo data
 
 ## Known Deployment Limitations
 - `database_id` in wrangler.jsonc must be updated for production
-- JWT_SECRET must be set as a Pages secret before first deploy
+- `JWT_SECRET` must be set as a Pages secret before first deploy; missing or placeholder values fail closed
+- `ALLOWED_ORIGINS` and `APP_ENV=production` must be configured for cross-origin browser deployments
 - D1 is SQLite — no `AUTO_INCREMENT` (use `INTEGER PRIMARY KEY`)
 - First migration may need `--skip-execution` if database already has tables

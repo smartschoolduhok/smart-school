@@ -163,14 +163,13 @@
 - `parent` — ولي الأمر (مستقبلي)
 
 ### Password Hashing
-```
-SHA-256(password + 'smart-school-salt-2026' + email)
-```
+- New and reset passwords use versioned PBKDF2-HMAC-SHA256 with 210,000 iterations and a random per-password salt.
+- Legacy SHA-256 hashes are accepted only for a successful migration login and are upgraded immediately.
 
 ### JWT
-- Secret from `JWT_SECRET` env var
-- TTL: 24 hours (86400 seconds)
-- Blacklist on logout
+- A validated `JWT_SECRET` is required; missing or placeholder values fail closed.
+- TTL: 8 hours.
+- Logout revokes the session by `jti`; raw bearer tokens are not stored in D1.
 
 ---
 
@@ -202,8 +201,7 @@ npx wrangler d1 create smart-school-db
 # 3. Apply migrations to production
 npx wrangler d1 migrations apply smart-school-db --remote
 
-# 4. Seed production data
-npx wrangler d1 execute smart-school-db --remote --file=./seed.sql
+# 4. Do NOT run seed.sql in production; it contains local demo accounts.
 
 # 5. Deploy
 npm run deploy
@@ -211,7 +209,9 @@ npm run deploy
 
 ### Environment Variables
 ```
-JWT_SECRET=your-very-long-random-secret-key-here
+JWT_SECRET=<generate-a-random-value-of-at-least-32-characters>
+ALLOWED_ORIGINS=https://school.example.com
+APP_ENV=production
 ```
 
 ---
