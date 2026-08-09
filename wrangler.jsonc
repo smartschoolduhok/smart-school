@@ -9,8 +9,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "smart-school-db",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_name": "smart-school-staging-db",
+      "database_id": "1bdb9c3d-08d6-4023-9cbc-64369d53198a"
     }
   ]
 }
