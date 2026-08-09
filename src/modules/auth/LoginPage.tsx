@@ -111,12 +111,6 @@ export default function LoginPage() {
               )}
             </button>
           </form>
-
-          <div className="mt-6 p-4 bg-gray-50 rounded-lg text-xs text-gray-500 space-y-1">
-            <p className="font-semibold text-gray-700">بيانات تجريبية للدخول:</p>
-            <p>مدير النظام: admin@smart-school.iq / admin123</p>
-            <p>مدير مدرسة: principal@nukhba.iq / school123</p>
-          </div>
         </div>
       </div>
     </div>
