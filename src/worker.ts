@@ -521,7 +521,12 @@ app.post('/api/auth/login', async (c) => {
         },
       },
     });
-  } catch {
+  } catch (error) {
+    console.error('[auth/login] unexpected failure', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
     return c.json({ error: 'فشل في تسجيل الدخول' }, 500);
   }
 });
