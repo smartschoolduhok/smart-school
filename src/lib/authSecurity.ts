@@ -1,3 +1,5 @@
+import { pbkdf2 } from 'node:crypto';
+
 export const PASSWORD_HASH_SCHEME = 'pbkdf2_sha256';
 export const PBKDF2_ITERATIONS = 210_000;
 export const PBKDF2_SALT_BYTES = 16;
@@ -44,24 +46,15 @@ async function derivePasswordKey(
   salt: Uint8Array,
   iterations: number,
 ): Promise<Uint8Array> {
-  const passwordKey = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits'],
-  );
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      hash: 'SHA-256',
-      salt: salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer,
-      iterations,
-    },
-    passwordKey,
-    PBKDF2_DERIVED_KEY_BYTES * 8,
-  );
-  return new Uint8Array(derivedBits);
+  return new Promise((resolve, reject) => {
+    pbkdf2(password, salt, iterations, PBKDF2_DERIVED_KEY_BYTES, 'sha256', (error, derivedKey) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Uint8Array.from(derivedKey));
+    });
+  });
 }
 
 export async function hashPassword(password: string): Promise<string> {
