@@ -31,11 +31,11 @@ import {
 
 const secureSecret = 'Q7v!2mZ9#pR4xL8cN6sT1wY5kF3hJ0dB';
 
-test('new password hashes use PBKDF2-SHA256 with 210000 iterations and verify correctly', async () => {
+test('new password hashes use PBKDF2-SHA256 with 100000 iterations and verify correctly', async () => {
   const hash = await hashPassword('correct horse battery staple');
   const [scheme, iterations, encodedSalt, encodedKey] = hash.split('$');
   assert.equal(scheme, PASSWORD_HASH_SCHEME);
-  assert.equal(Number(iterations), 210_000);
+  assert.equal(Number(iterations), 100_000);
   assert.equal(Number(iterations), PBKDF2_ITERATIONS);
   assert.equal(Buffer.from(encodedSalt, 'base64url').length, PBKDF2_SALT_BYTES);
   assert.equal(Buffer.from(encodedKey, 'base64url').length, PBKDF2_DERIVED_KEY_BYTES);
@@ -67,6 +67,23 @@ test('independently generated PBKDF2-SHA256 hashes remain verifiable', async () 
     valid: true,
     needsUpgrade: false,
     scheme: 'pbkdf2_sha256',
+  });
+});
+
+test('PBKDF2 hashes above the Cloudflare runtime maximum fail safely', async () => {
+  const unsupportedHash = [
+    PASSWORD_HASH_SCHEME,
+    PBKDF2_ITERATIONS + 1,
+    Buffer.alloc(PBKDF2_SALT_BYTES, 1).toString('base64url'),
+    Buffer.alloc(PBKDF2_DERIVED_KEY_BYTES, 2).toString('base64url'),
+  ].join('$');
+
+  await assert.doesNotReject(async () => {
+    assert.deepEqual(await verifyPassword('password', unsupportedHash), {
+      valid: false,
+      needsUpgrade: false,
+      scheme: 'unknown',
+    });
   });
 });
 

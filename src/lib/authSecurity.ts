@@ -1,7 +1,8 @@
 import { pbkdf2 } from 'node:crypto';
 
 export const PASSWORD_HASH_SCHEME = 'pbkdf2_sha256';
-export const PBKDF2_ITERATIONS = 210_000;
+// 100,000 is the currently verified Cloudflare Workers PBKDF2 runtime maximum in staging.
+export const PBKDF2_ITERATIONS = 100_000;
 export const PBKDF2_SALT_BYTES = 16;
 export const PBKDF2_DERIVED_KEY_BYTES = 32;
 
@@ -100,7 +101,7 @@ export async function verifyPassword(
   }
 
   const iterations = Number(parts[1]);
-  if (!Number.isSafeInteger(iterations) || iterations < 10_000 || iterations > 2_000_000) {
+  if (!Number.isSafeInteger(iterations) || iterations < 10_000 || iterations > PBKDF2_ITERATIONS) {
     return { valid: false, needsUpgrade: false, scheme: 'unknown' };
   }
 
