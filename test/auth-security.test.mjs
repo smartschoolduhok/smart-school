@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { pbkdf2Sync } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
+  PBKDF2_DERIVED_KEY_BYTES,
+  PBKDF2_ITERATIONS,
+  PBKDF2_SALT_BYTES,
   PASSWORD_HASH_SCHEME,
   createLegacyPasswordHash,
   hashPassword,
@@ -27,10 +31,39 @@ import {
 
 const secureSecret = 'Q7v!2mZ9#pR4xL8cN6sT1wY5kF3hJ0dB';
 
-test('new password hashes use PBKDF2 and verify correctly', async () => {
+test('new password hashes use PBKDF2-SHA256 with 210000 iterations and verify correctly', async () => {
   const hash = await hashPassword('correct horse battery staple');
-  assert.equal(hash.startsWith(PASSWORD_HASH_SCHEME + '$'), true);
+  const [scheme, iterations, encodedSalt, encodedKey] = hash.split('$');
+  assert.equal(scheme, PASSWORD_HASH_SCHEME);
+  assert.equal(Number(iterations), 210_000);
+  assert.equal(Number(iterations), PBKDF2_ITERATIONS);
+  assert.equal(Buffer.from(encodedSalt, 'base64url').length, PBKDF2_SALT_BYTES);
+  assert.equal(Buffer.from(encodedKey, 'base64url').length, PBKDF2_DERIVED_KEY_BYTES);
   assert.deepEqual(await verifyPassword('correct horse battery staple', hash), {
+    valid: true,
+    needsUpgrade: false,
+    scheme: 'pbkdf2_sha256',
+  });
+});
+
+test('independently generated PBKDF2-SHA256 hashes remain verifiable', async () => {
+  const password = 'independent-password';
+  const salt = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+  const derivedKey = pbkdf2Sync(
+    password,
+    salt,
+    PBKDF2_ITERATIONS,
+    PBKDF2_DERIVED_KEY_BYTES,
+    'sha256',
+  );
+  const hash = [
+    PASSWORD_HASH_SCHEME,
+    PBKDF2_ITERATIONS,
+    salt.toString('base64url'),
+    derivedKey.toString('base64url'),
+  ].join('$');
+
+  assert.deepEqual(await verifyPassword(password, hash), {
     valid: true,
     needsUpgrade: false,
     scheme: 'pbkdf2_sha256',
