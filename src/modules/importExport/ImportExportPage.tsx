@@ -1,7 +1,16 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { IMPORT_EXPORT_ROLES, hasRole } from '../../lib/rbac';
-import { previewImport, confirmImport, getExportData, getImportJobs } from '../../lib/api';
+import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections } from '../../lib/api';
+import {
+  analyzeWorksheet,
+  classifyWorksheet,
+  detectHeaderRowAt,
+  normalizeHeader,
+  sheetRowsToRecords,
+  type WorksheetCategory,
+  type WorksheetRows,
+} from '../../lib/excelImport';
 import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, XCircle, FileText, History, ChevronRight, ArrowLeft, ArrowRight, Loader2, BookOpen, Layers, GraduationCap, Users } from 'lucide-react';
 
 // ===========================================
@@ -11,12 +20,18 @@ import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, X
 type ImportType = 'students' | 'classes-sections' | 'subjects' | 'employees' | 'grades' | 'student-subjects';
 type ImportMode = 'skip_existing' | 'update_existing' | 'error_on_existing';
 type AssignmentMode = 'strict_existing_assignments' | 'auto_assign_missing_subjects';
-type SheetType = 'students' | 'subjects' | 'grade_sheet' | 'summary' | 'unknown';
+type ClassAssignmentMode = 'excel' | 'override';
+type SectionAssignmentMode = 'excel' | 'override' | 'none';
 
 interface SheetInfo {
   name: string;
-  type: SheetType;
+  type: WorksheetCategory;
   columnNames: string[];
+  headerRowIndex: number;
+  headerScore: number;
+  headerConfidence: 'high' | 'medium' | 'low';
+  rowCount: number;
+  rows: WorksheetRows;
 }
 
 interface ColumnMap {
@@ -35,6 +50,7 @@ interface PreviewResult {
   valid_rows: number;
   error_rows: number;
   duplicate_rows: number;
+  skipped_rows?: number;
   valid: PreviewRow[];
   errors: any[];
   warnings: any[];
@@ -65,7 +81,7 @@ const MODE_OPTIONS: { value: ImportMode; label: string; description: string }[] 
 
 const SYSTEM_FIELDS: Record<ImportType, { key: string; label: string; required?: boolean; hint?: string }[]> = {
   students: [
-    { key: 'student_number', label: 'رقم الطالب', required: true },
+    { key: 'student_number', label: 'رقم الطالب', hint: 'اختياري؛ ينشئ النظام رقماً داخلياً ثابتاً عند تجاهله' },
     { key: 'full_name', label: 'اسم الطالب', required: true },
     { key: 'father_name', label: 'اسم الأب' },
     { key: 'mother_name', label: 'اسم الأم' },
@@ -179,18 +195,6 @@ const AUTO_MAP_RULES: Record<string, string[]> = {
   completion_exam: ['الاكمال', 'درجة الاكمال', 'completion_exam', 'completion', 'complementary', 'الإكمال'],
 };
 
-function classifySheetName(name: string): SheetType {
-  const n = name.toLowerCase().trim();
-  const studentNames = ['ادخال الاسماء', 'الاسماء', 'الطلاب', 'اسماء الطلاب', 'students', 'student', 'names', 'الاسم', 'اسماء'];
-  const summaryNames = ['ملخص', 'النتيجة النهائية', 'نصف السنة', 'القرار', 'كنترول', 'تدقيق', 'تجييك', 'summary', 'control', 'report', 'final', 'result'];
-  const subjectNames = ['فيزياء', 'كيمياء', 'احياء', 'الفيزياء', 'الكيمياء', 'الاحياء', 'عربية', 'العربية', 'اسلامية', 'الاسلامية', 'انكليزية', 'الانكليزية', 'الاجتماعيات', 'رياضيات', 'الرياضيات', 'حاسوب', 'الحاسوب', 'الانجليزية', 'انجليزية', 'فرنسية', 'الفرنسية', 'التاريخ', 'تاريخ', 'جغرافيا', 'الجغرافيا', 'علوم', 'العلوم', 'رياضة', 'الرياضة', 'الفن', 'فن', 'موسيقى', 'الكردية', 'السورية', 'الفلسفة', 'المنطق', 'الاقتصاد', 'الادارة', 'القانون', 'الاحصاء', 'النفس', 'الاجتماع', 'البيولوجيا', 'الجيولوجيا', 'الفلك', 'الفنون', 'الصحة', 'البيئة', 'الطاقة', 'الفضاء', 'النووي', 'الليزر', 'المواد'];
-
-  if (studentNames.some(s => n.includes(s.toLowerCase()))) return 'students';
-  if (summaryNames.some(s => n.includes(s.toLowerCase()))) return 'summary';
-  if (subjectNames.some(s => n.includes(s.toLowerCase()))) return 'subjects';
-  return 'unknown';
-}
-
 function autoMapColumns(excelColumns: string[], importType: ImportType): ColumnMap {
   const map: ColumnMap = {};
   const used = new Set<string>();
@@ -198,9 +202,12 @@ function autoMapColumns(excelColumns: string[], importType: ImportType): ColumnM
   for (const field of fields) {
     const candidates = AUTO_MAP_RULES[field.key] || [];
     for (const col of excelColumns) {
-      const colLower = col.toLowerCase().trim();
+      const colLower = normalizeHeader(col);
       if (used.has(col)) continue;
-      if (candidates.some(c => colLower === c.toLowerCase() || colLower.includes(c.toLowerCase()))) {
+      if (candidates.some(c => {
+        const candidate = normalizeHeader(c);
+        return colLower === candidate || (candidate.length > 2 && colLower.includes(candidate));
+      })) {
         map[field.key] = col;
         used.add(col);
         break;
@@ -219,11 +226,11 @@ export default function ImportExportPage() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<'import' | 'export' | 'templates' | 'jobs'>('import');
   const [selectedType, setSelectedType] = useState<ImportType>('students');
+  const [importTypeConfirmed, setImportTypeConfirmed] = useState(true);
   const [mode, setMode] = useState<ImportMode>('skip_existing');
   const [file, setFile] = useState<File | null>(null);
   const [sheets, setSheets] = useState<SheetInfo[]>([]);
   const [selectedSheet, setSelectedSheet] = useState<string>('');
-  const [sheetRows, setSheetRows] = useState<any[]>([]);
   const [mapping, setMapping] = useState<ColumnMap>({});
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [confirmResult, setConfirmResult] = useState<any>(null);
@@ -238,6 +245,10 @@ export default function ImportExportPage() {
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
   const [selectedSectionId, setSelectedSectionId] = useState<number | null>(null);
   const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(null);
+  const [classes, setClasses] = useState<any[]>([]);
+  const [sections, setSections] = useState<any[]>([]);
+  const [classAssignmentMode, setClassAssignmentMode] = useState<ClassAssignmentMode>('override');
+  const [sectionAssignmentMode, setSectionAssignmentMode] = useState<SectionAssignmentMode>('excel');
 
   const canAccessEmployees = hasRole(user?.role_key, IMPORT_EXPORT_ROLES);
   const canAccessGrades = hasRole(user?.role_key, IMPORT_EXPORT_ROLES);
@@ -258,6 +269,17 @@ export default function ImportExportPage() {
   useEffect(() => {
     if (activeTab === 'jobs') loadJobs();
   }, [activeTab]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!schoolId) return;
+    Promise.all([getClasses(schoolId), getSections(schoolId)]).then(([classResult, sectionResult]) => {
+      if (cancelled) return;
+      setClasses(classResult.data || []);
+      setSections(sectionResult.data || []);
+    });
+    return () => { cancelled = true; };
+  }, [schoolId]);
 
   const loadXlsx = useCallback(async () => {
     if (xlsxModule) return xlsxModule;
@@ -288,9 +310,18 @@ export default function ImportExportPage() {
       const workbook = XLSX.read(data, { type: 'array' });
       const sheetInfos: SheetInfo[] = workbook.SheetNames.map((name: string) => {
         const ws = workbook.Sheets[name];
-        const json = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as any[][];
-        const headers = (json[0] || []).map(String);
-        return { name, type: classifySheetName(name), columnNames: headers };
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: true }) as WorksheetRows;
+        const analysis = analyzeWorksheet(name, rows);
+        return {
+          name,
+          type: analysis.category,
+          columnNames: analysis.columnNames,
+          headerRowIndex: analysis.headerRowIndex,
+          headerScore: analysis.score,
+          headerConfidence: analysis.confidence,
+          rowCount: analysis.rowCount,
+          rows,
+        };
       });
       setSheets(sheetInfos);
       setStep('sheets');
@@ -304,59 +335,67 @@ export default function ImportExportPage() {
     const info = sheets.find(s => s.name === sheetName);
     if (!info) return;
     setSelectedSheet(sheetName);
-    const sheetType = info.type;
-    let suggestedType: ImportType = 'students';
-    if (sheetType === 'subjects') {
-      // If sheet contains grade-like columns, suggest grades import
-      const gradeColumns = info.columnNames.filter(c => /درجة|نصف السنة|الاكمال|الفصل|السعي|النهائية|النتيجة|المعدل|القرار|mid|final|exam|grade/i.test(c));
-      if (gradeColumns.length > 0) {
-        suggestedType = 'grades';
-      } else {
-        suggestedType = 'subjects';
-      }
+    if (info.type === 'students' || info.type === 'grade_sheet') {
+      const suggestedType: ImportType = info.type === 'grade_sheet' ? 'grades' : 'students';
+      setSelectedType(suggestedType);
+      setMapping(autoMapColumns(info.columnNames, suggestedType));
+      setImportTypeConfirmed(true);
+    } else {
+      setMapping({});
+      setImportTypeConfirmed(false);
     }
-    setSelectedType(suggestedType);
-    setMapping(autoMapColumns(info.columnNames, suggestedType));
     setStep('mapping');
+  };
+
+  const changeHeaderRow = (oneBasedRow: number) => {
+    const info = sheets.find(s => s.name === selectedSheet);
+    if (!info) return;
+    const detection = detectHeaderRowAt(info.rows, Math.max(0, oneBasedRow - 1));
+    setSheets(previous => previous.map(sheet => sheet.name === info.name ? {
+      ...sheet,
+      columnNames: detection.columnNames,
+      type: classifyWorksheet(sheet.name, sheet.rows, detection),
+      headerRowIndex: detection.headerRowIndex,
+      headerScore: detection.score,
+      headerConfidence: detection.confidence,
+      rowCount: Math.max(0, sheet.rows.length - detection.headerRowIndex - 1),
+    } : sheet));
+    setMapping(autoMapColumns(detection.columnNames, selectedType));
+    setPreview(null);
   };
 
   const handleMappingChange = (field: string, col: string) => {
     setMapping(prev => ({ ...prev, [field]: col }));
   };
 
-  const mappedRows = useCallback(() => {
-    if (!selectedSheet || !xlsxModule || !file) return [];
-    return sheetRows; // Actually parsed below on mapping step
-  }, [selectedSheet, xlsxModule, file, sheetRows]);
-
   const parseSheetAndPreview = async () => {
     if (!selectedSheet || !file) return;
     setLoading(true);
     try {
-      const XLSX = await loadXlsx();
-      const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data, { type: 'array' });
-      const ws = workbook.Sheets[selectedSheet];
-      const json = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as any[][];
-      const headers = json[0] || [];
-      const rows = json.slice(1).map((r: any[]) => {
-        const obj: Record<string, any> = {};
-        headers.forEach((h: any, i: number) => {
-          if (h) obj[String(h)] = r[i] ?? '';
-        });
-        return obj;
-      }).filter(r => Object.values(r).some(v => v !== ''));
-      setSheetRows(rows);
-
-      const mappedData = rows.map((raw: any) => {
-        const obj: Record<string, any> = {};
-        for (const [field, col] of Object.entries(mapping)) {
-          if (col && raw[col] !== undefined) obj[field] = raw[col];
-        }
-        return obj;
-      }).filter(r => Object.values(r).some(v => v !== '' && v !== null));
-
-      const payload: any = { school_id: schoolId, rows: mappedData, mode, mapping };
+      const info = sheets.find(s => s.name === selectedSheet);
+      if (!info) throw new Error('تعذر العثور على ورقة العمل المحددة');
+      if (!importTypeConfirmed) throw new Error('اختر نوع الاستيراد لهذه الورقة أولاً');
+      if (!mapping.full_name && selectedType === 'students') throw new Error('يجب ربط حقل اسم الطالب');
+      if (selectedType === 'students' && classAssignmentMode === 'excel' && !mapping.class_name) {
+        throw new Error('يجب ربط عمود الصف أو اختيار صف واحد لكل الملف');
+      }
+      if (selectedType === 'students' && sectionAssignmentMode === 'excel' && !mapping.section_name) {
+        throw new Error('يجب ربط عمود الشعبة أو اختيار وضع آخر للشعبة');
+      }
+      if (selectedType === 'students' && classAssignmentMode === 'override' && !selectedClassId) {
+        throw new Error('يجب اختيار الصف عند استخدام الصف المحدد يدوياً');
+      }
+      if (selectedType === 'students' && sectionAssignmentMode === 'override' && !selectedSectionId) {
+        throw new Error('يجب اختيار الشعبة عند استخدام الشعبة المحددة يدوياً');
+      }
+      const rows = sheetRowsToRecords(info.rows, info.headerRowIndex);
+      const payload: any = { school_id: schoolId, rows, mode, mapping };
+      if (selectedType === 'students') {
+        payload.class_assignment_mode = classAssignmentMode;
+        payload.section_assignment_mode = sectionAssignmentMode;
+        payload.selected_class_id = selectedClassId;
+        payload.selected_section_id = selectedSectionId;
+      }
       if (selectedType === 'grades') {
         payload.assignment_mode = assignmentMode;
         payload.clear_empty_fields = clearEmptyFields;
@@ -388,6 +427,12 @@ export default function ImportExportPage() {
     try {
       const rowsToSend = preview.valid.map((r: PreviewRow) => r.data);
       const payload: any = { school_id: schoolId, rows: rowsToSend, mode, file_name: file?.name || 'import.xlsx' };
+      if (selectedType === 'students') {
+        payload.class_assignment_mode = classAssignmentMode;
+        payload.section_assignment_mode = sectionAssignmentMode;
+        payload.selected_class_id = selectedClassId;
+        payload.selected_section_id = selectedSectionId;
+      }
       if (selectedType === 'grades') {
         payload.assignment_mode = assignmentMode;
         payload.clear_empty_fields = clearEmptyFields;
@@ -534,13 +579,15 @@ export default function ImportExportPage() {
               <div className="grid gap-3">
                 {sheets.map(s => (
                   <div key={s.name} className={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${s.name === selectedSheet ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'}`} onClick={() => selectSheet(s.name)}>
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white ${s.type === 'students' ? 'bg-green-500' : s.type === 'subjects' ? 'bg-blue-500' : s.type === 'summary' ? 'bg-amber-500' : 'bg-gray-400'}`}>
-                      {s.type === 'students' ? <Users size={18} /> : s.type === 'subjects' ? <BookOpen size={18} /> : s.type === 'summary' ? <FileText size={18} /> : <Table size={18} />}
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white ${s.type === 'students' ? 'bg-green-500' : s.type === 'grade_sheet' ? 'bg-blue-500' : s.type === 'summary' ? 'bg-amber-500' : 'bg-gray-400'}`}>
+                      {s.type === 'students' ? <Users size={18} /> : s.type === 'grade_sheet' ? <BookOpen size={18} /> : s.type === 'summary' ? <FileText size={18} /> : <Table size={18} />}
                     </div>
                     <div className="flex-1">
                       <p className="font-bold text-gray-900">{s.name}</p>
                       <p className="text-xs text-gray-500">
-                        {s.type === 'students' ? 'ورقة محتملة: الطلاب' : s.type === 'subjects' ? 'ورقة محتملة: مواد/درجات' : s.type === 'summary' ? 'ورقة ملخص/تقرير' : 'غير محدد'} — {s.columnNames.length} أعمدة
+                        {s.type === 'students' ? 'قائمة طلاب' : s.type === 'grade_sheet' ? 'ورقة مادة/درجات' : s.type === 'summary' ? 'ملخص/تقرير' : 'غير معروف'}
+                        {' — '}صف العناوين {s.headerRowIndex + 1} — {s.columnNames.length} أعمدة — {s.rowCount} صفوف بيانات
+                        {' — '}ثقة {s.headerConfidence === 'high' ? 'عالية' : s.headerConfidence === 'medium' ? 'متوسطة' : 'منخفضة'}
                       </p>
                     </div>
                     <ChevronRight size={18} className="text-gray-400" />
@@ -558,13 +605,37 @@ export default function ImportExportPage() {
               <h2 className="text-lg font-bold text-gray-900 mb-2">ربط الأعمدة</h2>
               <p className="text-sm text-gray-500 mb-4">اختر الأعمدة المناسبة من ملف Excel لكل حقل من حقول النظام. يمكن ترك الحقول غير المستخدمة فارغة.</p>
 
+              <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <label htmlFor="header-row" className="block text-sm font-bold text-blue-900 mb-2">صف العناوين في Excel</label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    id="header-row"
+                    type="number"
+                    min={1}
+                    max={sheets.find(s => s.name === selectedSheet)?.rows.length || 1}
+                    value={(sheets.find(s => s.name === selectedSheet)?.headerRowIndex || 0) + 1}
+                    onChange={event => changeHeaderRow(Number(event.target.value) || 1)}
+                    className="w-28 rounded-md border border-blue-300 px-3 py-2 text-sm"
+                  />
+                  <span className="text-xs text-blue-700">
+                    اكتشاف تلقائي ضمن أول 20 صفاً غير فارغ. غيّر الرقم لإعادة حساب الأعمدة والربط.
+                  </span>
+                </div>
+              </div>
+
               <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                 {availableTypes.map(t => (
-                  <button key={t.value} onClick={() => { setSelectedType(t.value); setMapping(autoMapColumns(sheets.find(s => s.name === selectedSheet)?.columnNames || [], t.value)); }} className={`flex items-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${selectedType === t.value ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:bg-gray-50'}`}>
+                  <button key={t.value} onClick={() => { setSelectedType(t.value); setImportTypeConfirmed(true); setMapping(autoMapColumns(sheets.find(s => s.name === selectedSheet)?.columnNames || [], t.value)); }} className={`flex items-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${importTypeConfirmed && selectedType === t.value ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:bg-gray-50'}`}>
                     {t.icon} {t.label}
                   </button>
                 ))}
               </div>
+
+              {!importTypeConfirmed && (
+                <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  لم تُصنّف هذه الورقة كقائمة طلاب أو ورقة درجات. اختر نوع الاستيراد صراحةً قبل المتابعة.
+                </div>
+              )}
 
               <div className="mb-4 grid grid-cols-3 gap-3">
                 {MODE_OPTIONS.map(m => (
@@ -594,6 +665,39 @@ export default function ImportExportPage() {
                 </div>
               )}
 
+              {selectedType === 'students' && (
+                <div className="mb-4 space-y-4 rounded-lg border border-gray-200 p-4">
+                  <div>
+                    <p className="text-sm font-bold text-gray-900 mb-2">تحديد الصف</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+                      <button type="button" onClick={() => { setClassAssignmentMode('excel'); if (sectionAssignmentMode === 'override') { setSectionAssignmentMode('excel'); setSelectedSectionId(null); } }} className={`rounded-lg border p-3 text-sm ${classAssignmentMode === 'excel' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>من عمود Excel</button>
+                      <button type="button" onClick={() => setClassAssignmentMode('override')} className={`rounded-lg border p-3 text-sm ${classAssignmentMode === 'override' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>صف واحد لكل الملف</button>
+                    </div>
+                    {classAssignmentMode === 'override' && (
+                      <select value={selectedClassId || ''} onChange={event => { setSelectedClassId(event.target.value ? Number(event.target.value) : null); setSelectedSectionId(null); }} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                        <option value="">— اختر الصف —</option>
+                        {classes.filter(item => item.status === 'active').map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-gray-900 mb-2">تحديد الشعبة</p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+                      <button type="button" onClick={() => setSectionAssignmentMode('excel')} className={`rounded-lg border p-3 text-sm ${sectionAssignmentMode === 'excel' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>من عمود Excel</button>
+                      <button type="button" disabled={classAssignmentMode !== 'override'} onClick={() => setSectionAssignmentMode('override')} className={`rounded-lg border p-3 text-sm disabled:cursor-not-allowed disabled:opacity-50 ${sectionAssignmentMode === 'override' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>شعبة واحدة لكل الملف</button>
+                      <button type="button" onClick={() => { setSectionAssignmentMode('none'); setSelectedSectionId(null); }} className={`rounded-lg border p-3 text-sm ${sectionAssignmentMode === 'none' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>بلا شعبة</button>
+                    </div>
+                    {sectionAssignmentMode === 'override' && (
+                      <select value={selectedSectionId || ''} onChange={event => setSelectedSectionId(event.target.value ? Number(event.target.value) : null)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                        <option value="">— اختر الشعبة —</option>
+                        {sections.filter(item => item.status === 'active' && (!selectedClassId || item.class_id === selectedClassId)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500">لن ينشئ الاستيراد صفوفاً أو شعباً جديدة. أي صف أو شعبة غير موجودة أو من مدرسة أخرى سيُرفض من الخادم.</p>
+                </div>
+              )}
+
               <div className="overflow-auto border border-gray-200 rounded-lg mb-4">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50">
@@ -615,11 +719,12 @@ export default function ImportExportPage() {
                             onChange={e => handleMappingChange(field.key, e.target.value)}
                             className="w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
-                            <option value="">— غير محدد —</option>
+                            <option value="">— تجاهل هذا الحقل —</option>
                             {sheets.find(s => s.name === selectedSheet)?.columnNames.map(col => (
                               <option key={col} value={col}>{col}</option>
                             ))}
                           </select>
+                          {field.hint && <p className="mt-1 text-xs text-gray-500">{field.hint}</p>}
                         </td>
                       </tr>
                     ))}
@@ -647,7 +752,13 @@ export default function ImportExportPage() {
           {step === 'preview' && preview && (
             <div className="bg-white border border-gray-200 rounded-xl p-6">
               <h2 className="text-lg font-bold text-gray-900 mb-4">معاينة البيانات</h2>
-              <div className="grid grid-cols-4 gap-3 mb-4">
+              {selectedType === 'students' && preview.valid[0]?.data && (
+                <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                  الصف: <strong>{preview.valid[0].data.class_name || 'غير محدد'}</strong>
+                  {' — '}الشعبة: <strong>{sectionAssignmentMode === 'none' ? 'بلا شعبة' : (preview.valid[0].data.section_name || 'مشتقة لكل صف')}</strong>
+                </div>
+              )}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
                   <p className="text-2xl font-bold text-blue-700">{preview.total_rows}</p>
                   <p className="text-xs text-blue-600">إجمالي الصفوف</p>
@@ -663,6 +774,10 @@ export default function ImportExportPage() {
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-center">
                   <p className="text-2xl font-bold text-amber-700">{preview.duplicate_rows}</p>
                   <p className="text-xs text-amber-600">مكرر/متخطى</p>
+                </div>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
+                  <p className="text-2xl font-bold text-gray-700">{preview.skipped_rows || 0}</p>
+                  <p className="text-xs text-gray-600">فارغ/متخطى</p>
                 </div>
               </div>
 
@@ -686,14 +801,23 @@ export default function ImportExportPage() {
                 </div>
               )}
 
+              {preview.duplicates.length > 0 && (
+                <div className="mb-4 max-h-48 overflow-auto rounded-lg border border-amber-200">
+                  <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-700">صفوف مكررة</div>
+                  <table className="w-full text-sm"><thead><tr><th className="px-4 py-2 text-right">صف Excel</th><th className="px-4 py-2 text-right">الطالب</th><th className="px-4 py-2 text-right">رقم الطالب</th></tr></thead><tbody>
+                    {preview.duplicates.map((duplicate, index) => <tr key={index} className="border-t border-amber-100"><td className="px-4 py-2">{duplicate.row}</td><td className="px-4 py-2">{duplicate.full_name || ''}</td><td className="px-4 py-2">{duplicate.student_number || ''}</td></tr>)}
+                  </tbody></table>
+                </div>
+              )}
+
               {preview.valid.length > 0 && (
                 <div className="mb-4 max-h-80 overflow-auto border border-gray-200 rounded-lg">
                   <div className="bg-green-50 px-4 py-2 text-sm font-bold text-green-700 border-b border-green-200">الصفوف الصالحة ({preview.valid_rows})</div>
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 sticky top-0">
                       <tr>
-                        <th className="px-4 py-2 text-right">#</th>
-                        {SYSTEM_FIELDS[selectedType].filter(f => mapping[f.key]).map(f => (
+                        <th className="px-4 py-2 text-right">صف Excel</th>
+                        {SYSTEM_FIELDS[selectedType].filter(f => mapping[f.key] || (selectedType === 'students' && ['student_number', 'full_name', 'class_name', 'section_name'].includes(f.key))).map(f => (
                           <th key={f.key} className="px-4 py-2 text-right">{f.label}</th>
                         ))}
                       </tr>
@@ -701,8 +825,8 @@ export default function ImportExportPage() {
                     <tbody>
                       {preview.valid.slice(0, 50).map((r, i) => (
                         <tr key={i} className="border-t border-gray-100">
-                          <td className="px-4 py-2 text-gray-500">{r.row_index}</td>
-                          {SYSTEM_FIELDS[selectedType].filter(f => mapping[f.key]).map(f => (
+                          <td className="px-4 py-2 text-gray-500">{r.data.excel_row_number || r.row_index}</td>
+                          {SYSTEM_FIELDS[selectedType].filter(f => mapping[f.key] || (selectedType === 'students' && ['student_number', 'full_name', 'class_name', 'section_name'].includes(f.key))).map(f => (
                             <td key={f.key} className="px-4 py-2 text-gray-800">{String(r.data[f.key] ?? '')}</td>
                           ))}
                         </tr>

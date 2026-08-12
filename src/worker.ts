@@ -53,6 +53,15 @@ import {
   type LoginThrottlePolicy,
   type LoginThrottleRecord,
 } from './lib/apiSecurity'
+import { normalizeSectionName } from './lib/excelImport'
+import {
+  buildGeneratedStudentNumber,
+  findStudentDuplicate,
+  normalizeStudentIdentity,
+  studentDuplicateAction,
+  studentIdentityKey,
+  validateStudentImportPlacement,
+} from './lib/studentImport'
 
 // ===========================================
 // Types & Extended Bindings
@@ -3456,44 +3465,18 @@ async function validateStudentPlacement(
   let classRecord: StudentPlacementRecord | null = null;
   let sectionRecord: StudentPlacementRecord | null = null;
 
-  if (sectionId != null && classId == null) {
-    return { ok: false, status: 400, error: 'يجب تحديد الصف عند تحديد الشعبة' };
-  }
-
   if (classId != null) {
     classRecord = await db.prepare(
       'SELECT id, school_id, name, status FROM classes WHERE id = ?',
     ).bind(classId).first<StudentPlacementRecord>();
-    if (!classRecord) {
-      return { ok: false, status: 400, error: 'الصف المحدد غير موجود' };
-    }
-    if (classRecord.school_id !== schoolId) {
-      return { ok: false, status: 403, error: 'الصف المحدد ينتمي إلى مدرسة أخرى' };
-    }
-    if (classRecord.status !== 'active') {
-      return { ok: false, status: 400, error: 'الصف المحدد غير فعال' };
-    }
   }
 
   if (sectionId != null) {
     sectionRecord = await db.prepare(
       'SELECT id, school_id, class_id, name, status FROM sections WHERE id = ?',
     ).bind(sectionId).first<StudentPlacementRecord>();
-    if (!sectionRecord) {
-      return { ok: false, status: 400, error: 'الشعبة المحددة غير موجودة' };
-    }
-    if (sectionRecord.school_id !== schoolId) {
-      return { ok: false, status: 403, error: 'الشعبة المحددة تنتمي إلى مدرسة أخرى' };
-    }
-    if (sectionRecord.status !== 'active') {
-      return { ok: false, status: 400, error: 'الشعبة المحددة غير فعالة' };
-    }
-    if (sectionRecord.class_id !== classId) {
-      return { ok: false, status: 400, error: 'الشعبة المحددة لا تتبع الصف المحدد' };
-    }
   }
-
-  return { ok: true, classRecord, sectionRecord };
+  return validateStudentImportPlacement(schoolId, classId, sectionId, classRecord, sectionRecord);
 }
 
 interface ResultCardStudentSnapshot {
@@ -7211,7 +7194,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
 
   try {
     const body = await c.req.json();
-    let { school_id, rows, mode, mapping, assignment_mode, clear_empty_fields, selected_subject_id, selected_class_id, selected_section_id, selected_sheet } = body;
+    let { school_id, rows, mode, mapping, assignment_mode, clear_empty_fields, selected_subject_id, selected_class_id, selected_section_id, selected_sheet, class_assignment_mode, section_assignment_mode } = body;
     mode = mode || 'skip_existing';
     if (type === 'grades') mode = mode || 'update_existing'; // default for grades
     const assignmentMode = assignment_mode || 'strict_existing_assignments';
@@ -7229,6 +7212,35 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
       return c.json({ error: 'عدد الصفوف كبير جداً، يرجى تقسيم الملف' }, 400);
     }
 
+    const classAssignmentMode = class_assignment_mode || (selected_class_id ? 'override' : 'excel');
+    const sectionAssignmentMode = section_assignment_mode || (selected_section_id ? 'override' : 'none');
+    if (type === 'students') {
+      if (!['excel', 'override'].includes(classAssignmentMode)) {
+        return c.json({ error: 'طريقة تحديد الصف غير صالحة' }, 400);
+      }
+      if (!['excel', 'override', 'none'].includes(sectionAssignmentMode)) {
+        return c.json({ error: 'طريقة تحديد الشعبة غير صالحة' }, 400);
+      }
+      if (classAssignmentMode === 'override' && !selected_class_id) {
+        return c.json({ error: 'يجب تحديد الصف للاستيراد' }, 400);
+      }
+      if (sectionAssignmentMode === 'override' && !selected_section_id) {
+        return c.json({ error: 'يجب تحديد الشعبة للاستيراد' }, 400);
+      }
+      if (sectionAssignmentMode === 'override' && classAssignmentMode !== 'override') {
+        return c.json({ error: 'يتطلب تثبيت الشعبة تثبيت الصف أيضاً' }, 400);
+      }
+      if (classAssignmentMode === 'override' || sectionAssignmentMode === 'override') {
+        const selectedPlacement = await validateStudentPlacement(
+          db,
+          school_id,
+          selected_class_id ? Number(selected_class_id) : null,
+          sectionAssignmentMode === 'override' ? Number(selected_section_id) : null,
+        );
+        if (!selectedPlacement.ok) return c.json({ error: selectedPlacement.error }, selectedPlacement.status);
+      }
+    }
+
     const validRows: any[] = [];
     const errors: any[] = [];
     const warnings: any[] = [];
@@ -7240,23 +7252,36 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
     const existingEmployees = await db.prepare(`SELECT id, full_name, email, phone FROM employees WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
 
     const classMap = new Map((existingClasses.results || []).map((c: any) => [c.name, c.id]));
+    const normalizedClassMap = new Map((existingClasses.results || []).map((c: any) => [normalizeStudentIdentity(c.name), c.id]));
     const classIdMap = new Map((existingClasses.results || []).map((c: any) => [c.id, c.name]));
     const sectionMap = new Map((existingSections.results || []).map((s: any) => [`${s.class_id}:${s.name}`, s.id]));
+    const normalizedSectionMap = new Map((existingSections.results || []).map((s: any) => [`${s.class_id}:${normalizeSectionName(s.name)}`, s.id]));
     const studentMap = new Map((existingStudents.results || []).map((s: any) => [s.student_number, s]));
     const subjectMap = new Map((existingSubjects.results || []).map((s: any) => [`${s.class_id}:${s.section_id || ''}:${s.name}`, s.id]));
     const employeeEmailMap = new Map((existingEmployees.results || []).map((e: any) => [e.email, e]));
     const employeePhoneMap = new Map((existingEmployees.results || []).map((e: any) => [e.phone, e]));
 
+    const excelRowNumber = (rowIndex: number) => Number(rows[rowIndex]?._excel_row_number || rows[rowIndex]?.excel_row_number || rowIndex + 2);
     const rowError = (rowIndex: number, field: string, message: string) => {
-      errors.push({ row: rowIndex + 1, field, message, raw: rows[rowIndex] });
+      errors.push({ row: excelRowNumber(rowIndex), field, message, raw: rows[rowIndex] });
     };
 
     const rowWarn = (rowIndex: number, field: string, message: string) => {
-      warnings.push({ row: rowIndex + 1, field, message });
+      warnings.push({ row: excelRowNumber(rowIndex), field, message });
     };
+
+    const seenStudentNumbers = new Set<string>();
+    const seenStudentIdentities = new Set<string>();
+    let skippedRows = 0;
 
     for (let i = 0; i < rows.length; i++) {
       const raw = rows[i] || {};
+      const hasRawData = Object.entries(raw).some(([key, value]) => !['_excel_row_number', 'excel_row_number'].includes(key) && normalizeText(value));
+      if (!hasRawData) {
+        skippedRows += 1;
+        rowWarn(i, 'row', 'صف Excel فارغ وتم تجاهله');
+        continue;
+      }
       const mapped: Record<string, any> = {};
       if (mapping && typeof mapping === 'object') {
         for (const [systemField, excelColumn] of Object.entries(mapping)) {
@@ -7277,42 +7302,89 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         const fullName = normalizeText(mapped.full_name || mapped['اسم الطالب'] || mapped['اسم الطالبة'] || mapped['الاسم'] || mapped['student name'] || mapped['name']);
         const fatherName = normalizeText(mapped.father_name || mapped['اسم الأب'] || mapped['father']);
         const motherName = normalizeText(mapped.mother_name || mapped['اسم الأم'] || mapped['mother']);
-        const gender = isValidGender(mapped.gender || mapped['الجنس'] || mapped['النوع']);
+        const rawGender = normalizeText(mapped.gender || mapped['الجنس'] || mapped['النوع']);
+        const gender = rawGender ? isValidGender(rawGender) : 'unknown';
         const birthDate = normalizeDate(mapped.birth_date || mapped['تاريخ الميلاد'] || mapped['birthdate']);
         const phone = normalizeText(mapped.phone || mapped['الهاتف'] || mapped['رقم الهاتف'] || mapped['mobile']);
         const guardianName = normalizeText(mapped.guardian_name || mapped['ولي الأمر'] || mapped['guardian']);
         const guardianPhone = normalizeText(mapped.guardian_phone || mapped['هاتف ولي الأمر']);
         const address = normalizeText(mapped.address || mapped['العنوان'] || mapped['السكن']);
-        const className = normalizeText(mapped.class_name || mapped['الصف'] || mapped['المرحلة'] || mapped['class'] || mapped['grade']);
-        const sectionName = normalizeText(mapped.section_name || mapped['الشعبة'] || mapped['القسم'] || mapped['section'] || mapped['group']);
+        const excelClassName = normalizeText(mapped.class_name || mapped['الصف'] || mapped['المرحلة'] || mapped['class'] || mapped['grade']);
+        const excelSectionName = normalizeText(mapped.section_name || mapped['الشعبة'] || mapped['القسم'] || mapped['section'] || mapped['group']);
         const notes = normalizeText(mapped.notes || mapped['ملاحظات'] || mapped['notes']);
         const status = isValidStatus(mapped.status || mapped['الحالة'] || mapped['status']) || 'active';
 
-        if (!studentNumber) { rowError(i, 'student_number', 'رقم الطالب مطلوب'); hasFatal = true; }
         if (!fullName) { rowError(i, 'full_name', 'اسم الطالب مطلوب'); hasFatal = true; }
-        if (!gender) { rowError(i, 'gender', 'الجنس مطلوب'); hasFatal = true; }
+        if (rawGender && !gender) { rowError(i, 'gender', 'قيمة الجنس غير صالحة'); hasFatal = true; }
+        if (!rawGender) rowWarn(i, 'gender', 'لم يُحدد الجنس؛ سيُحفظ بالقيمة الداخلية unknown');
 
-        if (className && !classMap.has(className)) {
-          rowError(i, 'class_name', `الصف "${className}" غير موجود في المدرسة`); hasFatal = true;
+        const className = classAssignmentMode === 'override'
+          ? (classIdMap.get(Number(selected_class_id)) || null)
+          : excelClassName;
+        const classId = classAssignmentMode === 'override'
+          ? Number(selected_class_id)
+          : (className ? normalizedClassMap.get(normalizeStudentIdentity(className)) : null);
+        if (!classId) {
+          rowError(i, 'class_name', className ? `الصف "${className}" غير موجود في المدرسة` : 'الصف مطلوب'); hasFatal = true;
         }
-        const classId = className ? classMap.get(className) : null;
-        const sectionKey = classId && sectionName ? `${classId}:${sectionName}` : null;
-        if (sectionName && classId && sectionKey && !sectionMap.has(sectionKey)) {
-          rowError(i, 'section_name', `الشعبة "${sectionName}" غير موجودة في الصف "${className}"`); hasFatal = true;
-        }
-        const sectionId = sectionKey ? sectionMap.get(sectionKey) : null;
 
-        if (studentNumber && studentMap.has(studentNumber)) {
-          const existing = studentMap.get(studentNumber);
-          if (mode === 'error_on_existing') {
-            rowError(i, 'student_number', 'رقم الطالب موجود مسبقاً'); hasFatal = true;
-          } else if (mode === 'skip_existing') {
-            duplicates.push({ row: i + 1, student_number: studentNumber, existing_id: existing.id });
+        let sectionName: string | null = null;
+        let sectionId: number | null = null;
+        if (sectionAssignmentMode === 'override') {
+          sectionId = Number(selected_section_id);
+          sectionName = (existingSections.results || []).find((section: any) => section.id === sectionId)?.name || null;
+        } else if (sectionAssignmentMode === 'excel') {
+          sectionName = excelSectionName;
+          const sectionKey = classId && sectionName ? `${classId}:${normalizeSectionName(sectionName)}` : null;
+          sectionId = sectionKey ? (normalizedSectionMap.get(sectionKey) || null) : null;
+          if (!sectionName) { rowError(i, 'section_name', 'الشعبة مطلوبة عند اختيار الاستيراد من Excel'); hasFatal = true; }
+          else if (!sectionId) { rowError(i, 'section_name', `الشعبة "${sectionName}" غير موجودة في الصف "${className || ''}"`); hasFatal = true; }
+        }
+
+        if (classId) {
+          const placement = await validateStudentPlacement(db, school_id, Number(classId), sectionId);
+          if (!placement.ok) { rowError(i, 'class_section', placement.error); hasFatal = true; }
+        }
+
+        const duplicate = fullName ? findStudentDuplicate({ studentNumber, fullName, classId: classId || null, sectionId }, existingStudents.results || []) : { kind: 'none' as const };
+        if (duplicate.kind === 'ambiguous') {
+          rowError(i, 'full_name', 'يوجد أكثر من طالب مطابق؛ أضف رقم الطالب لحسم التكرار'); hasFatal = true;
+        } else if (duplicate.kind === 'match') {
+          const duplicateAction = studentDuplicateAction(mode, true);
+          if (duplicateAction === 'error') {
+            rowError(i, duplicate.matchedBy, 'الطالب موجود مسبقاً'); hasFatal = true;
+          } else if (duplicateAction === 'skip') {
+            duplicates.push({ row: excelRowNumber(i), student_number: duplicate.student.student_number, full_name: fullName, existing_id: duplicate.student.id });
             continue; // skip this row in preview
           }
         }
 
-        record.data = { student_number: studentNumber, full_name: fullName, father_name: fatherName, mother_name: motherName, gender, birth_date: birthDate, phone, guardian_name: guardianName, guardian_phone: guardianPhone, address, class_id: classId, section_id: sectionId, class_name: className, section_name: sectionName, notes, status };
+        const identity = fullName ? studentIdentityKey(fullName, classId || null, sectionId) : '';
+        const duplicateInsideFile = studentNumber
+          ? seenStudentNumbers.has(studentNumber)
+          : Boolean(identity && seenStudentIdentities.has(identity));
+        if (!hasFatal && duplicateInsideFile) {
+          if (mode === 'skip_existing') {
+            duplicates.push({ row: excelRowNumber(i), student_number: studentNumber, full_name: fullName, source: 'file' });
+            continue;
+          }
+          rowError(i, studentNumber ? 'student_number' : 'full_name', studentNumber ? 'رقم القيد مكرر داخل الملف' : 'الطالب مكرر داخل الملف'); hasFatal = true;
+        }
+        if (!hasFatal) {
+          if (studentNumber) seenStudentNumbers.add(studentNumber);
+          else if (identity) seenStudentIdentities.add(identity);
+        }
+
+        const finalStudentNumber = studentNumber || (!hasFatal && fullName && classId ? await buildGeneratedStudentNumber(school_id, fullName, classId, sectionId) : null);
+        if (!studentNumber && finalStudentNumber) rowWarn(i, 'student_number', `سيُنشأ رقم طالب داخلي: ${finalStudentNumber}`);
+        record.row_index = excelRowNumber(i);
+        record.data = {
+          excel_row_number: excelRowNumber(i), student_number: finalStudentNumber, student_number_generated: !studentNumber,
+          full_name: fullName, father_name: fatherName, mother_name: motherName, gender, birth_date: birthDate,
+          phone, guardian_name: guardianName, guardian_phone: guardianPhone, address, class_id: classId,
+          section_id: sectionId, class_name: className, section_name: sectionName, notes, status,
+          imported_fields: Object.keys(mapping || {}).filter(field => mapping[field]),
+        };
       } else if (type === 'classes-sections') {
         const className = normalizeText(mapped.class_name || mapped['اسم الصف'] || mapped['الصف'] || mapped['class'] || mapped['name']);
         const stage = normalizeText(mapped.stage || mapped['المرحلة'] || mapped['stage'] || mapped['level']);
@@ -7642,6 +7714,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         valid_rows: validRows.length,
         error_rows: errors.length,
         duplicate_rows: duplicates.length,
+        skipped_rows: skippedRows,
         valid: validRows,
         errors,
         warnings,
@@ -7681,7 +7754,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
 
   try {
     const body = await c.req.json();
-    let { school_id, rows, mode, file_name } = body;
+    let { school_id, rows, mode, file_name, selected_class_id, selected_section_id, class_assignment_mode, section_assignment_mode } = body;
     mode = mode || 'skip_existing';
     if (scope === 'single' && resolvedSchoolId != null) {
       school_id = resolvedSchoolId;
@@ -7696,6 +7769,26 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
       return c.json({ error: 'عدد الصفوف كبير جداً، يرجى تقسيم الملف' }, 400);
     }
 
+    const classAssignmentMode = class_assignment_mode || (selected_class_id ? 'override' : 'excel');
+    const sectionAssignmentMode = section_assignment_mode || (selected_section_id ? 'override' : 'none');
+    if (type === 'students') {
+      if (!['excel', 'override'].includes(classAssignmentMode) || !['excel', 'override', 'none'].includes(sectionAssignmentMode)) {
+        return c.json({ error: 'طريقة تحديد الصف أو الشعبة غير صالحة' }, 400);
+      }
+      if (classAssignmentMode === 'override' && !selected_class_id) return c.json({ error: 'يجب تحديد الصف للاستيراد' }, 400);
+      if (sectionAssignmentMode === 'override' && !selected_section_id) return c.json({ error: 'يجب تحديد الشعبة للاستيراد' }, 400);
+      if (sectionAssignmentMode === 'override' && classAssignmentMode !== 'override') return c.json({ error: 'يتطلب تثبيت الشعبة تثبيت الصف أيضاً' }, 400);
+      if (classAssignmentMode === 'override' || sectionAssignmentMode === 'override') {
+        const selectedPlacement = await validateStudentPlacement(
+          db,
+          school_id,
+          selected_class_id ? Number(selected_class_id) : null,
+          sectionAssignmentMode === 'override' ? Number(selected_section_id) : null,
+        );
+        if (!selectedPlacement.ok) return c.json({ error: selectedPlacement.error }, selectedPlacement.status);
+      }
+    }
+
     const fileName = file_name || 'import.xlsx';
 
     // Insert import job record
@@ -7707,12 +7800,14 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
 
     const existingClasses = await db.prepare(`SELECT id, name FROM classes WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
     const existingSections = await db.prepare(`SELECT id, name, class_id FROM sections WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
-    const existingStudents = await db.prepare(`SELECT id, student_number, full_name, class_id, section_id FROM students WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
+    const existingStudents = await db.prepare(`SELECT id, student_number, full_name, father_name, mother_name, gender, birth_date, phone, guardian_name, guardian_phone, address, class_id, section_id, status, notes FROM students WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
     const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
     const existingEmployees = await db.prepare(`SELECT id, full_name, email, phone FROM employees WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
 
     const classMap = new Map((existingClasses.results || []).map((c: any) => [c.name, c.id]));
+    const normalizedClassMap = new Map((existingClasses.results || []).map((c: any) => [normalizeStudentIdentity(c.name), c.id]));
     const sectionMap = new Map((existingSections.results || []).map((s: any) => [`${s.class_id}:${s.name}`, s.id]));
+    const normalizedSectionMap = new Map((existingSections.results || []).map((s: any) => [`${s.class_id}:${normalizeSectionName(s.name)}`, s.id]));
     const studentMap = new Map((existingStudents.results || []).map((s: any) => [s.student_number, s]));
     const subjectMap = new Map((existingSubjects.results || []).map((s: any) => [`${s.class_id}:${s.section_id || ''}:${s.name}`, s.id]));
     const employeeEmailMap = new Map((existingEmployees.results || []).map((e: any) => [e.email, e]));
@@ -7732,59 +7827,106 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
     const rowErrors: any[] = [];
     const now = Math.floor(Date.now() / 1000);
 
+    const confirmExcelRowNumber = (rowIndex: number) => Number(rows[rowIndex]?.excel_row_number || rows[rowIndex]?._excel_row_number || rows[rowIndex]?.data?.excel_row_number || rowIndex + 2);
     const rowError = (rowIndex: number, field: string, message: string) => {
       errorCount++;
-      rowErrors.push({ row: rowIndex + 1, field, message });
+      rowErrors.push({ row: confirmExcelRowNumber(rowIndex), field, message });
     };
+
+    const confirmedStudentNumbers = new Set<string>();
+    const confirmedStudentIdentities = new Set<string>();
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i] || {};
       const d = row.data || row;
       try {
         if (type === 'students') {
-          const studentNumber = normalizeText(d.student_number);
           const fullName = normalizeText(d.full_name);
-          const gender = isValidGender(d.gender);
-          if (!studentNumber || !fullName || !gender) {
-            rowError(i, 'general', 'بيانات الطالب غير كاملة'); continue;
-          }
-          const classId = normalizeText(d.class_name) ? classMap.get(d.class_name) : (d.class_id || null);
-          if (d.class_name && !classId) {
-            rowError(i, 'class_name', `الصف "${d.class_name}" غير موجود في المدرسة`); continue;
-          }
-          const sectionKey = classId && normalizeText(d.section_name) ? `${classId}:${d.section_name}` : null;
-          const sectionId = sectionKey ? sectionMap.get(sectionKey) : (d.section_id || null);
-          if (d.section_name && classId && !sectionId) {
-            rowError(i, 'section_name', `الشعبة "${d.section_name}" غير موجودة في الصف`); continue;
-          }
-          if (sectionId && !classId) {
-            rowError(i, 'section_id', 'لا يمكن تحديد شعبة بدون صف'); continue;
+          if (!fullName) { rowError(i, 'full_name', 'اسم الطالب مطلوب'); continue; }
+          const rawGender = normalizeText(d.gender);
+          const gender = rawGender === 'unknown' ? 'unknown' : (isValidGender(rawGender) || (!rawGender ? 'unknown' : null));
+          if (!gender) { rowError(i, 'gender', 'قيمة الجنس غير صالحة'); continue; }
+
+          const classId = classAssignmentMode === 'override'
+            ? Number(selected_class_id)
+            : (normalizeText(d.class_name) ? normalizedClassMap.get(normalizeStudentIdentity(d.class_name)) : Number(d.class_id || 0));
+          if (!classId) { rowError(i, 'class_name', 'الصف مطلوب أو غير موجود في المدرسة'); continue; }
+
+          let sectionId: number | null = null;
+          if (sectionAssignmentMode === 'override') {
+            sectionId = Number(selected_section_id);
+          } else if (sectionAssignmentMode === 'excel') {
+            const sectionName = normalizeText(d.section_name);
+            const sectionKey = sectionName ? `${classId}:${normalizeSectionName(sectionName)}` : null;
+            sectionId = sectionKey ? (normalizedSectionMap.get(sectionKey) || null) : Number(d.section_id || 0) || null;
+            if (!sectionId) { rowError(i, 'section_name', 'الشعبة مطلوبة أو غير موجودة في الصف'); continue; }
           }
           const placement = await validateStudentPlacement(
             db,
             school_id,
-            classId ? Number(classId) : null,
-            sectionId ? Number(sectionId) : null,
+            Number(classId),
+            sectionId,
           );
           if (!placement.ok) {
             rowError(i, 'class_section', placement.error); continue;
           }
-          const existing = studentMap.get(studentNumber);
-          if (existing) {
+
+          const suppliedStudentNumber = d.student_number_generated ? null : normalizeText(d.student_number);
+          const studentNumber = suppliedStudentNumber || await buildGeneratedStudentNumber(school_id, fullName, Number(classId), sectionId);
+          const duplicate = findStudentDuplicate(
+            { studentNumber: suppliedStudentNumber, fullName, classId: Number(classId), sectionId },
+            existingStudents.results || [],
+          );
+          if (duplicate.kind === 'ambiguous') { rowError(i, 'full_name', 'يوجد أكثر من طالب مطابق؛ أضف رقم الطالب'); continue; }
+
+          const identity = studentIdentityKey(fullName, Number(classId), sectionId);
+          const duplicateInsideFile = suppliedStudentNumber
+            ? confirmedStudentNumbers.has(studentNumber)
+            : confirmedStudentIdentities.has(identity);
+          if (duplicateInsideFile) {
             if (mode === 'skip_existing') { skipped++; continue; }
-            if (mode === 'error_on_existing') { rowError(i, 'student_number', 'رقم الطالب موجود مسبقاً'); continue; }
-            // update_existing
+            rowError(i, suppliedStudentNumber ? 'student_number' : 'full_name', suppliedStudentNumber ? 'رقم القيد مكرر داخل الملف' : 'الطالب مكرر داخل الملف'); continue;
+          }
+          if (suppliedStudentNumber) confirmedStudentNumbers.add(studentNumber);
+          else confirmedStudentIdentities.add(identity);
+
+          const existing = duplicate.kind === 'match' ? duplicate.student : null;
+          if (existing) {
+            const duplicateAction = studentDuplicateAction(mode, true);
+            if (duplicateAction === 'skip') { skipped++; continue; }
+            if (duplicateAction === 'error') { rowError(i, duplicate.kind === 'match' ? duplicate.matchedBy : 'student', 'الطالب موجود مسبقاً'); continue; }
+            const importedFields = new Set<string>(Array.isArray(d.imported_fields) ? d.imported_fields : Object.keys(d));
+            const keepOrImport = (field: string, fallback: any) => importedFields.has(field) ? (d[field] || null) : fallback;
             await db.prepare(`
               UPDATE students SET full_name = ?, father_name = ?, mother_name = ?, gender = ?, birth_date = ?, phone = ?, guardian_name = ?, guardian_phone = ?, address = ?, class_id = ?, section_id = ?, notes = ?, status = ?, updated_at = unixepoch()
               WHERE id = ? AND school_id = ?
-            `).bind(fullName, d.father_name || null, d.mother_name || null, gender, d.birth_date || null, d.phone || null, d.guardian_name || null, d.guardian_phone || null, d.address || null, classId || null, sectionId || null, d.notes || null, d.status || 'active', existing.id, school_id).run();
+            `).bind(
+              fullName,
+              keepOrImport('father_name', existing.father_name),
+              keepOrImport('mother_name', existing.mother_name),
+              importedFields.has('gender') ? gender : existing.gender,
+              keepOrImport('birth_date', existing.birth_date),
+              keepOrImport('phone', existing.phone),
+              keepOrImport('guardian_name', existing.guardian_name),
+              keepOrImport('guardian_phone', existing.guardian_phone),
+              keepOrImport('address', existing.address),
+              classId,
+              sectionId,
+              keepOrImport('notes', existing.notes),
+              importedFields.has('status') ? (isValidStatus(d.status) || existing.status || 'active') : (existing.status || 'active'),
+              existing.id,
+              school_id,
+            ).run();
             updated++;
             continue;
           }
-          await db.prepare(`
+          const insertResult = await db.prepare(`
             INSERT INTO students (school_id, student_number, full_name, father_name, mother_name, gender, birth_date, phone, guardian_name, guardian_phone, address, class_id, section_id, status, notes, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-          `).bind(school_id, studentNumber, fullName, d.father_name || null, d.mother_name || null, gender, d.birth_date || null, d.phone || null, d.guardian_name || null, d.guardian_phone || null, d.address || null, classId || null, sectionId || null, d.status || 'active', d.notes || null).run();
+          `).bind(school_id, studentNumber, fullName, d.father_name || null, d.mother_name || null, gender, d.birth_date || null, d.phone || null, d.guardian_name || null, d.guardian_phone || null, d.address || null, classId, sectionId, isValidStatus(d.status) || 'active', d.notes || null).run();
+          const insertedStudent = { id: Number(insertResult.meta.last_row_id), student_number: studentNumber, full_name: fullName, class_id: Number(classId), section_id: sectionId };
+          (existingStudents.results || []).push(insertedStudent);
+          studentMap.set(studentNumber, insertedStudent);
           imported++;
         } else if (type === 'classes-sections') {
           const className = normalizeText(d.class_name || d.name);
