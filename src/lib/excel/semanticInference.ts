@@ -3,6 +3,7 @@ import {
   columnKey,
   extractClassValue,
   isCommonSectionValue,
+  isExcelErrorValue,
   normalizeHeader,
 } from './normalizers.ts';
 import type {
@@ -27,7 +28,8 @@ const FIELD_HEADER_ALIASES: Record<StudentSemanticField, string[]> = {
 };
 
 const GRADE_HEADERS = ['الفصل الاول', 'نصف السنه', 'الفصل الثاني', 'السعي', 'النهايه', 'النهائي', 'الدرجه', 'المعدل', 'final', 'mid year', 'exam', 'grade'];
-const SUMMARY_NAMES = ['ملخص', 'النتيجه النهائيه', 'القرار', 'كنترول', 'تدقيق', 'summary', 'control', 'report', 'result'];
+const SUMMARY_NAMES = ['ملخص', 'النتيجه النهائيه', 'نصف السنه', 'القرار', 'كنترول', 'تدقيق', 'تجييك', 'تجييك قابل للمسح', 'summary', 'control', 'report', 'result'];
+const SUMMARY_HEADERS = ['المجموع', 'المعدل', 'النتيجه', 'القرار', 'الناجح', 'الراسب', 'summary', 'total', 'average', 'result'];
 const STUDENT_NAMES = ['ادخال الاسماء', 'الاسماء', 'الطلاب', 'اسماء الطلاب', 'students', 'student names'];
 const SUBJECT_NAMES = ['فيزياء', 'كيمياء', 'احياء', 'العربيه', 'انكليزي', 'رياضيات', 'علوم', 'اجتماعيات', 'حاسوب', 'اسلاميه', 'physics', 'chemistry', 'biology', 'arabic', 'english', 'mathematics', 'math', 'science'];
 
@@ -37,6 +39,16 @@ function clamp(value: number): number {
 
 function ratio(count: number, total: number): number {
   return total > 0 ? count / total : 0;
+}
+
+function contentEvidenceWeight(sampleCount: number): number {
+  if (sampleCount <= 0) return 0;
+  if (sampleCount === 1) return 0.25;
+  if (sampleCount === 2) return 0.5;
+  if (sampleCount === 3) return 0.65;
+  if (sampleCount <= 5) return 0.8;
+  if (sampleCount <= 7) return 0.9;
+  return 1;
 }
 
 function isNumeric(value: ExcelCell): boolean {
@@ -87,13 +99,13 @@ export function profileColumns(
     const values = rows
       .slice(region.dataStartRow, region.endRow + 1)
       .map(row => row?.[columnIndex])
-      .filter(value => String(value ?? '').trim() !== '');
+      .filter(value => String(value ?? '').trim() !== '' && !isExcelErrorValue(value));
     const normalizedValues = values.map(value => normalizeHeader(value));
     const uniqueCount = new Set(normalizedValues).size;
     const textValues = values.filter(value => typeof value === 'string' && !isNumeric(value));
     const wordCounts = textValues.map(value => normalizeHeader(value).split(/\s+/u).filter(Boolean).length);
     const headerValue = headerRowIndex == null ? null : rows[headerRowIndex]?.[columnIndex];
-    const headerText = String(headerValue ?? '').trim() || null;
+    const headerText = isExcelErrorValue(headerValue) ? null : (String(headerValue ?? '').trim() || null);
     const letter = columnIndexToLetter(columnIndex);
     const nonEmptyCount = values.length;
 
@@ -140,43 +152,43 @@ function candidateForColumn(field: StudentSemanticField, profile: ColumnProfile)
   const header = headerConfidence(field, profile.headerText);
   const reasons: string[] = header.reason ? [header.reason] : [];
   const uniqueness = ratio(profile.uniqueCount, profile.nonEmptyCount);
-  let score = header.score;
+  let contentScore = 0;
 
   if (field === 'full_name') {
     const usefulWordShape = profile.averageWordCount >= 2 && profile.averageWordCount <= 6 ? 1 : 0;
-    score += profile.textRatio * 0.2 + usefulWordShape * 0.2 + uniqueness * 0.15 + profile.arabicTextRatio * 0.15;
-    if (profile.shortCategoryRatio < 0.6) score += 0.12;
-    score -= profile.numericRatio * 0.55;
+    contentScore += profile.textRatio * 0.2 + usefulWordShape * 0.2 + uniqueness * 0.15 + profile.arabicTextRatio * 0.15;
+    if (profile.shortCategoryRatio < 0.6) contentScore += 0.12;
+    contentScore -= profile.numericRatio * 0.55;
     if (usefulWordShape) reasons.push('القيم نصية وتتكون غالباً من 2–6 كلمات');
     if (uniqueness >= 0.75) reasons.push('القيم عالية التفرّد');
   } else if (field === 'student_number') {
-    score += profile.structuredIdRatio * 0.48 + uniqueness * 0.18 + profile.integerRatio * 0.08;
-    score -= profile.sequentialIntegerRatio * 0.62;
+    contentScore += profile.structuredIdRatio * 0.48 + uniqueness * 0.18 + profile.integerRatio * 0.08;
+    contentScore -= profile.sequentialIntegerRatio * 0.62;
     if (profile.structuredIdRatio >= 0.6) reasons.push('القيم تتبع نمط معرّف منظم مثل 5/001 أو S-101');
     if (profile.sequentialIntegerRatio >= 0.8) reasons.push('عقوبة: القيم تبدو تسلسلاً صفياً بسيطاً');
   } else if (field === 'section_name') {
-    score += profile.sectionValueRatio * 0.68;
-    if (profile.nonEmptyCount > 0 && profile.uniqueCount <= 6) score += 0.14;
-    score += profile.shortCategoryRatio * 0.08;
-    score -= profile.sequentialIntegerRatio * (uniqueness >= 0.8 ? 0.78 : 0.18);
+    contentScore += profile.sectionValueRatio * 0.68;
+    if (profile.nonEmptyCount > 0 && profile.uniqueCount <= 6) contentScore += 0.14;
+    contentScore += profile.shortCategoryRatio * 0.08;
+    contentScore -= profile.sequentialIntegerRatio * (uniqueness >= 0.8 ? 0.78 : 0.18);
     if (profile.sectionValueRatio >= 0.7) reasons.push('القيم تطابق أنماط الشعب الشائعة وتتكرر كفئات قصيرة');
     if (profile.sequentialIntegerRatio >= 0.8 && uniqueness >= 0.8) reasons.push('عقوبة: القيم تبدو تسلسلاً صفياً بسيطاً');
   } else if (field === 'class_name') {
-    score += profile.classValueRatio * 0.48;
-    if (profile.nonEmptyCount > 0 && profile.uniqueCount <= 4) score += 0.12;
+    contentScore += profile.classValueRatio * 0.48;
+    if (profile.nonEmptyCount > 0 && profile.uniqueCount <= 4) contentScore += 0.12;
     if (profile.classValueRatio >= 0.6) reasons.push('القيم تشبه أسماء صفوف دراسية');
   } else if (field === 'gender') {
-    score += profile.genderValueRatio * 0.72;
-    if (profile.nonEmptyCount > 0 && profile.uniqueCount <= 4) score += 0.1;
+    contentScore += profile.genderValueRatio * 0.72;
+    if (profile.nonEmptyCount > 0 && profile.uniqueCount <= 4) contentScore += 0.1;
     if (profile.genderValueRatio >= 0.7) reasons.push('القيم تطابق قيم الجنس المعروفة');
   } else if (field === 'phone') {
-    score += profile.phoneValueRatio * 0.72 + uniqueness * 0.08;
+    contentScore += profile.phoneValueRatio * 0.72 + uniqueness * 0.08;
     if (profile.phoneValueRatio >= 0.7) reasons.push('القيم تشبه أرقام هاتف');
   }
 
   return {
     source: { type: 'column', columnIndex: profile.columnIndex, columnKey: profile.key },
-    confidence: clamp(score),
+    confidence: clamp(header.score + contentScore * contentEvidenceWeight(profile.nonEmptyCount)),
     reasons,
   };
 }
@@ -216,23 +228,27 @@ export function classifyFromAnalysis(
   profiles: ColumnProfile[],
   inferences: FieldInference[],
 ): { category: WorksheetCategory; confidence: number } {
-  if (containsAlias(sheetName, SUMMARY_NAMES)) return { category: 'summary', confidence: 0.95 };
-
   const gradeHeaderCount = profiles.filter(profile => GRADE_HEADERS.some(alias => normalizeHeader(profile.headerText).includes(normalizeHeader(alias)))).length;
   const strongGradeHeaderCount = profiles.filter(profile => GRADE_HEADERS.some(alias => {
     const normalizedAlias = normalizeHeader(alias);
     return normalizedAlias !== 'grade' && normalizeHeader(profile.headerText).includes(normalizedAlias);
   })).length;
   const gradeNumericSignal = Math.max(0, ...profiles.map(profile => profile.numericRatio));
-  if (gradeHeaderCount >= 2 || (strongGradeHeaderCount >= 1 && gradeNumericSignal >= 0.7) || (containsAlias(sheetName, SUBJECT_NAMES) && gradeHeaderCount >= 1)) {
-    return { category: 'grade_sheet', confidence: clamp(0.65 + gradeHeaderCount * 0.1 + gradeNumericSignal * 0.1) };
-  }
-
   const nameInference = inferences.find(inference => inference.field === 'full_name')?.confidence || 0;
   const identityInference = Math.max(
     inferences.find(inference => inference.field === 'student_number')?.confidence || 0,
     inferences.find(inference => inference.field === 'section_name')?.confidence || 0,
   );
+  const reportHeaderCount = profiles.filter(profile => SUMMARY_HEADERS.some(alias => normalizeHeader(profile.headerText).includes(normalizeHeader(alias)))).length;
+  const sampleCount = Math.max(0, ...profiles.map(profile => profile.nonEmptyCount));
+  const hasSummaryName = containsAlias(sheetName, SUMMARY_NAMES);
+  const sparseOrNonStudentStructure = sampleCount <= 5 || identityInference < 0.55 || reportHeaderCount > 0;
+  if (hasSummaryName && sparseOrNonStudentStructure) {
+    return { category: 'summary', confidence: clamp(0.72 + Math.min(reportHeaderCount, 2) * 0.08 + (sampleCount <= 5 ? 0.1 : 0)) };
+  }
+  if (gradeHeaderCount >= 2 || (strongGradeHeaderCount >= 1 && gradeNumericSignal >= 0.7) || (containsAlias(sheetName, SUBJECT_NAMES) && gradeHeaderCount >= 1)) {
+    return { category: 'grade_sheet', confidence: clamp(0.65 + gradeHeaderCount * 0.1 + gradeNumericSignal * 0.1) };
+  }
   const nameSignal = containsAlias(sheetName, STUDENT_NAMES) ? 0.2 : 0;
   const studentConfidence = clamp(nameInference * 0.68 + identityInference * 0.2 + nameSignal);
   if (studentConfidence >= 0.58) return { category: 'students', confidence: studentConfidence };

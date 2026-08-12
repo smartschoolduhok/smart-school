@@ -3,6 +3,7 @@ import {
   confidenceLevel,
   extractClassValue,
   extractSectionValue,
+  isExcelErrorValue,
   normalizeHeader,
 } from './normalizers.ts';
 import {
@@ -62,11 +63,42 @@ export function extractHeaders(row: ExcelCell[]): string[] {
   const counts = new Map<string, number>();
   return row.map(cell => {
     const header = String(cell ?? '').trim();
-    if (!header) return '';
+    if (!header || isExcelErrorValue(cell)) return '';
     const count = (counts.get(header) || 0) + 1;
     counts.set(header, count);
     return count === 1 ? header : `${header} (${count})`;
   });
+}
+
+function consecutiveBlankRows(rows: WorksheetRows, startRow: number, endRow: number): number {
+  let count = 0;
+  for (let rowIndex = startRow; rowIndex <= endRow; rowIndex += 1) {
+    if (nonEmptyColumns(rows[rowIndex] || []).length) break;
+    count += 1;
+  }
+  return count;
+}
+
+function dominantColumns(rows: WorksheetRows, rowIndexes: number[]): Set<number> {
+  const frequencies = new Map<number, number>();
+  for (const rowIndex of rowIndexes) {
+    for (const columnIndex of nonEmptyColumns(rows[rowIndex] || [])) {
+      frequencies.set(columnIndex, (frequencies.get(columnIndex) || 0) + 1);
+    }
+  }
+  const minimumFrequency = Math.max(1, Math.ceil(rowIndexes.length * 0.5));
+  return new Set([...frequencies.entries()]
+    .filter(([, frequency]) => frequency >= minimumFrequency)
+    .map(([columnIndex]) => columnIndex));
+}
+
+function rowMatchesDominantStructure(row: ExcelCell[], expectedColumns: Set<number>): boolean {
+  const columns = nonEmptyColumns(row);
+  if (!columns.length || !expectedColumns.size) return false;
+  const overlap = columns.filter(column => expectedColumns.has(column)).length;
+  const expectedCoverage = overlap / expectedColumns.size;
+  const rowCoverage = overlap / columns.length;
+  return expectedCoverage >= 0.5 && rowCoverage >= 0.5;
 }
 
 export function detectHeaderRow(rows: WorksheetRows, maxNonEmptyRows = 20): HeaderDetection {
@@ -129,21 +161,52 @@ function largestNonEmptyBlock(rows: WorksheetRows): { start: number; end: number
 
 export function detectDataRegions(rows: WorksheetRows, header: HeaderDetection): DataRegion[] {
   if (!rows.length) return [];
-  const block = header.headerRowIndex != null
+  const dominantBlock = header.headerRowIndex == null ? largestNonEmptyBlock(rows) : null;
+  let block = header.headerRowIndex != null
     ? { start: header.headerRowIndex, end: rows.length - 1 }
-    : largestNonEmptyBlock(rows);
+    : dominantBlock;
   if (!block) return [];
+
+  if (header.headerRowIndex == null && dominantBlock) {
+    const anchorRows = Array.from(
+      { length: dominantBlock.end - dominantBlock.start + 1 },
+      (_, offset) => dominantBlock.start + offset,
+    ).filter(index => nonEmptyColumns(rows[index] || []).length > 0);
+    const expectedColumns = dominantColumns(rows, anchorRows.slice(0, 10));
+    let expandedStart = dominantBlock.start;
+    let blankRowsCrossed = 0;
+    for (let rowIndex = dominantBlock.start - 1; rowIndex >= 0; rowIndex -= 1) {
+      if (!nonEmptyColumns(rows[rowIndex] || []).length) {
+        blankRowsCrossed += 1;
+        if (blankRowsCrossed > 1) break;
+        continue;
+      }
+      if (isSummaryRow(rows[rowIndex] || []) || !rowMatchesDominantStructure(rows[rowIndex] || [], expectedColumns)) break;
+      expandedStart = rowIndex;
+    }
+    block = { start: expandedStart, end: rows.length - 1 };
+  }
 
   const startRow = header.headerRowIndex ?? block.start;
   const dataStartRow = header.headerRowIndex != null ? header.headerRowIndex + 1 : startRow;
   let endRow = block.end;
   let observedDataRows = 0;
+  const observedRowIndexes: number[] = [];
   for (let rowIndex = dataStartRow; rowIndex <= block.end; rowIndex += 1) {
     const columns = nonEmptyColumns(rows[rowIndex] || []);
     if (!columns.length) {
       if (observedDataRows >= 2) {
-        endRow = rowIndex - 1;
-        break;
+        const blankCount = consecutiveBlankRows(rows, rowIndex, block.end);
+        const nextRowIndex = rowIndex + blankCount;
+        const nextRows = Array.from({ length: 3 }, (_, offset) => nextRowIndex + offset)
+          .filter(index => index <= block.end && nonEmptyColumns(rows[index] || []).length > 0);
+        const nextIsSummary = nextRowIndex <= block.end && isSummaryRow(rows[nextRowIndex] || []);
+        const expectedColumns = dominantColumns(rows, observedRowIndexes.slice(-10));
+        const followingMatches = nextRows.some(index => rowMatchesDominantStructure(rows[index] || [], expectedColumns));
+        if (blankCount >= 2 || nextIsSummary || !followingMatches) {
+          endRow = rowIndex - 1;
+          break;
+        }
       }
       continue;
     }
@@ -152,6 +215,7 @@ export function detectDataRegions(rows: WorksheetRows, header: HeaderDetection):
       break;
     }
     observedDataRows += 1;
+    observedRowIndexes.push(rowIndex);
   }
 
   const relevantRows = rows.slice(startRow, endRow + 1);

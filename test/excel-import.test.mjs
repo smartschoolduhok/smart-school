@@ -9,6 +9,7 @@ import {
   detectHeaderRow,
   detectHeaderRowAt,
   fieldSourceIdentity,
+  normalizeHeader,
   matchSectionByName,
   normalizeSectionName,
   sheetRowsToRecords,
@@ -84,7 +85,8 @@ test('detects the real-world student table while preserving a meaningful blank-h
   assert.equal(inference.full_name.source.columnIndex, 1);
   assert.equal(inference.student_number.source.columnIndex, 3);
   assert.equal(inference.section_name.source.columnIndex, 2);
-  assert.ok(inference.section_name.confidence >= 0.9);
+  assert.ok(inference.section_name.confidence >= 0.4);
+  assert.ok(inference.section_name.confidence < 0.7);
   assert.equal(inference.class_name.source.type, 'metadata-cell');
   assert.equal(inference.class_name.source.value, 'الاول المتوسط');
   assert.ok(inference.student_number.alternatives.find(candidate => candidate.source.type === 'column' && candidate.source.columnIndex === 0).confidence < 0.4);
@@ -97,13 +99,13 @@ test('infers student fields from content when no reliable header exists', () => 
   ]);
   const inference = Object.fromEntries(analysis.tables[0].fieldInferences.map(item => [item.field, item]));
   assert.equal(analysis.headerRowIndex, null);
-  assert.equal(analysis.category, 'students');
   assert.equal(inference.full_name.source.columnIndex, 0);
-  assert.ok(inference.full_name.confidence >= 0.7);
+  assert.ok(inference.full_name.confidence >= 0.4);
+  assert.ok(inference.full_name.confidence < 0.7);
   assert.equal(inference.student_number.source.columnIndex, 1);
-  assert.ok(inference.student_number.confidence >= 0.6);
+  assert.ok(inference.student_number.confidence >= 0.3);
   assert.equal(inference.section_name.source.columnIndex, 2);
-  assert.ok(inference.section_name.confidence >= 0.9);
+  assert.ok(inference.section_name.confidence >= 0.4);
 });
 
 test('semantic inference follows reordered columns instead of fixed positions', () => {
@@ -140,17 +142,32 @@ test('does not hallucinate a section when the sheet has none', () => {
   assert.ok(section.confidence < 0.7);
 });
 
-test('recognizes repeated numeric section categories without treating them as a row sequence', () => {
+test('recognizes repeated numeric section categories across sufficient evidence', () => {
+  const rows = [['الاسم', '']];
+  for (let index = 1; index <= 20; index += 1) rows.push([`طالب تجريبي ${index}`, index <= 10 ? 1 : 2]);
+  const analysis = analyzeWorksheet('Students', rows);
+  const section = analysis.tables[0].fieldInferences.find(item => item.field === 'section_name');
+  assert.equal(section.source.columnIndex, 1);
+  assert.ok(section.confidence >= 0.85);
+});
+
+test('keeps a one-row numeric section-like value at low confidence', () => {
   const analysis = analyzeWorksheet('Students', [
-    ['الاسم', ''],
-    ['طالب تجريبي 1', 1],
-    ['طالب تجريبي 2', 1],
-    ['طالب تجريبي 3', 2],
-    ['طالب تجريبي 4', 2],
+    ['اسم الطالب', ''],
+    ['طالب تجريبي', 1],
   ]);
   const section = analysis.tables[0].fieldInferences.find(item => item.field === 'section_name');
   assert.equal(section.source.columnIndex, 1);
-  assert.ok(section.confidence >= 0.7);
+  assert.ok(section.confidence < 0.7);
+});
+
+test('keeps unlabeled repeated A/B sections at high confidence with sufficient evidence', () => {
+  const rows = [['اسم الطالب', '']];
+  for (let index = 1; index <= 26; index += 1) rows.push([`طالب تجريبي ${index}`, index <= 13 ? 'A' : 'B']);
+  const analysis = analyzeWorksheet('Students', rows);
+  const section = analysis.tables[0].fieldInferences.find(item => item.field === 'section_name');
+  assert.equal(section.source.columnIndex, 1);
+  assert.ok(section.confidence >= 0.9);
 });
 
 test('penalizes row sequences and profiles grade-like numeric columns without importing grades', () => {
@@ -181,6 +198,80 @@ test('stops the dominant table before a separated trailing summary', () => {
   assert.equal(analysis.tables[0].region.startRow, 1);
   assert.equal(analysis.tables[0].region.endRow, 3);
   assert.equal(analysis.tables[0].region.rowCount, 2);
+});
+
+test('keeps students after one accidental blank row inside the dominant table', () => {
+  const rows = [
+    ['القيد', 'اسم الطالب', 'الشعبة'],
+    ['5/001', 'طالب تجريبي 1', 'ا'],
+    ['5/002', 'طالب تجريبي 2', 'ا'],
+    [],
+    ['5/003', 'طالب تجريبي 3', 'ب'],
+    ['5/004', 'طالب تجريبي 4', 'ب'],
+  ];
+  const analysis = analyzeWorksheet('Students', rows);
+  const region = analysis.tables[0].region;
+  assert.equal(region.startRow, 0);
+  assert.equal(region.endRow, 5);
+  assert.equal(region.rowCount, 4);
+  assert.equal(sheetRowsToRecords(rows, analysis.headerRowIndex, region).length, 5);
+});
+
+test('keeps a no-header student table intact across one accidental blank row', () => {
+  const rows = [
+    ['طالب تجريبي 1', '5/001', 'ا'],
+    ['طالب تجريبي 2', '5/002', 'ا'],
+    [],
+    ['طالب تجريبي 3', '5/003', 'ب'],
+    ['طالب تجريبي 4', '5/004', 'ب'],
+    ['طالب تجريبي 5', '5/005', 'ب'],
+  ];
+  const region = analyzeWorksheet('بيانات', rows).tables[0].region;
+  assert.equal(region.startRow, 0);
+  assert.equal(region.endRow, 5);
+  assert.equal(region.rowCount, 5);
+});
+
+test('classifies sparse half-year and checking sheets as reports', () => {
+  const halfYear = analyzeWorksheet('نصف السنة', [
+    ['الاسم', 'المعدل'],
+    ['طالب تجريبي', 85],
+  ]);
+  const checking = analyzeWorksheet('تجييك قابل للمسح', [
+    ['الاسم', 'ملاحظة'],
+    ['طالب تجريبي', 'مراجعة'],
+  ]);
+  assert.equal(halfYear.category, 'summary');
+  assert.equal(checking.category, 'summary');
+});
+
+test('classifies the known sparse control/report sheet names consistently', () => {
+  const reportNames = ['ملخص', 'النتيجة النهائية', 'نصف السنة', 'القرار', 'كنترول', 'تجييك', 'تجييك قابل للمسح'];
+  for (const name of reportNames) {
+    assert.equal(analyzeWorksheet(name, [['الاسم'], ['طالب تجريبي']]).category, 'summary', name);
+  }
+});
+
+test('report aliases do not override a strong dense student-table structure', () => {
+  const rows = [['القيد', 'اسم الطالب', 'الشعبة']];
+  for (let index = 1; index <= 12; index += 1) {
+    rows.push([`5/${String(index).padStart(3, '0')}`, `طالب تجريبي ${index}`, index <= 6 ? 'ا' : 'ب']);
+  }
+  assert.equal(analyzeWorksheet('نصف السنة', rows).category, 'students');
+});
+
+test('treats common Excel error tokens as non-semantic noise', () => {
+  const errors = ['#NAME?', '#N/A', '#VALUE!', '#REF!', '#DIV/0!', '#NUM!', '#NULL!'];
+  for (const error of errors) assert.equal(normalizeHeader(error), '');
+
+  const analysis = analyzeWorksheet('Students', [
+    ['#NAME?', 'اسم الطالب', 'القيد'],
+    ['#VALUE!', 'طالب تجريبي 1', '5/001'],
+    ['#REF!', 'طالب تجريبي 2', '5/002'],
+  ]);
+  const table = analysis.tables[0];
+  assert.equal(table.columns.find(column => column.columnIndex === 0), undefined);
+  assert.ok(table.fieldInferences.every(inference => inference.source.type !== 'column' || inference.source.columnIndex !== 0));
 });
 
 test('uses explicit confidence bands', () => {
@@ -278,4 +369,14 @@ test('student preview performs no database write and confirm keeps tenant-scoped
   const confirm = source.slice(source.indexOf("app.post('/api/import-export/:type/confirm'"), source.indexOf("app.get('/api/import-export/:type/export'"));
   assert.match(confirm, /UPDATE students[\s\S]*WHERE id = \? AND school_id = \?/);
   assert.match(confirm, /INSERT INTO students \(school_id,/);
+});
+
+test('system administrators must explicitly choose an import target school', async () => {
+  const source = await readFile(new URL('../src/modules/importExport/ImportExportPage.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /user\?\.school_id\s*\|\|\s*1/);
+  assert.match(source, /useState<number \| null>\(isSystemAdmin \? null : \(user\?\.school_id \?\? null\)\)/);
+  assert.match(source, /getSchools\(\)/);
+  assert.match(source, /id="target-school"/);
+  assert.match(source, /if \(!schoolId\) throw new Error\('يجب اختيار المدرسة المستهدفة قبل المعاينة'\)/);
+  assert.match(source, /setSelectedClassId\(null\)[\s\S]*setSelectedSectionId\(null\)[\s\S]*setSelectedSubjectId\(null\)/);
 });

@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { IMPORT_EXPORT_ROLES, hasRole } from '../../lib/rbac';
-import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections } from '../../lib/api';
+import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections, getSchools } from '../../lib/api';
 import {
   analysisRowsToRecords,
   analyzeWorksheet,
@@ -283,7 +283,9 @@ export default function ImportExportPage() {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'upload' | 'sheets' | 'mapping' | 'preview' | 'confirm'>('upload');
   const [importJobs, setImportJobs] = useState<any[]>([]);
-  const [schoolId, setSchoolId] = useState<number>(user?.school_id || 1);
+  const isSystemAdmin = user?.role_key === 'system_admin';
+  const [schoolId, setSchoolId] = useState<number | null>(isSystemAdmin ? null : (user?.school_id ?? null));
+  const [schools, setSchools] = useState<Array<Record<string, any>>>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const [xlsxModule, setXlsxModule] = useState<any>(null);
   const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>('strict_existing_assignments');
@@ -320,8 +322,17 @@ export default function ImportExportPage() {
     : [];
 
   useEffect(() => {
-    if (user?.school_id) setSchoolId(user.school_id);
-  }, [user]);
+    if (isSystemAdmin) {
+      setSchoolId(null);
+      let cancelled = false;
+      getSchools().then(result => {
+        if (!cancelled) setSchools((result.data || []).filter(school => school.status === 'active'));
+      });
+      return () => { cancelled = true; };
+    }
+    setSchools([]);
+    setSchoolId(user?.school_id ?? null);
+  }, [isSystemAdmin, user?.school_id]);
 
   useEffect(() => {
     if (activeTab === 'jobs') loadJobs();
@@ -329,7 +340,20 @@ export default function ImportExportPage() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!schoolId) return;
+    setSelectedClassId(null);
+    setSelectedSectionId(null);
+    setSelectedSubjectId(null);
+    setClasses([]);
+    setSections([]);
+    setPreview(null);
+    setConfirmResult(null);
+    setAnalysisAcknowledged(false);
+    setStudentSources(previous => Object.fromEntries(Object.entries(previous).map(([field, source]) => [
+      field,
+      source?.type === 'system-selection' ? { ...source, id: null } : source,
+    ])) as Partial<Record<StudentSemanticField, FieldSource>>);
+    setStep(current => current === 'preview' || current === 'confirm' ? 'mapping' : current);
+    if (!schoolId) return () => { cancelled = true; };
     Promise.all([getClasses(schoolId), getSections(schoolId)]).then(([classResult, sectionResult]) => {
       if (cancelled) return;
       setClasses(classResult.data || []);
@@ -501,6 +525,7 @@ export default function ImportExportPage() {
     try {
       const info = sheets.find(s => s.name === selectedSheet);
       if (!info) throw new Error('تعذر العثور على ورقة العمل المحددة');
+      if (!schoolId) throw new Error('يجب اختيار المدرسة المستهدفة قبل المعاينة');
       if (!importTypeConfirmed) throw new Error('اختر نوع الاستيراد لهذه الورقة أولاً');
       const rows = analysisRowsToRecords(info.rows, info.analysis);
       let rowsForPreview: Array<Record<string, unknown>> = rows;
@@ -582,6 +607,7 @@ export default function ImportExportPage() {
     if (!preview) return;
     setLoading(true);
     try {
+      if (!schoolId) throw new Error('يجب اختيار المدرسة المستهدفة قبل تأكيد الاستيراد');
       const rowsToSend = preview.valid.map((r: PreviewRow) => r.data);
       const payload: any = { school_id: schoolId, rows: rowsToSend, mode, file_name: file?.name || 'import.xlsx' };
       if (selectedType === 'students') {
@@ -618,6 +644,7 @@ export default function ImportExportPage() {
   const handleExport = async (type: ImportType) => {
     setLoading(true);
     try {
+      if (!schoolId) throw new Error('يجب اختيار المدرسة المستهدفة قبل التصدير');
       const res = await getExportData(type, schoolId);
       if (res.data?.rows) {
         const XLSX = await loadXlsx();
@@ -696,6 +723,22 @@ export default function ImportExportPage() {
         <FileSpreadsheet className="text-primary-600" />
         استيراد وتصدير Excel
       </h1>
+
+      {isSystemAdmin && (
+        <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4">
+          <label htmlFor="target-school" className="mb-2 block text-sm font-bold text-blue-900">المدرسة المستهدفة</label>
+          <select
+            id="target-school"
+            value={schoolId ?? ''}
+            onChange={event => setSchoolId(event.target.value ? Number(event.target.value) : null)}
+            className="w-full max-w-md rounded-md border border-blue-300 bg-white px-3 py-2 text-sm"
+          >
+            <option value="">— اختر المدرسة قبل الاستيراد أو التصدير —</option>
+            {schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}
+          </select>
+          <p className="mt-2 text-xs text-blue-700">لن تُحمّل الصفوف أو الشعب، ولن تبدأ المعاينة أو التصدير، قبل اختيار مدرسة صراحةً.</p>
+        </div>
+      )}
 
       {preview?.warnings && preview.warnings.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
@@ -963,7 +1006,7 @@ export default function ImportExportPage() {
 
               <div className="flex gap-2">
                 <button onClick={() => setStep('sheets')} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">رجوع</button>
-                <button onClick={parseSheetAndPreview} disabled={loading} className="bg-primary-600 hover:bg-primary-700 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                <button onClick={parseSheetAndPreview} disabled={loading || !schoolId} className="bg-primary-600 hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
                   {loading ? <Loader2 size={16} className="animate-spin" /> : <ChevronRight size={16} />}
                   معاينة البيانات
                 </button>
@@ -1071,7 +1114,7 @@ export default function ImportExportPage() {
 
               <div className="flex gap-2">
                 <button onClick={() => setStep('mapping')} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">رجوع</button>
-                <button onClick={handleConfirm} disabled={loading || preview.valid_rows === 0} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                <button onClick={handleConfirm} disabled={loading || preview.valid_rows === 0 || !schoolId} className="bg-green-600 hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
                   {loading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
                   تأكيد الاستيراد
                 </button>
@@ -1118,7 +1161,7 @@ export default function ImportExportPage() {
             <h2 className="text-lg font-bold text-gray-900 mb-4">تصدير البيانات</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {availableTypes.map(t => (
-                <button key={t.value} onClick={() => handleExport(t.value)} className="flex items-center gap-3 p-4 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors text-right">
+                <button key={t.value} onClick={() => handleExport(t.value)} disabled={!schoolId} className="flex items-center gap-3 p-4 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors text-right">
                   {t.icon}
                   <div className="flex-1">
                     <p className="font-bold text-gray-900">{t.label}</p>

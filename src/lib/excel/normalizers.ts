@@ -1,8 +1,22 @@
 import type { FieldSource } from './types.ts';
 
 const ARABIC_DIACRITICS = /[\u064b-\u065f\u0670]/g;
+const EXCEL_ERROR_TOKENS = new Set([
+  '#NAME?',
+  '#N/A',
+  '#VALUE!',
+  '#REF!',
+  '#DIV/0!',
+  '#NUM!',
+  '#NULL!',
+]);
+
+export function isExcelErrorValue(value: unknown): boolean {
+  return EXCEL_ERROR_TOKENS.has(String(value ?? '').trim().toUpperCase());
+}
 
 export function normalizeHeader(value: unknown): string {
+  if (isExcelErrorValue(value)) return '';
   return String(value ?? '')
     .normalize('NFKC')
     .trim()
