@@ -3,11 +3,14 @@ import { useAuth } from '../../hooks/useAuth';
 import { IMPORT_EXPORT_ROLES, hasRole } from '../../lib/rbac';
 import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections } from '../../lib/api';
 import {
+  analysisRowsToRecords,
   analyzeWorksheet,
-  classifyWorksheet,
-  detectHeaderRowAt,
+  fieldSourceIdentity,
   normalizeHeader,
-  sheetRowsToRecords,
+  type ColumnProfile,
+  type FieldSource,
+  type StudentSemanticField,
+  type WorksheetAnalysis,
   type WorksheetCategory,
   type WorksheetRows,
 } from '../../lib/excelImport';
@@ -20,18 +23,17 @@ import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, X
 type ImportType = 'students' | 'classes-sections' | 'subjects' | 'employees' | 'grades' | 'student-subjects';
 type ImportMode = 'skip_existing' | 'update_existing' | 'error_on_existing';
 type AssignmentMode = 'strict_existing_assignments' | 'auto_assign_missing_subjects';
-type ClassAssignmentMode = 'excel' | 'override';
-type SectionAssignmentMode = 'excel' | 'override' | 'none';
 
 interface SheetInfo {
   name: string;
   type: WorksheetCategory;
   columnNames: string[];
-  headerRowIndex: number;
+  headerRowIndex: number | null;
   headerScore: number;
   headerConfidence: 'high' | 'medium' | 'low';
   rowCount: number;
   rows: WorksheetRows;
+  analysis: WorksheetAnalysis;
 }
 
 interface ColumnMap {
@@ -195,21 +197,32 @@ const AUTO_MAP_RULES: Record<string, string[]> = {
   completion_exam: ['الاكمال', 'درجة الاكمال', 'completion_exam', 'completion', 'complementary', 'الإكمال'],
 };
 
-function autoMapColumns(excelColumns: string[], importType: ImportType): ColumnMap {
+const STUDENT_SEMANTIC_FIELDS: StudentSemanticField[] = ['full_name', 'student_number', 'section_name', 'class_name', 'gender', 'phone'];
+
+const STUDENT_SEMANTIC_LABELS: Record<StudentSemanticField, string> = {
+  full_name: 'اسم الطالب',
+  student_number: 'رقم الطالب / القيد',
+  section_name: 'الشعبة',
+  class_name: 'الصف',
+  gender: 'الجنس',
+  phone: 'الهاتف',
+};
+
+function autoMapColumns(excelColumns: ColumnProfile[], importType: ImportType): ColumnMap {
   const map: ColumnMap = {};
   const used = new Set<string>();
   const fields = SYSTEM_FIELDS[importType];
   for (const field of fields) {
     const candidates = AUTO_MAP_RULES[field.key] || [];
     for (const col of excelColumns) {
-      const colLower = normalizeHeader(col);
-      if (used.has(col)) continue;
+      const colLower = normalizeHeader(col.headerText || col.displayName);
+      if (used.has(col.key)) continue;
       if (candidates.some(c => {
         const candidate = normalizeHeader(c);
         return colLower === candidate || (candidate.length > 2 && colLower.includes(candidate));
       })) {
-        map[field.key] = col;
-        used.add(col);
+        map[field.key] = col.key;
+        used.add(col.key);
         break;
       }
     }
@@ -217,9 +230,42 @@ function autoMapColumns(excelColumns: string[], importType: ImportType): ColumnM
   return map;
 }
 
-function detectIgnoredColumns(excelColumns: string[], mapping: ColumnMap): string[] {
+function sourcesFromAnalysis(analysis: WorksheetAnalysis): Partial<Record<StudentSemanticField, FieldSource>> {
+  const sources: Partial<Record<StudentSemanticField, FieldSource>> = {};
+  for (const inference of analysis.tables[0]?.fieldInferences || []) {
+    const minimum = inference.field === 'full_name' ? 0.35 : 0.48;
+    if (inference.confidence >= minimum) sources[inference.field] = inference.source;
+    else if (inference.field === 'class_name') sources[inference.field] = { type: 'system-selection', id: null };
+    else sources[inference.field] = { type: 'ignore' };
+  }
+  if (!sources.full_name && analysis.columns[0]) {
+    sources.full_name = { type: 'column', columnIndex: analysis.columns[0].columnIndex, columnKey: analysis.columns[0].key };
+  }
+  return sources;
+}
+
+function columnMappingFromSources(sources: Partial<Record<StudentSemanticField, FieldSource>>): ColumnMap {
+  const mapping: ColumnMap = {};
+  for (const field of STUDENT_SEMANTIC_FIELDS) {
+    const source = sources[field];
+    if (source?.type === 'column') mapping[field] = source.columnKey;
+  }
+  return mapping;
+}
+
+function sourceValue(source: FieldSource): string {
+  if (source.type === 'metadata-cell' || source.type === 'sheet-name' || source.type === 'file-name' || source.type === 'constant') return source.value;
+  return '';
+}
+
+function detectIgnoredColumns(
+  columns: ColumnProfile[],
+  mapping: ColumnMap,
+  sources: Partial<Record<StudentSemanticField, FieldSource>>,
+): string[] {
   const used = new Set(Object.values(mapping).filter(Boolean));
-  return excelColumns.filter(c => !used.has(c));
+  for (const source of Object.values(sources)) if (source?.type === 'column') used.add(source.columnKey);
+  return columns.filter(column => !used.has(column.key)).map(column => column.displayName);
 }
 
 export default function ImportExportPage() {
@@ -247,8 +293,8 @@ export default function ImportExportPage() {
   const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(null);
   const [classes, setClasses] = useState<any[]>([]);
   const [sections, setSections] = useState<any[]>([]);
-  const [classAssignmentMode, setClassAssignmentMode] = useState<ClassAssignmentMode>('override');
-  const [sectionAssignmentMode, setSectionAssignmentMode] = useState<SectionAssignmentMode>('excel');
+  const [studentSources, setStudentSources] = useState<Partial<Record<StudentSemanticField, FieldSource>>>({});
+  const [analysisAcknowledged, setAnalysisAcknowledged] = useState(false);
 
   const canAccessEmployees = hasRole(user?.role_key, IMPORT_EXPORT_ROLES);
   const canAccessGrades = hasRole(user?.role_key, IMPORT_EXPORT_ROLES);
@@ -261,6 +307,17 @@ export default function ImportExportPage() {
     if (t.value === 'student-subjects') return canAccessStudentSubjects;
     return true;
   });
+
+  const selectedSheetInfo = sheets.find(sheet => sheet.name === selectedSheet);
+  const selectedTable = selectedSheetInfo?.analysis.tables[0];
+  const lowConfidenceInferences = selectedType === 'students'
+    ? (selectedTable?.fieldInferences || []).filter(inference => {
+        const selectedSource = studentSources[inference.field];
+        return selectedSource?.type !== 'ignore'
+          && fieldSourceIdentity(selectedSource) === fieldSourceIdentity(inference.source)
+          && inference.confidence < 0.7;
+      })
+    : [];
 
   useEffect(() => {
     if (user?.school_id) setSchoolId(user.school_id);
@@ -311,7 +368,7 @@ export default function ImportExportPage() {
       const sheetInfos: SheetInfo[] = workbook.SheetNames.map((name: string) => {
         const ws = workbook.Sheets[name];
         const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: true }) as WorksheetRows;
-        const analysis = analyzeWorksheet(name, rows);
+        const analysis = analyzeWorksheet(name, rows, { fileName: f.name });
         return {
           name,
           type: analysis.category,
@@ -321,6 +378,7 @@ export default function ImportExportPage() {
           headerConfidence: analysis.confidence,
           rowCount: analysis.rowCount,
           rows,
+          analysis,
         };
       });
       setSheets(sheetInfos);
@@ -338,34 +396,103 @@ export default function ImportExportPage() {
     if (info.type === 'students' || info.type === 'grade_sheet') {
       const suggestedType: ImportType = info.type === 'grade_sheet' ? 'grades' : 'students';
       setSelectedType(suggestedType);
-      setMapping(autoMapColumns(info.columnNames, suggestedType));
+      if (suggestedType === 'students') {
+        const sources = sourcesFromAnalysis(info.analysis);
+        setStudentSources(sources);
+        setMapping({ ...autoMapColumns(info.analysis.columns, suggestedType), ...columnMappingFromSources(sources) });
+      } else {
+        setStudentSources({});
+        setMapping(autoMapColumns(info.analysis.columns, suggestedType));
+      }
       setImportTypeConfirmed(true);
     } else {
       setMapping({});
       setImportTypeConfirmed(false);
     }
+    setAnalysisAcknowledged(false);
     setStep('mapping');
   };
 
-  const changeHeaderRow = (oneBasedRow: number) => {
+  const changeHeaderRow = (oneBasedRow: number | null) => {
     const info = sheets.find(s => s.name === selectedSheet);
     if (!info) return;
-    const detection = detectHeaderRowAt(info.rows, Math.max(0, oneBasedRow - 1));
+    const analysis = analyzeWorksheet(info.name, info.rows, {
+      fileName: file?.name,
+      headerRowIndex: oneBasedRow == null ? null : Math.max(0, oneBasedRow - 1),
+    });
     setSheets(previous => previous.map(sheet => sheet.name === info.name ? {
       ...sheet,
-      columnNames: detection.columnNames,
-      type: classifyWorksheet(sheet.name, sheet.rows, detection),
-      headerRowIndex: detection.headerRowIndex,
-      headerScore: detection.score,
-      headerConfidence: detection.confidence,
-      rowCount: Math.max(0, sheet.rows.length - detection.headerRowIndex - 1),
+      columnNames: analysis.columnNames,
+      type: analysis.category,
+      headerRowIndex: analysis.headerRowIndex,
+      headerScore: analysis.score,
+      headerConfidence: analysis.confidence,
+      rowCount: analysis.rowCount,
+      analysis,
     } : sheet));
-    setMapping(autoMapColumns(detection.columnNames, selectedType));
+    if (selectedType === 'students') {
+      const sources = sourcesFromAnalysis(analysis);
+      setStudentSources(sources);
+      setMapping({ ...autoMapColumns(analysis.columns, selectedType), ...columnMappingFromSources(sources) });
+    } else {
+      setMapping(autoMapColumns(analysis.columns, selectedType));
+    }
+    setAnalysisAcknowledged(false);
     setPreview(null);
   };
 
   const handleMappingChange = (field: string, col: string) => {
     setMapping(prev => ({ ...prev, [field]: col }));
+  };
+
+  const changeImportType = (info: SheetInfo, type: ImportType) => {
+    setSelectedType(type);
+    setImportTypeConfirmed(true);
+    if (type === 'students') {
+      const sources = sourcesFromAnalysis(info.analysis);
+      setStudentSources(sources);
+      setMapping({ ...autoMapColumns(info.analysis.columns, type), ...columnMappingFromSources(sources) });
+    } else {
+      setStudentSources({});
+      setMapping(autoMapColumns(info.analysis.columns, type));
+    }
+    setAnalysisAcknowledged(false);
+  };
+
+  const changeStudentSource = (field: StudentSemanticField, token: string) => {
+    const info = sheets.find(sheet => sheet.name === selectedSheet);
+    if (!info) return;
+    let source: FieldSource;
+    if (token.startsWith('column:')) {
+      const columnIndex = Number(token.split(':')[1]);
+      source = { type: 'column', columnIndex, columnKey: token };
+    } else if (token.startsWith('metadata:')) {
+      const [, rowText, columnText] = token.split(':');
+      const candidate = info.analysis.metadata.find(item => item.field === field && item.source.type === 'metadata-cell' && item.source.row === Number(rowText) && item.source.column === Number(columnText));
+      source = candidate?.source || { type: 'ignore' };
+    } else if (token === 'sheet-name' || token === 'file-name') {
+      const candidate = info.analysis.metadata.find(item => item.field === field && item.source.type === token);
+      source = candidate?.source || { type: token, value: token === 'sheet-name' ? info.name : (file?.name || '').replace(/\.[^.]+$/u, '') };
+    } else if (token === 'system-selection') {
+      source = { type: 'system-selection', id: field === 'class_name' ? selectedClassId : selectedSectionId };
+    } else if (token === 'constant') {
+      source = { type: 'constant', value: '' };
+    } else {
+      source = { type: 'ignore' };
+    }
+    setStudentSources(previous => ({ ...previous, [field]: source }));
+    setMapping(previous => {
+      const next = { ...previous };
+      if (source.type === 'column') next[field] = source.columnKey;
+      else delete next[field];
+      return next;
+    });
+    setAnalysisAcknowledged(false);
+  };
+
+  const changeConstantSource = (field: 'class_name' | 'section_name', value: string) => {
+    setStudentSources(previous => ({ ...previous, [field]: { type: 'constant', value } }));
+    setAnalysisAcknowledged(false);
   };
 
   const parseSheetAndPreview = async () => {
@@ -375,26 +502,56 @@ export default function ImportExportPage() {
       const info = sheets.find(s => s.name === selectedSheet);
       if (!info) throw new Error('تعذر العثور على ورقة العمل المحددة');
       if (!importTypeConfirmed) throw new Error('اختر نوع الاستيراد لهذه الورقة أولاً');
-      if (!mapping.full_name && selectedType === 'students') throw new Error('يجب ربط حقل اسم الطالب');
-      if (selectedType === 'students' && classAssignmentMode === 'excel' && !mapping.class_name) {
-        throw new Error('يجب ربط عمود الصف أو اختيار صف واحد لكل الملف');
-      }
-      if (selectedType === 'students' && sectionAssignmentMode === 'excel' && !mapping.section_name) {
-        throw new Error('يجب ربط عمود الشعبة أو اختيار وضع آخر للشعبة');
-      }
-      if (selectedType === 'students' && classAssignmentMode === 'override' && !selectedClassId) {
-        throw new Error('يجب اختيار الصف عند استخدام الصف المحدد يدوياً');
-      }
-      if (selectedType === 'students' && sectionAssignmentMode === 'override' && !selectedSectionId) {
-        throw new Error('يجب اختيار الشعبة عند استخدام الشعبة المحددة يدوياً');
-      }
-      const rows = sheetRowsToRecords(info.rows, info.headerRowIndex);
-      const payload: any = { school_id: schoolId, rows, mode, mapping };
+      const rows = analysisRowsToRecords(info.rows, info.analysis);
+      let rowsForPreview: Array<Record<string, unknown>> = rows;
+      let effectiveMapping = { ...mapping };
+      let effectiveClassMode: 'excel' | 'override' = 'excel';
+      let effectiveSectionMode: 'excel' | 'override' | 'none' = 'none';
+      let effectiveClassId = selectedClassId;
+      let effectiveSectionId = selectedSectionId;
       if (selectedType === 'students') {
-        payload.class_assignment_mode = classAssignmentMode;
-        payload.section_assignment_mode = sectionAssignmentMode;
-        payload.selected_class_id = selectedClassId;
-        payload.selected_section_id = selectedSectionId;
+        const fullNameSource = studentSources.full_name;
+        const classSource = studentSources.class_name;
+        const sectionSource = studentSources.section_name;
+        if (fullNameSource?.type !== 'column') throw new Error('يجب اختيار عمود لاسم الطالب');
+        if (!classSource || classSource.type === 'ignore') throw new Error('يجب تحديد مصدر الصف');
+        if (classSource.type === 'system-selection' && !selectedClassId) throw new Error('يجب اختيار صف موجود من النظام');
+        if (sectionSource?.type === 'system-selection' && !selectedSectionId) throw new Error('يجب اختيار شعبة موجودة من النظام');
+        if (lowConfidenceInferences.length > 0 && !analysisAcknowledged) throw new Error('راجع الاستدلالات منخفضة الثقة وأكد مراجعتها قبل المعاينة');
+
+        effectiveMapping = Object.fromEntries(Object.entries(mapping).filter(([field]) => !STUDENT_SEMANTIC_FIELDS.includes(field as StudentSemanticField)));
+        const sourceValues: Partial<Record<StudentSemanticField, string>> = {};
+        for (const field of STUDENT_SEMANTIC_FIELDS) {
+          const source = studentSources[field];
+          if (!source || source.type === 'ignore' || source.type === 'system-selection') continue;
+          if (source.type === 'column') {
+            effectiveMapping[field] = source.columnKey;
+          } else {
+            const virtualKey = `__source_${field}`;
+            effectiveMapping[field] = virtualKey;
+            sourceValues[field] = sourceValue(source);
+          }
+        }
+        rowsForPreview = rows.map(row => {
+          const prepared = { ...row };
+          for (const [field, value] of Object.entries(sourceValues)) prepared[`__source_${field}`] = value;
+          return prepared;
+        });
+        effectiveClassMode = classSource.type === 'system-selection' ? 'override' : 'excel';
+        effectiveSectionMode = !sectionSource || sectionSource.type === 'ignore'
+          ? 'none'
+          : sectionSource.type === 'system-selection' ? 'override' : 'excel';
+        if (effectiveClassMode === 'override') effectiveClassId = selectedClassId;
+        else if (effectiveSectionMode === 'override') {
+          effectiveClassId = sections.find(section => section.id === selectedSectionId)?.class_id || null;
+        } else effectiveClassId = null;
+      }
+      const payload: any = { school_id: schoolId, rows: rowsForPreview, mode, mapping: effectiveMapping };
+      if (selectedType === 'students') {
+        payload.class_assignment_mode = effectiveClassMode;
+        payload.section_assignment_mode = effectiveSectionMode;
+        payload.selected_class_id = effectiveClassId;
+        payload.selected_section_id = effectiveSectionId;
       }
       if (selectedType === 'grades') {
         payload.assignment_mode = assignmentMode;
@@ -428,9 +585,17 @@ export default function ImportExportPage() {
       const rowsToSend = preview.valid.map((r: PreviewRow) => r.data);
       const payload: any = { school_id: schoolId, rows: rowsToSend, mode, file_name: file?.name || 'import.xlsx' };
       if (selectedType === 'students') {
-        payload.class_assignment_mode = classAssignmentMode;
-        payload.section_assignment_mode = sectionAssignmentMode;
-        payload.selected_class_id = selectedClassId;
+        const classSource = studentSources.class_name;
+        const sectionSource = studentSources.section_name;
+        const classMode = classSource?.type === 'system-selection' ? 'override' : 'excel';
+        const sectionMode = !sectionSource || sectionSource.type === 'ignore'
+          ? 'none'
+          : sectionSource.type === 'system-selection' ? 'override' : 'excel';
+        payload.class_assignment_mode = classMode;
+        payload.section_assignment_mode = sectionMode;
+        payload.selected_class_id = classMode === 'override'
+          ? selectedClassId
+          : sectionMode === 'override' ? (sections.find(section => section.id === selectedSectionId)?.class_id || null) : null;
         payload.selected_section_id = selectedSectionId;
       }
       if (selectedType === 'grades') {
@@ -502,7 +667,16 @@ export default function ImportExportPage() {
     setLoading(false);
   };
 
-  const ignoredCols = selectedSheet ? detectIgnoredColumns(sheets.find(s => s.name === selectedSheet)?.columnNames || [], mapping) : [];
+  const ignoredCols = selectedSheetInfo
+    ? detectIgnoredColumns(selectedSheetInfo.analysis.columns, mapping, studentSources)
+    : [];
+  const previewFields = SYSTEM_FIELDS[selectedType].filter(field => {
+    if (selectedType !== 'students') return Boolean(mapping[field.key]);
+    if (STUDENT_SEMANTIC_FIELDS.includes(field.key as StudentSemanticField)) {
+      return studentSources[field.key as StudentSemanticField]?.type !== 'ignore';
+    }
+    return Boolean(mapping[field.key]) || ['student_number', 'full_name', 'class_name', 'section_name'].includes(field.key);
+  });
 
   if (!canImportExport) {
     return (
@@ -586,8 +760,8 @@ export default function ImportExportPage() {
                       <p className="font-bold text-gray-900">{s.name}</p>
                       <p className="text-xs text-gray-500">
                         {s.type === 'students' ? 'قائمة طلاب' : s.type === 'grade_sheet' ? 'ورقة مادة/درجات' : s.type === 'summary' ? 'ملخص/تقرير' : 'غير معروف'}
-                        {' — '}صف العناوين {s.headerRowIndex + 1} — {s.columnNames.length} أعمدة — {s.rowCount} صفوف بيانات
-                        {' — '}ثقة {s.headerConfidence === 'high' ? 'عالية' : s.headerConfidence === 'medium' ? 'متوسطة' : 'منخفضة'}
+                        {' — '}صف العناوين {s.headerRowIndex == null ? 'غير موثوق' : s.headerRowIndex + 1} — {s.columnNames.length} أعمدة — {s.rowCount} صفوف بيانات
+                        {' — '}ثقة النوع {Math.round(s.analysis.categoryConfidence * 100)}%
                       </p>
                     </div>
                     <ChevronRight size={18} className="text-gray-400" />
@@ -608,15 +782,17 @@ export default function ImportExportPage() {
               <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
                 <label htmlFor="header-row" className="block text-sm font-bold text-blue-900 mb-2">صف العناوين في Excel</label>
                 <div className="flex flex-wrap items-center gap-3">
-                  <input
+                  <select
                     id="header-row"
-                    type="number"
-                    min={1}
-                    max={sheets.find(s => s.name === selectedSheet)?.rows.length || 1}
-                    value={(sheets.find(s => s.name === selectedSheet)?.headerRowIndex || 0) + 1}
-                    onChange={event => changeHeaderRow(Number(event.target.value) || 1)}
+                    value={selectedSheetInfo?.headerRowIndex == null ? 'none' : String(selectedSheetInfo.headerRowIndex + 1)}
+                    onChange={event => changeHeaderRow(event.target.value === 'none' ? null : Number(event.target.value))}
                     className="w-28 rounded-md border border-blue-300 px-3 py-2 text-sm"
-                  />
+                  >
+                    <option value="none">بلا عنوان موثوق</option>
+                    {Array.from({ length: Math.min(selectedSheetInfo?.rows.length || 0, 30) }, (_, index) => (
+                      <option key={index + 1} value={index + 1}>{index + 1}</option>
+                    ))}
+                  </select>
                   <span className="text-xs text-blue-700">
                     اكتشاف تلقائي ضمن أول 20 صفاً غير فارغ. غيّر الرقم لإعادة حساب الأعمدة والربط.
                   </span>
@@ -625,7 +801,7 @@ export default function ImportExportPage() {
 
               <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                 {availableTypes.map(t => (
-                  <button key={t.value} onClick={() => { setSelectedType(t.value); setImportTypeConfirmed(true); setMapping(autoMapColumns(sheets.find(s => s.name === selectedSheet)?.columnNames || [], t.value)); }} className={`flex items-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${importTypeConfirmed && selectedType === t.value ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:bg-gray-50'}`}>
+                  <button key={t.value} onClick={() => selectedSheetInfo && changeImportType(selectedSheetInfo, t.value)} className={`flex items-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${importTypeConfirmed && selectedType === t.value ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 hover:bg-gray-50'}`}>
                     {t.icon} {t.label}
                   </button>
                 ))}
@@ -666,35 +842,81 @@ export default function ImportExportPage() {
               )}
 
               {selectedType === 'students' && (
-                <div className="mb-4 space-y-4 rounded-lg border border-gray-200 p-4">
-                  <div>
-                    <p className="text-sm font-bold text-gray-900 mb-2">تحديد الصف</p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
-                      <button type="button" onClick={() => { setClassAssignmentMode('excel'); if (sectionAssignmentMode === 'override') { setSectionAssignmentMode('excel'); setSelectedSectionId(null); } }} className={`rounded-lg border p-3 text-sm ${classAssignmentMode === 'excel' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>من عمود Excel</button>
-                      <button type="button" onClick={() => setClassAssignmentMode('override')} className={`rounded-lg border p-3 text-sm ${classAssignmentMode === 'override' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>صف واحد لكل الملف</button>
+                <div className="mb-4 space-y-4 rounded-xl border border-blue-200 bg-blue-50/40 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="font-bold text-gray-900">ما فهمه النظام</h3>
+                      <p className="text-xs text-gray-600">
+                        المنطقة المرجحة: الصفوف {(selectedTable?.region.startRow || 0) + 1}–{(selectedTable?.region.endRow || 0) + 1}
+                        {'، '}الأعمدة {selectedTable?.columns[0]?.columnLetter || '—'}–{selectedTable?.columns[selectedTable.columns.length - 1]?.columnLetter || '—'}
+                      </p>
                     </div>
-                    {classAssignmentMode === 'override' && (
-                      <select value={selectedClassId || ''} onChange={event => { setSelectedClassId(event.target.value ? Number(event.target.value) : null); setSelectedSectionId(null); }} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
-                        <option value="">— اختر الصف —</option>
-                        {classes.filter(item => item.status === 'active').map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-                      </select>
-                    )}
+                    <span className={`rounded-full px-3 py-1 text-xs font-bold ${selectedSheetInfo?.analysis.categoryConfidence && selectedSheetInfo.analysis.categoryConfidence >= 0.9 ? 'bg-green-100 text-green-700' : selectedSheetInfo?.analysis.categoryConfidence && selectedSheetInfo.analysis.categoryConfidence >= 0.7 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+                      قائمة طلاب — ثقة {Math.round((selectedSheetInfo?.analysis.categoryConfidence || 0) * 100)}%
+                    </span>
                   </div>
-                  <div>
-                    <p className="text-sm font-bold text-gray-900 mb-2">تحديد الشعبة</p>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
-                      <button type="button" onClick={() => setSectionAssignmentMode('excel')} className={`rounded-lg border p-3 text-sm ${sectionAssignmentMode === 'excel' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>من عمود Excel</button>
-                      <button type="button" disabled={classAssignmentMode !== 'override'} onClick={() => setSectionAssignmentMode('override')} className={`rounded-lg border p-3 text-sm disabled:cursor-not-allowed disabled:opacity-50 ${sectionAssignmentMode === 'override' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>شعبة واحدة لكل الملف</button>
-                      <button type="button" onClick={() => { setSectionAssignmentMode('none'); setSelectedSectionId(null); }} className={`rounded-lg border p-3 text-sm ${sectionAssignmentMode === 'none' ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200'}`}>بلا شعبة</button>
-                    </div>
-                    {sectionAssignmentMode === 'override' && (
-                      <select value={selectedSectionId || ''} onChange={event => setSelectedSectionId(event.target.value ? Number(event.target.value) : null)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
-                        <option value="">— اختر الشعبة —</option>
-                        {sections.filter(item => item.status === 'active' && (!selectedClassId || item.class_id === selectedClassId)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-                      </select>
-                    )}
+
+                  <div className="overflow-auto rounded-lg border border-gray-200 bg-white">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50"><tr><th className="px-3 py-2 text-right">الحقل</th><th className="px-3 py-2 text-right">المصدر القابل للتغيير</th><th className="px-3 py-2 text-right">الثقة</th></tr></thead>
+                      <tbody>
+                        {STUDENT_SEMANTIC_FIELDS.map(field => {
+                          const inference = selectedTable?.fieldInferences.find(item => item.field === field);
+                          const selectedSource = studentSources[field];
+                          const isRecommended = fieldSourceIdentity(selectedSource) === fieldSourceIdentity(inference?.source);
+                          const metadataOptions = (selectedSheetInfo?.analysis.metadata || []).filter(candidate => candidate.field === field);
+                          return (
+                            <tr key={field} className="border-t border-gray-100 align-top">
+                              <td className="px-3 py-3 font-medium text-gray-900">{STUDENT_SEMANTIC_LABELS[field]}{(field === 'full_name' || field === 'class_name') && <span className="text-red-500"> *</span>}</td>
+                              <td className="px-3 py-3">
+                                <select value={fieldSourceIdentity(selectedSource)} onChange={event => changeStudentSource(field, event.target.value)} className="w-full min-w-56 rounded-md border border-gray-300 px-2 py-2 text-sm">
+                                  {field !== 'full_name' && field !== 'class_name' && <option value="ignore">تجاهل</option>}
+                                  {(selectedSheetInfo?.analysis.columns || []).map(column => <option key={column.key} value={column.key}>{column.displayName} — العمود {column.columnLetter}</option>)}
+                                  {(field === 'class_name' || field === 'section_name') && metadataOptions.map((candidate, index) => (
+                                    <option key={`${fieldSourceIdentity(candidate.source)}-${index}`} value={fieldSourceIdentity(candidate.source)}>
+                                      {candidate.source.type === 'metadata-cell' ? `نص أعلى الجدول: ${candidate.originalText}` : candidate.source.type === 'sheet-name' ? `اسم الورقة: ${candidate.originalText}` : `اسم الملف: ${candidate.originalText}`}
+                                    </option>
+                                  ))}
+                                  {(field === 'class_name' || field === 'section_name') && <option value="system-selection">اختيار موجود من النظام</option>}
+                                  {(field === 'class_name' || field === 'section_name') && <option value="constant">قيمة ثابتة يدوية</option>}
+                                </select>
+                                {selectedSource?.type === 'constant' && (field === 'class_name' || field === 'section_name') && (
+                                  <input value={selectedSource.value} onChange={event => changeConstantSource(field, event.target.value)} placeholder="اكتب القيمة التي ستطبق على جميع الصفوف" className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+                                )}
+                                {selectedSource?.type === 'system-selection' && field === 'class_name' && (
+                                  <select value={selectedClassId || ''} onChange={event => { setSelectedClassId(event.target.value ? Number(event.target.value) : null); setSelectedSectionId(null); }} className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                                    <option value="">— اختر الصف —</option>
+                                    {classes.filter(item => item.status === 'active').map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                                  </select>
+                                )}
+                                {selectedSource?.type === 'system-selection' && field === 'section_name' && (
+                                  <select value={selectedSectionId || ''} onChange={event => setSelectedSectionId(event.target.value ? Number(event.target.value) : null)} className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                                    <option value="">— اختر الشعبة —</option>
+                                    {sections.filter(item => item.status === 'active' && (!selectedClassId || item.class_id === selectedClassId)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                                  </select>
+                                )}
+                              </td>
+                              <td className="px-3 py-3">
+                                {isRecommended && inference ? (
+                                  <span className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-bold ${inference.confidence >= 0.9 ? 'bg-green-100 text-green-700' : inference.confidence >= 0.7 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+                                    {inference.confidence >= 0.9 ? 'ثقة عالية' : inference.confidence >= 0.7 ? 'يحتاج مراجعة' : 'غير مؤكد'} ({Math.round(inference.confidence * 100)}%)
+                                  </span>
+                                ) : <span className="text-xs font-medium text-blue-700">اختيار المستخدم</span>}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
-                  <p className="text-xs text-gray-500">لن ينشئ الاستيراد صفوفاً أو شعباً جديدة. أي صف أو شعبة غير موجودة أو من مدرسة أخرى سيُرفض من الخادم.</p>
+
+                  {lowConfidenceInferences.length > 0 && (
+                    <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                      <input type="checkbox" checked={analysisAcknowledged} onChange={event => setAnalysisAcknowledged(event.target.checked)} className="mt-0.5" />
+                      <span>راجعت الحقول غير المؤكدة ({lowConfidenceInferences.map(inference => STUDENT_SEMANTIC_LABELS[inference.field]).join('، ')}) وأوافق على المصادر المختارة.</span>
+                    </label>
+                  )}
+                  <p className="text-xs text-gray-600">الاقتراحات لا تقفل الاختيار. لن ينشئ الاستيراد صفوفاً أو شعباً، وسيعيد الخادم التحقق من المدرسة والصف والشعبة قبل الحفظ.</p>
                 </div>
               )}
 
@@ -707,7 +929,7 @@ export default function ImportExportPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {SYSTEM_FIELDS[selectedType].map(field => (
+                    {SYSTEM_FIELDS[selectedType].filter(field => selectedType !== 'students' || !STUDENT_SEMANTIC_FIELDS.includes(field.key as StudentSemanticField)).map(field => (
                       <tr key={field.key} className="border-t border-gray-100">
                         <td className="px-4 py-2">
                           <span className={field.required ? 'font-bold text-red-600' : 'text-gray-800'}>{field.label}</span>
@@ -720,8 +942,8 @@ export default function ImportExportPage() {
                             className="w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
                           >
                             <option value="">— تجاهل هذا الحقل —</option>
-                            {sheets.find(s => s.name === selectedSheet)?.columnNames.map(col => (
-                              <option key={col} value={col}>{col}</option>
+                            {selectedSheetInfo?.analysis.columns.map(column => (
+                              <option key={column.key} value={column.key}>{column.displayName} — العمود {column.columnLetter}</option>
                             ))}
                           </select>
                           {field.hint && <p className="mt-1 text-xs text-gray-500">{field.hint}</p>}
@@ -752,10 +974,18 @@ export default function ImportExportPage() {
           {step === 'preview' && preview && (
             <div className="bg-white border border-gray-200 rounded-xl p-6">
               <h2 className="text-lg font-bold text-gray-900 mb-4">معاينة البيانات</h2>
+              {selectedSheetInfo && (
+                <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                  الورقة: <strong>{selectedSheetInfo.name}</strong>
+                  {' — '}النوع المتوقع: <strong>{selectedSheetInfo.type === 'students' ? 'قائمة طلاب' : selectedSheetInfo.type === 'grade_sheet' ? 'ورقة مادة/درجات' : selectedSheetInfo.type === 'summary' ? 'ملخص/تقرير' : 'غير معروف'}</strong>
+                  {' — '}الثقة: <strong>{Math.round(selectedSheetInfo.analysis.categoryConfidence * 100)}%</strong>
+                  {' — '}نطاق الجدول: <strong>{(selectedTable?.region.startRow || 0) + 1}–{(selectedTable?.region.endRow || 0) + 1}</strong>
+                </div>
+              )}
               {selectedType === 'students' && preview.valid[0]?.data && (
                 <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
                   الصف: <strong>{preview.valid[0].data.class_name || 'غير محدد'}</strong>
-                  {' — '}الشعبة: <strong>{sectionAssignmentMode === 'none' ? 'بلا شعبة' : (preview.valid[0].data.section_name || 'مشتقة لكل صف')}</strong>
+                  {' — '}الشعبة: <strong>{studentSources.section_name?.type === 'ignore' ? 'بلا شعبة' : (preview.valid[0].data.section_name || 'مشتقة لكل صف')}</strong>
                 </div>
               )}
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
@@ -817,7 +1047,7 @@ export default function ImportExportPage() {
                     <thead className="bg-gray-50 sticky top-0">
                       <tr>
                         <th className="px-4 py-2 text-right">صف Excel</th>
-                        {SYSTEM_FIELDS[selectedType].filter(f => mapping[f.key] || (selectedType === 'students' && ['student_number', 'full_name', 'class_name', 'section_name'].includes(f.key))).map(f => (
+                        {previewFields.map(f => (
                           <th key={f.key} className="px-4 py-2 text-right">{f.label}</th>
                         ))}
                       </tr>
@@ -826,7 +1056,7 @@ export default function ImportExportPage() {
                       {preview.valid.slice(0, 50).map((r, i) => (
                         <tr key={i} className="border-t border-gray-100">
                           <td className="px-4 py-2 text-gray-500">{r.data.excel_row_number || r.row_index}</td>
-                          {SYSTEM_FIELDS[selectedType].filter(f => mapping[f.key] || (selectedType === 'students' && ['student_number', 'full_name', 'class_name', 'section_name'].includes(f.key))).map(f => (
+                          {previewFields.map(f => (
                             <td key={f.key} className="px-4 py-2 text-gray-800">{String(r.data[f.key] ?? '')}</td>
                           ))}
                         </tr>

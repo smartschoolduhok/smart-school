@@ -7227,9 +7227,6 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
       if (sectionAssignmentMode === 'override' && !selected_section_id) {
         return c.json({ error: 'يجب تحديد الشعبة للاستيراد' }, 400);
       }
-      if (sectionAssignmentMode === 'override' && classAssignmentMode !== 'override') {
-        return c.json({ error: 'يتطلب تثبيت الشعبة تثبيت الصف أيضاً' }, 400);
-      }
       if (classAssignmentMode === 'override' || sectionAssignmentMode === 'override') {
         const selectedPlacement = await validateStudentPlacement(
           db,
@@ -7777,7 +7774,6 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
       }
       if (classAssignmentMode === 'override' && !selected_class_id) return c.json({ error: 'يجب تحديد الصف للاستيراد' }, 400);
       if (sectionAssignmentMode === 'override' && !selected_section_id) return c.json({ error: 'يجب تحديد الشعبة للاستيراد' }, 400);
-      if (sectionAssignmentMode === 'override' && classAssignmentMode !== 'override') return c.json({ error: 'يتطلب تثبيت الشعبة تثبيت الصف أيضاً' }, 400);
       if (classAssignmentMode === 'override' || sectionAssignmentMode === 'override') {
         const selectedPlacement = await validateStudentPlacement(
           db,

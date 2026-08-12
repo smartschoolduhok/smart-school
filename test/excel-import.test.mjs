@@ -5,8 +5,10 @@ import test from 'node:test';
 import {
   analyzeWorksheet,
   classifyWorksheet,
+  confidenceLevel,
   detectHeaderRow,
   detectHeaderRowAt,
+  fieldSourceIdentity,
   matchSectionByName,
   normalizeSectionName,
   sheetRowsToRecords,
@@ -38,7 +40,7 @@ test('manual header override recalculates columns and Excel row numbers', () => 
   const rows = [['عنوان'], ['رمز خاص', 'اسم خاص'], ['7', 'طالب تجريبي']];
   const detection = detectHeaderRowAt(rows, 1);
   assert.deepEqual(detection.columnNames, ['رمز خاص', 'اسم خاص']);
-  assert.deepEqual(sheetRowsToRecords(rows, 1), [{ _excel_row_number: 3, 'رمز خاص': '7', 'اسم خاص': 'طالب تجريبي' }]);
+  assert.deepEqual(sheetRowsToRecords(rows, 1), [{ _excel_row_number: 3, 'column:0': '7', 'column:1': 'طالب تجريبي' }]);
 });
 
 test('classifies student, grade, summary, and unknown worksheets using name and content', () => {
@@ -52,6 +54,161 @@ test('analyzes every worksheet without assuming the first row is the header', ()
   const analysis = analyzeWorksheet('Students', [['Student roster'], ['Student Number', 'Student Name', 'Class', 'Section']]);
   assert.equal(analysis.category, 'students');
   assert.equal(analysis.headerRowNumber, 2);
+});
+
+test('detects the real-world student table while preserving a meaningful blank-header column', () => {
+  const rows = [
+    ['اسماء الطلاب', '', 'الصف الاول المتوسط', ''],
+    ['ت', 'اسم الطالب', '', 'القيد'],
+    [1, 'طالب تجريبي 1', 'ا', '5/001'],
+    [2, 'طالب تجريبي 2', 'ب', '5/002'],
+  ];
+  const analysis = analyzeWorksheet('ادخال الاسماء', rows, { fileName: 'طلاب.xlsx' });
+  const table = analysis.tables[0];
+  const inference = Object.fromEntries(table.fieldInferences.map(item => [item.field, item]));
+
+  assert.equal(analysis.category, 'students');
+  assert.equal(analysis.headerRowNumber, 2);
+  assert.deepEqual(table.region, {
+    startRow: 1,
+    endRow: 3,
+    startColumn: 0,
+    endColumn: 3,
+    dataStartRow: 2,
+    rowCount: 2,
+    confidence: 0.88,
+  });
+  assert.equal(table.columns[2].key, 'column:2');
+  assert.equal(table.columns[2].headerText, null);
+  assert.equal(table.columns[2].displayName, 'عمود C (بدون عنوان)');
+  assert.equal(inference.full_name.source.columnIndex, 1);
+  assert.equal(inference.student_number.source.columnIndex, 3);
+  assert.equal(inference.section_name.source.columnIndex, 2);
+  assert.ok(inference.section_name.confidence >= 0.9);
+  assert.equal(inference.class_name.source.type, 'metadata-cell');
+  assert.equal(inference.class_name.source.value, 'الاول المتوسط');
+  assert.ok(inference.student_number.alternatives.find(candidate => candidate.source.type === 'column' && candidate.source.columnIndex === 0).confidence < 0.4);
+});
+
+test('infers student fields from content when no reliable header exists', () => {
+  const analysis = analyzeWorksheet('بيانات', [
+    ['طالب تجريبي 1', '5/001', 'ا'],
+    ['طالب تجريبي 2', '5/002', 'ب'],
+  ]);
+  const inference = Object.fromEntries(analysis.tables[0].fieldInferences.map(item => [item.field, item]));
+  assert.equal(analysis.headerRowIndex, null);
+  assert.equal(analysis.category, 'students');
+  assert.equal(inference.full_name.source.columnIndex, 0);
+  assert.ok(inference.full_name.confidence >= 0.7);
+  assert.equal(inference.student_number.source.columnIndex, 1);
+  assert.ok(inference.student_number.confidence >= 0.6);
+  assert.equal(inference.section_name.source.columnIndex, 2);
+  assert.ok(inference.section_name.confidence >= 0.9);
+});
+
+test('semantic inference follows reordered columns instead of fixed positions', () => {
+  const analysis = analyzeWorksheet('Students', [
+    ['القيد', 'الشعبة', 'الاسم'],
+    ['5/001', 'ا', 'طالب تجريبي 1'],
+    ['5/002', 'ب', 'طالب تجريبي 2'],
+  ]);
+  const inference = Object.fromEntries(analysis.tables[0].fieldInferences.map(item => [item.field, item]));
+  assert.equal(inference.student_number.source.columnIndex, 0);
+  assert.equal(inference.section_name.source.columnIndex, 1);
+  assert.equal(inference.full_name.source.columnIndex, 2);
+});
+
+test('supports English student headers', () => {
+  const analysis = analyzeWorksheet('Students', [
+    ['Student ID', 'Student Name', 'Section'],
+    ['S-101', 'Test Student One', 'A'],
+    ['S-102', 'Test Student Two', 'B'],
+  ]);
+  const inference = Object.fromEntries(analysis.tables[0].fieldInferences.map(item => [item.field, item]));
+  assert.equal(inference.student_number.source.columnIndex, 0);
+  assert.equal(inference.full_name.source.columnIndex, 1);
+  assert.equal(inference.section_name.source.columnIndex, 2);
+});
+
+test('does not hallucinate a section when the sheet has none', () => {
+  const analysis = analyzeWorksheet('Students', [
+    ['اسم الطالب', 'القيد'],
+    ['طالب تجريبي 1', '5/001'],
+    ['طالب تجريبي 2', '5/002'],
+  ]);
+  const section = analysis.tables[0].fieldInferences.find(item => item.field === 'section_name');
+  assert.ok(section.confidence < 0.7);
+});
+
+test('recognizes repeated numeric section categories without treating them as a row sequence', () => {
+  const analysis = analyzeWorksheet('Students', [
+    ['الاسم', ''],
+    ['طالب تجريبي 1', 1],
+    ['طالب تجريبي 2', 1],
+    ['طالب تجريبي 3', 2],
+    ['طالب تجريبي 4', 2],
+  ]);
+  const section = analysis.tables[0].fieldInferences.find(item => item.field === 'section_name');
+  assert.equal(section.source.columnIndex, 1);
+  assert.ok(section.confidence >= 0.7);
+});
+
+test('penalizes row sequences and profiles grade-like numeric columns without importing grades', () => {
+  const analysis = analyzeWorksheet('درجات', [
+    ['الاسم', 'رقم', 'نصف السنة'],
+    ['طالب تجريبي 1', 1, 85],
+    ['طالب تجريبي 2', 2, 90],
+  ]);
+  const table = analysis.tables[0];
+  const number = table.fieldInferences.find(item => item.field === 'student_number');
+  const section = table.fieldInferences.find(item => item.field === 'section_name');
+  assert.equal(analysis.category, 'grade_sheet');
+  assert.equal(table.columns[1].sequentialIntegerRatio, 1);
+  assert.equal(table.columns[2].numericRatio, 1);
+  assert.ok(number.confidence < 0.7);
+  assert.ok(section.confidence < 0.7);
+});
+
+test('stops the dominant table before a separated trailing summary', () => {
+  const analysis = analyzeWorksheet('Students', [
+    ['قائمة الطلاب'],
+    ['القيد', 'اسم الطالب', 'الشعبة'],
+    ['5/001', 'طالب تجريبي 1', 'ا'],
+    ['5/002', 'طالب تجريبي 2', 'ب'],
+    [],
+    ['المجموع', 2],
+  ]);
+  assert.equal(analysis.tables[0].region.startRow, 1);
+  assert.equal(analysis.tables[0].region.endRow, 3);
+  assert.equal(analysis.tables[0].region.rowCount, 2);
+});
+
+test('uses explicit confidence bands', () => {
+  assert.equal(confidenceLevel(0.9), 'high');
+  assert.equal(confidenceLevel(0.7), 'medium');
+  assert.equal(confidenceLevel(0.699), 'low');
+});
+
+test('field sources have stable serializable identities for user overrides and future profiles', () => {
+  const sources = [
+    { type: 'column', columnIndex: 2, columnKey: 'column:2' },
+    { type: 'metadata-cell', row: 0, column: 2, value: 'الاول المتوسط' },
+    { type: 'sheet-name', value: 'الاول المتوسط' },
+    { type: 'file-name', value: 'طلاب الاول' },
+    { type: 'constant', value: 'الاول المتوسط' },
+    { type: 'system-selection', id: 7 },
+    { type: 'ignore' },
+  ];
+  assert.deepEqual(sources.map(fieldSourceIdentity), [
+    'column:2',
+    'metadata:0:2',
+    'sheet-name',
+    'file-name',
+    'constant',
+    'system-selection',
+    'ignore',
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(sources)), sources);
 });
 
 test('normalizes common Arabic and Latin section spellings', () => {
