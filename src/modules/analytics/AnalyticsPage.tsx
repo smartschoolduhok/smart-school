@@ -14,7 +14,8 @@ import {
   ShieldAlert,
   UserCircle,
 } from 'lucide-react';
-import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getAnalyticsOverview,
   getAnalyticsByClass,
@@ -24,7 +25,6 @@ import {
   getStudentsCloseToExemption,
   getExemptionBlockers,
   getStudentSummary,
-  getSchools,
   getClasses,
   getSections,
   getSubjects,
@@ -105,8 +105,8 @@ function statusIcon(status: string | null): string {
 
 // ---- Component ----
 export default function AnalyticsPage() {
-  const { user } = useAuth();
-  const isAdmin = user?.role_key === 'system_admin';
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
 
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [filters, setFilters] = useState<FilterState>({
@@ -118,7 +118,6 @@ export default function AnalyticsPage() {
   });
 
   // Dropdown data
-  const [schools, setSchools] = useState<any[]>([]);
   const [classes, setClasses] = useState<any[]>([]);
   const [sections, setSections] = useState<any[]>([]);
   const [subjects, setSubjects] = useState<any[]>([]);
@@ -140,32 +139,34 @@ export default function AnalyticsPage() {
   // Load filter dropdowns
   useEffect(() => {
     async function loadDropdowns() {
-      const [schRes, clsRes, secRes, subRes, stuRes] = await Promise.all([
-        getSchools(),
-        getClasses(isAdmin ? null : user?.school_id),
-        getSections(isAdmin ? null : user?.school_id),
-        getSubjects(isAdmin ? null : user?.school_id),
-        getStudents(isAdmin ? null : user?.school_id),
+      if (schoolId == null) {
+        setClasses([]); setSections([]); setSubjects([]); setStudents([]);
+        return;
+      }
+      const [clsRes, secRes, subRes, stuRes] = await Promise.all([
+        getClasses(schoolId),
+        getSections(schoolId),
+        getSubjects(schoolId),
+        getStudents(schoolId),
       ]);
-      setSchools(schRes.data || []);
       setClasses(clsRes.data || []);
       setSections(secRes.data || []);
       setSubjects(subRes.data || []);
       setStudents(stuRes.data || []);
     }
+    setFilters({ schoolId: '', classId: '', sectionId: '', subjectId: '', studentId: '' });
     loadDropdowns();
-  }, [isAdmin, user?.school_id]);
+  }, [schoolId]);
 
   // Build query params from filters
   const buildQueryParams = useCallback(() => {
     const params: Record<string, number | null> = {};
-    if (isAdmin && filters.schoolId) params.school_id = Number(filters.schoolId);
-    if (!isAdmin && user?.school_id) params.school_id = user.school_id;
+    if (schoolId != null) params.school_id = schoolId;
     if (filters.classId) params.class_id = Number(filters.classId);
     if (filters.sectionId) params.section_id = Number(filters.sectionId);
     if (filters.subjectId) params.subject_id = Number(filters.subjectId);
     return params;
-  }, [filters, isAdmin, user?.school_id]);
+  }, [filters, schoolId]);
 
   // Fetch data when tab or filters change
   useEffect(() => {
@@ -173,6 +174,10 @@ export default function AnalyticsPage() {
     let cancelled = false;
 
     async function fetchData() {
+      if (schoolId == null) {
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       setError(null);
       try {
@@ -297,17 +302,11 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      <SystemAdminSchoolSelector {...schoolScope} />
+
       {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-200 p-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {isAdmin && (
-            <FilterSelect
-              label="المدرسة"
-              value={filters.schoolId}
-              onChange={(v) => setFilters((f) => ({ ...f, schoolId: v }))}
-              options={schools}
-            />
-          )}
           <FilterSelect
             label="الصف"
             value={filters.classId}

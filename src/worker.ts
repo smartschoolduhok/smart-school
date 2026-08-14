@@ -54,6 +54,7 @@ import {
   type LoginThrottleRecord,
 } from './lib/apiSecurity'
 import { normalizeSectionName } from './lib/excelImport'
+import { resolveRequiredWriteSchoolId } from './lib/tenantSchool'
 import {
   buildGeneratedStudentNumber,
   findStudentDuplicate,
@@ -273,6 +274,42 @@ function resolveSchoolScope(user: UserContext | null, querySchoolId: string | nu
   }
 
   return { schoolId: user.school_id, scope: 'single', forbidden: false };
+}
+
+type WriteSchoolResolution =
+  | { ok: true; schoolId: number }
+  | { ok: false; status: 400 | 403; error: string };
+
+async function resolveActiveWriteSchool(
+  db: D1Database,
+  user: UserContext | null,
+  requestedSchoolId: unknown,
+): Promise<WriteSchoolResolution> {
+  if (!user) {
+    return { ok: false, status: 403, error: 'غير مسموح: المستخدم غير مرتبط بسياق صالح' };
+  }
+
+  const numericSchoolId = Number(requestedSchoolId);
+  const requested = Number.isInteger(numericSchoolId) && numericSchoolId > 0 ? numericSchoolId : null;
+  const resolved = resolveRequiredWriteSchoolId(user.role_key, user.school_id, requested);
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      status: resolved.status,
+      error: resolved.status === 400
+        ? 'يجب تحديد مدرسة مستهدفة صالحة'
+        : 'غير مسموح: المدرسة المستهدفة لا تطابق مدرسة المستخدم',
+    };
+  }
+
+  const school = await db.prepare('SELECT id, status FROM schools WHERE id = ?')
+    .bind(resolved.schoolId)
+    .first<{ id: number; status: string }>();
+  if (!school || school.status !== 'active') {
+    return { ok: false, status: 400, error: 'المدرسة المستهدفة غير موجودة أو غير نشطة' };
+  }
+
+  return { ok: true, schoolId: resolved.schoolId };
 }
 
 function requireAuthEnforced() {
@@ -1203,22 +1240,15 @@ app.get('/api/classes', requireSameSchoolOrAdmin(), async (c) => {
 app.post('/api/classes', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
-  const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
-  const scope: 'all' | 'single' = c.get('scope')
   try {
     const body = await c.req.json()
-    let { school_id, name, stage, order_index } = body
+    const { name, stage, order_index } = body
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    const school_id = targetSchool.schoolId
 
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId
-    }
-
-    if (!school_id || !name || !stage) {
+    if (!name || !stage) {
       return c.json({ error: 'المدرسة والاسم والمرحلة مطلوبة' }, 400)
-    }
-
-    if (user && user.role_key !== 'system_admin' && school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح: لا يمكنك إنشاء صف في مدرسة أخرى' }, 403)
     }
 
     const result = await db.prepare(`
@@ -1238,17 +1268,19 @@ app.put('/api/classes/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MA
   try {
     const body = await c.req.json()
     const { name, stage, order_index, status } = body
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
     const existing = await db.prepare(`SELECT school_id FROM classes WHERE id = ?`).bind(id).first<{ school_id: number }>()
     if (!existing) return c.json({ error: 'الصف غير موجود' }, 404)
-    if (user && user.role_key !== 'system_admin' && existing.school_id !== user.school_id) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل صف في مدرسة أخرى' }, 403)
     }
 
     await db.prepare(`
       UPDATE classes SET name = ?, stage = ?, order_index = ?, status = ?, updated_at = unixepoch()
       WHERE id = ? AND school_id = ?
-    `).bind(name, stage, order_index || 0, status || 'active', id, existing.school_id).run()
+    `).bind(name, stage, order_index || 0, status || 'active', id, targetSchool.schoolId).run()
     return c.json({ data: { id, name, stage, order_index, status } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الصف', detail: err.message }, 500)
@@ -1260,9 +1292,12 @@ app.put('/api/classes/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACA
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
   try {
+    const body = await c.req.json().catch(() => ({}))
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
     const existing = await db.prepare(`SELECT school_id FROM classes WHERE id = ?`).bind(id).first<{ school_id: number }>()
     if (!existing) return c.json({ error: 'الصف غير موجود' }, 404)
-    if (user && user.role_key !== 'system_admin' && existing.school_id !== user.school_id) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة صف في مدرسة أخرى' }, 403)
     }
 
@@ -1270,7 +1305,7 @@ app.put('/api/classes/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACA
     if (students && students.count > 0) {
       return c.json({ error: 'لا يمكن أرشفة الصف لأنه يحتوي على طلاب نشطين', detail: `عدد الطلاب: ${students.count}` }, 400)
     }
-    await db.prepare(`UPDATE classes SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, existing.school_id).run()
+    await db.prepare(`UPDATE classes SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الصف', detail: err.message }, 500)
@@ -1310,22 +1345,15 @@ app.get('/api/sections', requireSameSchoolOrAdmin(), async (c) => {
 app.post('/api/sections', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
-  const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
-  const scope: 'all' | 'single' = c.get('scope')
   try {
     const body = await c.req.json()
-    let { school_id, class_id, name, capacity } = body
+    let { class_id, name, capacity } = body
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    let school_id = targetSchool.schoolId
 
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId
-    }
-
-    if (!school_id || !class_id || !name) {
+    if (!class_id || !name) {
       return c.json({ error: 'المدرسة والصف والاسم مطلوبة' }, 400)
-    }
-
-    if (user && user.role_key !== 'system_admin' && school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح: لا يمكنك إنشاء شعبة في مدرسة أخرى' }, 403)
     }
 
     school_id = Number(school_id)
@@ -1352,15 +1380,17 @@ app.put('/api/sections/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
   try {
     const body = await c.req.json()
     const { class_id, name, capacity, status } = body
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
     const existing = await db.prepare(`SELECT school_id, class_id FROM sections WHERE id = ?`).bind(id).first<{ school_id: number; class_id: number }>()
     if (!existing) return c.json({ error: 'الشعبة غير موجودة' }, 404)
-    if (user && user.role_key !== 'system_admin' && existing.school_id !== user.school_id) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل شعبة في مدرسة أخرى' }, 403)
     }
 
     const nextClassId = Number(class_id)
-    const placement = await validateStudentPlacement(db, existing.school_id, nextClassId, null)
+    const placement = await validateStudentPlacement(db, targetSchool.schoolId, nextClassId, null)
     if (!placement.ok) {
       return c.json({ error: placement.error }, placement.status)
     }
@@ -1368,7 +1398,7 @@ app.put('/api/sections/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     await db.prepare(`
       UPDATE sections SET class_id = ?, name = ?, capacity = ?, status = ?, updated_at = unixepoch()
       WHERE id = ? AND school_id = ?
-    `).bind(nextClassId, name, capacity || 30, status || 'active', id, existing.school_id).run()
+    `).bind(nextClassId, name, capacity || 30, status || 'active', id, targetSchool.schoolId).run()
     return c.json({ data: { id, class_id, name, capacity, status } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الشعبة', detail: err.message }, 500)
@@ -1380,9 +1410,12 @@ app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
   try {
+    const body = await c.req.json().catch(() => ({}))
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
     const existing = await db.prepare(`SELECT school_id FROM sections WHERE id = ?`).bind(id).first<{ school_id: number }>()
     if (!existing) return c.json({ error: 'الشعبة غير موجودة' }, 404)
-    if (user && user.role_key !== 'system_admin' && existing.school_id !== user.school_id) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة شعبة في مدرسة أخرى' }, 403)
     }
 
@@ -1390,7 +1423,7 @@ app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
     if (students && students.count > 0) {
       return c.json({ error: 'لا يمكن أرشفة الشعبة لأنها تحتوي على طلاب نشطين', detail: `عدد الطلاب: ${students.count}` }, 400)
     }
-    await db.prepare(`UPDATE sections SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, existing.school_id).run()
+    await db.prepare(`UPDATE sections SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الشعبة', detail: err.message }, 500)
@@ -1468,19 +1501,14 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       address, class_id, section_id, photo_url, notes
     } = body
 
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId
-    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    school_id = targetSchool.schoolId
 
     if (!school_id || !student_number || !full_name || !gender) {
       return c.json({ error: 'المدرسة ورقم الطالب والاسم والجنس مطلوبة' }, 400)
     }
 
-    if (user && user.role_key !== 'system_admin' && school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح: لا يمكنك إنشاء طالب في مدرسة أخرى' }, 403)
-    }
-
-    school_id = Number(school_id)
     class_id = class_id == null || class_id === '' ? null : Number(class_id)
     section_id = section_id == null || section_id === '' ? null : Number(section_id)
     const placement = await validateStudentPlacement(db, school_id, class_id, section_id)
@@ -1512,6 +1540,8 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
   const id = c.req.param('id')
   try {
     const body = await c.req.json()
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
     const existing = await db.prepare(`SELECT * FROM students WHERE id = ?`).bind(id).first<{
       school_id: number; student_number: string; full_name: string; father_name: string | null; mother_name: string | null;
@@ -1519,7 +1549,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       address: string | null; class_id: number | null; section_id: number | null; photo_url: string | null; notes: string | null; status: string;
     }>()
     if (!existing) return c.json({ error: 'الطالب غير موجود' }, 404)
-    if (user && user.role_key !== 'system_admin' && existing.school_id !== user.school_id) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل طالب في مدرسة أخرى' }, 403)
     }
 
@@ -1543,7 +1573,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     const notes = body.notes !== undefined ? body.notes : existing.notes
     const status = body.status ?? existing.status
 
-    const placement = await validateStudentPlacement(db, existing.school_id, class_id, section_id)
+    const placement = await validateStudentPlacement(db, targetSchool.schoolId, class_id, section_id)
     if (!placement.ok) {
       return c.json({ error: placement.error }, placement.status)
     }
@@ -1558,7 +1588,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     `).bind(
       student_number, full_name, father_name, mother_name,
       gender, birth_date, phone, guardian_name, guardian_phone,
-      address, class_id, section_id, photo_url, notes, status, id, existing.school_id
+      address, class_id, section_id, photo_url, notes, status, id, targetSchool.schoolId
     ).run()
     return c.json({ data: { id, student_number, full_name, status } })
   } catch (err: any) {
@@ -1571,13 +1601,16 @@ app.put('/api/students/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
   try {
+    const body = await c.req.json().catch(() => ({}))
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
     const existing = await db.prepare(`SELECT school_id FROM students WHERE id = ?`).bind(id).first<{ school_id: number }>()
     if (!existing) return c.json({ error: 'الطالب غير موجود' }, 404)
-    if (user && user.role_key !== 'system_admin' && existing.school_id !== user.school_id) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة طالب في مدرسة أخرى' }, 403)
     }
 
-    await db.prepare(`UPDATE students SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, existing.school_id).run()
+    await db.prepare(`UPDATE students SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الطالب', detail: err.message }, 500)
@@ -1629,19 +1662,14 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       passing_grade, exemption_grade, order_index
     } = body
 
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId
-    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    school_id = targetSchool.schoolId
 
     if (!school_id || !class_id || !name) {
       return c.json({ error: 'المدرسة والصف واسم المادة مطلوبة' }, 400)
     }
 
-    if (user && user.role_key !== 'system_admin' && school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح: لا يمكنك إنشاء مادة في مدرسة أخرى' }, 403)
-    }
-
-    school_id = Number(school_id)
     class_id = Number(class_id)
     section_id = section_id == null || section_id === '' ? null : Number(section_id)
     const placement = await validateStudentPlacement(db, school_id, class_id, section_id)
@@ -1674,6 +1702,8 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
   const id = c.req.param('id')
   try {
     const body = await c.req.json()
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
     const {
       class_id, section_id, name, subject_type,
       counts_in_average, appears_in_report_card,
@@ -1682,7 +1712,7 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
 
     const existing = await db.prepare(`SELECT school_id, class_id FROM subjects WHERE id = ?`).bind(id).first<{ school_id: number; class_id: number }>()
     if (!existing) return c.json({ error: 'المادة غير موجودة' }, 404)
-    if (user && user.role_key !== 'system_admin' && existing.school_id !== user.school_id) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل مادة في مدرسة أخرى' }, 403)
     }
 
@@ -1690,7 +1720,7 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     const nextSectionId = section_id == null || section_id === '' ? null : Number(section_id)
     const placement = await validateStudentPlacement(
       db,
-      existing.school_id,
+      targetSchool.schoolId,
       nextClassId,
       nextSectionId,
     )
@@ -1709,7 +1739,7 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       nextClassId, nextSectionId, name, subject_type || 'أساسية',
       counts_in_average !== undefined ? (counts_in_average ? 1 : 0) : 1,
       appears_in_report_card !== undefined ? (appears_in_report_card ? 1 : 0) : 1,
-      passing_grade || 50, exemption_grade || 25, order_index || 0, status || 'active', id, existing.school_id
+      passing_grade || 50, exemption_grade || 25, order_index || 0, status || 'active', id, targetSchool.schoolId
     ).run()
     return c.json({ data: { id, name, status: status || 'active' } })
   } catch (err: any) {
@@ -1722,13 +1752,16 @@ app.put('/api/subjects/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
   const user: UserContext | null = c.get('user') || null
   const id = c.req.param('id')
   try {
+    const body = await c.req.json().catch(() => ({}))
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
     const existing = await db.prepare(`SELECT school_id FROM subjects WHERE id = ?`).bind(id).first<{ school_id: number }>()
     if (!existing) return c.json({ error: 'المادة غير موجودة' }, 404)
-    if (user && user.role_key !== 'system_admin' && existing.school_id !== user.school_id) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة مادة في مدرسة أخرى' }, 403)
     }
 
-    await db.prepare(`UPDATE subjects SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, existing.school_id).run()
+    await db.prepare(`UPDATE subjects SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة المادة', detail: err.message }, 500)
@@ -1885,12 +1918,14 @@ app.post('/api/student-subjects/assign-class', requireSameSchoolOrAdmin(), requi
   try {
     const body = await c.req.json();
     const { class_id, subject_ids } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     if (!class_id) return c.json({ error: 'يجب اختيار الصف' }, 400);
     if (!Array.isArray(subject_ids) || subject_ids.length === 0) return c.json({ error: 'يجب اختيار مادة واحدة على الأقل' }, 400);
 
     const cls = await db.prepare('SELECT school_id FROM classes WHERE id = ?').bind(class_id).first<{ school_id: number }>();
     if (!cls) return c.json({ error: 'الصف غير موجود' }, 404);
-    if (user && user.role_key !== 'system_admin' && cls.school_id !== user.school_id) {
+    if (cls.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الصف لا ينتمي إلى مدرستك' }, 403);
     }
 
@@ -1935,12 +1970,14 @@ app.post('/api/student-subjects/assign-section', requireSameSchoolOrAdmin(), req
   try {
     const body = await c.req.json();
     const { section_id, subject_ids } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     if (!section_id) return c.json({ error: 'يجب اختيار الشعبة' }, 400);
     if (!Array.isArray(subject_ids) || subject_ids.length === 0) return c.json({ error: 'يجب اختيار مادة واحدة على الأقل' }, 400);
 
     const sec = await db.prepare('SELECT school_id, class_id FROM sections WHERE id = ?').bind(section_id).first<{ school_id: number; class_id: number }>();
     if (!sec) return c.json({ error: 'الشعبة غير موجودة' }, 404);
-    if (user && user.role_key !== 'system_admin' && sec.school_id !== user.school_id) {
+    if (sec.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الشعبة لا تنتمي إلى مدرستك' }, 403);
     }
 
@@ -1987,6 +2024,8 @@ app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), re
   try {
     const body = await c.req.json();
     const { student_ids, subject_ids } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     if (!Array.isArray(student_ids) || student_ids.length === 0) return c.json({ error: 'يجب اختيار طالب واحد على الأقل' }, 400);
     if (!Array.isArray(subject_ids) || subject_ids.length === 0) return c.json({ error: 'يجب اختيار مادة واحدة على الأقل' }, 400);
 
@@ -1998,7 +2037,7 @@ app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), re
       const studentMeta = await db.prepare('SELECT school_id FROM students WHERE id = ?').bind(Number(sid)).first<{ school_id: number }>();
       if (!studentMeta) { skipped.push(Number(sid)); continue; }
       const school_id = studentMeta.school_id;
-      if (user && user.role_key !== 'system_admin' && school_id !== user.school_id) {
+      if (school_id !== targetSchool.schoolId) {
         return c.json({ error: 'غير مسموح: أحد الطلاب لا ينتمي إلى مدرستك' }, 403);
       }
       for (const suId of subject_ids) {
@@ -2031,10 +2070,15 @@ app.post('/api/student-subjects/assign-one', requireSameSchoolOrAdmin(), require
   try {
     const body = await c.req.json();
     const { student_id, subject_id } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     if (!student_id || !subject_id) return c.json({ error: 'الطالب والمادة مطلوبان' }, 400);
     const check = await verifyStudentSubjectSchool(db, user, Number(student_id), Number(subject_id));
     if (!check.ok) return c.json({ error: check.error }, (check.status || 400) as any);
     const school_id = check.school_id!;
+    if (school_id !== targetSchool.schoolId) {
+      return c.json({ error: 'غير مسموح: الطالب أو المادة لا ينتمي إلى المدرسة المستهدفة' }, 403);
+    }
 
     // Validate class/section match for the subject
     const st = await getStudentClassSection(db, Number(student_id));
@@ -2065,9 +2109,12 @@ app.put('/api/student-subjects/:id/reactivate', requireSameSchoolOrAdmin(), requ
   const user: UserContext | null = c.get('user') || null;
   const id = Number(c.req.param('id'));
   try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const row = await db.prepare('SELECT school_id, student_id, subject_id, is_active FROM student_subjects WHERE id = ?').bind(id).first<{ school_id: number; student_id: number; subject_id: number; is_active: number }>();
     if (!row) return c.json({ error: 'التعيين غير موجود' }, 404);
-    if (user && user.role_key !== 'system_admin' && row.school_id !== user.school_id) {
+    if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل تعيين في مدرسة أخرى' }, 403);
     }
     if (row.is_active === 1) return c.json({ error: 'التعيين مفعّل مسبقًا' }, 400);
@@ -2078,7 +2125,7 @@ app.put('/api/student-subjects/:id/reactivate', requireSameSchoolOrAdmin(), requ
       return c.json({ error: 'لا يمكن إعادة التفعيل: يوجد تعيين نشط آخر للطالب في نفس المادة' }, 409);
     }
 
-    await db.prepare(`UPDATE student_subjects SET is_active = 1, removed_at = NULL, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
+    await db.prepare(`UPDATE student_subjects SET is_active = 1, removed_at = NULL, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, is_active: 1, message: 'تم إعادة تفعيل التعيين بنجاح' } });
   } catch (err: any) {
     return c.json({ error: 'فشل في إعادة تفعيل التعيين', detail: err.message }, 500);
@@ -2091,12 +2138,15 @@ app.put('/api/student-subjects/:id/deactivate', requireSameSchoolOrAdmin(), requ
   const user: UserContext | null = c.get('user') || null;
   const id = Number(c.req.param('id'));
   try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const row = await db.prepare('SELECT school_id FROM student_subjects WHERE id = ?').bind(id).first<{ school_id: number }>();
     if (!row) return c.json({ error: 'التعيين غير موجود' }, 404);
-    if (user && user.role_key !== 'system_admin' && row.school_id !== user.school_id) {
+    if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل تعيين في مدرسة أخرى' }, 403);
     }
-    await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
+    await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, is_active: 0 } });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء التعيين', detail: err.message }, 500);
@@ -2109,14 +2159,18 @@ app.post('/api/student-subjects/bulk-deactivate', requireSameSchoolOrAdmin(), re
   const user: UserContext | null = c.get('user') || null;
   try {
     const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const ids: number[] = body.ids || [];
     if (!Array.isArray(ids) || ids.length === 0) return c.json({ error: 'يجب اختيار تعيين واحد على الأقل' }, 400);
     let affected = 0;
     for (const id of ids) {
       const row = await db.prepare('SELECT school_id FROM student_subjects WHERE id = ?').bind(id).first<{ school_id: number }>();
       if (!row) continue;
-      if (user && user.role_key !== 'system_admin' && row.school_id !== user.school_id) continue;
-      await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
+      if (row.school_id !== targetSchool.schoolId) {
+        return c.json({ error: 'غير مسموح: أحد التعيينات لا ينتمي إلى المدرسة المستهدفة' }, 403);
+      }
+      await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
       affected++;
     }
     return c.json({ data: { affected } });
@@ -2291,19 +2345,9 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
       first_term_formula, second_term_formula, annual_effort_formula,
       final_grade_formula, completion_formula, effective_formula } = body;
 
-    const scope = c.get('scope');
-    const resolvedSchoolId = c.get('resolvedSchoolId');
-
-    // Non-admin users: school_id is derived from JWT. Reject body school_id that doesn't match.
-    if (scope === 'single' && resolvedSchoolId) {
-      if (school_id && Number(school_id) !== resolvedSchoolId) {
-        return c.json({ error: 'غير مسموح: لا يمكنك تعديل إعدادات مدرسة أخرى' }, 403);
-      }
-    }
-
-    // Admin without query/body school_id must provide one
-    const targetSchoolId = scope === 'single' ? resolvedSchoolId : (school_id || resolvedSchoolId);
-    if (!targetSchoolId) return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    const targetSchoolId = targetSchool.schoolId;
 
     // Check existing
     const existing = await db.prepare('SELECT id FROM grade_settings WHERE school_id = ?').bind(targetSchoolId).first<{ id: number }>();
@@ -2525,10 +2569,13 @@ app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(
   const user: UserContext | null = c.get('user') || null;
   const studentId = Number(c.req.param('student_id'));
   try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const student = await db.prepare('SELECT school_id FROM students WHERE id = ?').bind(studentId).first<{ school_id: number }>();
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
 
-    if (user && user.role_key !== 'system_admin' && student.school_id !== user.school_id) {
+    if (student.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
 
@@ -2566,13 +2613,15 @@ app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRo
   try {
     const body = await c.req.json();
     const { section_id, subject_ids } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     if (!section_id) return c.json({ error: 'معرف الشعبة مطلوب' }, 400);
     if (!Array.isArray(subject_ids) || subject_ids.length === 0) return c.json({ error: 'يجب اختيار مادة واحدة على الأقل' }, 400);
 
     const section = await db.prepare('SELECT school_id, class_id FROM sections WHERE id = ?').bind(Number(section_id)).first<{ school_id: number; class_id: number }>();
     if (!section) return c.json({ error: 'الشعبة غير موجودة' }, 404);
 
-    if (user && user.role_key !== 'system_admin' && section.school_id !== user.school_id) {
+    if (section.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
 
@@ -2614,6 +2663,9 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
   const user: UserContext | null = c.get('user') || null;
   const gradeId = Number(c.req.param('id'));
   try {
+    const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const gradeRow = await db.prepare(`
       SELECT g.*, ss.is_active as ss_active, s.status as subject_status
       FROM grades g
@@ -2627,12 +2679,11 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
       return c.json({ error: 'المادة غير مفعلة أو غير مسندة للطالب' }, 403);
     }
 
-    if (user && user.role_key !== 'system_admin' && gradeRow.school_id !== user.school_id) {
+    if (gradeRow.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
 
     const settings = await getGradeSettings(db, gradeRow.school_id);
-    const body = await c.req.json();
     const { first_month, second_month, third_month, fourth_month,
       mid_year_exam, final_exam, completion_exam, notes, change_reason } = body;
 
@@ -2736,6 +2787,8 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
   try {
     const body = await c.req.json();
     const { entries } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     if (!Array.isArray(entries) || entries.length === 0) return c.json({ error: 'يجب إرسال مدخلات واحدة على الأقل' }, 400);
 
     let updated = 0;
@@ -2749,7 +2802,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       const gradeRow = await db.prepare('SELECT * FROM grades WHERE id = ?').bind(Number(grade_id)).first<any>();
       if (!gradeRow) { errors.push(`الدرجة ${grade_id} غير موجودة`); continue; }
 
-      if (user && user.role_key !== 'system_admin' && gradeRow.school_id !== user.school_id) {
+      if (gradeRow.school_id !== targetSchool.schoolId) {
         errors.push(`غير مسموح بالدرجة ${grade_id}`); continue;
       }
 
@@ -3830,15 +3883,14 @@ app.post(
     }
 
     try {
+      const body = await c.req.json().catch(() => ({}));
+      const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+      if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
       const student = await loadResultCardStudent(db, studentId);
       if (!student) {
         return c.json({ error: 'الطالب غير موجود أو غير فعال' }, 404);
       }
-      if (
-        scope === 'single' &&
-        resolvedSchoolId &&
-        student.school_id !== resolvedSchoolId
-      ) {
+      if (student.school_id !== targetSchool.schoolId) {
         return c.json(
           { error: 'غير مسموح: لا يمكنك إنشاء كارت لطالب من مدرسة أخرى' },
           403,
@@ -3894,6 +3946,8 @@ app.post(
     }
 
     try {
+      const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+      if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
       const section = await db.prepare(`
         SELECT id, school_id, class_id, status
         FROM sections
@@ -3905,11 +3959,7 @@ app.post(
       if (section.class_id !== classId) {
         return c.json({ error: 'الشعبة لا تتبع الصف المحدد' }, 400);
       }
-      if (
-        scope === 'single' &&
-        resolvedSchoolId &&
-        section.school_id !== resolvedSchoolId
-      ) {
+      if (section.school_id !== targetSchool.schoolId) {
         return c.json(
           { error: 'غير مسموح: لا يمكنك إنشاء كارتات لشعبة من مدرسة أخرى' },
           403,
@@ -4030,15 +4080,18 @@ app.put(
   const id = parseInt(c.req.param('id'), 10);
 
   try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const row = await db.prepare(`SELECT school_id, status FROM result_cards WHERE id = ?`).bind(id).first<any>();
     if (!row) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
-    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+    if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
     if (row.status !== 'active') {
       return c.json({ error: 'لا يمكن تعليم كارت غير فعال كمطبوع' }, 400);
     }
-    await db.prepare(`UPDATE result_cards SET printed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
+    await db.prepare(`UPDATE result_cards SET printed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, printed_at: Math.floor(Date.now() / 1000) }, message: 'تم تعليم الكارت كمطبوع' });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الكارت', detail: err.message }, 500);
@@ -4060,12 +4113,15 @@ app.put(
   const id = parseInt(c.req.param('id'), 10);
 
   try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const row = await db.prepare(`SELECT school_id, status FROM result_cards WHERE id = ?`).bind(id).first<any>();
     if (!row) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
-    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+    if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
-    await db.prepare(`UPDATE result_cards SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, row.school_id).run();
+    await db.prepare(`UPDATE result_cards SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, status: 'cancelled' }, message: 'تم إلغاء الكارت' });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء الكارت', detail: err.message }, 500);
@@ -4238,17 +4294,12 @@ app.post('/api/student-fees', requireSameSchoolOrAdmin(), async (c) => {
   try {
     const body = await c.req.json();
     let { school_id, student_id, academic_year_id, fee_type, amount, currency, due_date, notes } = body;
-
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId;
-    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    school_id = targetSchool.schoolId;
 
     if (!school_id || !student_id || !amount) {
       return c.json({ error: 'المدرسة والطالب والمبلغ مطلوبة' }, 400);
-    }
-
-    if (user && user.role_key !== 'system_admin' && school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح: لا يمكنك إنشاء قسط في مدرسة أخرى' }, 403);
     }
 
     const student = await db.prepare('SELECT school_id, status FROM students WHERE id = ?').bind(student_id).first<{ school_id: number; status: string }>();
@@ -4304,13 +4355,15 @@ app.put('/api/student-fees/:id', requireSameSchoolOrAdmin(), async (c) => {
   }
 
   try {
+    const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const existing = await db.prepare('SELECT * FROM student_fees WHERE id = ?').bind(id).first<any>();
     if (!existing) return c.json({ error: 'القسط غير موجود' }, 404);
-    if (scope === 'single' && resolvedSchoolId && existing.school_id !== resolvedSchoolId) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
 
-    const body = await c.req.json();
     const fee_type = body.fee_type !== undefined ? body.fee_type : existing.fee_type;
     const amount = body.amount !== undefined ? parseFloat(body.amount) : existing.amount;
     const currency = body.currency !== undefined ? body.currency : existing.currency;
@@ -4331,8 +4384,8 @@ app.put('/api/student-fees/:id', requireSameSchoolOrAdmin(), async (c) => {
     }
 
     await db.prepare(`
-      UPDATE student_fees SET fee_type = ?, amount = ?, currency = ?, due_date = ?, notes = ?, discount_type = ?, discount_value = ?, discount_amount = ?, net_fee = ?, updated_at = unixepoch() WHERE id = ?
-    `).bind(fee_type, amount, currency, due_date, notes, discount_type, discount_value, discount_amount, net_fee, id).run();
+      UPDATE student_fees SET fee_type = ?, amount = ?, currency = ?, due_date = ?, notes = ?, discount_type = ?, discount_value = ?, discount_amount = ?, net_fee = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?
+    `).bind(fee_type, amount, currency, due_date, notes, discount_type, discount_value, discount_amount, net_fee, id, targetSchool.schoolId).run();
 
     return c.json({ data: { id, fee_type, amount, currency, due_date, notes, discount_type, discount_value, discount_amount, net_fee }, message: 'تم تحديث القسط' });
   } catch (err: any) {
@@ -4354,9 +4407,12 @@ app.delete('/api/student-fees/:id', requireSameSchoolOrAdmin(), async (c) => {
   }
 
   try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const existing = await db.prepare('SELECT school_id, paid_amount FROM student_fees WHERE id = ?').bind(id).first<{ school_id: number; paid_amount: number }>();
     if (!existing) return c.json({ error: 'القسط غير موجود' }, 404);
-    if (scope === 'single' && resolvedSchoolId && existing.school_id !== resolvedSchoolId) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
     if (existing.paid_amount > 0) {
@@ -4369,7 +4425,7 @@ app.delete('/api/student-fees/:id', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'لا يمكن حذف قسط له مدفوعات مسجلة. استخدم إلغاء القسط بدلاً من الحذف.' }, 400);
     }
 
-    await db.prepare('DELETE FROM student_fees WHERE id = ?').bind(id).run();
+    await db.prepare('DELETE FROM student_fees WHERE id = ? AND school_id = ?').bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id }, message: 'تم حذف القسط' });
   } catch (err: any) {
     return c.json({ error: 'فشل في حذف القسط', detail: err.message }, 500);
@@ -4424,6 +4480,8 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
   try {
     const body = await c.req.json();
     const { student_fee_id, amount, payment_method, payment_date, notes } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
 
     if (!student_fee_id || !amount || !payment_date) {
       return c.json({ error: 'معرف القسط والمبلغ وتاريخ الدفع مطلوبة' }, 400);
@@ -4436,7 +4494,7 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
     const fee = await db.prepare('SELECT * FROM student_fees WHERE id = ?').bind(student_fee_id).first<any>();
     if (!fee) return c.json({ error: 'القسط غير موجود' }, 404);
 
-    if (scope === 'single' && resolvedSchoolId && fee.school_id !== resolvedSchoolId) {
+    if (fee.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: القسط لا ينتمي إلى مدرستك' }, 403);
     }
 
@@ -4460,8 +4518,8 @@ app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
     `).bind(fee.school_id, student_fee_id, fee.student_id, amountNum, payment_method || 'cash', payment_date, notes || null, user.id).run();
 
     await db.prepare(`
-      UPDATE student_fees SET paid_amount = ?, status = ?, updated_at = unixepoch() WHERE id = ?
-    `).bind(newPaid, newStatus, student_fee_id).run();
+      UPDATE student_fees SET paid_amount = ?, status = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?
+    `).bind(newPaid, newStatus, student_fee_id, targetSchool.schoolId).run();
 
     const paymentId = result.meta.last_row_id;
 
@@ -4650,6 +4708,8 @@ app.post('/api/fee-receipts/generate', requireSameSchoolOrAdmin(), async (c) => 
   try {
     const body = await c.req.json();
     const { student_id, payment_ids } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
 
     if (!student_id || !Array.isArray(payment_ids) || payment_ids.length === 0) {
       return c.json({ error: 'الطالب ومعرفات المدفوعات مطلوبة' }, 400);
@@ -4666,7 +4726,7 @@ app.post('/api/fee-receipts/generate', requireSameSchoolOrAdmin(), async (c) => 
     `).bind(student_id).first<any>();
 
     if (!student) return c.json({ error: 'الطالب غير موجود أو غير نشط' }, 404);
-    if (scope === 'single' && resolvedSchoolId && student.school_id !== resolvedSchoolId) {
+    if (student.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الطالب لا ينتمي إلى مدرستك' }, 403);
     }
 
@@ -4753,16 +4813,19 @@ app.put('/api/fee-receipts/:id/cancel', requireSameSchoolOrAdmin(), async (c) =>
   }
 
   try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const row = await db.prepare('SELECT school_id, status FROM fee_receipts WHERE id = ?').bind(id).first<any>();
     if (!row) return c.json({ error: 'الإيصال غير موجود' }, 404);
-    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+    if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
     if (row.status !== 'active') {
       return c.json({ error: 'لا يمكن إلغاء إيصال غير نشط' }, 400);
     }
 
-    await db.prepare(`UPDATE fee_receipts SET status = 'cancelled', updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    await db.prepare(`UPDATE fee_receipts SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, status: 'cancelled' }, message: 'تم إلغاء الإيصال' });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء الإيصال', detail: err.message }, 500);
@@ -4790,9 +4853,12 @@ app.put('/api/fee-receipts/:id/mark-printed', requireSameSchoolOrAdmin(), async 
   }
 
   try {
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const row = await db.prepare('SELECT school_id, status, receipt_number FROM fee_receipts WHERE id = ?').bind(id).first<any>();
     if (!row) return c.json({ error: 'الإيصال غير موجود' }, 404);
-    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+    if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
     if (row.status !== 'active') {
@@ -4803,7 +4869,7 @@ app.put('/api/fee-receipts/:id/mark-printed', requireSameSchoolOrAdmin(), async 
 
     // Update fee_receipts printed_at if column exists (best-effort via migrations; use try/catch for schema robustness)
     try {
-      await db.prepare(`UPDATE fee_receipts SET printed_at = ?, updated_at = unixepoch() WHERE id = ?`).bind(printedAt, id).run();
+      await db.prepare(`UPDATE fee_receipts SET printed_at = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(printedAt, id, targetSchool.schoolId).run();
     } catch (e: any) {
       // If column doesn't exist yet, just continue
       if (e.message && !e.message.includes('no such column')) {
@@ -4812,12 +4878,11 @@ app.put('/api/fee-receipts/:id/mark-printed', requireSameSchoolOrAdmin(), async 
     }
 
     // Create print record
-    const body = await c.req.json().catch(() => ({}));
     const copies = typeof body.copies === 'number' ? body.copies : 1;
     await db.prepare(`
       INSERT INTO print_records (school_id, document_id, print_type, source_type, source_id, document_number, title, printed_at, printed_by_user_id, copies_count, printer_info_json)
       VALUES (?, ?, 'receipt', 'fee_receipts', ?, ?, 'وصل قسط', ?, ?, ?, ?)
-    `).bind(row.school_id, id, id, row.receipt_number || '', printedAt, user.id, copies, null).run();
+    `).bind(targetSchool.schoolId, id, id, row.receipt_number || '', printedAt, user.id, copies, null).run();
 
     return c.json({ data: { id, printed_at: printedAt }, message: 'تم تعليم الإيصال كمطبوع' });
   } catch (err: any) {
@@ -4986,10 +5051,9 @@ app.post('/api/employees', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'اسم الموظف مطلوب' }, 400);
     }
 
-    const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : (school_id || null);
-    if (!targetSchoolId) {
-      return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
-    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    const targetSchoolId = targetSchool.schoolId;
 
     const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseInt(String(salary_amount), 10) : 0;
     if (isNaN(salaryNum) || salaryNum < 0) {
@@ -5024,14 +5088,17 @@ app.put('/api/employees/:id', requireSameSchoolOrAdmin(), async (c) => {
     const id = parseInt(c.req.param('id'), 10);
     if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
 
+    const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+
     const existing = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(id).first<any>();
     if (!existing) return c.json({ error: 'الموظف غير موجود' }, 404);
 
-    if (scope === 'single' && resolvedSchoolId && existing.school_id !== resolvedSchoolId) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
     }
 
-    const body = await c.req.json();
     const { full_name, employee_number, phone, email, role, job_title, salary_amount, hire_date, notes } = body;
 
     const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseInt(String(salary_amount), 10) : existing.salary_amount;
@@ -5051,10 +5118,10 @@ app.put('/api/employees/:id', requireSameSchoolOrAdmin(), async (c) => {
         hire_date = COALESCE(?, hire_date),
         notes = COALESCE(?, notes),
         updated_at = unixepoch()
-      WHERE id = ?
+      WHERE id = ? AND school_id = ?
     `).bind(
       full_name || null, employee_number || null, phone || null, email || null,
-      role || null, job_title || null, salaryNum, hire_date || null, notes || null, id
+      role || null, job_title || null, salaryNum, hire_date || null, notes || null, id, targetSchool.schoolId
     ).run();
 
     return c.json({ data: { id, updated: true } });
@@ -5078,15 +5145,18 @@ app.put('/api/employees/:id/archive', requireSameSchoolOrAdmin(), async (c) => {
   try {
     const id = parseInt(c.req.param('id'), 10);
     if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
 
     const existing = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(id).first<any>();
     if (!existing) return c.json({ error: 'الموظف غير موجود' }, 404);
 
-    if (scope === 'single' && resolvedSchoolId && existing.school_id !== resolvedSchoolId) {
+    if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
     }
 
-    await db.prepare(`UPDATE employees SET status = 'archived', updated_at = unixepoch() WHERE id = ?`).bind(id).run();
+    await db.prepare(`UPDATE employees SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, status: 'archived' } });
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الموظف', detail: err.message }, 500);
@@ -5194,6 +5264,8 @@ app.post('/api/salaries/generate', requireSameSchoolOrAdmin(), async (c) => {
   try {
     const body = await c.req.json();
     const { employee_id, month, year, base_salary, bonus_amount, deduction_amount } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
 
     if (!employee_id || !month || !year) {
       return c.json({ error: 'معرف الموظف والشهر والسنة مطلوبة' }, 400);
@@ -5202,8 +5274,8 @@ app.post('/api/salaries/generate', requireSameSchoolOrAdmin(), async (c) => {
     const emp = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(employee_id).first<any>();
     if (!emp) return c.json({ error: 'الموظف غير موجود' }, 404);
 
-    const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : emp.school_id;
-    if (scope === 'single' && resolvedSchoolId && emp.school_id !== resolvedSchoolId) {
+    const targetSchoolId = targetSchool.schoolId;
+    if (emp.school_id !== targetSchoolId) {
       return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
     }
 
@@ -5259,10 +5331,9 @@ app.post('/api/salaries/generate-all', requireSameSchoolOrAdmin(), async (c) => 
       return c.json({ error: 'الشهر والسنة مطلوبة' }, 400);
     }
 
-    const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : (school_id || null);
-    if (!targetSchoolId) {
-      return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
-    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    const targetSchoolId = targetSchool.schoolId;
 
     const bonus = bonus_amount !== undefined ? parseInt(String(bonus_amount), 10) : 0;
     const deduction = deduction_amount !== undefined ? parseInt(String(deduction_amount), 10) : 0;
@@ -5321,6 +5392,9 @@ app.put('/api/salaries/:id/pay', requireSameSchoolOrAdmin(), async (c) => {
   try {
     const id = parseInt(c.req.param('id'), 10);
     if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
 
     const salary = await db.prepare(`
       SELECT s.*, e.full_name as employee_name FROM employee_salaries s
@@ -5330,7 +5404,7 @@ app.put('/api/salaries/:id/pay', requireSameSchoolOrAdmin(), async (c) => {
 
     if (!salary) return c.json({ error: 'الراتب غير موجود' }, 404);
 
-    if (scope === 'single' && resolvedSchoolId && salary.school_id !== resolvedSchoolId) {
+    if (salary.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الراتب لا ينتمي إلى مدرستك' }, 403);
     }
 
@@ -5350,14 +5424,13 @@ app.put('/api/salaries/:id/pay', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'تم دفع هذا الراتب مسبقاً' }, 409);
     }
 
-    const body = await c.req.json().catch(() => ({}));
     const paidAt = body.paid_at || new Date().toISOString().split('T')[0];
     const paidAtUnix = Math.floor(new Date(paidAt).getTime() / 1000) || Math.floor(Date.now() / 1000);
 
     // ── Mark salary paid first (optimistic), then treasury; rollback on failure ──
     await db.prepare(`
-      UPDATE employee_salaries SET status = 'paid', paid_at = ?, paid_by_user_id = ?, updated_at = unixepoch() WHERE id = ?
-    `).bind(paidAtUnix, user.id, id).run();
+      UPDATE employee_salaries SET status = 'paid', paid_at = ?, paid_by_user_id = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?
+    `).bind(paidAtUnix, user.id, id, targetSchool.schoolId).run();
 
     try {
       // Create treasury expense transaction
@@ -5419,11 +5492,14 @@ app.put('/api/salaries/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
   try {
     const id = parseInt(c.req.param('id'), 10);
     if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
 
     const salary = await db.prepare(`SELECT * FROM employee_salaries WHERE id = ?`).bind(id).first<any>();
     if (!salary) return c.json({ error: 'الراتب غير موجود' }, 404);
 
-    if (scope === 'single' && resolvedSchoolId && salary.school_id !== resolvedSchoolId) {
+    if (salary.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الراتب لا ينتمي إلى مدرستك' }, 403);
     }
 
@@ -5431,7 +5507,6 @@ app.put('/api/salaries/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'هذا الراتب ملغى مسبقاً' }, 409);
     }
 
-    const body = await c.req.json();
     const { cancel_reason } = body;
     if (!cancel_reason || typeof cancel_reason !== 'string' || cancel_reason.trim().length === 0) {
       return c.json({ error: 'سبب الإلغاء مطلوب' }, 400);
@@ -5458,8 +5533,8 @@ app.put('/api/salaries/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
     }
 
     await db.prepare(`
-      UPDATE employee_salaries SET status = 'cancelled', cancel_reason = ?, updated_at = unixepoch() WHERE id = ?
-    `).bind(cancel_reason, id).run();
+      UPDATE employee_salaries SET status = 'cancelled', cancel_reason = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?
+    `).bind(cancel_reason, id, targetSchool.schoolId).run();
 
     return c.json({ data: { id, status: 'cancelled', cancel_reason } });
   } catch (err: any) {
@@ -5702,10 +5777,9 @@ app.post('/api/treasury/transactions', requireSameSchoolOrAdmin(), async (c) => 
   try {
     const body = await c.req.json();
     let { school_id, transaction_type, category, amount, currency, description } = body;
-
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId;
-    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    school_id = targetSchool.schoolId;
 
     if (!school_id || !transaction_type || !category || amount === undefined || amount === null || amount === '') {
       return c.json({ error: 'المدرسة ونوع القيد والتصنيف والمبلغ مطلوبة' }, 400);
@@ -5765,11 +5839,13 @@ app.put('/api/treasury/transactions/:id/cancel', requireSameSchoolOrAdmin(), asy
     const id = parseInt(c.req.param('id'), 10);
     const body = await c.req.json();
     const { cancel_reason } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
 
     const tx = await db.prepare(`SELECT * FROM treasury_transactions WHERE id = ?`).bind(id).first<any>();
     if (!tx) return c.json({ error: 'القيد المالي غير موجود' }, 404);
 
-    if (scope === 'single' && resolvedSchoolId && tx.school_id !== resolvedSchoolId) {
+    if (tx.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: القيد لا ينتمي إلى مدرستك' }, 403);
     }
 
@@ -5789,8 +5865,8 @@ app.put('/api/treasury/transactions/:id/cancel', requireSameSchoolOrAdmin(), asy
     await db.prepare(`
       UPDATE treasury_transactions
       SET status = 'cancelled', cancelled_at = unixepoch(), cancelled_by = ?, cancel_reason = ?, updated_at = unixepoch()
-      WHERE id = ?
-    `).bind(user.id, cancel_reason.trim(), id).run();
+      WHERE id = ? AND school_id = ?
+    `).bind(user.id, cancel_reason.trim(), id, targetSchool.schoolId).run();
 
     // Reverse cached balance
     const reverseDelta = tx.transaction_type === 'income' ? -tx.amount : tx.amount;
@@ -5863,10 +5939,9 @@ app.post('/api/treasury/daily-closings/close-day', requireSameSchoolOrAdmin(), a
   try {
     const body = await c.req.json();
     let { school_id, closing_date, notes } = body;
-
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId;
-    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    school_id = targetSchool.schoolId;
 
     if (!school_id || !closing_date) {
       return c.json({ error: 'المدرسة وتاريخ الإقفال مطلوبان' }, 400);
@@ -6183,11 +6258,6 @@ app.get('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
 app.put('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
-  const targetSchoolId = c.get('resolvedSchoolId') as number;
-
-  if (!targetSchoolId) {
-    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
-  }
 
   if (!user || !canManageSettings(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
@@ -6195,6 +6265,9 @@ app.put('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
 
   try {
     const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    const targetSchoolId = targetSchool.schoolId;
     const allowedFields = ['name', 'name_en', 'school_type', 'city', 'province', 'address', 'phone', 'email', 'website', 'principal_name', 'logo_url', 'official_stamp_url'];
     const updates: string[] = [];
     const params: any[] = [];
@@ -6269,11 +6342,6 @@ app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
 app.put('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
-  const targetSchoolId = c.get('resolvedSchoolId') as number;
-
-  if (!targetSchoolId) {
-    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
-  }
 
   if (!user || !canManageSettings(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
@@ -6281,6 +6349,9 @@ app.put('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
 
   try {
     const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    const targetSchoolId = targetSchool.schoolId;
 
     // Ensure row exists
     const existing = await db.prepare(`SELECT id FROM school_settings WHERE school_id = ?`).bind(targetSchoolId).first<any>();
@@ -6360,11 +6431,6 @@ app.get('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
 app.put('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
-  const targetSchoolId = c.get('resolvedSchoolId') as number;
-
-  if (!targetSchoolId) {
-    return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
-  }
 
   if (!user || !canManageSettings(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
@@ -6372,6 +6438,9 @@ app.put('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
 
   try {
     const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    const targetSchoolId = targetSchool.schoolId;
 
     // Ensure row exists
     const existing = await db.prepare(`SELECT id FROM school_settings WHERE school_id = ?`).bind(targetSchoolId).first<any>();
@@ -6454,27 +6523,18 @@ app.post('/api/official-book-templates', requireSameSchoolOrAdmin(), async (c) =
 
   try {
     const body = await c.req.json();
-    const schoolId = scope === 'all' ? (body.school_id || user.school_id) : resolvedSchoolId;
-
-    if (!schoolId) {
-      return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
-    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    const schoolId = targetSchool.schoolId;
     if (!body.title || !body.body_text) {
       return c.json({ error: 'العنوان ونص الكتاب مطلوبان' }, 400);
-    }
-
-    const school = await db.prepare(
-      'SELECT id FROM schools WHERE id = ?',
-    ).bind(Number(schoolId)).first<{ id: number }>();
-    if (!school) {
-      return c.json({ error: 'المدرسة غير موجودة' }, 404);
     }
 
     const paperSize = body.paper_size || 'A4';
     const result = await db.prepare(`
       INSERT INTO official_book_templates (school_id, title, body_text, paper_size, requires_student, requires_employee, status, created_by_user_id)
       VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
-    `).bind(school.id, body.title, body.body_text, paperSize, body.requires_student ? 1 : 0, body.requires_employee ? 1 : 0, user.id).run();
+    `).bind(schoolId, body.title, body.body_text, paperSize, body.requires_student ? 1 : 0, body.requires_employee ? 1 : 0, user.id).run();
 
     const id = result.meta?.last_row_id;
     return c.json({ data: { id, message: 'تم إنشاء القالب بنجاح' } }, 201);
@@ -6499,17 +6559,15 @@ app.put('/api/official-book-templates/:id', requireSameSchoolOrAdmin(), async (c
   try {
     const id = parseInt(c.req.param('id'), 10);
     const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const template = await db.prepare(
       'SELECT school_id FROM official_book_templates WHERE id = ?',
     ).bind(id).first<{ school_id: number }>();
     if (!template) {
       return c.json({ error: 'القالب غير موجود' }, 404);
     }
-    if (
-      scope === 'single' &&
-      resolvedSchoolId &&
-      template.school_id !== resolvedSchoolId
-    ) {
+    if (template.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: القالب تابع لمدرسة أخرى' }, 403);
     }
     const allowed = ['title', 'body_text', 'paper_size', 'requires_student', 'requires_employee', 'status'];
@@ -6526,7 +6584,7 @@ app.put('/api/official-book-templates/:id', requireSameSchoolOrAdmin(), async (c
       return c.json({ error: 'لا توجد بيانات للتحديث' }, 400);
     }
     updates.push('updated_at = unixepoch()');
-    params.push(id, template.school_id);
+    params.push(id, targetSchool.schoolId);
 
     await db.prepare(`UPDATE official_book_templates SET ${updates.join(', ')} WHERE id = ? AND school_id = ?`).bind(...params).run();
     return c.json({ data: { message: 'تم تحديث القالب بنجاح' } });
@@ -6637,13 +6695,14 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
 
   try {
     const body = await c.req.json();
-    const rawSchoolId = scope === 'all' ? (body.school_id || user.school_id) : resolvedSchoolId;
-    const schoolId = rawSchoolId == null ? null : Number(rawSchoolId);
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    const schoolId = targetSchool.schoolId;
     const templateId = Number(body.template_id);
     const studentId = body.student_id ? Number(body.student_id) : null;
     const employeeId = body.employee_id ? Number(body.employee_id) : null;
 
-    if (!schoolId || !templateId) {
+    if (!templateId) {
       return c.json({ error: 'معرف المدرسة والقالب مطلوبان' }, 400);
     }
 
@@ -6814,16 +6873,19 @@ app.put('/api/official-books/:id/cancel', requireSameSchoolOrAdmin(), async (c) 
 
   try {
     const id = parseInt(c.req.param('id'), 10);
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const book = await db.prepare(
       'SELECT school_id FROM official_books WHERE id = ?',
     ).bind(id).first<{ school_id: number }>();
     if (!book) {
       return c.json({ error: 'الكتاب غير موجود' }, 404);
     }
-    if (user.role_key !== 'system_admin' && book.school_id !== user.school_id) {
+    if (book.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الكتاب تابع لمدرسة أخرى' }, 403);
     }
-    await db.prepare(`UPDATE official_books SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, book.school_id).run();
+    await db.prepare(`UPDATE official_books SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { message: 'تم إلغاء الكتاب بنجاح' } });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء الكتاب', detail: err.message }, 500);
@@ -6843,18 +6905,21 @@ app.post('/api/official-books/:id/print', requireSameSchoolOrAdmin(), async (c) 
 
   try {
     const id = parseInt(c.req.param('id'), 10);
+    const body = await c.req.json().catch(() => ({}));
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const book = await db.prepare(`SELECT school_id, status FROM official_books WHERE id = ?`).bind(id).first<any>();
     if (!book) {
       return c.json({ error: 'الكتاب غير موجود' }, 404);
     }
-    if (user.role_key !== 'system_admin' && book.school_id !== user.school_id) {
+    if (book.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: الكتاب تابع لمدرسة أخرى' }, 403);
     }
     if (book.status === 'cancelled') {
       return c.json({ error: 'هذا الكتاب ملغى ولا يمكن طباعته' }, 400);
     }
 
-    await db.prepare(`INSERT INTO print_records (school_id, document_id, print_type, printed_at, printed_by_user_id, printer_info_json) VALUES (?, ?, 'official_book', unixepoch(), ?, ?)`).bind(book.school_id, id, user.id, null).run();
+    await db.prepare(`INSERT INTO print_records (school_id, document_id, print_type, printed_at, printed_by_user_id, printer_info_json) VALUES (?, ?, 'official_book', unixepoch(), ?, ?)`).bind(targetSchool.schoolId, id, user.id, null).run();
     return c.json({ data: { message: 'تم تسجيل الطباعة بنجاح' } });
   } catch (err: any) {
     return c.json({ error: 'فشل في تسجيل الطباعة', detail: err.message }, 500);
@@ -7195,16 +7260,13 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
   try {
     const body = await c.req.json();
     let { school_id, rows, mode, mapping, assignment_mode, clear_empty_fields, selected_subject_id, selected_class_id, selected_section_id, selected_sheet, class_assignment_mode, section_assignment_mode } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    school_id = targetSchool.schoolId;
     mode = mode || 'skip_existing';
     if (type === 'grades') mode = mode || 'update_existing'; // default for grades
     const assignmentMode = assignment_mode || 'strict_existing_assignments';
     const clearEmpty = clear_empty_fields === true;
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId;
-    }
-    if (!school_id) {
-      return c.json({ error: 'المدرسة مطلوبة' }, 400);
-    }
     if (!Array.isArray(rows) || rows.length === 0) {
       return c.json({ error: 'لا يوجد بيانات للاستيراد' }, 400);
     }
@@ -7752,13 +7814,10 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
   try {
     const body = await c.req.json();
     let { school_id, rows, mode, file_name, selected_class_id, selected_section_id, class_assignment_mode, section_assignment_mode } = body;
+    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+    school_id = targetSchool.schoolId;
     mode = mode || 'skip_existing';
-    if (scope === 'single' && resolvedSchoolId != null) {
-      school_id = resolvedSchoolId;
-    }
-    if (!school_id) {
-      return c.json({ error: 'المدرسة مطلوبة' }, 400);
-    }
     if (!Array.isArray(rows) || rows.length === 0) {
       return c.json({ error: 'لا يوجد بيانات للاستيراد' }, 400);
     }

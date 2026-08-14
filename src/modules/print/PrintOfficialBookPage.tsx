@@ -13,6 +13,7 @@ import {
 
 interface BookRecord {
   id: number;
+  school_id: number;
   document_number: string;
   title: string;
   body_text: string;
@@ -69,7 +70,7 @@ export default function PrintOfficialBookPage() {
       if (!book || book.status === 'cancelled') return;
       if (canManageOfficialBooks(user?.role_key)) {
         try {
-          await printOfficialBook(book.id, user?.school_id);
+          await printOfficialBook(book.id, book.school_id);
         } catch {
           // Non-blocking: print record is best-effort
         }

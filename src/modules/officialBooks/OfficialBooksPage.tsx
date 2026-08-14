@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getOfficialBookTemplates, createOfficialBookTemplate, updateOfficialBookTemplate,
   getOfficialBooks, createOfficialBook, cancelOfficialBook, printOfficialBook,
@@ -88,6 +90,8 @@ const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
    ═══════════════════════════════════════ */
 export default function OfficialBooksPage() {
   const { user } = useAuth();
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
   const [activeTab, setActiveTab] = useState<TabKey>('list');
 
   if (!canViewBooks(user?.role_key)) {
@@ -112,6 +116,8 @@ export default function OfficialBooksPage() {
         </div>
       </div>
 
+      <SystemAdminSchoolSelector {...schoolScope} />
+
       {/* Tabs */}
       <div className="flex gap-2 border-b border-gray-200 pb-1 overflow-x-auto">
         {TAB_CONFIG.map((tab) => (
@@ -131,9 +137,9 @@ export default function OfficialBooksPage() {
       </div>
 
       {/* Tab Content */}
-      {activeTab === 'templates' && <TemplatesTab user={user} />}
-      {activeTab === 'generate' && <GenerateTab user={user} />}
-      {activeTab === 'list' && <ListTab user={user} />}
+      {activeTab === 'templates' && <TemplatesTab user={user} schoolId={schoolId} />}
+      {activeTab === 'generate' && <GenerateTab user={user} schoolId={schoolId} />}
+      {activeTab === 'list' && <ListTab user={user} schoolId={schoolId} />}
       {activeTab === 'verify' && <VerifyTab />}
     </div>
   );
@@ -142,7 +148,7 @@ export default function OfficialBooksPage() {
 /* ═══════════════════════════════════════
    Templates Tab
    ═══════════════════════════════════════ */
-function TemplatesTab({ user }: { user: any }) {
+function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }) {
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -153,24 +159,30 @@ function TemplatesTab({ user }: { user: any }) {
   });
 
   const fetchTemplates = async () => {
+    if (schoolId == null) { setTemplates([]); setLoading(false); return; }
     setLoading(true);
     try {
-      const res = await getOfficialBookTemplates(user?.school_id || null);
+      const res = await getOfficialBookTemplates(schoolId);
       setTemplates((res.data || []) as TemplateRecord[]);
     } catch (e: any) {
       setError(e?.message || 'فشل في جلب القوالب');
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchTemplates(); }, []);
+  useEffect(() => {
+    setShowForm(false);
+    setEditingId(null);
+    void fetchTemplates();
+  }, [schoolId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (schoolId == null) return;
     try {
       if (editingId) {
-        await updateOfficialBookTemplate(editingId, formData, user?.school_id || null);
+        await updateOfficialBookTemplate(editingId, formData, schoolId);
       } else {
-        await createOfficialBookTemplate(formData, user?.school_id || null);
+        await createOfficialBookTemplate(formData, schoolId);
       }
       setShowForm(false);
       setEditingId(null);
@@ -191,9 +203,10 @@ function TemplatesTab({ user }: { user: any }) {
   };
 
   const archiveTemplate = async (id: number) => {
+    if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من أرشفة هذا القالب؟')) return;
     try {
-      await updateOfficialBookTemplate(id, { status: 'archived' }, user?.school_id || null);
+      await updateOfficialBookTemplate(id, { status: 'archived' }, schoolId);
       await fetchTemplates();
     } catch (e: any) {
       alert(e?.error || 'فشل في أرشفة القالب');
@@ -204,7 +217,7 @@ function TemplatesTab({ user }: { user: any }) {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h3 className="text-lg font-bold">قوالب الكتب الرسمية</h3>
-        {canManageTemplates(user?.role_key) && (
+        {canManageTemplates(user?.role_key) && schoolId != null && (
           <button
             onClick={() => { setShowForm(true); setEditingId(null); setFormData({ title: '', body_text: '', paper_size: 'A4', requires_student: false, requires_employee: false }); }}
             className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-700"
@@ -260,7 +273,7 @@ function TemplatesTab({ user }: { user: any }) {
                <div className="text-sm text-gray-600 line-clamp-2">{t.body_text}</div>
                <div>{statusBadge(t.status)}</div>
              </div>
-             {canManageTemplates(user?.role_key) && t.status !== 'archived' && (
+             {canManageTemplates(user?.role_key) && schoolId != null && t.status !== 'archived' && (
                <div className="flex gap-2">
                  <button onClick={() => startEdit(t)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Eye size={16} /></button>
                  <button onClick={() => archiveTemplate(t.id)} className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg"><Archive size={16} /></button>
@@ -276,7 +289,7 @@ function TemplatesTab({ user }: { user: any }) {
 /* ═══════════════════════════════════════
    Generate Tab
    ═══════════════════════════════════════ */
-function GenerateTab({ user }: { user: any }) {
+function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null }) {
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
   const [students, setStudents] = useState<StudentOption[]>([]);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
@@ -287,12 +300,23 @@ function GenerateTab({ user }: { user: any }) {
   const [generated, setGenerated] = useState<any>(null);
 
   useEffect(() => {
-    getOfficialBookTemplates(user?.school_id || null).then(r => setTemplates(((r.data || []) as TemplateRecord[]).filter((t: TemplateRecord) => t.status === 'active')));
-    getStudents(user?.school_id || null).then(r => setStudents((r.data || []).map((s: any) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number }))));
-    getEmployees(user?.school_id || null).then(r => setEmployees((r.data || []).map((e: any) => ({ id: e.id, full_name: e.full_name, job_title: e.job_title }))));
-  }, []);
+    setSelectedTemplate('');
+    setSelectedStudent('');
+    setSelectedEmployee('');
+    setGenerated(null);
+    if (schoolId == null) {
+      setTemplates([]);
+      setStudents([]);
+      setEmployees([]);
+      return;
+    }
+    getOfficialBookTemplates(schoolId).then(r => setTemplates(((r.data || []) as TemplateRecord[]).filter((t: TemplateRecord) => t.status === 'active')));
+    getStudents(schoolId).then(r => setStudents((r.data || []).map((s: any) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number }))));
+    getEmployees(schoolId).then(r => setEmployees((r.data || []).map((e: any) => ({ id: e.id, full_name: e.full_name, job_title: e.job_title }))));
+  }, [schoolId]);
 
   const handleGenerate = async () => {
+    if (schoolId == null) return;
     if (!selectedTemplate) return;
     const template = templates.find(t => t.id === Number(selectedTemplate));
     if (!template) return;
@@ -309,7 +333,7 @@ function GenerateTab({ user }: { user: any }) {
 
     setLoading(true);
     try {
-      const res = await createOfficialBook(data, user?.school_id || null);
+      const res = await createOfficialBook(data, schoolId);
       setGenerated(res.data);
     } catch (e: any) {
       alert(e?.error || 'فشل في إنشاء الكتاب');
@@ -380,35 +404,41 @@ function GenerateTab({ user }: { user: any }) {
 /* ═══════════════════════════════════════
    List Tab
    ═══════════════════════════════════════ */
-function ListTab({ user }: { user: any }) {
+function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
   const [books, setBooks] = useState<BookRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewBook, setPreviewBook] = useState<BookRecord | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
 
   const fetchBooks = async () => {
+    if (schoolId == null) { setBooks([]); setLoading(false); return; }
     setLoading(true);
     try {
-      const res = await getOfficialBooks(user?.school_id || null);
+      const res = await getOfficialBooks(schoolId);
       setBooks((res.data || []) as BookRecord[]);
     } catch (e) { /* ignore */ }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchBooks(); }, []);
+  useEffect(() => {
+    setPreviewBook(null);
+    void fetchBooks();
+  }, [schoolId]);
 
   const handlePrint = async (book: BookRecord) => {
+    if (schoolId == null) return;
     try {
-      await printOfficialBook(book.id, user?.school_id || null);
+      await printOfficialBook(book.id, schoolId);
       setPreviewBook(book);
       setTimeout(() => window.print(), 300);
     } catch (e) { alert('فشل في تسجيل الطباعة'); }
   };
 
   const handleCancel = async (id: number) => {
+    if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إلغاء هذا الكتاب؟')) return;
     try {
-      await cancelOfficialBook(id, user?.school_id || null);
+      await cancelOfficialBook(id, schoolId);
       await fetchBooks();
     } catch (e) { alert('فشل في الإلغاء'); }
   };
@@ -440,7 +470,7 @@ function ListTab({ user }: { user: any }) {
              </div>
              <div className="flex gap-2">
                <button onClick={() => { setPreviewBook(b); }} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="معاينة"><Eye size={16} /></button>
-               {canManageBooks(user?.role_key) && b.status === 'active' && (
+               {canManageBooks(user?.role_key) && schoolId != null && b.status === 'active' && (
                  <>
                    <button onClick={() => handlePrint(b)} className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg" title="طباعة / حفظ PDF"><Printer size={16} /></button>
                    <a href={`/print/official-book/${b.id}`} target="_blank" rel="noreferrer" className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg inline-flex items-center" title="تصدير PDF مخصص"><Printer size={16} /></a>

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getPrintRecords } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { Printer, Loader2, FileText, Receipt, GraduationCap, Filter, Calendar, User } from 'lucide-react';
@@ -45,7 +46,8 @@ const TYPE_OPTIONS: { key: FilterType; label: string; icon: React.ReactNode }[] 
 ];
 
 export default function PrintRecordsPage() {
-  const { user } = useAuth();
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState<FilterType>('all');
@@ -54,6 +56,7 @@ export default function PrintRecordsPage() {
   const [filterUser, setFilterUser] = useState('');
 
   const fetchRecords = async () => {
+    if (schoolId == null) { setRecords([]); setLoading(false); return; }
     setLoading(true);
     try {
       const filters: any = {};
@@ -61,13 +64,21 @@ export default function PrintRecordsPage() {
       if (fromDate) filters.from_date = Math.floor(new Date(fromDate).getTime() / 1000);
       if (toDate) filters.to_date = Math.floor(new Date(toDate + 'T23:59:59').getTime() / 1000);
       if (filterUser) filters.user_id = parseInt(filterUser, 10);
-      const res = await getPrintRecords(filters, user?.school_id || null);
+      const res = await getPrintRecords(filters, schoolId);
       setRecords((res.data || []) as RecordItem[]);
     } catch (e) { /* ignore */ }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchRecords(); }, [filterType, fromDate, toDate, filterUser]);
+  useEffect(() => {
+    setFilterType('all');
+    setFromDate('');
+    setToDate('');
+    setFilterUser('');
+    void fetchRecords();
+  }, [schoolId]);
+
+  useEffect(() => { void fetchRecords(); }, [filterType, fromDate, toDate, filterUser]);
 
   return (
     <div className="space-y-6" dir="rtl">
@@ -80,6 +91,8 @@ export default function PrintRecordsPage() {
           <p className="text-sm text-gray-500">تتبع ومراقبة عمليات الطباعة في النظام</p>
         </div>
       </div>
+
+      <SystemAdminSchoolSelector {...schoolScope} />
 
       {/* Filters */}
       <div className="bg-white p-4 rounded-lg border border-gray-200 space-y-3">

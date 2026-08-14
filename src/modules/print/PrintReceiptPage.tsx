@@ -21,6 +21,7 @@ interface PaymentSnapshot {
 
 interface ReceiptRecord {
   id: number;
+  school_id: number;
   receipt_number: string;
   student_name_snapshot: string;
   class_name_snapshot?: string;
@@ -65,7 +66,7 @@ export default function PrintReceiptPage() {
     onBeforePrint: async () => {
       if (!receipt || receipt.status === 'cancelled') return;
       try {
-        await markReceiptPrinted(receipt.id);
+        await markReceiptPrinted(receipt.id, receipt.school_id);
       } catch {
         // Non-blocking: print record is best-effort
       }

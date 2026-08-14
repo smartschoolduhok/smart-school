@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getSubjects, getClasses, getSections, createSubject, updateSubject, archiveSubject } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
@@ -49,8 +51,10 @@ const emptyForm = {
 
 export default function SubjectsPage() {
   const { user } = useAuth();
-  const schoolId = user?.school_id;
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
+  const canManageSelectedSchool = canManage && schoolId != null;
 
   const [subjects, setSubjects] = useState<SubjectRecord[]>([]);
   const [classes, setClasses] = useState<ClassRecord[]>([]);
@@ -71,12 +75,25 @@ export default function SubjectsPage() {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => { loadData(); }, [schoolId]);
+  useEffect(() => {
+    setFilterClass('');
+    setModalOpen(false);
+    setEditingId(null);
+    setForm(emptyForm);
+    void loadData();
+  }, [schoolId]);
 
   async function loadData() {
+    if (schoolId == null) {
+      setSubjects([]);
+      setClasses([]);
+      setSections([]);
+      setError('');
+      setLoading(false);
+      return;
+    }
     setLoading(true); setError('');
-    const sid = schoolId ?? undefined;
-    const [subRes, cRes, sRes] = await Promise.all([getSubjects(sid), getClasses(sid), getSections(sid)]);
+    const [subRes, cRes, sRes] = await Promise.all([getSubjects(schoolId), getClasses(schoolId), getSections(schoolId)]);
     if (subRes.data) setSubjects(subRes.data as SubjectRecord[]);
     else if (subRes.error) setError(subRes.error);
     if (cRes.data) setClasses(cRes.data as ClassRecord[]);
@@ -97,6 +114,7 @@ export default function SubjectsPage() {
   }, [subjects, search, filterClass, filterType, filterStatus]);
 
   function openCreate() {
+    if (schoolId == null) return;
     setForm(emptyForm);
     setFormError('');
     setModalMode('create');
@@ -105,6 +123,7 @@ export default function SubjectsPage() {
   }
 
   function openEdit(s: SubjectRecord) {
+    if (schoolId == null) return;
     setForm({
       class_id: s.class_id,
       section_id: s.section_id || '',
@@ -124,10 +143,11 @@ export default function SubjectsPage() {
 
   async function handleSave() {
     setFormError('');
+    if (schoolId == null) { setFormError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!form.class_id || !form.name.trim()) { setFormError('الصف واسم المادة مطلوبة'); return; }
     setSaving(true);
     const payload = {
-      school_id: schoolId ?? 1,
+      school_id: schoolId,
       class_id: Number(form.class_id),
       section_id: form.section_id ? Number(form.section_id) : null,
       name: form.name.trim(),
@@ -151,8 +171,9 @@ export default function SubjectsPage() {
   }
 
   async function handleArchive(id: number) {
+    if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من أرشفة هذه المادة؟')) return;
-    const res = await archiveSubject(id);
+    const res = await archiveSubject(id, schoolId);
     if (res.error) alert(res.error);
     else loadData();
   }
@@ -169,12 +190,16 @@ export default function SubjectsPage() {
           <h1 className="text-2xl font-bold text-gray-900">المواد الدراسية</h1>
           <p className="text-sm text-gray-500 mt-1">إدارة المواد وإعدادات الدرجات والكشوف</p>
         </div>
-        {canManage && (
+        {canManageSelectedSchool && (
           <button onClick={openCreate} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
             <Plus size={18} />
             <span>إضافة مادة</span>
           </button>
         )}
+      </div>
+
+      <div className="mb-6">
+        <SystemAdminSchoolSelector {...schoolScope} />
       </div>
 
       {/* Filters */}
@@ -304,7 +329,7 @@ export default function SubjectsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        {canManage && (
+                        {canManageSelectedSchool && (
                           <>
                             <button onClick={() => openEdit(s)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="تعديل"><Edit2 size={16} /></button>
                             <button onClick={() => handleArchive(s.id)} className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors" title="أرشفة"><Archive size={16} /></button>
