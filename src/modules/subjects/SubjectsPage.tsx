@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getSubjects, getClasses, getSections, createSubject, updateSubject, archiveSubject } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
@@ -53,6 +54,7 @@ export default function SubjectsPage() {
   const { user } = useAuth();
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
   const canManageSelectedSchool = canManage && schoolId != null;
 
@@ -76,14 +78,22 @@ export default function SubjectsPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    setSubjects([]);
+    setClasses([]);
+    setSections([]);
     setFilterClass('');
     setModalOpen(false);
     setEditingId(null);
     setForm(emptyForm);
+    setLoading(false);
+    setSaving(false);
+    setError('');
+    setFormError('');
     void loadData();
   }, [schoolId]);
 
   async function loadData() {
+    const isCurrentRequest = captureSchoolRequest();
     if (schoolId == null) {
       setSubjects([]);
       setClasses([]);
@@ -94,6 +104,7 @@ export default function SubjectsPage() {
     }
     setLoading(true); setError('');
     const [subRes, cRes, sRes] = await Promise.all([getSubjects(schoolId), getClasses(schoolId), getSections(schoolId)]);
+    if (!isCurrentRequest()) return;
     if (subRes.data) setSubjects(subRes.data as SubjectRecord[]);
     else if (subRes.error) setError(subRes.error);
     if (cRes.data) setClasses(cRes.data as ClassRecord[]);
@@ -145,6 +156,7 @@ export default function SubjectsPage() {
     setFormError('');
     if (schoolId == null) { setFormError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!form.class_id || !form.name.trim()) { setFormError('الصف واسم المادة مطلوبة'); return; }
+    const isCurrentRequest = captureSchoolRequest();
     setSaving(true);
     const payload = {
       school_id: schoolId,
@@ -160,10 +172,12 @@ export default function SubjectsPage() {
     };
     if (modalMode === 'create') {
       const res = await createSubject(payload);
+      if (!isCurrentRequest()) return;
       if (res.error) setFormError(res.error);
       else { setModalOpen(false); loadData(); }
     } else if (editingId != null) {
       const res = await updateSubject(editingId, { ...payload, status: 'active' });
+      if (!isCurrentRequest()) return;
       if (res.error) setFormError(res.error);
       else { setModalOpen(false); loadData(); }
     }
@@ -173,7 +187,9 @@ export default function SubjectsPage() {
   async function handleArchive(id: number) {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من أرشفة هذه المادة؟')) return;
+    const isCurrentRequest = captureSchoolRequest();
     const res = await archiveSubject(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getClasses, getSections, createClass, updateClass, archiveClass, createSection, updateSection, archiveSection } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
@@ -42,6 +43,7 @@ export default function ClassesPage() {
   const { user } = useAuth();
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
   const canManageSelectedSchool = canManage && schoolId != null;
   const loadRequestId = useRef(0);
@@ -71,6 +73,8 @@ export default function ClassesPage() {
   const [savingSection, setSavingSection] = useState(false);
 
   useEffect(() => {
+    setClasses([]);
+    setSections([]);
     setExpandedClass(null);
     setClassModal(false);
     setSectionModal(false);
@@ -79,11 +83,16 @@ export default function ClassesPage() {
     setClassForm(emptyClassForm);
     setSectionForm(emptySectionForm);
     setSearch('');
+    setLoading(false);
+    setSavingClass(false);
+    setSavingSection(false);
+    setError('');
     void loadData(schoolId);
   }, [schoolId]);
 
   async function loadData(targetSchoolId: number | null = schoolId) {
     const requestId = ++loadRequestId.current;
+    const isCurrentRequest = captureSchoolRequest();
     if (targetSchoolId == null) {
       setClasses([]);
       setSections([]);
@@ -93,7 +102,7 @@ export default function ClassesPage() {
     }
     setLoading(true); setError('');
     const [cRes, sRes] = await Promise.all([getClasses(targetSchoolId), getSections(targetSchoolId)]);
-    if (requestId !== loadRequestId.current) return;
+    if (!isCurrentRequest() || requestId !== loadRequestId.current) return;
     if (cRes.data) setClasses(cRes.data as ClassRecord[]);
     else if (cRes.error) setError(cRes.error);
     if (sRes.data) setSections(sRes.data as SectionRecord[]);
@@ -138,14 +147,17 @@ export default function ClassesPage() {
     setClassFormError('');
     if (schoolId == null) { setClassFormError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!classForm.name.trim() || !classForm.stage) { setClassFormError('الاسم والمرحلة مطلوبة'); return; }
+    const isCurrentRequest = captureSchoolRequest();
     setSavingClass(true);
     const payload = { school_id: schoolId, name: classForm.name.trim(), stage: classForm.stage, order_index: Number(classForm.order_index) || 0 };
     if (classMode === 'create') {
       const res = await createClass(payload);
+      if (!isCurrentRequest()) return;
       if (res.error) setClassFormError(res.error);
       else { setClassModal(false); loadData(); }
     } else if (editingClassId != null) {
       const res = await updateClass(editingClassId, { ...payload, status: 'active' });
+      if (!isCurrentRequest()) return;
       if (res.error) setClassFormError(res.error);
       else { setClassModal(false); loadData(); }
     }
@@ -157,7 +169,9 @@ export default function ClassesPage() {
     const secCount = sectionsOf(id).length;
     if (secCount > 0) { alert(`لا يمكن أرشفة الصف لأنه يحتوي على ${toArabicDigits(secCount)} شعب. أرشف الشعب أولاً.`); return; }
     if (!confirm('هل أنت متأكد من أرشفة هذا الصف؟')) return;
+    const isCurrentRequest = captureSchoolRequest();
     const res = await archiveClass(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }
@@ -184,14 +198,17 @@ export default function ClassesPage() {
     setSectionFormError('');
     if (schoolId == null) { setSectionFormError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!sectionForm.class_id || !sectionForm.name.trim()) { setSectionFormError('الصف والاسم مطلوبة'); return; }
+    const isCurrentRequest = captureSchoolRequest();
     setSavingSection(true);
     const payload = { school_id: schoolId, class_id: Number(sectionForm.class_id), name: sectionForm.name.trim(), capacity: Number(sectionForm.capacity) || 30 };
     if (sectionMode === 'create') {
       const res = await createSection(payload);
+      if (!isCurrentRequest()) return;
       if (res.error) setSectionFormError(res.error);
       else { setSectionModal(false); loadData(); }
     } else if (editingSectionId != null) {
       const res = await updateSection(editingSectionId, { ...payload, status: 'active' });
+      if (!isCurrentRequest()) return;
       if (res.error) setSectionFormError(res.error);
       else { setSectionModal(false); loadData(); }
     }
@@ -201,7 +218,9 @@ export default function ClassesPage() {
   async function handleArchiveSection(id: number) {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من أرشفة هذه الشعبة؟')) return;
+    const isCurrentRequest = captureSchoolRequest();
     const res = await archiveSection(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getPrintRecords } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
@@ -48,6 +49,8 @@ const TYPE_OPTIONS: { key: FilterType; label: string; icon: React.ReactNode }[] 
 export default function PrintRecordsPage() {
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
+  const recordsRequestId = useRef(0);
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState<FilterType>('all');
@@ -57,6 +60,8 @@ export default function PrintRecordsPage() {
 
   const fetchRecords = async () => {
     if (schoolId == null) { setRecords([]); setLoading(false); return; }
+    const isCurrentSchool = captureSchoolRequest();
+    const requestId = ++recordsRequestId.current;
     setLoading(true);
     try {
       const filters: any = {};
@@ -65,20 +70,24 @@ export default function PrintRecordsPage() {
       if (toDate) filters.to_date = Math.floor(new Date(toDate + 'T23:59:59').getTime() / 1000);
       if (filterUser) filters.user_id = parseInt(filterUser, 10);
       const res = await getPrintRecords(filters, schoolId);
+      if (!isCurrentSchool() || requestId !== recordsRequestId.current) return;
       setRecords((res.data || []) as RecordItem[]);
     } catch (e) { /* ignore */ }
-    finally { setLoading(false); }
+    finally {
+      if (isCurrentSchool() && requestId === recordsRequestId.current) setLoading(false);
+    }
   };
 
   useEffect(() => {
+    setRecords([]);
+    setLoading(false);
     setFilterType('all');
     setFromDate('');
     setToDate('');
     setFilterUser('');
-    void fetchRecords();
   }, [schoolId]);
 
-  useEffect(() => { void fetchRecords(); }, [filterType, fromDate, toDate, filterUser]);
+  useEffect(() => { void fetchRecords(); }, [schoolId, filterType, fromDate, toDate, filterUser]);
 
   return (
     <div className="space-y-6" dir="rtl">

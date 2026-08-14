@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { getSchools } from '../lib/api';
+import { systemAdminSchoolSessionStore } from '../lib/systemAdminSchoolSession';
 import { resolveTenantSchoolId } from '../lib/tenantSchool';
 import type { School } from '../types';
 import { useAuth } from './useAuth';
@@ -16,14 +17,19 @@ export interface TenantSchoolScope {
 export function useTenantSchool(): TenantSchoolScope {
   const { user } = useAuth();
   const isSystemAdmin = user?.role_key === 'system_admin';
-  const [selectedSchoolId, setSelectedSchoolId] = useState<number | null>(null);
+  const selectedSchoolId = useSyncExternalStore(
+    systemAdminSchoolSessionStore.subscribe,
+    systemAdminSchoolSessionStore.getSnapshot,
+    () => null,
+  );
   const [schools, setSchools] = useState<School[]>([]);
   const [schoolsLoading, setSchoolsLoading] = useState(false);
   const [schoolsError, setSchoolsError] = useState('');
+  const [schoolsValidated, setSchoolsValidated] = useState(false);
 
   useEffect(() => {
-    setSelectedSchoolId(null);
     setSchoolsError('');
+    setSchoolsValidated(false);
 
     if (!isSystemAdmin) {
       setSchools([]);
@@ -39,7 +45,10 @@ export function useTenantSchool(): TenantSchoolScope {
         setSchools([]);
         setSchoolsError(error);
       } else {
-        setSchools(((data || []) as School[]).filter((school) => school.status === 'active'));
+        const activeSchools = ((data || []) as School[]).filter((school) => school.status === 'active');
+        setSchools(activeSchools);
+        systemAdminSchoolSessionStore.validateActiveSchools(activeSchools.map((school) => school.id));
+        setSchoolsValidated(true);
       }
       setSchoolsLoading(false);
     });
@@ -50,15 +59,20 @@ export function useTenantSchool(): TenantSchoolScope {
   }, [isSystemAdmin, user?.id]);
 
   const schoolId = useMemo(
-    () => resolveTenantSchoolId(user?.role_key, user?.school_id, selectedSchoolId),
-    [selectedSchoolId, user?.role_key, user?.school_id],
+    () => resolveTenantSchoolId(
+      user?.role_key,
+      user?.school_id,
+      isSystemAdmin && schoolsValidated ? selectedSchoolId : null,
+    ),
+    [isSystemAdmin, schoolsValidated, selectedSchoolId, user?.role_key, user?.school_id],
   );
 
   const selectSchool = useCallback((nextSchoolId: number | null) => {
-    if (isSystemAdmin) {
-      setSelectedSchoolId(nextSchoolId);
+    if (!isSystemAdmin) return;
+    if (nextSchoolId == null || schools.some((school) => school.id === nextSchoolId)) {
+      systemAdminSchoolSessionStore.setSchoolId(nextSchoolId);
     }
-  }, [isSystemAdmin]);
+  }, [isSystemAdmin, schools]);
 
   return {
     isSystemAdmin,

@@ -15,6 +15,7 @@ import {
   UserCircle,
 } from 'lucide-react';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getAnalyticsOverview,
@@ -107,6 +108,7 @@ function statusIcon(status: string | null): string {
 export default function AnalyticsPage() {
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
 
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [filters, setFilters] = useState<FilterState>({
@@ -138,17 +140,26 @@ export default function AnalyticsPage() {
 
   // Load filter dropdowns
   useEffect(() => {
+    setClasses([]); setSections([]); setSubjects([]); setStudents([]);
+    setOverviewData(null);
+    setByClassData([]); setBySectionData([]); setBySubjectData([]);
+    setClosePassingData([]); setCloseExemptionData([]); setBlockersData([]);
+    setStudentSummaryData(null);
+    setLoading(false);
+    setError(null);
     async function loadDropdowns() {
       if (schoolId == null) {
         setClasses([]); setSections([]); setSubjects([]); setStudents([]);
         return;
       }
+      const isCurrent = captureSchoolRequest();
       const [clsRes, secRes, subRes, stuRes] = await Promise.all([
         getClasses(schoolId),
         getSections(schoolId),
         getSubjects(schoolId),
         getStudents(schoolId),
       ]);
+      if (!isCurrent()) return;
       setClasses(clsRes.data || []);
       setSections(secRes.data || []);
       setSubjects(subRes.data || []);
@@ -178,59 +189,60 @@ export default function AnalyticsPage() {
         setLoading(false);
         return;
       }
+      const isCurrent = captureSchoolRequest();
       setLoading(true);
       setError(null);
       try {
         switch (activeTab) {
           case 'overview': {
             const res = await getAnalyticsOverview(params);
-            if (!cancelled) setOverviewData(res.data ?? res);
+            if (!cancelled && isCurrent()) setOverviewData(res.data ?? res);
             break;
           }
           case 'by-class': {
             const res = await getAnalyticsByClass(params);
-            if (!cancelled) setByClassData(res.data || []);
+            if (!cancelled && isCurrent()) setByClassData(res.data || []);
             break;
           }
           case 'by-section': {
             const res = await getAnalyticsBySection(params);
-            if (!cancelled) setBySectionData(res.data || []);
+            if (!cancelled && isCurrent()) setBySectionData(res.data || []);
             break;
           }
           case 'by-subject': {
             const res = await getAnalyticsBySubject(params);
-            if (!cancelled) setBySubjectData(res.data || []);
+            if (!cancelled && isCurrent()) setBySubjectData(res.data || []);
             break;
           }
           case 'close-passing': {
             const res = await getStudentsCloseToPassing(params);
-            if (!cancelled) setClosePassingData(res.data || []);
+            if (!cancelled && isCurrent()) setClosePassingData(res.data || []);
             break;
           }
           case 'close-exemption': {
             const res = await getStudentsCloseToExemption(params);
-            if (!cancelled) setCloseExemptionData(res.data || []);
+            if (!cancelled && isCurrent()) setCloseExemptionData(res.data || []);
             break;
           }
           case 'exemption-blockers': {
             const res = await getExemptionBlockers(params);
-            if (!cancelled) setBlockersData(res.data || []);
+            if (!cancelled && isCurrent()) setBlockersData(res.data || []);
             break;
           }
           case 'student-summary': {
             if (filters.studentId) {
               const res = await getStudentSummary(Number(filters.studentId));
-              if (!cancelled) setStudentSummaryData(res.data ?? res);
+              if (!cancelled && isCurrent()) setStudentSummaryData(res.data ?? res);
             } else {
-              if (!cancelled) setStudentSummaryData(null);
+              if (!cancelled && isCurrent()) setStudentSummaryData(null);
             }
             break;
           }
         }
       } catch (err: any) {
-        if (!cancelled) setError(err?.error || 'حدث خطأ أثناء جلب البيانات');
+        if (!cancelled && isCurrent()) setError(err?.error || 'حدث خطأ أثناء جلب البيانات');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && isCurrent()) setLoading(false);
       }
     }
 

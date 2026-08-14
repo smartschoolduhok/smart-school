@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getOfficialBookTemplates, createOfficialBookTemplate, updateOfficialBookTemplate,
@@ -149,6 +150,7 @@ export default function OfficialBooksPage() {
    Templates Tab
    ═══════════════════════════════════════ */
 function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -160,35 +162,45 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
 
   const fetchTemplates = async () => {
     if (schoolId == null) { setTemplates([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     try {
       const res = await getOfficialBookTemplates(schoolId);
+      if (!isCurrent()) return;
       setTemplates((res.data || []) as TemplateRecord[]);
     } catch (e: any) {
+      if (!isCurrent()) return;
       setError(e?.message || 'فشل في جلب القوالب');
-    } finally { setLoading(false); }
+    } finally { if (isCurrent()) setLoading(false); }
   };
 
   useEffect(() => {
+    setTemplates([]);
     setShowForm(false);
     setEditingId(null);
+    setFormData({ title: '', body_text: '', paper_size: 'A4', requires_student: false, requires_employee: false });
+    setError('');
+    setLoading(false);
     void fetchTemplates();
   }, [schoolId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
     try {
       if (editingId) {
         await updateOfficialBookTemplate(editingId, formData, schoolId);
       } else {
         await createOfficialBookTemplate(formData, schoolId);
       }
+      if (!isCurrent()) return;
       setShowForm(false);
       setEditingId(null);
       setFormData({ title: '', body_text: '', paper_size: 'A4', requires_student: false, requires_employee: false });
       await fetchTemplates();
     } catch (e: any) {
+      if (!isCurrent()) return;
       alert(e?.error || 'فشل في حفظ القالب');
     }
   };
@@ -205,10 +217,13 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
   const archiveTemplate = async (id: number) => {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من أرشفة هذا القالب؟')) return;
+    const isCurrent = captureSchoolRequest();
     try {
       await updateOfficialBookTemplate(id, { status: 'archived' }, schoolId);
+      if (!isCurrent()) return;
       await fetchTemplates();
     } catch (e: any) {
+      if (!isCurrent()) return;
       alert(e?.error || 'فشل في أرشفة القالب');
     }
   };
@@ -290,6 +305,7 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
    Generate Tab
    ═══════════════════════════════════════ */
 function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null }) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
   const [students, setStudents] = useState<StudentOption[]>([]);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
@@ -300,19 +316,31 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
   const [generated, setGenerated] = useState<any>(null);
 
   useEffect(() => {
+    setTemplates([]);
+    setStudents([]);
+    setEmployees([]);
     setSelectedTemplate('');
     setSelectedStudent('');
     setSelectedEmployee('');
     setGenerated(null);
+    setLoading(false);
     if (schoolId == null) {
       setTemplates([]);
       setStudents([]);
       setEmployees([]);
       return;
     }
-    getOfficialBookTemplates(schoolId).then(r => setTemplates(((r.data || []) as TemplateRecord[]).filter((t: TemplateRecord) => t.status === 'active')));
-    getStudents(schoolId).then(r => setStudents((r.data || []).map((s: any) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number }))));
-    getEmployees(schoolId).then(r => setEmployees((r.data || []).map((e: any) => ({ id: e.id, full_name: e.full_name, job_title: e.job_title }))));
+    const isCurrent = captureSchoolRequest();
+    void Promise.all([
+      getOfficialBookTemplates(schoolId),
+      getStudents(schoolId),
+      getEmployees(schoolId),
+    ]).then(([templateResult, studentResult, employeeResult]) => {
+      if (!isCurrent()) return;
+      setTemplates(((templateResult.data || []) as TemplateRecord[]).filter((t) => t.status === 'active'));
+      setStudents((studentResult.data || []).map((s: any) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number })));
+      setEmployees((employeeResult.data || []).map((e: any) => ({ id: e.id, full_name: e.full_name, job_title: e.job_title })));
+    });
   }, [schoolId]);
 
   const handleGenerate = async () => {
@@ -320,6 +348,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     if (!selectedTemplate) return;
     const template = templates.find(t => t.id === Number(selectedTemplate));
     if (!template) return;
+    const isCurrent = captureSchoolRequest();
 
     const data: any = { template_id: Number(selectedTemplate) };
     if (template.requires_student) {
@@ -334,10 +363,12 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     setLoading(true);
     try {
       const res = await createOfficialBook(data, schoolId);
+      if (!isCurrent()) return;
       setGenerated(res.data);
     } catch (e: any) {
+      if (!isCurrent()) return;
       alert(e?.error || 'فشل في إنشاء الكتاب');
-    } finally { setLoading(false); }
+    } finally { if (isCurrent()) setLoading(false); }
   };
 
   const template = templates.find(t => t.id === Number(selectedTemplate));
@@ -405,6 +436,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
    List Tab
    ═══════════════════════════════════════ */
 function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [books, setBooks] = useState<BookRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewBook, setPreviewBook] = useState<BookRecord | null>(null);
@@ -412,23 +444,29 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
 
   const fetchBooks = async () => {
     if (schoolId == null) { setBooks([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     try {
       const res = await getOfficialBooks(schoolId);
+      if (!isCurrent()) return;
       setBooks((res.data || []) as BookRecord[]);
     } catch (e) { /* ignore */ }
-    finally { setLoading(false); }
+    finally { if (isCurrent()) setLoading(false); }
   };
 
   useEffect(() => {
+    setBooks([]);
     setPreviewBook(null);
+    setLoading(false);
     void fetchBooks();
   }, [schoolId]);
 
   const handlePrint = async (book: BookRecord) => {
     if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
     try {
       await printOfficialBook(book.id, schoolId);
+      if (!isCurrent()) return;
       setPreviewBook(book);
       setTimeout(() => window.print(), 300);
     } catch (e) { alert('فشل في تسجيل الطباعة'); }
@@ -437,8 +475,10 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
   const handleCancel = async (id: number) => {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إلغاء هذا الكتاب؟')) return;
+    const isCurrent = captureSchoolRequest();
     try {
       await cancelOfficialBook(id, schoolId);
+      if (!isCurrent()) return;
       await fetchBooks();
     } catch (e) { alert('فشل في الإلغاء'); }
   };

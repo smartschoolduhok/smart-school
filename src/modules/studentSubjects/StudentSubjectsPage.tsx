@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getStudentSubjects, getClasses, getSections, getStudents, getSubjects,
@@ -47,6 +48,7 @@ export default function StudentSubjectsPage() {
   const { user } = useAuth();
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
   const canManageSelectedSchool = canManage && schoolId != null;
 
@@ -85,17 +87,27 @@ export default function StudentSubjectsPage() {
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
 
   useEffect(() => {
+    setAssignments([]);
+    setClasses([]);
+    setSections([]);
+    setStudents([]);
+    setSubjects([]);
     setMode('list');
     setFilterClass('');
     setFilterSection('');
     setFilterStudent('');
     setFilterSubject('');
     setSelectedIds([]);
+    setConfirmBulkOpen(false);
+    setLoading(false);
+    setAssigning(false);
+    setError('');
     resetAssign();
     void loadData();
   }, [schoolId]);
 
   async function loadData() {
+    const isCurrentRequest = captureSchoolRequest();
     if (schoolId == null) {
       setAssignments([]);
       setClasses([]);
@@ -111,6 +123,7 @@ export default function StudentSubjectsPage() {
       getStudentSubjects(schoolId, undefined, undefined, undefined, undefined, filterActive === '' ? null : filterActive === '1'),
       getClasses(schoolId), getSections(schoolId), getStudents(schoolId), getSubjects(schoolId)
     ]);
+    if (!isCurrentRequest()) return;
     if (aRes.data) setAssignments(aRes.data as AssignmentRecord[]);
     else if (aRes.error) setError(aRes.error);
     if (cRes.data) setClasses(cRes.data as ClassRec[]);
@@ -171,11 +184,13 @@ export default function StudentSubjectsPage() {
   async function handleAssign() {
     setAssignError(''); setAssignSuccess('');
     if (schoolId == null) { setAssignError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
+    const isCurrentRequest = captureSchoolRequest();
     if (mode === 'class') {
       if (!assignClass) { setAssignError('يجب اختيار الصف'); return; }
       if (assignSubjectIds.length === 0) { setAssignError('يجب اختيار مادة واحدة على الأقل'); return; }
       setAssigning(true);
       const res = await assignSubjectsToClass(Number(assignClass), assignSubjectIds, schoolId);
+      if (!isCurrentRequest()) return;
       setAssigning(false);
       if (res.error) setAssignError(res.error);
       else { setAssignSuccess(`تم التعيين: ${res.data?.inserted_count || 0} تعيين جديد`); resetAssign(); loadData(); }
@@ -184,6 +199,7 @@ export default function StudentSubjectsPage() {
       if (assignSubjectIds.length === 0) { setAssignError('يجب اختيار مادة واحدة على الأقل'); return; }
       setAssigning(true);
       const res = await assignSubjectsToSection(Number(assignSection), assignSubjectIds, schoolId);
+      if (!isCurrentRequest()) return;
       setAssigning(false);
       if (res.error) setAssignError(res.error);
       else { setAssignSuccess(`تم التعيين: ${res.data?.inserted_count || 0} تعيين جديد`); resetAssign(); loadData(); }
@@ -192,6 +208,7 @@ export default function StudentSubjectsPage() {
       if (assignSubjectIds.length === 0) { setAssignError('يجب اختيار مادة واحدة على الأقل'); return; }
       setAssigning(true);
       const res = await assignSubjectsToStudents(assignStudentIds, assignSubjectIds, schoolId);
+      if (!isCurrentRequest()) return;
       setAssigning(false);
       if (res.error) setAssignError(res.error);
       else { setAssignSuccess(`تم التعيين: ${res.data?.inserted_count || 0} تعيين جديد`); resetAssign(); loadData(); }
@@ -199,6 +216,7 @@ export default function StudentSubjectsPage() {
       if (!assignStudent || !assignSubject) { setAssignError('الطالب والمادة مطلوبان'); return; }
       setAssigning(true);
       const res = await assignSubjectToOne(Number(assignStudent), Number(assignSubject), schoolId);
+      if (!isCurrentRequest()) return;
       setAssigning(false);
       if (res.error) setAssignError(res.error);
       else { setAssignSuccess('تم تعيين المادة للطالب بنجاح'); resetAssign(); loadData(); }
@@ -208,7 +226,9 @@ export default function StudentSubjectsPage() {
   async function handleDeactivate(id: number) {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إلغاء التعيين؟')) return;
+    const isCurrentRequest = captureSchoolRequest();
     const res = await deactivateStudentSubject(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }
@@ -216,7 +236,9 @@ export default function StudentSubjectsPage() {
   async function handleReactivate(id: number) {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إعادة تفعيل التعيين؟')) return;
+    const isCurrentRequest = captureSchoolRequest();
     const res = await reactivateStudentSubject(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }
@@ -224,7 +246,9 @@ export default function StudentSubjectsPage() {
   async function handleBulkDeactivate() {
     if (schoolId == null) return;
     if (!confirm(`هل أنت متأكد من إلغاء ${selectedIds.length} تعيين مختار؟`)) return;
+    const isCurrentRequest = captureSchoolRequest();
     const res = await bulkDeactivateStudentSubject(selectedIds, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else { setSelectedIds([]); setConfirmBulkOpen(false); loadData(); }
   }

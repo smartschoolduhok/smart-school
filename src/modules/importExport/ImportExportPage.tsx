@@ -1,7 +1,10 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { IMPORT_EXPORT_ROLES, hasRole } from '../../lib/rbac';
-import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections, getSchools } from '../../lib/api';
+import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections } from '../../lib/api';
 import {
   analysisRowsToRecords,
   analyzeWorksheet,
@@ -270,6 +273,9 @@ function detectIgnoredColumns(
 
 export default function ImportExportPage() {
   const { user } = useAuth();
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [activeTab, setActiveTab] = useState<'import' | 'export' | 'templates' | 'jobs'>('import');
   const [selectedType, setSelectedType] = useState<ImportType>('students');
   const [importTypeConfirmed, setImportTypeConfirmed] = useState(true);
@@ -283,9 +289,6 @@ export default function ImportExportPage() {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<'upload' | 'sheets' | 'mapping' | 'preview' | 'confirm'>('upload');
   const [importJobs, setImportJobs] = useState<any[]>([]);
-  const isSystemAdmin = user?.role_key === 'system_admin';
-  const [schoolId, setSchoolId] = useState<number | null>(isSystemAdmin ? null : (user?.school_id ?? null));
-  const [schools, setSchools] = useState<Array<Record<string, any>>>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const [xlsxModule, setXlsxModule] = useState<any>(null);
   const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>('strict_existing_assignments');
@@ -320,19 +323,6 @@ export default function ImportExportPage() {
           && inference.confidence < 0.7;
       })
     : [];
-
-  useEffect(() => {
-    if (isSystemAdmin) {
-      setSchoolId(null);
-      let cancelled = false;
-      getSchools().then(result => {
-        if (!cancelled) setSchools((result.data || []).filter(school => school.status === 'active'));
-      });
-      return () => { cancelled = true; };
-    }
-    setSchools([]);
-    setSchoolId(user?.school_id ?? null);
-  }, [isSystemAdmin, user?.school_id]);
 
   useEffect(() => {
     if (activeTab === 'jobs') loadJobs();
@@ -521,6 +511,7 @@ export default function ImportExportPage() {
 
   const parseSheetAndPreview = async () => {
     if (!selectedSheet || !file) return;
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     try {
       const info = sheets.find(s => s.name === selectedSheet);
@@ -591,6 +582,7 @@ export default function ImportExportPage() {
         payload.selected_section_id = selectedSectionId;
       }
       const res = await previewImport(selectedType, payload);
+      if (!isCurrent()) return;
       if (res.data) {
         setPreview(res.data as PreviewResult);
         setStep('preview');
@@ -598,13 +590,15 @@ export default function ImportExportPage() {
         alert(res.error);
       }
     } catch (err: any) {
+      if (!isCurrent()) return;
       alert('فشل في المعاينة: ' + (err.message || 'خطأ غير معروف'));
     }
-    setLoading(false);
+    if (isCurrent()) setLoading(false);
   };
 
   const handleConfirm = async () => {
     if (!preview) return;
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     try {
       if (!schoolId) throw new Error('يجب اختيار المدرسة المستهدفة قبل تأكيد الاستيراد');
@@ -629,6 +623,7 @@ export default function ImportExportPage() {
         payload.clear_empty_fields = clearEmptyFields;
       }
       const res = await confirmImport(selectedType, payload);
+      if (!isCurrent()) return;
       if (res.data) {
         setConfirmResult(res.data);
         setStep('confirm');
@@ -636,18 +631,22 @@ export default function ImportExportPage() {
         alert(res.error);
       }
     } catch (err: any) {
+      if (!isCurrent()) return;
       alert('فشل في تأكيد الاستيراد: ' + (err.message || 'خطأ غير معروف'));
     }
-    setLoading(false);
+    if (isCurrent()) setLoading(false);
   };
 
   const handleExport = async (type: ImportType) => {
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     try {
       if (!schoolId) throw new Error('يجب اختيار المدرسة المستهدفة قبل التصدير');
       const res = await getExportData(type, schoolId);
+      if (!isCurrent()) return;
       if (res.data?.rows) {
         const XLSX = await loadXlsx();
+        if (!isCurrent()) return;
         const headers = SYSTEM_FIELDS[type].map(f => f.label);
         const keys = SYSTEM_FIELDS[type].map(f => f.key);
         const dataRows = res.data.rows.map((r: any) => keys.map(k => r[k] ?? ''));
@@ -667,9 +666,10 @@ export default function ImportExportPage() {
         alert(res.error);
       }
     } catch (err: any) {
+      if (!isCurrent()) return;
       alert('فشل في التصدير: ' + (err.message || 'خطأ غير معروف'));
     }
-    setLoading(false);
+    if (isCurrent()) setLoading(false);
   };
 
   const handleTemplateDownload = async (type: ImportType) => {
@@ -724,21 +724,9 @@ export default function ImportExportPage() {
         استيراد وتصدير Excel
       </h1>
 
-      {isSystemAdmin && (
-        <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4">
-          <label htmlFor="target-school" className="mb-2 block text-sm font-bold text-blue-900">المدرسة المستهدفة</label>
-          <select
-            id="target-school"
-            value={schoolId ?? ''}
-            onChange={event => setSchoolId(event.target.value ? Number(event.target.value) : null)}
-            className="w-full max-w-md rounded-md border border-blue-300 bg-white px-3 py-2 text-sm"
-          >
-            <option value="">— اختر المدرسة قبل الاستيراد أو التصدير —</option>
-            {schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}
-          </select>
-          <p className="mt-2 text-xs text-blue-700">لن تُحمّل الصفوف أو الشعب، ولن تبدأ المعاينة أو التصدير، قبل اختيار مدرسة صراحةً.</p>
-        </div>
-      )}
+      <div className="mb-6">
+        <SystemAdminSchoolSelector {...schoolScope} />
+      </div>
 
       {preview?.warnings && preview.warnings.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">

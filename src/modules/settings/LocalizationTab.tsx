@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { updateSystemSettings } from '../../lib/api';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { Save, Loader2, Globe, Hash, Calendar, Coins } from 'lucide-react';
 
 interface Props {
@@ -28,6 +29,7 @@ const CURRENCY_LABELS = [
 ];
 
 export default function LocalizationTab({ data, canEdit, schoolId, onSuccess, onError }: Props) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const settings = data || {};
   const [form, setForm] = useState<Record<string, any>>({});
   const [saving, setSaving] = useState(false);
@@ -39,8 +41,9 @@ export default function LocalizationTab({ data, canEdit, schoolId, onSuccess, on
       currency_label: settings.currency_label || 'د.ع',
       date_format: settings.date_format || 'dd/MM/yyyy',
     });
+    setSaving(false);
     setChanged(false);
-  }, [settings]);
+  }, [settings, schoolId]);
 
   const handleChange = (key: string, value: any) => {
     setForm(prev => ({ ...prev, [key]: value }));
@@ -54,8 +57,10 @@ export default function LocalizationTab({ data, canEdit, schoolId, onSuccess, on
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!schoolId || !canEdit) return;
+    const isCurrent = captureSchoolRequest();
     setSaving(true);
     const { data: resData, error } = await updateSystemSettings(form, schoolId);
+    if (!isCurrent()) return;
     setSaving(false);
     if (error) {
       onError(error);

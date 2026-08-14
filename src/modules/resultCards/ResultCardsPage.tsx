@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { QRCodeSVG } from 'qrcode.react';
 import {
@@ -139,6 +140,7 @@ export default function ResultCardsPage() {
    ═══════════════════════════════════════ */
 function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
   const { user } = useAuth();
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [students, setStudents] = useState<StudentOption[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [card, setCard] = useState<CardRecord | null>(null);
@@ -149,23 +151,31 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
   const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    setStudents([]);
     setSelectedStudentId('');
     setCard(null);
     setCardDetails(null);
+    setLoading(false);
+    setGenerating(false);
+    setMessage(null);
     void loadStudents();
   }, [schoolId]);
 
   async function loadStudents() {
     if (schoolId == null) { setStudents([]); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await getStudents(schoolId, null, null);
+    if (!isCurrent()) return;
     if (res.data) setStudents((res.data as any[]).map((s) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number })));
   }
 
   async function handleGenerate() {
     if (schoolId == null) { setMessage({ text: 'يجب اختيار المدرسة المستهدفة أولاً', type: 'error' }); return; }
     if (!selectedStudentId) { setMessage({ text: 'يرجى اختيار طالب أولاً', type: 'error' }); return; }
+    const isCurrent = captureSchoolRequest();
     setGenerating(true);
     const res = await generateStudentResultCard(selectedStudentId, schoolId);
+    if (!isCurrent()) return;
     setGenerating(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -174,6 +184,7 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
       setCard(res.data?.card || null);
       if (res.data?.card?.id) {
         const d = await getResultCard(res.data.card.id);
+        if (!isCurrent()) return;
         setCardDetails(d.data || null);
       }
     }
@@ -182,13 +193,16 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
 
   async function handleLoadPreview() {
     if (schoolId == null || !selectedStudentId) return;
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     // Find existing active card for this student
     const res = await getResultCards({ student_id: Number(selectedStudentId), status: 'active', school_id: schoolId });
+    if (!isCurrent()) return;
     const cards = (res.data || []) as CardRecord[];
     if (cards.length > 0) {
       setCard(cards[0]);
       const d = await getResultCard(cards[0].id);
+      if (!isCurrent()) return;
       setCardDetails(d.data || null);
     } else {
       setCard(null);
@@ -315,6 +329,7 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
    ═══════════════════════════════════════ */
 function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
   const { user } = useAuth();
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [sections, setSections] = useState<SectionOption[]>([]);
   const [selectedClassId, setSelectedClassId] = useState('');
@@ -324,9 +339,13 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
   const [result, setResult] = useState<any>(null);
 
   useEffect(() => {
+    setClasses([]);
+    setSections([]);
     setSelectedClassId('');
     setSelectedSectionId('');
     setResult(null);
+    setGenerating(false);
+    setMessage(null);
     void loadClasses();
   }, [schoolId]);
   useEffect(() => {
@@ -336,12 +355,16 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
 
   async function loadClasses() {
     if (schoolId == null) { setClasses([]); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await getClasses(schoolId);
+    if (!isCurrent()) return;
     if (res.data) setClasses((res.data as any[]).map((c) => ({ id: c.id, name: c.name })));
   }
   async function loadSections(classId: string) {
     if (schoolId == null) { setSections([]); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await getSections(schoolId, Number(classId));
+    if (!isCurrent()) return;
     if (res.data) setSections((res.data as any[]).map((s) => ({ id: s.id, name: s.name, class_id: s.class_id })));
   }
 
@@ -351,9 +374,11 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
       setMessage({ text: 'يرجى اختيار الصف والشعبة', type: 'error' });
       return;
     }
+    const isCurrent = captureSchoolRequest();
     setGenerating(true);
     setResult(null);
     const res = await generateSectionResultCards({ school_id: schoolId, class_id: Number(selectedClassId), section_id: Number(selectedSectionId) });
+    if (!isCurrent()) return;
     setGenerating(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -446,6 +471,7 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
    ═══════════════════════════════════════ */
 function ListTab({ schoolId }: { schoolId: number | null }) {
   const { user } = useAuth();
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState<{ status: string; student_id: string }>({ status: '', student_id: '' });
@@ -453,32 +479,42 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
   const [students, setStudents] = useState<StudentOption[]>([]);
 
   useEffect(() => {
+    setCards([]);
+    setStudents([]);
     setFilters({ status: '', student_id: '' });
+    setLoading(false);
+    setMessage(null);
     void loadCards();
     void loadStudents();
   }, [schoolId]);
 
   async function loadCards() {
     if (schoolId == null) { setCards([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getResultCards({
       school_id: schoolId,
       status: filters.status || null,
       student_id: filters.student_id ? Number(filters.student_id) : null,
     });
+    if (!isCurrent()) return;
     setCards((res.data || []) as CardRecord[]);
     setLoading(false);
   }
 
   async function loadStudents() {
     if (schoolId == null) { setStudents([]); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await getStudents(schoolId, null, null);
+    if (!isCurrent()) return;
     if (res.data) setStudents((res.data as any[]).map((s) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number })));
   }
 
   async function handleMarkPrinted(id: number) {
     if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
     const res = await markResultCardPrinted(id, schoolId);
+    if (!isCurrent()) return;
     if (res.error) setMessage({ text: res.error, type: 'error' });
     else { setMessage({ text: 'تم تعليم الكارت كمطبوع', type: 'success' }); loadCards(); }
     setTimeout(() => setMessage(null), 3000);
@@ -487,7 +523,9 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
   async function handleCancel(id: number) {
     if (schoolId == null) return;
     if (!window.confirm('هل أنت متأكد من إلغاء هذا الكارت؟')) return;
+    const isCurrent = captureSchoolRequest();
     const res = await cancelResultCard(id, schoolId);
+    if (!isCurrent()) return;
     if (res.error) setMessage({ text: res.error, type: 'error' });
     else { setMessage({ text: 'تم إلغاء الكارت', type: 'success' }); loadCards(); }
     setTimeout(() => setMessage(null), 3000);

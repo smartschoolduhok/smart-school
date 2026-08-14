@@ -7,6 +7,11 @@ import {
   resolveRequiredWriteSchoolId,
   resolveTenantSchoolId,
 } from '../src/lib/tenantSchool.ts';
+import { createRequestGeneration } from '../src/lib/requestGeneration.ts';
+import {
+  createSystemAdminSchoolSessionStore,
+  SYSTEM_ADMIN_SCHOOL_SESSION_KEY,
+} from '../src/lib/systemAdminSchoolSession.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -27,6 +32,64 @@ function runtimeSources(directory) {
   }
   return files;
 }
+
+function memorySessionStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key),
+  };
+}
+
+test('system_admin target persists across remounts in the same browser session', () => {
+  const storage = memorySessionStorage();
+  const firstMount = createSystemAdminSchoolSessionStore(storage);
+  firstMount.setSchoolId(27);
+
+  const nextMount = createSystemAdminSchoolSessionStore(storage);
+  assert.equal(nextMount.getSnapshot(), 27);
+  assert.equal(storage.getItem(SYSTEM_ADMIN_SCHOOL_SESSION_KEY), '27');
+});
+
+test('fresh system_admin sessions do not auto-select a school', () => {
+  const store = createSystemAdminSchoolSessionStore(memorySessionStorage());
+  assert.equal(store.getSnapshot(), null);
+  const implementation = source('src/lib/systemAdminSchoolSession.ts');
+  assert.match(implementation, /window\.sessionStorage/);
+  assert.doesNotMatch(implementation, /localStorage/);
+});
+
+test('invalid or inactive persisted schools are cleared after active-school validation', () => {
+  for (const storedValue of ['not-a-school', '19']) {
+    const storage = memorySessionStorage({ [SYSTEM_ADMIN_SCHOOL_SESSION_KEY]: storedValue });
+    const store = createSystemAdminSchoolSessionStore(storage);
+    store.validateActiveSchools([27, 31]);
+    assert.equal(store.getSnapshot(), null);
+    assert.equal(storage.getItem(SYSTEM_ADMIN_SCHOOL_SESSION_KEY), null);
+  }
+});
+
+test('tenant-bound users ignore a persisted system_admin target', () => {
+  const storage = memorySessionStorage({ [SYSTEM_ADMIN_SCHOOL_SESSION_KEY]: '27' });
+  const store = createSystemAdminSchoolSessionStore(storage);
+  assert.equal(store.getSnapshot(), 27);
+  assert.equal(resolveTenantSchoolId('school_owner', 9, store.getSnapshot()), 9);
+  assert.equal(resolveTenantSchoolId('registrar', 9, store.getSnapshot()), 9);
+});
+
+test('school request generations prevent a stale school-A response replacing school-B state', () => {
+  const requests = createRequestGeneration();
+  const schoolARequest = requests.capture();
+  requests.invalidate();
+  const schoolBRequest = requests.capture();
+  let state = [];
+
+  if (schoolBRequest()) state = ['school-b'];
+  if (schoolARequest()) state = ['school-a'];
+
+  assert.deepEqual(state, ['school-b']);
+});
 
 test('system_admin has no implicit school and writes require an explicit target', () => {
   assert.equal(resolveTenantSchoolId('system_admin', null, null), null);
@@ -56,6 +119,60 @@ test('classes and sections load only the selected school and discard stale schoo
   assert.match(classesPage, /setSections\(\[\]\)/);
   assert.match(classesPage, /canManageSelectedSchool = canManage && schoolId != null/);
   assert.match(classesPage, /school_id: schoolId/);
+});
+
+test('school-dependent pages guard async loads and reset actionable school state', () => {
+  const guardedPages = [
+    'src/modules/students/StudentsPage.tsx',
+    'src/modules/subjects/SubjectsPage.tsx',
+    'src/modules/studentSubjects/StudentSubjectsPage.tsx',
+    'src/modules/grades/GradesPage.tsx',
+    'src/modules/resultCards/ResultCardsPage.tsx',
+    'src/modules/fees/FeesPage.tsx',
+    'src/modules/treasury/TreasuryPage.tsx',
+    'src/modules/employees/EmployeesPage.tsx',
+    'src/modules/officialBooks/OfficialBooksPage.tsx',
+    'src/modules/settings/SettingsPage.tsx',
+    'src/modules/analytics/AnalyticsPage.tsx',
+    'src/modules/printRecords/PrintRecordsPage.tsx',
+    'src/modules/importExport/ImportExportPage.tsx',
+  ];
+  for (const page of guardedPages) {
+    const text = source(page);
+    assert.match(text, /useSchoolRequestGuard/, `${page} must reject stale school responses`);
+    assert.match(text, /captureSchoolRequest\(\)/, `${page} must capture request identity`);
+    assert.match(text, /isCurrent(?:[A-Z]\w*)?\(\)/, `${page} must check request identity`);
+  }
+
+  const students = source('src/modules/students/StudentsPage.tsx');
+  assert.match(students, /setStudents\(\[\]\)/);
+  assert.match(students, /setModalOpen\(false\)/);
+  const subjects = source('src/modules/subjects/SubjectsPage.tsx');
+  assert.match(subjects, /setSubjects\(\[\]\)/);
+  assert.match(subjects, /setModalOpen\(false\)/);
+  const employees = source('src/modules/employees/EmployeesPage.tsx');
+  assert.match(employees, /setEmployees\(\[\]\)/);
+  assert.match(employees, /setEditEmployee\(null\)/);
+  const officialBooks = source('src/modules/officialBooks/OfficialBooksPage.tsx');
+  assert.match(officialBooks, /setPreviewBook\(null\)/);
+  assert.match(officialBooks, /setGenerated\(null\)/);
+
+  const resetExpectations = new Map([
+    ['src/modules/classes/ClassesPage.tsx', [/setClassModal\(false\)/, /setSectionModal\(false\)/]],
+    ['src/modules/studentSubjects/StudentSubjectsPage.tsx', [/setSelectedIds\(\[\]\)/, /setConfirmBulkOpen\(false\)/]],
+    ['src/modules/grades/GradesPage.tsx', [/setSelectedStudentId\(''\)/, /setShowConfirm\(false\)/]],
+    ['src/modules/resultCards/ResultCardsPage.tsx', [/setSelectedStudentId\(''\)/, /setResult\(null\)/]],
+    ['src/modules/fees/FeesPage.tsx', [/setSelectedPayments\(\[\]\)/, /setEditingFee\(null\)/]],
+    ['src/modules/treasury/TreasuryPage.tsx', [/setTransactions\(\[\]\)/, /setClosings\(\[\]\)/]],
+    ['src/modules/settings/SettingsPage.tsx', [/setLoadedSchoolId\(null\)/, /setActiveTab\('profile'\)/]],
+    ['src/modules/analytics/AnalyticsPage.tsx', [/setStudentSummaryData\(null\)/, /setStudents\(\[\]\)/]],
+    ['src/modules/printRecords/PrintRecordsPage.tsx', [/setRecords\(\[\]\)/, /setFilterType\('all'\)/]],
+    ['src/modules/importExport/ImportExportPage.tsx', [/setSelectedClassId\(null\)/, /setPreview\(null\)/]],
+  ]);
+  for (const [page, patterns] of resetExpectations) {
+    const text = source(page);
+    for (const pattern of patterns) assert.match(text, pattern, `${page} must reset school-dependent state`);
+  }
 });
 
 test('runtime frontend contains no fallback or hardcoded tenant school 1', () => {

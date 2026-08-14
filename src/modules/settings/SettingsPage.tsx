@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getSchoolSettings, getDocumentSettings, getSystemSettings
@@ -33,6 +34,7 @@ export default function SettingsPage() {
   const { user } = useAuth();
   const schoolScope = useTenantSchool();
   const { schoolId: effectiveSchoolId, isSystemAdmin: isAdmin } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(effectiveSchoolId);
   const [activeTab, setActiveTab] = useState<TabKey>('profile');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +43,7 @@ export default function SettingsPage() {
   const [schoolData, setSchoolData] = useState<Record<string, any>>({});
   const [documentData, setDocumentData] = useState<Record<string, any>>({});
   const [systemData, setSystemData] = useState<Record<string, any>>({});
+  const [loadedSchoolId, setLoadedSchoolId] = useState<number | null>(null);
 
   const canEdit = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
 
@@ -49,6 +52,7 @@ export default function SettingsPage() {
       setLoading(false);
       return;
     }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     setError(null);
     try {
@@ -57,6 +61,7 @@ export default function SettingsPage() {
         getDocumentSettings(effectiveSchoolId),
         getSystemSettings(effectiveSchoolId),
       ]);
+      if (!isCurrent()) return;
 
       if (schoolRes.error) throw new Error(schoolRes.error);
       if (docRes.error) throw new Error(docRes.error);
@@ -65,15 +70,24 @@ export default function SettingsPage() {
       setSchoolData(schoolRes.data?.data || {});
       setDocumentData(docRes.data?.data || {});
       setSystemData(sysRes.data?.data || {});
+      setLoadedSchoolId(effectiveSchoolId);
     } catch (err: any) {
+      if (!isCurrent()) return;
       setError(err.message || 'فشل في تحميل الإعدادات');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [effectiveSchoolId]);
 
   // Load settings when school changes
   useEffect(() => {
+    setSchoolData({});
+    setDocumentData({});
+    setSystemData({});
+    setLoadedSchoolId(null);
+    setError(null);
+    setSuccess(null);
+    setActiveTab('profile');
     if (effectiveSchoolId) {
       loadSettings();
     } else {
@@ -151,7 +165,7 @@ export default function SettingsPage() {
       )}
 
       {/* Tabs + Content */}
-      {!loading && (!isAdmin || effectiveSchoolId) ? (
+      {!loading && effectiveSchoolId != null && loadedSchoolId === effectiveSchoolId ? (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="flex overflow-x-auto border-b border-gray-200">
             {TAB_CONFIG.map(tab => (

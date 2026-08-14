@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getStudents, getClasses, getSections, createStudent, updateStudent, archiveStudent } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
@@ -62,6 +63,7 @@ export default function StudentsPage() {
   const { user } = useAuth();
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
 
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [classes, setClasses] = useState<ClassRecord[]>([]);
@@ -87,15 +89,23 @@ export default function StudentsPage() {
   const canManageSelectedSchool = canManage && schoolId != null;
 
   useEffect(() => {
+    setStudents([]);
+    setClasses([]);
+    setSections([]);
     setFilterClass('');
     setFilterSection('');
     setModalOpen(false);
     setEditingId(null);
     setForm(emptyForm);
+    setLoading(false);
+    setSaving(false);
+    setError('');
+    setFormError('');
     void loadData();
   }, [schoolId]);
 
   async function loadData() {
+    const isCurrentRequest = captureSchoolRequest();
     if (schoolId == null) {
       setStudents([]);
       setClasses([]);
@@ -111,6 +121,7 @@ export default function StudentsPage() {
       getClasses(schoolId),
       getSections(schoolId),
     ]);
+    if (!isCurrentRequest()) return;
     if (sRes.data) setStudents(sRes.data as StudentRecord[]);
     else if (sRes.error) setError(sRes.error);
     if (cRes.data) setClasses(cRes.data as ClassRecord[]);
@@ -176,6 +187,7 @@ export default function StudentsPage() {
       setFormError('رقم الطالب والاسم الكامل والجنس مطلوبة');
       return;
     }
+    const isCurrentRequest = captureSchoolRequest();
     setSaving(true);
     const payload = {
       school_id: schoolId,
@@ -195,10 +207,12 @@ export default function StudentsPage() {
     };
     if (modalMode === 'create') {
       const res = await createStudent(payload);
+      if (!isCurrentRequest()) return;
       if (res.error) setFormError(res.error);
       else { setModalOpen(false); loadData(); }
     } else if (editingId != null) {
       const res = await updateStudent(editingId, { ...payload, status: 'active' });
+      if (!isCurrentRequest()) return;
       if (res.error) setFormError(res.error);
       else { setModalOpen(false); loadData(); }
     }
@@ -208,7 +222,9 @@ export default function StudentsPage() {
   async function handleArchive(id: number) {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من أرشفة هذا الطالب؟')) return;
+    const isCurrentRequest = captureSchoolRequest();
     const res = await archiveStudent(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }

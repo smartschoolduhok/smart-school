@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getStudentFees, createStudentFee, updateStudentFee, deleteStudentFee,
@@ -76,6 +77,7 @@ interface StudentOption {
 export default function FeesPage() {
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [activeTab, setActiveTab] = useState<TabKey>('list');
 
   // Shared data
@@ -135,46 +137,66 @@ export default function FeesPage() {
 
   const loadStudents = useCallback(async () => {
     if (schoolId == null) { setStudents([]); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await getStudents(schoolId);
+    if (!isCurrent()) return;
     if (res.data) setStudents(res.data.filter((s: any) => s.status === 'active').map((s: any) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number, class_name: s.class_name, section_name: s.section_name })));
   }, [schoolId]);
 
   const loadAcademicYears = useCallback(async () => {
     if (schoolId == null) { setAcademicYears([]); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await getAcademicYears(schoolId);
+    if (!isCurrent()) return;
     if (res.data) setAcademicYears(res.data as any);
   }, [schoolId]);
 
   const loadFees = useCallback(async () => {
     if (schoolId == null) { setFees([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getStudentFees({ school_id: schoolId });
+    if (!isCurrent()) return;
     if (res.data) setFees(res.data as any);
     setLoading(false);
   }, [schoolId]);
 
   const loadPayments = useCallback(async () => {
     if (schoolId == null) { setPayments([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getFeePayments({ school_id: schoolId, student_id: paymentStudentFilter || null });
+    if (!isCurrent()) return;
     if (res.data) setPayments(res.data as any);
     setLoading(false);
   }, [schoolId, paymentStudentFilter]);
 
   const loadReceipts = useCallback(async () => {
     if (schoolId == null) { setReceipts([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getFeeReceipts({ school_id: schoolId, student_id: receiptStudentFilter || null });
+    if (!isCurrent()) return;
     if (res.data) setReceipts(res.data as any);
     setLoading(false);
   }, [schoolId, receiptStudentFilter]);
 
   useEffect(() => {
+    setStudents([]);
+    setAcademicYears([]);
+    setFees([]);
+    setPayments([]);
+    setReceipts([]);
     setSelectedStudent('');
     setPaymentStudentFilter('');
     setReceiptStudentFilter('');
     setSelectedPayments([]);
+    setPayFeeId('');
+    setSelectedYear('');
     setEditingFee(null);
+    setLoading(false);
+    setError(null);
+    setSuccess(null);
     loadStudents();
     loadAcademicYears();
   }, [loadStudents, loadAcademicYears]);
@@ -189,6 +211,7 @@ export default function FeesPage() {
     e.preventDefault();
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!selectedStudent || !amount) { showError('الطالب والمبلغ مطلوبان'); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await createStudentFee({
       school_id: schoolId,
       student_id: Number(selectedStudent),
@@ -201,6 +224,7 @@ export default function FeesPage() {
       discount_type: discountType,
       discount_value: discountType === 'none' ? 0 : Number(discountValue),
     });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم إضافة القسط بنجاح');
@@ -213,7 +237,9 @@ export default function FeesPage() {
   async function handleDeleteFee(id: number) {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من حذف هذا القسط؟')) return;
+    const isCurrent = captureSchoolRequest();
     const res = await deleteStudentFee(id, schoolId);
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else { showSuccess('تم حذف القسط'); loadFees(); }
   }
@@ -222,6 +248,7 @@ export default function FeesPage() {
     e.preventDefault();
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!editingFee) return;
+    const isCurrent = captureSchoolRequest();
     const res = await updateStudentFee(editingFee.id, {
       school_id: schoolId,
       fee_type: editingFee.fee_type,
@@ -230,6 +257,7 @@ export default function FeesPage() {
       due_date: editingFee.due_date,
       notes: editingFee.notes,
     });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else { showSuccess('تم تحديث القسط'); setEditingFee(null); loadFees(); }
   }
@@ -238,6 +266,7 @@ export default function FeesPage() {
     e.preventDefault();
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!payFeeId || !payAmount || !payDate) { showError('القسط والمبلغ وتاريخ الدفع مطلوبة'); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await createFeePayment({
       school_id: schoolId,
       student_fee_id: Number(payFeeId),
@@ -246,6 +275,7 @@ export default function FeesPage() {
       payment_date: Math.floor(new Date(payDate).getTime() / 1000),
       notes: payNotes || null,
     });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم تسجيل الدفع بنجاح');
@@ -258,7 +288,9 @@ export default function FeesPage() {
   async function handleGenerateReceipt() {
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!receiptStudentFilter || selectedPayments.length === 0) { showError('اختر الطالب والمدفوعات'); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await generateFeeReceipt({ school_id: schoolId, student_id: Number(receiptStudentFilter), payment_ids: selectedPayments });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم إنشاء الإيصال بنجاح');
@@ -270,7 +302,9 @@ export default function FeesPage() {
   async function handleCancelReceipt(id: number) {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إلغاء هذا الإيصال؟')) return;
+    const isCurrent = captureSchoolRequest();
     const res = await cancelFeeReceipt(id, schoolId);
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else { showSuccess('تم إلغاء الإيصال'); loadReceipts(); }
   }
