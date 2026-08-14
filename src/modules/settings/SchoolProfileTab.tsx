@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { updateSchoolProfile } from '../../lib/api';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { Save, Loader2, MapPin, Phone, Mail, Globe, User, Image, Building2 } from 'lucide-react';
 
 interface Props {
@@ -13,6 +14,7 @@ interface Props {
 const SCHOOL_TYPES = ['خاص', 'حكومي', 'دولي', 'مختلط'];
 
 export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, onError }: Props) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const school = data?.school || {};
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -33,8 +35,9 @@ export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, o
       logo_url: school.logo_url || '',
       official_stamp_url: school.official_stamp_url || '',
     });
+    setSaving(false);
     setChanged(false);
-  }, [school]);
+  }, [school, schoolId]);
 
   const handleChange = (key: string, value: string) => {
     setForm(prev => ({ ...prev, [key]: value }));
@@ -44,8 +47,10 @@ export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, o
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!schoolId || !canEdit) return;
+    const isCurrent = captureSchoolRequest();
     setSaving(true);
     const { data: resData, error } = await updateSchoolProfile(form, schoolId);
+    if (!isCurrent()) return;
     setSaving(false);
     if (error) {
       onError(error);

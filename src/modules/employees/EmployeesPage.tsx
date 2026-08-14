@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { EMPLOYEE_MANAGEMENT_ROLES, EMPLOYEE_SALARY_ROLES, hasRole } from '../../lib/rbac';
 import {
   getEmployees, createEmployee, updateEmployee, archiveEmployee,
   getSalaries, generateSalary, generateAllSalaries, paySalary, cancelSalary,
-  getSalaryMonthlyReport, getEmployee,
+  getSalaryMonthlyReport,
 } from '../../lib/api';
 import {
   Users, Plus, Search, Trash2, X, DollarSign, Calendar,
@@ -86,8 +89,12 @@ interface ReportRow {
 
 export default function EmployeesPage() {
   const { user } = useAuth();
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const isManageEmployee = hasRole(user?.role_key, EMPLOYEE_MANAGEMENT_ROLES);
   const isManageSalary = hasRole(user?.role_key, EMPLOYEE_SALARY_ROLES);
+  const hasSelectedSchool = schoolId != null;
 
   const [activeTab, setActiveTab] = useState<TabKey>('list');
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
@@ -131,28 +138,50 @@ export default function EmployeesPage() {
     setTimeout(() => setSuccess(null), 5000);
   }, []);
 
-  const schoolId = user?.school_id || 1;
-
   const loadEmployees = useCallback(async () => {
+    if (schoolId == null) { setEmployees([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getEmployees(schoolId);
+    if (!isCurrent()) return;
     if (res.data) setEmployees(res.data as EmployeeRecord[]);
     setLoading(false);
   }, [schoolId]);
 
   const loadSalaries = useCallback(async () => {
+    if (schoolId == null) { setSalaries([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getSalaries({ school_id: schoolId, limit: 100, offset: 0 });
+    if (!isCurrent()) return;
     if (res.data) setSalaries(res.data as SalaryRecord[]);
     setLoading(false);
   }, [schoolId]);
 
   const loadReports = useCallback(async () => {
+    if (schoolId == null) { setReports([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getSalaryMonthlyReport(schoolId, reportFilters.month, reportFilters.year);
+    if (!isCurrent()) return;
     if (res.data) setReports(res.data as ReportRow[]);
     setLoading(false);
   }, [schoolId, reportFilters]);
+
+  useEffect(() => {
+    setEmployees([]);
+    setSalaries([]);
+    setReports([]);
+    setSelectedEmployee(null);
+    setSelectedSalary(null);
+    setEditEmployee(null);
+    setPaySalaryId('');
+    setCancelPayload({ id: '', reason: '' });
+    setLoading(false);
+    setError(null);
+    setSuccess(null);
+    setActiveTab('list');
+  }, [schoolId]);
 
   useEffect(() => {
     if (activeTab === 'list') loadEmployees();
@@ -162,8 +191,11 @@ export default function EmployeesPage() {
 
   async function handleAddEmployee(e: React.FormEvent) {
     e.preventDefault();
+    if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!newEmployee.full_name) { showError('اسم الموظف مطلوب'); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await createEmployee({ ...newEmployee, school_id: schoolId, salary_amount: Number(newEmployee.salary_amount) || 0 });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم إضافة الموظف بنجاح');
@@ -175,11 +207,15 @@ export default function EmployeesPage() {
 
   async function handleUpdateEmployee(e: React.FormEvent) {
     e.preventDefault();
+    if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!editEmployee || !selectedEmployee) return;
+    const isCurrent = captureSchoolRequest();
     const res = await updateEmployee(selectedEmployee.id, {
       ...editEmployee,
+      school_id: schoolId,
       salary_amount: Number(editEmployee.salary_amount) || 0,
     });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم تحديث الموظف بنجاح');
@@ -190,16 +226,22 @@ export default function EmployeesPage() {
   }
 
   async function handleArchive(id: number) {
+    if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من أرشفة هذا الموظف؟')) return;
-    const res = await archiveEmployee(id);
+    const isCurrent = captureSchoolRequest();
+    const res = await archiveEmployee(id, schoolId);
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else { showSuccess('تم أرشفة الموظف بنجاح'); loadEmployees(); }
   }
 
   async function handleGenerateOne(e: React.FormEvent) {
     e.preventDefault();
+    if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!genPayload.employee_id || !genPayload.month || !genPayload.year) { showError('معرف الموظف والشهر والسنة مطلوبة'); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await generateSalary({
+      school_id: schoolId,
       employee_id: Number(genPayload.employee_id),
       month: Number(genPayload.month),
       year: Number(genPayload.year),
@@ -207,6 +249,7 @@ export default function EmployeesPage() {
       bonus_amount: Number(genPayload.bonus_amount) || 0,
       deduction_amount: Number(genPayload.deduction_amount) || 0,
     });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم توليد الراتب بنجاح');
@@ -218,6 +261,8 @@ export default function EmployeesPage() {
 
   async function handleGenerateAll(e: React.FormEvent) {
     e.preventDefault();
+    if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await generateAllSalaries({
       school_id: schoolId,
       month: Number(genAllPayload.month),
@@ -225,6 +270,7 @@ export default function EmployeesPage() {
       bonus_amount: Number(genAllPayload.bonus_amount) || 0,
       deduction_amount: Number(genAllPayload.deduction_amount) || 0,
     });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       const data = res.data as any;
@@ -236,8 +282,11 @@ export default function EmployeesPage() {
 
   async function handlePay(e: React.FormEvent) {
     e.preventDefault();
+    if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!paySalaryId) { showError('معرف الراتب مطلوب'); return; }
-    const res = await paySalary(paySalaryId, payDate);
+    const isCurrent = captureSchoolRequest();
+    const res = await paySalary(paySalaryId, schoolId, payDate);
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم دفع الراتب بنجاح');
@@ -250,8 +299,11 @@ export default function EmployeesPage() {
 
   async function handleCancel(e: React.FormEvent) {
     e.preventDefault();
+    if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!cancelPayload.id || !cancelPayload.reason) { showError('معرف الراتب وسبب الإلغاء مطلوبان'); return; }
-    const res = await cancelSalary(cancelPayload.id, cancelPayload.reason);
+    const isCurrent = captureSchoolRequest();
+    const res = await cancelSalary(cancelPayload.id, schoolId, cancelPayload.reason);
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم إلغاء الراتب بنجاح');
@@ -267,10 +319,10 @@ export default function EmployeesPage() {
 
   const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
     { key: 'list', label: 'الموظفون', icon: <Users size={18} /> },
-    ...(isManageEmployee ? [{ key: 'add' as TabKey, label: 'إضافة موظف', icon: <Plus size={18} /> }] : []),
+    ...(isManageEmployee && hasSelectedSchool ? [{ key: 'add' as TabKey, label: 'إضافة موظف', icon: <Plus size={18} /> }] : []),
     { key: 'salaries', label: 'الرواتب الشهرية', icon: <DollarSign size={18} /> },
-    ...(isManageSalary ? [{ key: 'generate' as TabKey, label: 'توليد الرواتب', icon: <Calendar size={18} /> }] : []),
-    ...(isManageSalary ? [{ key: 'pay' as TabKey, label: 'دفع راتب', icon: <Wallet size={18} /> }] : []),
+    ...(isManageSalary && hasSelectedSchool ? [{ key: 'generate' as TabKey, label: 'توليد الرواتب', icon: <Calendar size={18} /> }] : []),
+    ...(isManageSalary && hasSelectedSchool ? [{ key: 'pay' as TabKey, label: 'دفع راتب', icon: <Wallet size={18} /> }] : []),
     { key: 'reports', label: 'تقارير الرواتب', icon: <BarChart3 size={18} /> },
   ];
 
@@ -280,6 +332,10 @@ export default function EmployeesPage() {
         <UserCheck className="text-primary-600" />
         الموظفون والرواتب
       </h1>
+
+      <div className="mb-6">
+        <SystemAdminSchoolSelector {...schoolScope} />
+      </div>
 
       {error && (
         <div className="mb-4 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 flex items-center gap-2">
@@ -336,7 +392,7 @@ export default function EmployeesPage() {
                   <th className="px-4 py-3 text-right font-medium">المسمى الوظيفي</th>
                   <th className="px-4 py-3 text-right font-medium">الراتب</th>
                   <th className="px-4 py-3 text-right font-medium">الحالة</th>
-                  {isManageEmployee && (
+                  {isManageEmployee && hasSelectedSchool && (
                     <th className="px-4 py-3 text-right font-medium">إجراءات</th>
                   )}
                 </tr>
@@ -359,7 +415,7 @@ export default function EmployeesPage() {
                         {emp.status === 'active' ? 'نشط' : 'مؤرشف'}
                       </span>
                     </td>
-                    {isManageEmployee && (
+                    {isManageEmployee && hasSelectedSchool && (
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
                           <button
@@ -382,7 +438,7 @@ export default function EmployeesPage() {
                   </tr>
                 ))}
                 {filteredEmployees.length === 0 && (
-                  <tr><td colSpan={isManageEmployee ? 6 : 5} className="px-4 py-8 text-center text-gray-500">لا يوجد موظفون</td></tr>
+                  <tr><td colSpan={isManageEmployee && hasSelectedSchool ? 6 : 5} className="px-4 py-8 text-center text-gray-500">لا يوجد موظفون</td></tr>
                 )}
               </tbody>
             </table>

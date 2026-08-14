@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getTreasurySummary, getTreasuryTransactions, createTreasuryTransaction,
   cancelTreasuryTransaction, getTreasuryClosings, closeTreasuryDay,
@@ -77,7 +79,9 @@ interface CategoryOption {
 }
 
 export default function TreasuryPage() {
-  const { user } = useAuth();
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
 
   const [loading, setLoading] = useState(false);
@@ -125,16 +129,19 @@ export default function TreasuryPage() {
     setTimeout(() => setSuccess(null), 5000);
   }, []);
 
-  const schoolId = user?.school_id || 1;
-
   const loadSummary = useCallback(async () => {
+    if (schoolId == null) { setSummary(null); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getTreasurySummary(schoolId);
+    if (!isCurrent()) return;
     if (res.data) setSummary(res.data);
     setLoading(false);
   }, [schoolId]);
 
   const loadTransactions = useCallback(async () => {
+    if (schoolId == null) { setTransactions([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const filters: any = { school_id: schoolId, limit: txMeta.limit, offset: txMeta.offset };
     if (txFilters.type) filters.type = txFilters.type;
@@ -143,6 +150,7 @@ export default function TreasuryPage() {
     if (txFilters.date_from) filters.date_from = Math.floor(new Date(txFilters.date_from).getTime() / 1000);
     if (txFilters.date_to) filters.date_to = Math.floor(new Date(txFilters.date_to).getTime() / 1000) + 86400;
     const res = await getTreasuryTransactions(filters);
+    if (!isCurrent()) return;
     if (res.data) {
       setTransactions(res.data as TxRecord[]);
       if (res.meta) setTxMeta(prev => ({ ...prev, total: res.meta!.total }));
@@ -156,25 +164,48 @@ export default function TreasuryPage() {
   }, []);
 
   const loadClosings = useCallback(async () => {
+    if (schoolId == null) { setClosings([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getTreasuryClosings(schoolId);
+    if (!isCurrent()) return;
     if (res.data) setClosings(res.data as ClosingRecord[]);
     setLoading(false);
   }, [schoolId]);
 
   const loadDailyReport = useCallback(async () => {
+    if (schoolId == null) { setDailyReport([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getTreasuryDailyReport(schoolId, reportDate);
+    if (!isCurrent()) return;
     if (res.data && res.data.by_category) setDailyReport(res.data.by_category as ReportRow[]);
     setLoading(false);
   }, [schoolId, reportDate]);
 
   const loadMonthlyReport = useCallback(async () => {
+    if (schoolId == null) { setMonthlyReport([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getTreasuryMonthlyReport(schoolId, reportMonth);
+    if (!isCurrent()) return;
     if (res.data && res.data.daily_breakdown) setMonthlyReport(res.data.daily_breakdown as MonthlyRow[]);
     setLoading(false);
   }, [schoolId, reportMonth]);
+
+  useEffect(() => {
+    setSummary(null);
+    setTransactions([]);
+    setClosings([]);
+    setDailyReport([]);
+    setMonthlyReport([]);
+    setTxFilters({ type: '', category: '', status: '', date_from: '', date_to: '' });
+    setTxMeta({ total: 0, limit: 50, offset: 0 });
+    setNewTx({ transaction_type: 'income', category: '', amount: '', currency: 'IQD', description: '' });
+    setLoading(false);
+    setError(null);
+    setSuccess(null);
+  }, [schoolId]);
 
   useEffect(() => {
     if (activeTab === 'dashboard') loadSummary();
@@ -189,7 +220,9 @@ export default function TreasuryPage() {
 
   async function handleAddTx(e: React.FormEvent) {
     e.preventDefault();
+    if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!newTx.category || !newTx.amount) { showError('التصنيف والمبلغ مطلوبان'); return; }
+    const isCurrent = captureSchoolRequest();
     const res = await createTreasuryTransaction({
       school_id: schoolId,
       transaction_type: newTx.transaction_type,
@@ -198,6 +231,7 @@ export default function TreasuryPage() {
       currency: newTx.currency,
       description: newTx.description,
     });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم إضافة القيد المالي بنجاح');
@@ -207,15 +241,21 @@ export default function TreasuryPage() {
   }
 
   async function handleCancelTx(id: number) {
+    if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إلغاء هذا القيد؟')) return;
-    const res = await cancelTreasuryTransaction(id, 'إلغاء يدوي من واجهة الخزنة');
+    const isCurrent = captureSchoolRequest();
+    const res = await cancelTreasuryTransaction(id, schoolId, 'إلغاء يدوي من واجهة الخزنة');
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else { showSuccess('تم إلغاء القيد بنجاح'); loadTransactions(); }
   }
 
   async function handleCloseDay() {
+    if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!confirm('هل أنت متأكد من إغلاق اليوم المالي؟ لا يمكن التراجع عن هذا الإجراء.')) return;
+    const isCurrent = captureSchoolRequest();
     const res = await closeTreasuryDay({ school_id: schoolId, closing_date: new Date().toISOString().split('T')[0] });
+    if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
     else { showSuccess('تم إغلاق اليوم المالي بنجاح'); loadClosings(); }
   }
@@ -240,6 +280,8 @@ export default function TreasuryPage() {
           الخزنة والواردات والمصروفات
         </h1>
       </div>
+
+      <SystemAdminSchoolSelector {...schoolScope} />
 
       {/* Notifications */}
       {error && (

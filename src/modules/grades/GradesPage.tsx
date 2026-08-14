@@ -1,11 +1,14 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import type { RoleKey } from '../../types';
 import { SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
   getGrades, getStudentGrades, initializeStudentGrades, initializeSectionGrades,
   updateGrade, bulkUpdateGrades, getGradeHistory, getGradeSettings, updateGradeSettings,
-  getStudents, getClasses, getSections, getSubjects, getSchools
+  getStudents, getClasses, getSections, getSubjects
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
@@ -89,6 +92,14 @@ interface AuditRecord {
 
 type TabKey = 'student' | 'section' | 'settings' | 'history';
 
+const DEFAULT_GRADE_SETTINGS_FORM = {
+  max_grade: '100',
+  passing_grade: '50',
+  exemption_grade: '90',
+  general_exemption_average_grade: '85',
+  general_exemption_min_subject_grade: '75',
+};
+
 const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; roles?: readonly RoleKey[] }[] = [
   { key: 'student', label: 'إدخال درجات طالب', icon: <User size={18} /> },
   { key: 'section', label: 'إدخال درجات شعبة', icon: <Users size={18} /> },
@@ -103,6 +114,8 @@ function canAccessTab(userRole: RoleKey | undefined, tabRoles?: readonly RoleKey
 
 export default function GradesPage() {
   const { user } = useAuth();
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
   const visibleTabs = TAB_CONFIG.filter((tab) => canAccessTab(user?.role_key, tab.roles));
   const [activeTab, setActiveTab] = useState<TabKey>('student');
   // Reset to first visible tab if current tab becomes hidden
@@ -119,6 +132,8 @@ export default function GradesPage() {
           <p className="text-sm text-gray-500">إدارة درجات الطلاب والحسابات الأكاديمية</p>
         </div>
       </div>
+
+      <SystemAdminSchoolSelector {...schoolScope} />
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-gray-200">
@@ -138,10 +153,10 @@ export default function GradesPage() {
         ))}
       </div>
 
-      {effectiveTab === 'student' && <StudentGradesTab />}
-      {effectiveTab === 'section' && <SectionGradesTab />}
-      {effectiveTab === 'settings' && <SettingsTab />}
-      {effectiveTab === 'history' && <HistoryTab />}
+      {effectiveTab === 'student' && <StudentGradesTab schoolId={schoolId} />}
+      {effectiveTab === 'section' && <SectionGradesTab schoolId={schoolId} />}
+      {effectiveTab === 'settings' && <SettingsTab schoolId={schoolId} />}
+      {effectiveTab === 'history' && <HistoryTab schoolId={schoolId} />}
     </div>
   );
 }
@@ -149,9 +164,8 @@ export default function GradesPage() {
 /* ═══════════════════════════════════════
    Tab 1: إدخال درجات طالب
    ═══════════════════════════════════════ */
-function StudentGradesTab() {
-  const { user } = useAuth();
-  const schoolId = user?.school_id;
+function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [grades, setGrades] = useState<GradeRecord[]>([]);
@@ -162,17 +176,33 @@ function StudentGradesTab() {
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [studentName, setStudentName] = useState('');
 
-  useEffect(() => { loadStudents(); }, [schoolId]);
+  useEffect(() => {
+    setStudents([]);
+    setSelectedStudentId('');
+    setGrades([]);
+    setSettings(null);
+    setStudentName('');
+    setLoading(false);
+    setInitLoading(false);
+    setSaveLoading({});
+    setMessage(null);
+    void loadStudents();
+  }, [schoolId]);
 
   async function loadStudents() {
-    const res = await getStudents(schoolId ?? null, null, null);
+    if (schoolId == null) { setStudents([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getStudents(schoolId, null, null);
+    if (!isCurrent()) return;
     if (res.data) setStudents(res.data as StudentRecord[]);
   }
 
   async function loadStudentGrades(studentId: string) {
     if (!studentId) return;
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getStudentGrades(studentId);
+    if (!isCurrent()) return;
     if (res.data) {
       setGrades((res.data.grades || []) as GradeRecord[]);
       setSettings((res.data.settings || null) as GradeSettings | null);
@@ -183,8 +213,11 @@ function StudentGradesTab() {
 
   async function handleInit() {
     if (!selectedStudentId) { setMessage({ text: 'يرجى اختيار طالب أولاً', type: 'error' }); return; }
+    if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
     setInitLoading(true);
-    const res = await initializeStudentGrades(selectedStudentId);
+    const res = await initializeStudentGrades(selectedStudentId, schoolId);
+    if (!isCurrent()) return;
     setInitLoading(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -208,9 +241,12 @@ function StudentGradesTab() {
       return;
     }
 
+    if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
     setSaveLoading((prev) => ({ ...prev, [grade.id]: true }));
     const payload: Record<string, any> = { [field]: num };
-    const res = await updateGrade(grade.id, payload);
+    const res = await updateGrade(grade.id, payload, schoolId);
+    if (!isCurrent()) return;
     setSaveLoading((prev) => ({ ...prev, [grade.id]: false }));
 
     if (res.error) {
@@ -465,9 +501,8 @@ function StudentGradesTab() {
 /* ═══════════════════════════════════════
    Tab 2: إدخال درجات شعبة
    ═══════════════════════════════════════ */
-function SectionGradesTab() {
-  const { user } = useAuth();
-  const schoolId = user?.school_id;
+function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [sections, setSections] = useState<SectionRecord[]>([]);
   const [subjects, setSubjects] = useState<SubjectRecord[]>([]);
@@ -493,33 +528,61 @@ function SectionGradesTab() {
     { key: 'completion_exam', label: 'درجة الإكمال' },
   ];
 
-  useEffect(() => { loadClasses(); loadSubjects(); }, [schoolId]);
+  useEffect(() => {
+    setClasses([]);
+    setSections([]);
+    setSubjects([]);
+    setSelectedClassId('');
+    setSelectedSectionId('');
+    setSelectedSubjectId('');
+    setGrades([]);
+    setEdits({});
+    setLoading(false);
+    setInitLoading(false);
+    setSaveLoading(false);
+    setMessage(null);
+    setShowConfirm(false);
+    void loadClasses();
+    void loadSubjects();
+  }, [schoolId]);
   useEffect(() => {
     if (selectedClassId) loadSections(selectedClassId);
     else { setSections([]); setSelectedSectionId(''); }
   }, [selectedClassId]);
 
   async function loadClasses() {
-    const res = await getClasses(schoolId ?? null);
+    if (schoolId == null) { setClasses([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getClasses(schoolId);
+    if (!isCurrent()) return;
     if (res.data) setClasses(res.data as ClassRecord[]);
   }
   async function loadSections(classId: string) {
-    const res = await getSections(schoolId ?? null, Number(classId));
+    if (schoolId == null) { setSections([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getSections(schoolId, Number(classId));
+    if (!isCurrent()) return;
     if (res.data) setSections(res.data as SectionRecord[]);
   }
   async function loadSubjects() {
-    const res = await getSubjects(schoolId ?? null, null, null);
+    if (schoolId == null) { setSubjects([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getSubjects(schoolId, null, null);
+    if (!isCurrent()) return;
     if (res.data) setSubjects(res.data as SubjectRecord[]);
   }
 
   async function loadGrades() {
-    if (!selectedSectionId || !selectedSubjectId) return;
+    if (schoolId == null || !selectedSectionId || !selectedSubjectId) return;
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getGrades({
+      school_id: schoolId,
       section_id: Number(selectedSectionId),
       subject_id: Number(selectedSubjectId),
       is_active: true,
     });
+    if (!isCurrent()) return;
     setGrades((res.data || []) as GradeRecord[]);
     setEdits({});
     setLoading(false);
@@ -531,11 +594,15 @@ function SectionGradesTab() {
       setTimeout(() => setMessage(null), 3000);
       return;
     }
+    if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
     setInitLoading(true);
     const res = await initializeSectionGrades({
+      school_id: schoolId,
       section_id: Number(selectedSectionId),
       subject_ids: [Number(selectedSubjectId)],
     });
+    if (!isCurrent()) return;
     setInitLoading(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -563,6 +630,8 @@ function SectionGradesTab() {
 
   async function confirmBulkSave() {
     setShowConfirm(false);
+    if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
     setSaveLoading(true);
     const entries = Object.entries(edits)
       .filter(([, v]) => v !== '')
@@ -570,7 +639,8 @@ function SectionGradesTab() {
         grade_id: Number(gradeId),
         [fieldToEdit]: value,
       }));
-    const res = await bulkUpdateGrades(entries);
+    const res = await bulkUpdateGrades(entries, schoolId);
+    if (!isCurrent()) return;
     setSaveLoading(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -710,49 +780,33 @@ function SectionGradesTab() {
 /* ═══════════════════════════════════════
    Tab 3: إعدادات الدرجات
    ═══════════════════════════════════════ */
-function SettingsTab() {
+function SettingsTab({ schoolId }: { schoolId: number | null }) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const { user } = useAuth();
-  const isAdmin = user?.role_key === 'system_admin';
   const isTeacher = user?.role_key === 'teacher';
   const canEdit = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
-  const jwtSchoolId = user?.school_id;
-  const [selectedSchoolId, setSelectedSchoolId] = useState<number | null>(jwtSchoolId ?? null);
-  const [schools, setSchools] = useState<Array<Record<string, any>>>([]);
   const [settings, setSettings] = useState<GradeSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
-  const [form, setForm] = useState({
-    max_grade: '100',
-    passing_grade: '50',
-    exemption_grade: '90',
-    general_exemption_average_grade: '85',
-    general_exemption_min_subject_grade: '75',
-  });
+  const [form, setForm] = useState(DEFAULT_GRADE_SETTINGS_FORM);
 
   useEffect(() => {
-    if (isAdmin) {
-      getSchools().then((res) => {
-        if (res.data) {
-          setSchools(res.data as any);
-          // Auto-select first school if none selected
-          if (!selectedSchoolId && res.data.length > 0) {
-            setSelectedSchoolId((res.data as any)[0].id);
-          }
-        }
-      });
-    }
-  }, [isAdmin]);
-
-  useEffect(() => {
-    loadSettings();
-  }, [selectedSchoolId, jwtSchoolId]);
+    setSettings(null);
+    setForm(DEFAULT_GRADE_SETTINGS_FORM);
+    setMessage(null);
+    setLoading(false);
+    setSaving(false);
+    void loadSettings();
+  }, [schoolId]);
 
   async function loadSettings() {
+    if (schoolId == null) { setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
-    const schoolIdForApi = isAdmin ? selectedSchoolId : jwtSchoolId;
-    const res = await getGradeSettings(schoolIdForApi ?? null);
+    const res = await getGradeSettings(schoolId);
+    if (!isCurrent()) return;
     setLoading(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -775,6 +829,7 @@ function SettingsTab() {
   }
 
   async function handleSave() {
+    if (schoolId == null) { setMessage({ text: 'يجب اختيار المدرسة المستهدفة أولاً', type: 'error' }); return; }
     const maxGrade = Number(form.max_grade);
     const passingGrade = Number(form.passing_grade);
     const exemptionGrade = Number(form.exemption_grade);
@@ -795,6 +850,7 @@ function SettingsTab() {
     if (generalMin > generalAvg) { setMessage({ text: 'أدنى درجة للإعفاء العام يجب أن تكون ≤ متوسط الإعفاء العام', type: 'error' }); return; }
 
     setSaving(true);
+    const isCurrent = captureSchoolRequest();
     const payload: Record<string, any> = {
       max_grade: maxGrade,
       passing_grade: passingGrade,
@@ -802,8 +858,8 @@ function SettingsTab() {
       general_exemption_average_grade: generalAvg,
       general_exemption_min_subject_grade: generalMin,
     };
-    const schoolIdForApi = isAdmin ? selectedSchoolId : jwtSchoolId;
-    const res = await updateGradeSettings(payload, schoolIdForApi ?? null);
+    const res = await updateGradeSettings(payload, schoolId);
+    if (!isCurrent()) return;
     setSaving(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -865,28 +921,13 @@ function SettingsTab() {
           </div>
 
           <div className="flex flex-col gap-3 pt-2">
-            {isAdmin && (
-              <div className="w-full max-w-sm">
-                <label className="block text-sm font-medium text-gray-700 mb-1">اختيار المدرسة</label>
-                <select
-                  value={selectedSchoolId ?? ''}
-                  onChange={(e) => setSelectedSchoolId(e.target.value ? Number(e.target.value) : null)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white"
-                >
-                  <option value="">— اختر مدرسة —</option>
-                  {schools.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            {!isAdmin && !canEdit && (
+            {!canEdit && (
               <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 text-sm">
                 <AlertCircle size={16} />
                 <span>ليس لديك صلاحية تعديل الإعدادات. يمكنك فقط الاطلاع على القيم.</span>
               </div>
             )}
-            {canEdit && (
+            {canEdit && schoolId != null && (
               <button onClick={handleSave} disabled={saving} className="flex items-center gap-2 px-5 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 w-fit">
                 {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
                 حفظ الإعدادات
@@ -909,9 +950,8 @@ function SettingsTab() {
 /* ═══════════════════════════════════════
    Tab 4: سجل تعديل الدرجات
    ═══════════════════════════════════════ */
-function HistoryTab() {
-  const { user } = useAuth();
-  const schoolId = user?.school_id;
+function HistoryTab({ schoolId }: { schoolId: number | null }) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [grades, setGrades] = useState<GradeRecord[]>([]);
@@ -919,24 +959,39 @@ function HistoryTab() {
   const [history, setHistory] = useState<AuditRecord[]>([]);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => { loadStudents(); }, [schoolId]);
+  useEffect(() => {
+    setStudents([]);
+    setSelectedStudentId('');
+    setGrades([]);
+    setSelectedGradeId(null);
+    setHistory([]);
+    setLoading(false);
+    void loadStudents();
+  }, [schoolId]);
 
   async function loadStudents() {
-    const res = await getStudents(schoolId ?? null, null, null);
+    if (schoolId == null) { setStudents([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getStudents(schoolId, null, null);
+    if (!isCurrent()) return;
     if (res.data) setStudents(res.data as StudentRecord[]);
   }
 
   async function loadGrades(studentId: string) {
     if (!studentId) return;
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getStudentGrades(studentId);
+    if (!isCurrent()) return;
     if (res.data) setGrades((res.data.grades || []) as GradeRecord[]);
     setLoading(false);
   }
 
   async function loadHistory(gradeId: number) {
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getGradeHistory(gradeId);
+    if (!isCurrent()) return;
     if (res.data) setHistory((res.data || []) as AuditRecord[]);
     setLoading(false);
   }
@@ -948,7 +1003,7 @@ function HistoryTab() {
           <label className="block text-sm font-medium text-gray-700 mb-1">اختيار الطالب</label>
           <select
             value={selectedStudentId}
-            onChange={(e) => { setSelectedStudentId(e.target.value); loadGrades(e.target.value); setHistory([]); setSelectedGradeId(null); }}
+            onChange={(e) => { setSelectedStudentId(e.target.value); setGrades([]); loadGrades(e.target.value); setHistory([]); setSelectedGradeId(null); }}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white"
           >
             <option value="">— اختر طالب —</option>
@@ -966,7 +1021,7 @@ function HistoryTab() {
           {grades.map((g) => (
             <button
               key={g.id}
-              onClick={() => { setSelectedGradeId(g.id); loadHistory(g.id); }}
+              onClick={() => { setSelectedGradeId(g.id); setHistory([]); loadHistory(g.id); }}
               className={`text-right p-3 rounded-lg border transition-colors ${selectedGradeId === g.id ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'}`}
             >
               <p className="font-medium text-sm text-gray-900">{g.subject_name}</p>

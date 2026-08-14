@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { updateDocumentSettings } from '../../lib/api';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { Save, Loader2, FileText, Printer, Image, Stamp, CheckSquare, Square } from 'lucide-react';
 
 interface Props {
@@ -22,6 +23,7 @@ const RECEIPT_SIZES = [
 ];
 
 export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onError }: Props) {
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const settings = data || {};
   const [form, setForm] = useState<Record<string, any>>({});
   const [saving, setSaving] = useState(false);
@@ -38,8 +40,9 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
       default_print_size: settings.default_print_size || 'A4',
       default_receipt_size: settings.default_receipt_size || 'A5',
     });
+    setSaving(false);
     setChanged(false);
-  }, [settings]);
+  }, [settings, schoolId]);
 
   const handleChange = (key: string, value: any) => {
     setForm(prev => ({ ...prev, [key]: value }));
@@ -53,8 +56,10 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!schoolId || !canEdit) return;
+    const isCurrent = captureSchoolRequest();
     setSaving(true);
     const { data: resData, error } = await updateDocumentSettings(form, schoolId);
+    if (!isCurrent()) return;
     setSaving(false);
     if (error) {
       onError(error);

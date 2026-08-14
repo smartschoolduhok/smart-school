@@ -56,6 +56,7 @@ interface CardData {
 
 interface CardRecord {
   id: number;
+  school_id: number;
   card_number: string;
   student_name_snapshot: string;
   class_name_snapshot: string;
@@ -98,7 +99,7 @@ export default function PrintResultCardPage() {
         hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES),
       )) return;
       try {
-        await markResultCardPrinted(String(card.id));
+        await markResultCardPrinted(String(card.id), card.school_id);
       } catch {
         // Non-blocking: print record is best-effort
       }

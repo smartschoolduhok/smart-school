@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { QRCodeSVG } from 'qrcode.react';
 import {
   getResultCards, getResultCard, generateStudentResultCard,
@@ -88,7 +91,8 @@ const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
    Main Page
    ═══════════════════════════════════════ */
 export default function ResultCardsPage() {
-  const { user } = useAuth();
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
   const [activeTab, setActiveTab] = useState<TabKey>('list');
 
   return (
@@ -102,6 +106,8 @@ export default function ResultCardsPage() {
           <p className="text-sm text-gray-500">إنشاء كارتات النتائج الرسمية مع التحقق عبر QR</p>
         </div>
       </div>
+
+      <SystemAdminSchoolSelector {...schoolScope} />
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-gray-200">
@@ -121,9 +127,9 @@ export default function ResultCardsPage() {
         ))}
       </div>
 
-      {activeTab === 'generate-student' && <GenerateStudentTab />}
-      {activeTab === 'generate-section' && <GenerateSectionTab />}
-      {activeTab === 'list' && <ListTab />}
+      {activeTab === 'generate-student' && <GenerateStudentTab schoolId={schoolId} />}
+      {activeTab === 'generate-section' && <GenerateSectionTab schoolId={schoolId} />}
+      {activeTab === 'list' && <ListTab schoolId={schoolId} />}
       {activeTab === 'verify' && <VerifyTab />}
     </div>
   );
@@ -132,8 +138,9 @@ export default function ResultCardsPage() {
 /* ═══════════════════════════════════════
    Tab 1: Generate Student Card
    ═══════════════════════════════════════ */
-function GenerateStudentTab() {
+function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
   const { user } = useAuth();
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [students, setStudents] = useState<StudentOption[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [card, setCard] = useState<CardRecord | null>(null);
@@ -143,17 +150,32 @@ function GenerateStudentTab() {
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { loadStudents(); }, [user?.school_id]);
+  useEffect(() => {
+    setStudents([]);
+    setSelectedStudentId('');
+    setCard(null);
+    setCardDetails(null);
+    setLoading(false);
+    setGenerating(false);
+    setMessage(null);
+    void loadStudents();
+  }, [schoolId]);
 
   async function loadStudents() {
-    const res = await getStudents(user?.school_id ?? null, null, null);
+    if (schoolId == null) { setStudents([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getStudents(schoolId, null, null);
+    if (!isCurrent()) return;
     if (res.data) setStudents((res.data as any[]).map((s) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number })));
   }
 
   async function handleGenerate() {
+    if (schoolId == null) { setMessage({ text: 'يجب اختيار المدرسة المستهدفة أولاً', type: 'error' }); return; }
     if (!selectedStudentId) { setMessage({ text: 'يرجى اختيار طالب أولاً', type: 'error' }); return; }
+    const isCurrent = captureSchoolRequest();
     setGenerating(true);
-    const res = await generateStudentResultCard(selectedStudentId);
+    const res = await generateStudentResultCard(selectedStudentId, schoolId);
+    if (!isCurrent()) return;
     setGenerating(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -162,6 +184,7 @@ function GenerateStudentTab() {
       setCard(res.data?.card || null);
       if (res.data?.card?.id) {
         const d = await getResultCard(res.data.card.id);
+        if (!isCurrent()) return;
         setCardDetails(d.data || null);
       }
     }
@@ -169,14 +192,17 @@ function GenerateStudentTab() {
   }
 
   async function handleLoadPreview() {
-    if (!selectedStudentId) return;
+    if (schoolId == null || !selectedStudentId) return;
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     // Find existing active card for this student
-    const res = await getResultCards({ student_id: Number(selectedStudentId), status: 'active', school_id: user?.school_id ?? null });
+    const res = await getResultCards({ student_id: Number(selectedStudentId), status: 'active', school_id: schoolId });
+    if (!isCurrent()) return;
     const cards = (res.data || []) as CardRecord[];
     if (cards.length > 0) {
       setCard(cards[0]);
       const d = await getResultCard(cards[0].id);
+      if (!isCurrent()) return;
       setCardDetails(d.data || null);
     } else {
       setCard(null);
@@ -258,7 +284,7 @@ function GenerateStudentTab() {
           {loading ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />}
           عرض الكارت الحالي
         </button>
-        {canGenerate(user?.role_key) && (
+        {canGenerate(user?.role_key) && schoolId != null && (
           <button
             onClick={handleGenerate}
             disabled={generating || !selectedStudentId}
@@ -301,8 +327,9 @@ function GenerateStudentTab() {
 /* ═══════════════════════════════════════
    Tab 2: Generate Section Cards
    ═══════════════════════════════════════ */
-function GenerateSectionTab() {
+function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
   const { user } = useAuth();
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [sections, setSections] = useState<SectionOption[]>([]);
   const [selectedClassId, setSelectedClassId] = useState('');
@@ -311,29 +338,47 @@ function GenerateSectionTab() {
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [result, setResult] = useState<any>(null);
 
-  useEffect(() => { loadClasses(); }, [user?.school_id]);
+  useEffect(() => {
+    setClasses([]);
+    setSections([]);
+    setSelectedClassId('');
+    setSelectedSectionId('');
+    setResult(null);
+    setGenerating(false);
+    setMessage(null);
+    void loadClasses();
+  }, [schoolId]);
   useEffect(() => {
     if (selectedClassId) loadSections(selectedClassId);
     else { setSections([]); setSelectedSectionId(''); }
   }, [selectedClassId]);
 
   async function loadClasses() {
-    const res = await getClasses(user?.school_id ?? null);
+    if (schoolId == null) { setClasses([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getClasses(schoolId);
+    if (!isCurrent()) return;
     if (res.data) setClasses((res.data as any[]).map((c) => ({ id: c.id, name: c.name })));
   }
   async function loadSections(classId: string) {
-    const res = await getSections(user?.school_id ?? null, Number(classId));
+    if (schoolId == null) { setSections([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getSections(schoolId, Number(classId));
+    if (!isCurrent()) return;
     if (res.data) setSections((res.data as any[]).map((s) => ({ id: s.id, name: s.name, class_id: s.class_id })));
   }
 
   async function handleGenerate() {
+    if (schoolId == null) { setMessage({ text: 'يجب اختيار المدرسة المستهدفة أولاً', type: 'error' }); return; }
     if (!selectedClassId || !selectedSectionId) {
       setMessage({ text: 'يرجى اختيار الصف والشعبة', type: 'error' });
       return;
     }
+    const isCurrent = captureSchoolRequest();
     setGenerating(true);
     setResult(null);
-    const res = await generateSectionResultCards({ class_id: Number(selectedClassId), section_id: Number(selectedSectionId) });
+    const res = await generateSectionResultCards({ school_id: schoolId, class_id: Number(selectedClassId), section_id: Number(selectedSectionId) });
+    if (!isCurrent()) return;
     setGenerating(false);
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
@@ -375,7 +420,7 @@ function GenerateSectionTab() {
             {sections.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
           </select>
         </div>
-        {canGenerate(user?.role_key) && (
+        {canGenerate(user?.role_key) && schoolId != null && (
           <button
             onClick={handleGenerate}
             disabled={generating || !selectedSectionId}
@@ -424,42 +469,63 @@ function GenerateSectionTab() {
 /* ═══════════════════════════════════════
    Tab 3: List Cards
    ═══════════════════════════════════════ */
-function ListTab() {
+function ListTab({ schoolId }: { schoolId: number | null }) {
   const { user } = useAuth();
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState<{ status: string; student_id: string }>({ status: '', student_id: '' });
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [students, setStudents] = useState<StudentOption[]>([]);
 
-  useEffect(() => { loadCards(); loadStudents(); }, [user?.school_id]);
+  useEffect(() => {
+    setCards([]);
+    setStudents([]);
+    setFilters({ status: '', student_id: '' });
+    setLoading(false);
+    setMessage(null);
+    void loadCards();
+    void loadStudents();
+  }, [schoolId]);
 
   async function loadCards() {
+    if (schoolId == null) { setCards([]); setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getResultCards({
-      school_id: user?.school_id ?? null,
+      school_id: schoolId,
       status: filters.status || null,
       student_id: filters.student_id ? Number(filters.student_id) : null,
     });
+    if (!isCurrent()) return;
     setCards((res.data || []) as CardRecord[]);
     setLoading(false);
   }
 
   async function loadStudents() {
-    const res = await getStudents(user?.school_id ?? null, null, null);
+    if (schoolId == null) { setStudents([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getStudents(schoolId, null, null);
+    if (!isCurrent()) return;
     if (res.data) setStudents((res.data as any[]).map((s) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number })));
   }
 
   async function handleMarkPrinted(id: number) {
-    const res = await markResultCardPrinted(id);
+    if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
+    const res = await markResultCardPrinted(id, schoolId);
+    if (!isCurrent()) return;
     if (res.error) setMessage({ text: res.error, type: 'error' });
     else { setMessage({ text: 'تم تعليم الكارت كمطبوع', type: 'success' }); loadCards(); }
     setTimeout(() => setMessage(null), 3000);
   }
 
   async function handleCancel(id: number) {
+    if (schoolId == null) return;
     if (!window.confirm('هل أنت متأكد من إلغاء هذا الكارت؟')) return;
-    const res = await cancelResultCard(id);
+    const isCurrent = captureSchoolRequest();
+    const res = await cancelResultCard(id, schoolId);
+    if (!isCurrent()) return;
     if (res.error) setMessage({ text: res.error, type: 'error' });
     else { setMessage({ text: 'تم إلغاء الكارت', type: 'success' }); loadCards(); }
     setTimeout(() => setMessage(null), 3000);

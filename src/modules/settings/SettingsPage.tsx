@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
-  getSchoolSettings, getDocumentSettings, getSystemSettings,
-  getSchools
+  getSchoolSettings, getDocumentSettings, getSystemSettings
 } from '../../lib/api';
-import type { AuthUser, School } from '../../types';
 import { SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
   Building2, GraduationCap, FileText, Globe, Shield, Database,
@@ -31,27 +32,27 @@ const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
 
 export default function SettingsPage() {
   const { user } = useAuth();
+  const schoolScope = useTenantSchool();
+  const { schoolId: effectiveSchoolId, isSystemAdmin: isAdmin } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(effectiveSchoolId);
   const [activeTab, setActiveTab] = useState<TabKey>('profile');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const [schools, setSchools] = useState<School[]>([]);
-  const [selectedSchoolId, setSelectedSchoolId] = useState<number | null>(null);
-
   const [schoolData, setSchoolData] = useState<Record<string, any>>({});
   const [documentData, setDocumentData] = useState<Record<string, any>>({});
   const [systemData, setSystemData] = useState<Record<string, any>>({});
+  const [loadedSchoolId, setLoadedSchoolId] = useState<number | null>(null);
 
-  const isAdmin = user?.role_key === 'system_admin';
   const canEdit = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
-  const effectiveSchoolId = isAdmin ? selectedSchoolId : (user?.school_id ?? null);
 
   const loadSettings = useCallback(async () => {
     if (!effectiveSchoolId) {
       setLoading(false);
       return;
     }
+    const isCurrent = captureSchoolRequest();
     setLoading(true);
     setError(null);
     try {
@@ -60,6 +61,7 @@ export default function SettingsPage() {
         getDocumentSettings(effectiveSchoolId),
         getSystemSettings(effectiveSchoolId),
       ]);
+      if (!isCurrent()) return;
 
       if (schoolRes.error) throw new Error(schoolRes.error);
       if (docRes.error) throw new Error(docRes.error);
@@ -68,29 +70,24 @@ export default function SettingsPage() {
       setSchoolData(schoolRes.data?.data || {});
       setDocumentData(docRes.data?.data || {});
       setSystemData(sysRes.data?.data || {});
+      setLoadedSchoolId(effectiveSchoolId);
     } catch (err: any) {
+      if (!isCurrent()) return;
       setError(err.message || 'فشل في تحميل الإعدادات');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [effectiveSchoolId]);
 
-  // Load schools list for admin
-  useEffect(() => {
-    if (isAdmin) {
-      getSchools().then(({ data }) => {
-        if (data) {
-          setSchools(data as School[]);
-          if (!selectedSchoolId && data.length > 0) {
-            setSelectedSchoolId(data[0].id);
-          }
-        }
-      });
-    }
-  }, [isAdmin]);
-
   // Load settings when school changes
   useEffect(() => {
+    setSchoolData({});
+    setDocumentData({});
+    setSystemData({});
+    setLoadedSchoolId(null);
+    setError(null);
+    setSuccess(null);
+    setActiveTab('profile');
     if (effectiveSchoolId) {
       loadSettings();
     } else {
@@ -122,21 +119,9 @@ export default function SettingsPage() {
             إدارة بيانات المدرسة والإعدادات العامة
           </p>
         </div>
-        {isAdmin && (
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600">المدرسة:</label>
-            <select
-              className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary-500"
-              value={selectedSchoolId ?? ''}
-              onChange={e => setSelectedSchoolId(Number(e.target.value))}
-            >
-              {schools.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
       </div>
+
+      <SystemAdminSchoolSelector {...schoolScope} />
 
       {/* Alerts */}
       {error && (
@@ -163,7 +148,7 @@ export default function SettingsPage() {
       )}
 
       {/* Admin without school selected */}
-      {isAdmin && !selectedSchoolId && (
+      {isAdmin && !effectiveSchoolId && (
         <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
           <AlertCircle size={40} className="text-gray-400 mx-auto mb-4" />
           <h2 className="text-lg font-bold text-gray-900 mb-2">يرجى اختيار مدرسة</h2>
@@ -180,7 +165,7 @@ export default function SettingsPage() {
       )}
 
       {/* Tabs + Content */}
-      {!loading && !isAdmin || (isAdmin && selectedSchoolId) ? (
+      {!loading && effectiveSchoolId != null && loadedSchoolId === effectiveSchoolId ? (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="flex overflow-x-auto border-b border-gray-200">
             {TAB_CONFIG.map(tab => (

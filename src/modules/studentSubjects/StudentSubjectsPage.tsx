@@ -1,5 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getStudentSubjects, getClasses, getSections, getStudents, getSubjects,
   assignSubjectsToClass, assignSubjectsToSection, assignSubjectsToStudents, assignSubjectToOne,
@@ -43,8 +46,11 @@ interface SubjectRec { id: number; name: string; subject_type: string; class_id:
 
 export default function StudentSubjectsPage() {
   const { user } = useAuth();
-  const schoolId = user?.school_id;
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
+  const canManageSelectedSchool = canManage && schoolId != null;
 
   // Data
   const [assignments, setAssignments] = useState<AssignmentRecord[]>([]);
@@ -80,15 +86,44 @@ export default function StudentSubjectsPage() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
 
-  useEffect(() => { loadData(); }, [schoolId]);
+  useEffect(() => {
+    setAssignments([]);
+    setClasses([]);
+    setSections([]);
+    setStudents([]);
+    setSubjects([]);
+    setMode('list');
+    setFilterClass('');
+    setFilterSection('');
+    setFilterStudent('');
+    setFilterSubject('');
+    setSelectedIds([]);
+    setConfirmBulkOpen(false);
+    setLoading(false);
+    setAssigning(false);
+    setError('');
+    resetAssign();
+    void loadData();
+  }, [schoolId]);
 
   async function loadData() {
+    const isCurrentRequest = captureSchoolRequest();
+    if (schoolId == null) {
+      setAssignments([]);
+      setClasses([]);
+      setSections([]);
+      setStudents([]);
+      setSubjects([]);
+      setError('');
+      setLoading(false);
+      return;
+    }
     setLoading(true); setError('');
-    const sid = schoolId ?? undefined;
     const [aRes, cRes, sRes, stRes, suRes] = await Promise.all([
-      getStudentSubjects(sid, undefined, undefined, undefined, undefined, filterActive === '' ? null : filterActive === '1'),
-      getClasses(sid), getSections(sid), getStudents(sid), getSubjects(sid)
+      getStudentSubjects(schoolId, undefined, undefined, undefined, undefined, filterActive === '' ? null : filterActive === '1'),
+      getClasses(schoolId), getSections(schoolId), getStudents(schoolId), getSubjects(schoolId)
     ]);
+    if (!isCurrentRequest()) return;
     if (aRes.data) setAssignments(aRes.data as AssignmentRecord[]);
     else if (aRes.error) setError(aRes.error);
     if (cRes.data) setClasses(cRes.data as ClassRec[]);
@@ -148,11 +183,14 @@ export default function StudentSubjectsPage() {
 
   async function handleAssign() {
     setAssignError(''); setAssignSuccess('');
+    if (schoolId == null) { setAssignError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
+    const isCurrentRequest = captureSchoolRequest();
     if (mode === 'class') {
       if (!assignClass) { setAssignError('يجب اختيار الصف'); return; }
       if (assignSubjectIds.length === 0) { setAssignError('يجب اختيار مادة واحدة على الأقل'); return; }
       setAssigning(true);
-      const res = await assignSubjectsToClass(Number(assignClass), assignSubjectIds);
+      const res = await assignSubjectsToClass(Number(assignClass), assignSubjectIds, schoolId);
+      if (!isCurrentRequest()) return;
       setAssigning(false);
       if (res.error) setAssignError(res.error);
       else { setAssignSuccess(`تم التعيين: ${res.data?.inserted_count || 0} تعيين جديد`); resetAssign(); loadData(); }
@@ -160,7 +198,8 @@ export default function StudentSubjectsPage() {
       if (!assignSection) { setAssignError('يجب اختيار الشعبة'); return; }
       if (assignSubjectIds.length === 0) { setAssignError('يجب اختيار مادة واحدة على الأقل'); return; }
       setAssigning(true);
-      const res = await assignSubjectsToSection(Number(assignSection), assignSubjectIds);
+      const res = await assignSubjectsToSection(Number(assignSection), assignSubjectIds, schoolId);
+      if (!isCurrentRequest()) return;
       setAssigning(false);
       if (res.error) setAssignError(res.error);
       else { setAssignSuccess(`تم التعيين: ${res.data?.inserted_count || 0} تعيين جديد`); resetAssign(); loadData(); }
@@ -168,14 +207,16 @@ export default function StudentSubjectsPage() {
       if (assignStudentIds.length === 0) { setAssignError('يجب اختيار طالب واحد على الأقل'); return; }
       if (assignSubjectIds.length === 0) { setAssignError('يجب اختيار مادة واحدة على الأقل'); return; }
       setAssigning(true);
-      const res = await assignSubjectsToStudents(assignStudentIds, assignSubjectIds);
+      const res = await assignSubjectsToStudents(assignStudentIds, assignSubjectIds, schoolId);
+      if (!isCurrentRequest()) return;
       setAssigning(false);
       if (res.error) setAssignError(res.error);
       else { setAssignSuccess(`تم التعيين: ${res.data?.inserted_count || 0} تعيين جديد`); resetAssign(); loadData(); }
     } else if (mode === 'one') {
       if (!assignStudent || !assignSubject) { setAssignError('الطالب والمادة مطلوبان'); return; }
       setAssigning(true);
-      const res = await assignSubjectToOne(Number(assignStudent), Number(assignSubject));
+      const res = await assignSubjectToOne(Number(assignStudent), Number(assignSubject), schoolId);
+      if (!isCurrentRequest()) return;
       setAssigning(false);
       if (res.error) setAssignError(res.error);
       else { setAssignSuccess('تم تعيين المادة للطالب بنجاح'); resetAssign(); loadData(); }
@@ -183,22 +224,31 @@ export default function StudentSubjectsPage() {
   }
 
   async function handleDeactivate(id: number) {
+    if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إلغاء التعيين؟')) return;
-    const res = await deactivateStudentSubject(id);
+    const isCurrentRequest = captureSchoolRequest();
+    const res = await deactivateStudentSubject(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }
 
   async function handleReactivate(id: number) {
+    if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إعادة تفعيل التعيين؟')) return;
-    const res = await reactivateStudentSubject(id);
+    const isCurrentRequest = captureSchoolRequest();
+    const res = await reactivateStudentSubject(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }
 
   async function handleBulkDeactivate() {
+    if (schoolId == null) return;
     if (!confirm(`هل أنت متأكد من إلغاء ${selectedIds.length} تعيين مختار؟`)) return;
-    const res = await bulkDeactivateStudentSubject(selectedIds);
+    const isCurrentRequest = captureSchoolRequest();
+    const res = await bulkDeactivateStudentSubject(selectedIds, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else { setSelectedIds([]); setConfirmBulkOpen(false); loadData(); }
   }
@@ -224,7 +274,7 @@ export default function StudentSubjectsPage() {
           <h1 className="text-2xl font-bold text-gray-900">مواد الطالب</h1>
           <p className="text-sm text-gray-500 mt-1">تعيين وإدارة مواد الطلاب</p>
         </div>
-        {canManage && mode === 'list' && (
+        {canManageSelectedSchool && mode === 'list' && (
           <button onClick={() => { setMode('class'); resetAssign(); }} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
             <Plus size={18} />
             <span>تعيين مواد</span>
@@ -236,6 +286,10 @@ export default function StudentSubjectsPage() {
             <span>إلغاء</span>
           </button>
         )}
+      </div>
+
+      <div className="mb-6">
+        <SystemAdminSchoolSelector {...schoolScope} />
       </div>
 
       {/* Stats */}
@@ -382,10 +436,10 @@ export default function StudentSubjectsPage() {
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-500">{a.assigned_at ? toArabicDigits(new Date(a.assigned_at).toLocaleDateString('ar-IQ')) : '—'}</td>
                         <td className="px-4 py-3">
-                          {canManage && a.is_active === 1 && (
+                          {canManageSelectedSchool && a.is_active === 1 && (
                             <button onClick={() => handleDeactivate(a.id)} className="px-2 py-1 text-xs bg-red-50 text-red-700 border border-red-200 rounded hover:bg-red-100 transition-colors">إلغاء التعيين</button>
                           )}
-                          {canManage && a.is_active === 0 && (
+                          {canManageSelectedSchool && a.is_active === 0 && (
                             <button onClick={() => handleReactivate(a.id)} className="px-2 py-1 text-xs bg-green-50 text-green-700 border border-green-200 rounded hover:bg-green-100 transition-colors">إعادة التفعيل</button>
                           )}
                         </td>

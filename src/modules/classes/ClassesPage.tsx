@@ -1,5 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getClasses, getSections, createClass, updateClass, archiveClass, createSection, updateSection, archiveSection } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
@@ -38,8 +41,12 @@ const emptySectionForm = { class_id: '' as string | number, name: '', capacity: 
 
 export default function ClassesPage() {
   const { user } = useAuth();
-  const schoolId = user?.school_id;
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
+  const canManageSelectedSchool = canManage && schoolId != null;
+  const loadRequestId = useRef(0);
 
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [sections, setSections] = useState<SectionRecord[]>([]);
@@ -65,12 +72,37 @@ export default function ClassesPage() {
   const [sectionFormError, setSectionFormError] = useState('');
   const [savingSection, setSavingSection] = useState(false);
 
-  useEffect(() => { loadData(); }, [schoolId]);
+  useEffect(() => {
+    setClasses([]);
+    setSections([]);
+    setExpandedClass(null);
+    setClassModal(false);
+    setSectionModal(false);
+    setEditingClassId(null);
+    setEditingSectionId(null);
+    setClassForm(emptyClassForm);
+    setSectionForm(emptySectionForm);
+    setSearch('');
+    setLoading(false);
+    setSavingClass(false);
+    setSavingSection(false);
+    setError('');
+    void loadData(schoolId);
+  }, [schoolId]);
 
-  async function loadData() {
+  async function loadData(targetSchoolId: number | null = schoolId) {
+    const requestId = ++loadRequestId.current;
+    const isCurrentRequest = captureSchoolRequest();
+    if (targetSchoolId == null) {
+      setClasses([]);
+      setSections([]);
+      setError('');
+      setLoading(false);
+      return;
+    }
     setLoading(true); setError('');
-    const sid = schoolId ?? undefined;
-    const [cRes, sRes] = await Promise.all([getClasses(sid), getSections(sid)]);
+    const [cRes, sRes] = await Promise.all([getClasses(targetSchoolId), getSections(targetSchoolId)]);
+    if (!isCurrentRequest() || requestId !== loadRequestId.current) return;
     if (cRes.data) setClasses(cRes.data as ClassRecord[]);
     else if (cRes.error) setError(cRes.error);
     if (sRes.data) setSections(sRes.data as SectionRecord[]);
@@ -94,6 +126,7 @@ export default function ClassesPage() {
   }
 
   function openClassCreate() {
+    if (schoolId == null) return;
     setClassForm(emptyClassForm);
     setClassFormError('');
     setClassMode('create');
@@ -102,6 +135,7 @@ export default function ClassesPage() {
   }
 
   function openClassEdit(c: ClassRecord) {
+    if (schoolId == null) return;
     setClassForm({ name: c.name, stage: c.stage, order_index: c.order_index });
     setClassFormError('');
     setClassMode('edit');
@@ -111,15 +145,19 @@ export default function ClassesPage() {
 
   async function handleSaveClass() {
     setClassFormError('');
+    if (schoolId == null) { setClassFormError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!classForm.name.trim() || !classForm.stage) { setClassFormError('الاسم والمرحلة مطلوبة'); return; }
+    const isCurrentRequest = captureSchoolRequest();
     setSavingClass(true);
-    const payload = { school_id: schoolId ?? 1, name: classForm.name.trim(), stage: classForm.stage, order_index: Number(classForm.order_index) || 0 };
+    const payload = { school_id: schoolId, name: classForm.name.trim(), stage: classForm.stage, order_index: Number(classForm.order_index) || 0 };
     if (classMode === 'create') {
       const res = await createClass(payload);
+      if (!isCurrentRequest()) return;
       if (res.error) setClassFormError(res.error);
       else { setClassModal(false); loadData(); }
     } else if (editingClassId != null) {
       const res = await updateClass(editingClassId, { ...payload, status: 'active' });
+      if (!isCurrentRequest()) return;
       if (res.error) setClassFormError(res.error);
       else { setClassModal(false); loadData(); }
     }
@@ -127,15 +165,19 @@ export default function ClassesPage() {
   }
 
   async function handleArchiveClass(id: number) {
+    if (schoolId == null) return;
     const secCount = sectionsOf(id).length;
     if (secCount > 0) { alert(`لا يمكن أرشفة الصف لأنه يحتوي على ${toArabicDigits(secCount)} شعب. أرشف الشعب أولاً.`); return; }
     if (!confirm('هل أنت متأكد من أرشفة هذا الصف؟')) return;
-    const res = await archiveClass(id);
+    const isCurrentRequest = captureSchoolRequest();
+    const res = await archiveClass(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }
 
   function openSectionCreate(classId?: number) {
+    if (schoolId == null) return;
     setSectionForm({ class_id: classId ?? '', name: '', capacity: 30 });
     setSectionFormError('');
     setSectionMode('create');
@@ -144,6 +186,7 @@ export default function ClassesPage() {
   }
 
   function openSectionEdit(s: SectionRecord) {
+    if (schoolId == null) return;
     setSectionForm({ class_id: s.class_id, name: s.name, capacity: s.capacity });
     setSectionFormError('');
     setSectionMode('edit');
@@ -153,15 +196,19 @@ export default function ClassesPage() {
 
   async function handleSaveSection() {
     setSectionFormError('');
+    if (schoolId == null) { setSectionFormError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!sectionForm.class_id || !sectionForm.name.trim()) { setSectionFormError('الصف والاسم مطلوبة'); return; }
+    const isCurrentRequest = captureSchoolRequest();
     setSavingSection(true);
-    const payload = { school_id: schoolId ?? 1, class_id: Number(sectionForm.class_id), name: sectionForm.name.trim(), capacity: Number(sectionForm.capacity) || 30 };
+    const payload = { school_id: schoolId, class_id: Number(sectionForm.class_id), name: sectionForm.name.trim(), capacity: Number(sectionForm.capacity) || 30 };
     if (sectionMode === 'create') {
       const res = await createSection(payload);
+      if (!isCurrentRequest()) return;
       if (res.error) setSectionFormError(res.error);
       else { setSectionModal(false); loadData(); }
     } else if (editingSectionId != null) {
       const res = await updateSection(editingSectionId, { ...payload, status: 'active' });
+      if (!isCurrentRequest()) return;
       if (res.error) setSectionFormError(res.error);
       else { setSectionModal(false); loadData(); }
     }
@@ -169,8 +216,11 @@ export default function ClassesPage() {
   }
 
   async function handleArchiveSection(id: number) {
+    if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من أرشفة هذه الشعبة؟')) return;
-    const res = await archiveSection(id);
+    const isCurrentRequest = captureSchoolRequest();
+    const res = await archiveSection(id, schoolId);
+    if (!isCurrentRequest()) return;
     if (res.error) alert(res.error);
     else loadData();
   }
@@ -182,12 +232,16 @@ export default function ClassesPage() {
           <h1 className="text-2xl font-bold text-gray-900">الصفوف والشعب</h1>
           <p className="text-sm text-gray-500 mt-1">إدارة الصفوف الدراسية والشعب الأكاديمية</p>
         </div>
-        {canManage && (
+        {canManageSelectedSchool && (
           <button onClick={openClassCreate} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
             <Plus size={18} />
             <span>إضافة صف</span>
           </button>
         )}
+      </div>
+
+      <div className="mb-6">
+        <SystemAdminSchoolSelector {...schoolScope} />
       </div>
 
       {/* Filters */}
@@ -252,7 +306,7 @@ export default function ClassesPage() {
         ) : error ? (
           <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-red-600">
             <p className="font-medium">{error}</p>
-            <button onClick={loadData} className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">إعادة المحاولة</button>
+            <button onClick={() => void loadData()} className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">إعادة المحاولة</button>
           </div>
         ) : filteredClasses.length === 0 ? (
           <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
@@ -288,7 +342,7 @@ export default function ClassesPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {canManage && (
+                    {canManageSelectedSchool && (
                       <>
                         <button onClick={() => openSectionCreate(cls.id)} className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors">
                           <Plus size={14} />
@@ -334,7 +388,7 @@ export default function ClassesPage() {
                                 </td>
                                 <td className="px-4 py-2.5">
                                   <div className="flex items-center gap-2">
-                                    {canManage && (
+                                    {canManageSelectedSchool && (
                                       <>
                                         <button onClick={() => openSectionEdit(s)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="تعديل"><Edit2 size={14} /></button>
                                         <button onClick={() => handleArchiveSection(s.id)} className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors" title="أرشفة"><Archive size={14} /></button>

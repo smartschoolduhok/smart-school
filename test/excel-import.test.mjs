@@ -374,9 +374,10 @@ test('student preview performs no database write and confirm keeps tenant-scoped
 test('system administrators must explicitly choose an import target school', async () => {
   const source = await readFile(new URL('../src/modules/importExport/ImportExportPage.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /user\?\.school_id\s*\|\|\s*1/);
-  assert.match(source, /useState<number \| null>\(isSystemAdmin \? null : \(user\?\.school_id \?\? null\)\)/);
-  assert.match(source, /getSchools\(\)/);
-  assert.match(source, /id="target-school"/);
+  assert.match(source, /const schoolScope = useTenantSchool\(\)/);
+  assert.match(source, /const \{ schoolId \} = schoolScope/);
+  assert.match(source, /<SystemAdminSchoolSelector \{\.\.\.schoolScope\} \/>/);
+  assert.doesNotMatch(source, /setSchoolId|school_id\s*(?:\?\?|\|\|)\s*1/);
   assert.match(source, /if \(!schoolId\) throw new Error\('يجب اختيار المدرسة المستهدفة قبل المعاينة'\)/);
   assert.match(source, /setSelectedClassId\(null\)[\s\S]*setSelectedSectionId\(null\)[\s\S]*setSelectedSubjectId\(null\)/);
 });

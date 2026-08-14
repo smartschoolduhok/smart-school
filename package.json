@@ -4,7 +4,7 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "test:rbac": "node --experimental-strip-types --test test/rbac.test.mjs test/result-card.test.mjs",
+    "test:rbac": "node --experimental-strip-types --test test/rbac.test.mjs test/result-card.test.mjs test/tenant-targeting.test.mjs",
     "build": "vite build && vite build --config vite.worker.config.ts",
     "build:fe": "vite build",
     "build:api": "vite build --config vite.worker.config.ts",

@@ -14,7 +14,9 @@ import {
   ShieldAlert,
   UserCircle,
 } from 'lucide-react';
-import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getAnalyticsOverview,
   getAnalyticsByClass,
@@ -24,7 +26,6 @@ import {
   getStudentsCloseToExemption,
   getExemptionBlockers,
   getStudentSummary,
-  getSchools,
   getClasses,
   getSections,
   getSubjects,
@@ -105,8 +106,9 @@ function statusIcon(status: string | null): string {
 
 // ---- Component ----
 export default function AnalyticsPage() {
-  const { user } = useAuth();
-  const isAdmin = user?.role_key === 'system_admin';
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
 
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [filters, setFilters] = useState<FilterState>({
@@ -118,7 +120,6 @@ export default function AnalyticsPage() {
   });
 
   // Dropdown data
-  const [schools, setSchools] = useState<any[]>([]);
   const [classes, setClasses] = useState<any[]>([]);
   const [sections, setSections] = useState<any[]>([]);
   const [subjects, setSubjects] = useState<any[]>([]);
@@ -139,33 +140,44 @@ export default function AnalyticsPage() {
 
   // Load filter dropdowns
   useEffect(() => {
+    setClasses([]); setSections([]); setSubjects([]); setStudents([]);
+    setOverviewData(null);
+    setByClassData([]); setBySectionData([]); setBySubjectData([]);
+    setClosePassingData([]); setCloseExemptionData([]); setBlockersData([]);
+    setStudentSummaryData(null);
+    setLoading(false);
+    setError(null);
     async function loadDropdowns() {
-      const [schRes, clsRes, secRes, subRes, stuRes] = await Promise.all([
-        getSchools(),
-        getClasses(isAdmin ? null : user?.school_id),
-        getSections(isAdmin ? null : user?.school_id),
-        getSubjects(isAdmin ? null : user?.school_id),
-        getStudents(isAdmin ? null : user?.school_id),
+      if (schoolId == null) {
+        setClasses([]); setSections([]); setSubjects([]); setStudents([]);
+        return;
+      }
+      const isCurrent = captureSchoolRequest();
+      const [clsRes, secRes, subRes, stuRes] = await Promise.all([
+        getClasses(schoolId),
+        getSections(schoolId),
+        getSubjects(schoolId),
+        getStudents(schoolId),
       ]);
-      setSchools(schRes.data || []);
+      if (!isCurrent()) return;
       setClasses(clsRes.data || []);
       setSections(secRes.data || []);
       setSubjects(subRes.data || []);
       setStudents(stuRes.data || []);
     }
+    setFilters({ schoolId: '', classId: '', sectionId: '', subjectId: '', studentId: '' });
     loadDropdowns();
-  }, [isAdmin, user?.school_id]);
+  }, [schoolId]);
 
   // Build query params from filters
   const buildQueryParams = useCallback(() => {
     const params: Record<string, number | null> = {};
-    if (isAdmin && filters.schoolId) params.school_id = Number(filters.schoolId);
-    if (!isAdmin && user?.school_id) params.school_id = user.school_id;
+    if (schoolId != null) params.school_id = schoolId;
     if (filters.classId) params.class_id = Number(filters.classId);
     if (filters.sectionId) params.section_id = Number(filters.sectionId);
     if (filters.subjectId) params.subject_id = Number(filters.subjectId);
     return params;
-  }, [filters, isAdmin, user?.school_id]);
+  }, [filters, schoolId]);
 
   // Fetch data when tab or filters change
   useEffect(() => {
@@ -173,59 +185,64 @@ export default function AnalyticsPage() {
     let cancelled = false;
 
     async function fetchData() {
+      if (schoolId == null) {
+        setLoading(false);
+        return;
+      }
+      const isCurrent = captureSchoolRequest();
       setLoading(true);
       setError(null);
       try {
         switch (activeTab) {
           case 'overview': {
             const res = await getAnalyticsOverview(params);
-            if (!cancelled) setOverviewData(res.data ?? res);
+            if (!cancelled && isCurrent()) setOverviewData(res.data ?? res);
             break;
           }
           case 'by-class': {
             const res = await getAnalyticsByClass(params);
-            if (!cancelled) setByClassData(res.data || []);
+            if (!cancelled && isCurrent()) setByClassData(res.data || []);
             break;
           }
           case 'by-section': {
             const res = await getAnalyticsBySection(params);
-            if (!cancelled) setBySectionData(res.data || []);
+            if (!cancelled && isCurrent()) setBySectionData(res.data || []);
             break;
           }
           case 'by-subject': {
             const res = await getAnalyticsBySubject(params);
-            if (!cancelled) setBySubjectData(res.data || []);
+            if (!cancelled && isCurrent()) setBySubjectData(res.data || []);
             break;
           }
           case 'close-passing': {
             const res = await getStudentsCloseToPassing(params);
-            if (!cancelled) setClosePassingData(res.data || []);
+            if (!cancelled && isCurrent()) setClosePassingData(res.data || []);
             break;
           }
           case 'close-exemption': {
             const res = await getStudentsCloseToExemption(params);
-            if (!cancelled) setCloseExemptionData(res.data || []);
+            if (!cancelled && isCurrent()) setCloseExemptionData(res.data || []);
             break;
           }
           case 'exemption-blockers': {
             const res = await getExemptionBlockers(params);
-            if (!cancelled) setBlockersData(res.data || []);
+            if (!cancelled && isCurrent()) setBlockersData(res.data || []);
             break;
           }
           case 'student-summary': {
             if (filters.studentId) {
               const res = await getStudentSummary(Number(filters.studentId));
-              if (!cancelled) setStudentSummaryData(res.data ?? res);
+              if (!cancelled && isCurrent()) setStudentSummaryData(res.data ?? res);
             } else {
-              if (!cancelled) setStudentSummaryData(null);
+              if (!cancelled && isCurrent()) setStudentSummaryData(null);
             }
             break;
           }
         }
       } catch (err: any) {
-        if (!cancelled) setError(err?.error || 'حدث خطأ أثناء جلب البيانات');
+        if (!cancelled && isCurrent()) setError(err?.error || 'حدث خطأ أثناء جلب البيانات');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && isCurrent()) setLoading(false);
       }
     }
 
@@ -297,17 +314,11 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      <SystemAdminSchoolSelector {...schoolScope} />
+
       {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-200 p-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {isAdmin && (
-            <FilterSelect
-              label="المدرسة"
-              value={filters.schoolId}
-              onChange={(v) => setFilters((f) => ({ ...f, schoolId: v }))}
-              options={schools}
-            />
-          )}
           <FilterSelect
             label="الصف"
             value={filters.classId}
