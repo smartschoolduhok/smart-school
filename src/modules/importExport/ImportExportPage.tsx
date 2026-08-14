@@ -4,14 +4,16 @@ import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { IMPORT_EXPORT_ROLES, hasRole } from '../../lib/rbac';
-import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections } from '../../lib/api';
+import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections, getSubjects } from '../../lib/api';
 import {
   analysisRowsToRecords,
   analyzeWorksheet,
   fieldSourceIdentity,
   normalizeHeader,
+  RAW_GRADE_FIELDS,
   type ColumnProfile,
   type FieldSource,
+  type GradeSemanticField,
   type StudentSemanticField,
   type WorksheetAnalysis,
   type WorksheetCategory,
@@ -56,10 +58,23 @@ interface PreviewResult {
   error_rows: number;
   duplicate_rows: number;
   skipped_rows?: number;
-  valid: PreviewRow[];
+  valid: any[];
   errors: any[];
   warnings: any[];
   duplicates: any[];
+  sheets?: any[];
+  summary?: Record<string, number>;
+}
+
+interface GradeSheetConfig {
+  sheetName: string;
+  selected: boolean;
+  mapping: ColumnMap;
+  subjectId: number | null;
+  subjectName: string | null;
+  classId: number | null;
+  sectionId: number | null;
+  acknowledged: boolean;
 }
 
 const TABS = [
@@ -192,13 +207,35 @@ const AUTO_MAP_RULES: Record<string, string[]> = {
   salary_amount: ['الراتب', 'salary_amount', 'salary', 'الراتب الأساسي', 'basic salary'],
   salary_type: ['نوع الراتب', 'salary_type'],
   first_month: ['درجة الفصل الاول', 'الفصل الاول', 'first_month', 'first term', 'السعي الاول'],
-  second_month: ['السعي الثاني', 'second_month', 'second term', 'الفصل الثاني'],
+  second_month: ['السعي الثاني', 'الشهر الثاني', 'second_month', 'second term'],
   third_month: ['درجة الفصل الثاني', 'الفصل الثاني', 'third_month', 'third term', 'السعي الثالث'],
   fourth_month: ['السعي الرابع', 'fourth_month', 'fourth term'],
   mid_year_exam: ['نصف السنة', 'درجة نصف السنة', 'mid_year_exam', 'mid_year', 'mid year exam', 'mid'],
   final_exam: ['امتحان نهاية السنة', 'درجة نهاية السنة', 'final_exam', 'final exam', 'final', 'نهاية السنة'],
   completion_exam: ['الاكمال', 'درجة الاكمال', 'completion_exam', 'completion', 'complementary', 'الإكمال'],
 };
+
+const GRADE_IDENTITY_FIELDS = new Set<GradeSemanticField>(['student_number', 'full_name', 'class_name', 'section_name', 'subject_name']);
+
+function gradeMappingFromAnalysis(analysis: WorksheetAnalysis): ColumnMap {
+  const mapping: ColumnMap = {};
+  for (const inference of analysis.gradeFieldInferences) {
+    if (inference.kind === 'ignored_calculated' || inference.source.type !== 'column') continue;
+    const minimum = GRADE_IDENTITY_FIELDS.has(inference.field) ? 0.48 : 0.7;
+    if (inference.confidence >= minimum) mapping[inference.field] = inference.source.columnKey;
+  }
+  return { ...autoMapColumns(analysis.columns, 'grades'), ...mapping };
+}
+
+function gradeConfigNeedsAcknowledgement(config: GradeSheetConfig, info?: SheetInfo): boolean {
+  if (!info) return true;
+  if (!config.subjectId && (info.analysis.subjectInference.confidence < 0.85 || !config.subjectName)) return true;
+  return info.analysis.gradeFieldInferences.some(inference =>
+    inference.source.type === 'column'
+    && config.mapping[inference.field] === inference.source.columnKey
+    && inference.confidence < 0.7,
+  );
+}
 
 const STUDENT_SEMANTIC_FIELDS: StudentSemanticField[] = ['full_name', 'student_number', 'section_name', 'class_name', 'gender', 'phone'];
 
@@ -298,6 +335,9 @@ export default function ImportExportPage() {
   const [selectedSubjectId, setSelectedSubjectId] = useState<number | null>(null);
   const [classes, setClasses] = useState<any[]>([]);
   const [sections, setSections] = useState<any[]>([]);
+  const [subjects, setSubjects] = useState<any[]>([]);
+  const [gradeSheetConfigs, setGradeSheetConfigs] = useState<GradeSheetConfig[]>([]);
+  const [gradeConfirmPayload, setGradeConfirmPayload] = useState<Record<string, unknown> | null>(null);
   const [studentSources, setStudentSources] = useState<Partial<Record<StudentSemanticField, FieldSource>>>({});
   const [analysisAcknowledged, setAnalysisAcknowledged] = useState(false);
 
@@ -335,6 +375,9 @@ export default function ImportExportPage() {
     setSelectedSubjectId(null);
     setClasses([]);
     setSections([]);
+    setSubjects([]);
+    setGradeSheetConfigs([]);
+    setGradeConfirmPayload(null);
     setPreview(null);
     setConfirmResult(null);
     setAnalysisAcknowledged(false);
@@ -344,10 +387,11 @@ export default function ImportExportPage() {
     ])) as Partial<Record<StudentSemanticField, FieldSource>>);
     setStep(current => current === 'preview' || current === 'confirm' ? 'mapping' : current);
     if (!schoolId) return () => { cancelled = true; };
-    Promise.all([getClasses(schoolId), getSections(schoolId)]).then(([classResult, sectionResult]) => {
+    Promise.all([getClasses(schoolId), getSections(schoolId), getSubjects(schoolId)]).then(([classResult, sectionResult, subjectResult]) => {
       if (cancelled) return;
       setClasses(classResult.data || []);
       setSections(sectionResult.data || []);
+      setSubjects(subjectResult.data || []);
     });
     return () => { cancelled = true; };
   }, [schoolId]);
@@ -382,7 +426,7 @@ export default function ImportExportPage() {
       const sheetInfos: SheetInfo[] = workbook.SheetNames.map((name: string) => {
         const ws = workbook.Sheets[name];
         const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: true }) as WorksheetRows;
-        const analysis = analyzeWorksheet(name, rows, { fileName: f.name });
+        const analysis = analyzeWorksheet(name, rows, { fileName: f.name, subjects });
         return {
           name,
           type: analysis.category,
@@ -396,6 +440,17 @@ export default function ImportExportPage() {
         };
       });
       setSheets(sheetInfos);
+      setGradeSheetConfigs(sheetInfos.map(info => ({
+        sheetName: info.name,
+        selected: info.type === 'grade_sheet',
+        mapping: gradeMappingFromAnalysis(info.analysis),
+        subjectId: info.analysis.subjectInference.subjectId,
+        subjectName: info.analysis.subjectInference.subjectName,
+        classId: null,
+        sectionId: null,
+        acknowledged: false,
+      })));
+      setGradeConfirmPayload(null);
       setStep('sheets');
     } catch (err: any) {
       alert('فشل في قراءة الملف: ' + (err.message || 'خطأ غير معروف'));
@@ -416,7 +471,12 @@ export default function ImportExportPage() {
         setMapping({ ...autoMapColumns(info.analysis.columns, suggestedType), ...columnMappingFromSources(sources) });
       } else {
         setStudentSources({});
-        setMapping(autoMapColumns(info.analysis.columns, suggestedType));
+        const gradeMapping = gradeMappingFromAnalysis(info.analysis);
+        setMapping(gradeMapping);
+        setMode('update_existing');
+        setGradeSheetConfigs(previous => previous.map(config => config.sheetName === info.name
+          ? { ...config, selected: true, mapping: gradeMapping }
+          : config));
       }
       setImportTypeConfirmed(true);
     } else {
@@ -433,6 +493,7 @@ export default function ImportExportPage() {
     const analysis = analyzeWorksheet(info.name, info.rows, {
       fileName: file?.name,
       headerRowIndex: oneBasedRow == null ? null : Math.max(0, oneBasedRow - 1),
+      subjects,
     });
     setSheets(previous => previous.map(sheet => sheet.name === info.name ? {
       ...sheet,
@@ -449,7 +510,17 @@ export default function ImportExportPage() {
       setStudentSources(sources);
       setMapping({ ...autoMapColumns(analysis.columns, selectedType), ...columnMappingFromSources(sources) });
     } else {
-      setMapping(autoMapColumns(analysis.columns, selectedType));
+      const nextMapping = selectedType === 'grades' ? gradeMappingFromAnalysis(analysis) : autoMapColumns(analysis.columns, selectedType);
+      setMapping(nextMapping);
+      if (selectedType === 'grades') {
+        setGradeSheetConfigs(previous => previous.map(config => config.sheetName === info.name ? {
+          ...config,
+          mapping: nextMapping,
+          subjectId: analysis.subjectInference.subjectId,
+          subjectName: analysis.subjectInference.subjectName,
+          acknowledged: false,
+        } : config));
+      }
     }
     setAnalysisAcknowledged(false);
     setPreview(null);
@@ -457,6 +528,52 @@ export default function ImportExportPage() {
 
   const handleMappingChange = (field: string, col: string) => {
     setMapping(prev => ({ ...prev, [field]: col }));
+  };
+
+  const openGradeWorkbookMapping = () => {
+    const selected = gradeSheetConfigs.filter(config => config.selected);
+    if (!selected.length) {
+      alert('اختر ورقة درجات واحدة على الأقل');
+      return;
+    }
+    setSelectedType('grades');
+    setImportTypeConfirmed(true);
+    setMode('update_existing');
+    setSelectedSheet(selected[0].sheetName);
+    setMapping(selected[0].mapping);
+    setStep('mapping');
+  };
+
+  const updateGradeSheetConfig = (sheetName: string, update: Partial<GradeSheetConfig>) => {
+    setGradeSheetConfigs(previous => previous.map(config => config.sheetName === sheetName ? { ...config, ...update } : config));
+    setPreview(null);
+    setGradeConfirmPayload(null);
+  };
+
+  const changeGradeSheetMapping = (sheetName: string, field: string, columnKey: string) => {
+    setGradeSheetConfigs(previous => previous.map(config => {
+      if (config.sheetName !== sheetName) return config;
+      const nextMapping = { ...config.mapping };
+      if (columnKey) nextMapping[field] = columnKey;
+      else delete nextMapping[field];
+      return { ...config, mapping: nextMapping, acknowledged: false };
+    }));
+    setPreview(null);
+    setGradeConfirmPayload(null);
+  };
+
+  const applyGradeMappingToCompatibleSheets = (sourceSheetName: string) => {
+    const sourceConfig = gradeSheetConfigs.find(config => config.sheetName === sourceSheetName);
+    const sourceInfo = sheets.find(sheet => sheet.name === sourceSheetName);
+    if (!sourceConfig || !sourceInfo) return;
+    const signature = sourceInfo.analysis.columns.map(column => normalizeHeader(column.headerText || column.displayName)).join('|');
+    setGradeSheetConfigs(previous => previous.map(config => {
+      const info = sheets.find(sheet => sheet.name === config.sheetName);
+      const compatible = info?.analysis.columns.map(column => normalizeHeader(column.headerText || column.displayName)).join('|') === signature;
+      return config.selected && compatible ? { ...config, mapping: { ...sourceConfig.mapping }, acknowledged: false } : config;
+    }));
+    setPreview(null);
+    setGradeConfirmPayload(null);
   };
 
   const changeImportType = (info: SheetInfo, type: ImportType) => {
@@ -468,7 +585,14 @@ export default function ImportExportPage() {
       setMapping({ ...autoMapColumns(info.analysis.columns, type), ...columnMappingFromSources(sources) });
     } else {
       setStudentSources({});
-      setMapping(autoMapColumns(info.analysis.columns, type));
+      const nextMapping = type === 'grades' ? gradeMappingFromAnalysis(info.analysis) : autoMapColumns(info.analysis.columns, type);
+      setMapping(nextMapping);
+      if (type === 'grades') {
+        setMode('update_existing');
+        setGradeSheetConfigs(previous => previous.map(config => config.sheetName === info.name
+          ? { ...config, selected: true, mapping: nextMapping }
+          : config));
+      }
     }
     setAnalysisAcknowledged(false);
   };
@@ -518,6 +642,47 @@ export default function ImportExportPage() {
       if (!info) throw new Error('تعذر العثور على ورقة العمل المحددة');
       if (!schoolId) throw new Error('يجب اختيار المدرسة المستهدفة قبل المعاينة');
       if (!importTypeConfirmed) throw new Error('اختر نوع الاستيراد لهذه الورقة أولاً');
+      if (selectedType === 'grades') {
+        const selectedConfigs = gradeSheetConfigs.filter(config => config.selected);
+        if (!selectedConfigs.length) throw new Error('اختر ورقة درجات واحدة على الأقل');
+        const gradeSheets = selectedConfigs.map(config => {
+          const sheetInfo = sheets.find(sheet => sheet.name === config.sheetName);
+          if (!sheetInfo) throw new Error(`تعذر العثور على الورقة "${config.sheetName}"`);
+          if (!config.subjectId && !config.subjectName) throw new Error(`حدد المادة للورقة "${config.sheetName}"`);
+          if (!config.mapping.student_number && !config.mapping.full_name) throw new Error(`حدد رقم الطالب/القيد أو اسم الطالب في الورقة "${config.sheetName}"`);
+          if (!RAW_GRADE_FIELDS.some(field => Boolean(config.mapping[field]))) throw new Error(`حدد عمود درجة خام واحداً على الأقل في الورقة "${config.sheetName}"`);
+          if (gradeConfigNeedsAcknowledgement(config, sheetInfo) && !config.acknowledged) {
+            throw new Error(`راجع الاستدلالات غير المؤكدة وأكدها في الورقة "${config.sheetName}"`);
+          }
+          return {
+            sheet_name: config.sheetName,
+            rows: analysisRowsToRecords(sheetInfo.rows, sheetInfo.analysis),
+            mapping: config.mapping,
+            column_headers: Object.fromEntries(sheetInfo.analysis.columns.map(column => [column.key, column.headerText || column.displayName])),
+            subject_id: config.subjectId,
+            subject_name: config.subjectName,
+            class_id: config.classId,
+            section_id: config.sectionId,
+          };
+        });
+        const payload = {
+          school_id: schoolId,
+          grade_sheets: gradeSheets,
+          mode,
+          assignment_mode: assignmentMode,
+          clear_empty_fields: clearEmptyFields,
+          file_name: file.name,
+        };
+        const res = await previewImport('grades', payload);
+        if (!isCurrent()) return;
+        if (res.data) {
+          setGradeConfirmPayload(payload);
+          setPreview(res.data as PreviewResult);
+          setStep('preview');
+        } else if (res.error) alert(res.error);
+        if (isCurrent()) setLoading(false);
+        return;
+      }
       const rows = analysisRowsToRecords(info.rows, info.analysis);
       let rowsForPreview: Array<Record<string, unknown>> = rows;
       let effectiveMapping = { ...mapping };
@@ -569,14 +734,6 @@ export default function ImportExportPage() {
         payload.selected_class_id = effectiveClassId;
         payload.selected_section_id = effectiveSectionId;
       }
-      if (selectedType === 'grades') {
-        payload.assignment_mode = assignmentMode;
-        payload.clear_empty_fields = clearEmptyFields;
-        payload.selected_subject_id = selectedSubjectId;
-        payload.selected_class_id = selectedClassId;
-        payload.selected_section_id = selectedSectionId;
-        payload.selected_sheet = selectedSheet;
-      }
       if (selectedType === 'student-subjects') {
         payload.selected_class_id = selectedClassId;
         payload.selected_section_id = selectedSectionId;
@@ -602,6 +759,21 @@ export default function ImportExportPage() {
     setLoading(true);
     try {
       if (!schoolId) throw new Error('يجب اختيار المدرسة المستهدفة قبل تأكيد الاستيراد');
+      if (selectedType === 'grades') {
+        if (!gradeConfirmPayload) throw new Error('أعد معاينة أوراق الدرجات قبل التأكيد');
+        const res = await confirmImport('grades', {
+          ...gradeConfirmPayload,
+          school_id: schoolId,
+          file_name: file?.name || 'import.xlsx',
+        });
+        if (!isCurrent()) return;
+        if (res.data) {
+          setConfirmResult(res.data);
+          setStep('confirm');
+        } else if (res.error) alert(res.error);
+        if (isCurrent()) setLoading(false);
+        return;
+      }
       const rowsToSend = preview.valid.map((r: PreviewRow) => r.data);
       const payload: any = { school_id: schoolId, rows: rowsToSend, mode, file_name: file?.name || 'import.xlsx' };
       if (selectedType === 'students') {
@@ -617,10 +789,6 @@ export default function ImportExportPage() {
           ? selectedClassId
           : sectionMode === 'override' ? (sections.find(section => section.id === selectedSectionId)?.class_id || null) : null;
         payload.selected_section_id = selectedSectionId;
-      }
-      if (selectedType === 'grades') {
-        payload.assignment_mode = assignmentMode;
-        payload.clear_empty_fields = clearEmptyFields;
       }
       const res = await confirmImport(selectedType, payload);
       if (!isCurrent()) return;
@@ -784,6 +952,16 @@ export default function ImportExportPage() {
               <div className="grid gap-3">
                 {sheets.map(s => (
                   <div key={s.name} className={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${s.name === selectedSheet ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'}`} onClick={() => selectSheet(s.name)}>
+                    {s.type === 'grade_sheet' && (
+                      <input
+                        type="checkbox"
+                        aria-label={`اختيار ورقة الدرجات ${s.name}`}
+                        checked={gradeSheetConfigs.find(config => config.sheetName === s.name)?.selected || false}
+                        onClick={event => event.stopPropagation()}
+                        onChange={event => updateGradeSheetConfig(s.name, { selected: event.target.checked })}
+                        className="h-5 w-5 rounded border-gray-300 text-primary-600"
+                      />
+                    )}
                     <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white ${s.type === 'students' ? 'bg-green-500' : s.type === 'grade_sheet' ? 'bg-blue-500' : s.type === 'summary' ? 'bg-amber-500' : 'bg-gray-400'}`}>
                       {s.type === 'students' ? <Users size={18} /> : s.type === 'grade_sheet' ? <BookOpen size={18} /> : s.type === 'summary' ? <FileText size={18} /> : <Table size={18} />}
                     </div>
@@ -801,6 +979,11 @@ export default function ImportExportPage() {
               </div>
               <div className="mt-4 flex gap-2">
                 <button onClick={() => setStep('upload')} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">رجوع</button>
+                {gradeSheetConfigs.some(config => config.selected) && (
+                  <button onClick={openGradeWorkbookMapping} className="rounded-lg bg-primary-600 px-5 py-2 text-sm font-medium text-white hover:bg-primary-700">
+                    إعداد {gradeSheetConfigs.filter(config => config.selected).length} أوراق درجات معاً
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -869,6 +1052,127 @@ export default function ImportExportPage() {
                     <input id="clear_empty" type="checkbox" checked={clearEmptyFields} onChange={e => setClearEmptyFields(e.target.checked)} className="w-4 h-4 text-amber-600 border-gray-300 rounded focus:ring-amber-500" />
                     <label htmlFor="clear_empty" className="text-sm text-amber-800 font-bold cursor-pointer">مسح الحقول الفارغة (تحذير: سيتم مسح الدرجات الموجودة في الحقول الفارغة)</label>
                   </div>
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                    الوضع الافتراضي هو تحديث الدرجات الموجودة. الأعمدة المحسوبة مثل السعي السنوي والنتيجة تُعرض للمراجعة فقط ويعيد النظام حسابها من الدرجات الخام.
+                  </div>
+                </div>
+              )}
+
+              {selectedType === 'grades' && (
+                <div className="mb-5 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-200 bg-gray-50 p-4">
+                    <div>
+                      <h3 className="font-bold text-gray-900">أوراق المواد المحددة</h3>
+                      <p className="text-xs text-gray-600">يمكن تصحيح المادة والصف والشعبة وربط الأعمدة لكل ورقة بصورة مستقلة.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => setGradeSheetConfigs(previous => previous.map(config => ({ ...config, selected: sheets.find(sheet => sheet.name === config.sheetName)?.type === 'grade_sheet' })))} className="rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium">اختيار المقترحة</button>
+                      <button onClick={() => setGradeSheetConfigs(previous => previous.map(config => ({ ...config, selected: false })))} className="rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium">إلغاء الكل</button>
+                    </div>
+                  </div>
+
+                  {gradeSheetConfigs.filter(config => config.selected).map(config => {
+                    const info = sheets.find(sheet => sheet.name === config.sheetName);
+                    if (!info) return null;
+                    const calculatedColumns = info.analysis.gradeFieldInferences
+                      .filter(inference => inference.kind === 'ignored_calculated' && inference.source.type === 'column')
+                      .map(inference => info.analysis.columns.find(column => column.key === (inference.source.type === 'column' ? inference.source.columnKey : ''))?.displayName)
+                      .filter(Boolean);
+                    const calculatedColumnKeys = new Set(info.analysis.gradeFieldInferences
+                      .filter(inference => inference.kind === 'ignored_calculated' && inference.source.type === 'column')
+                      .map(inference => inference.source.type === 'column' ? inference.source.columnKey : ''));
+                    const needsAcknowledgement = gradeConfigNeedsAcknowledgement(config, info);
+                    const filteredSections = sections.filter(section => section.status === 'active' && (!config.classId || section.class_id === config.classId));
+                    const filteredSubjects = subjects.filter(subject => subject.status !== 'archived'
+                      && (!config.classId || subject.class_id == null || subject.class_id === config.classId)
+                      && (!config.sectionId || subject.section_id == null || subject.section_id === config.sectionId));
+                    return (
+                      <details key={config.sheetName} open className="rounded-xl border border-gray-200 bg-white p-4">
+                        <summary className="cursor-pointer list-none">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <h4 className="font-bold text-gray-900">{config.sheetName}</h4>
+                              <p className="text-xs text-gray-500">{info.rowCount} صفاً — ثقة التصنيف {Math.round(info.analysis.categoryConfidence * 100)}% — ثقة المادة {Math.round(info.analysis.subjectInference.confidence * 100)}%</p>
+                            </div>
+                            <button type="button" onClick={event => { event.preventDefault(); updateGradeSheetConfig(config.sheetName, { selected: false }); }} className="rounded-md border border-red-200 px-3 py-1 text-xs text-red-700">استبعاد الورقة</button>
+                          </div>
+                        </summary>
+
+                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                          <label className="text-sm font-medium text-gray-700">المادة
+                            <select
+                              value={config.subjectId != null ? String(config.subjectId) : config.subjectName ? `name:${config.subjectName}` : ''}
+                              onChange={event => {
+                                if (event.target.value.startsWith('name:')) updateGradeSheetConfig(config.sheetName, { subjectId: null, subjectName: event.target.value.slice(5), acknowledged: false });
+                                else {
+                                  const subject = subjects.find(item => item.id === Number(event.target.value));
+                                  updateGradeSheetConfig(config.sheetName, { subjectId: subject?.id || null, subjectName: subject?.name || null, acknowledged: false });
+                                }
+                              }}
+                              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2"
+                            >
+                              <option value="">— اختر المادة —</option>
+                              {config.subjectName && <option value={`name:${config.subjectName}`}>مطابقة «{config.subjectName}» حسب صف الطالب</option>}
+                              {filteredSubjects.map(subject => (
+                                <option key={subject.id} value={subject.id}>
+                                  {subject.name}{subject.class_name ? ` — ${subject.class_name}` : ''}{subject.section_name ? ` / ${subject.section_name}` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="text-sm font-medium text-gray-700">تقييد بالصف (اختياري)
+                            <select value={config.classId || ''} onChange={event => updateGradeSheetConfig(config.sheetName, { classId: event.target.value ? Number(event.target.value) : null, sectionId: null, acknowledged: false })} className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2">
+                              <option value="">من بيانات الطالب</option>
+                              {classes.filter(item => item.status === 'active').map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                            </select>
+                          </label>
+                          <label className="text-sm font-medium text-gray-700">تقييد بالشعبة (اختياري)
+                            <select value={config.sectionId || ''} onChange={event => updateGradeSheetConfig(config.sheetName, { sectionId: event.target.value ? Number(event.target.value) : null, acknowledged: false })} className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2">
+                              <option value="">من بيانات الطالب</option>
+                              {filteredSections.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                            </select>
+                          </label>
+                        </div>
+
+                        <div className="mt-4 overflow-auto rounded-lg border border-gray-200">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50"><tr><th className="px-3 py-2 text-right">حقل Smart School</th><th className="px-3 py-2 text-right">عمود Excel</th><th className="px-3 py-2 text-right">الثقة</th></tr></thead>
+                            <tbody>
+                              {SYSTEM_FIELDS.grades.map(field => {
+                                const inference = info.analysis.gradeFieldInferences.find(item => item.field === field.key);
+                                return (
+                                  <tr key={field.key} className="border-t border-gray-100">
+                                    <td className="px-3 py-2 font-medium text-gray-800">{field.label}</td>
+                                    <td className="px-3 py-2">
+                                      <select value={config.mapping[field.key] || ''} onChange={event => changeGradeSheetMapping(config.sheetName, field.key, event.target.value)} className="w-full min-w-56 rounded-md border border-gray-300 px-2 py-1.5">
+                                        <option value="">— تجاهل —</option>
+                                        {info.analysis.columns
+                                          .filter(column => !RAW_GRADE_FIELDS.some(rawField => rawField === field.key) || !calculatedColumnKeys.has(column.key))
+                                          .map(column => <option key={column.key} value={column.key}>{column.displayName} — {column.columnLetter}</option>)}
+                                      </select>
+                                    </td>
+                                    <td className="px-3 py-2 text-xs text-gray-600">{inference && inference.source.type === 'column' && config.mapping[field.key] === inference.source.columnKey ? `${Math.round(inference.confidence * 100)}%` : 'اختيار يدوي'}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-3">
+                          <button type="button" onClick={() => applyGradeMappingToCompatibleSheets(config.sheetName)} className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700">تطبيق الربط على الأوراق المتوافقة</button>
+                          {calculatedColumns.length > 0 && <span className="text-xs text-amber-700">أعمدة محسوبة ستُتجاهل: {calculatedColumns.join('، ')}</span>}
+                        </div>
+                        {needsAcknowledgement && (
+                          <label className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                            <input type="checkbox" checked={config.acknowledged} onChange={event => updateGradeSheetConfig(config.sheetName, { acknowledged: event.target.checked })} className="mt-0.5" />
+                            <span>راجعت المادة والحقول ذات الثقة المنخفضة لهذه الورقة وأؤكد الاختيارات.</span>
+                          </label>
+                        )}
+                      </details>
+                    );
+                  })}
+                  {!gradeSheetConfigs.some(config => config.selected) && <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">لم تُحدد أي ورقة درجات. ارجع إلى قائمة الأوراق أو اختر الأوراق المقترحة.</div>}
                 </div>
               )}
 
@@ -951,7 +1255,7 @@ export default function ImportExportPage() {
                 </div>
               )}
 
-              <div className="overflow-auto border border-gray-200 rounded-lg mb-4">
+              {selectedType !== 'grades' && <div className="overflow-auto border border-gray-200 rounded-lg mb-4">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50">
                     <tr>
@@ -983,9 +1287,9 @@ export default function ImportExportPage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </div>}
 
-              {ignoredCols.length > 0 && (
+              {selectedType !== 'grades' && ignoredCols.length > 0 && (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
                   <p className="text-sm text-amber-800 font-bold">أعمدة سيتم تجاهلها:</p>
                   <p className="text-sm text-amber-700">{ignoredCols.join('، ')}</p>
@@ -1005,12 +1309,21 @@ export default function ImportExportPage() {
           {step === 'preview' && preview && (
             <div className="bg-white border border-gray-200 rounded-xl p-6">
               <h2 className="text-lg font-bold text-gray-900 mb-4">معاينة البيانات</h2>
-              {selectedSheetInfo && (
+              {selectedSheetInfo && selectedType !== 'grades' && (
                 <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
                   الورقة: <strong>{selectedSheetInfo.name}</strong>
                   {' — '}النوع المتوقع: <strong>{selectedSheetInfo.type === 'students' ? 'قائمة طلاب' : selectedSheetInfo.type === 'grade_sheet' ? 'ورقة مادة/درجات' : selectedSheetInfo.type === 'summary' ? 'ملخص/تقرير' : 'غير معروف'}</strong>
                   {' — '}الثقة: <strong>{Math.round(selectedSheetInfo.analysis.categoryConfidence * 100)}%</strong>
                   {' — '}نطاق الجدول: <strong>{(selectedTable?.region.startRow || 0) + 1}–{(selectedTable?.region.endRow || 0) + 1}</strong>
+                </div>
+              )}
+              {selectedType === 'grades' && preview.sheets && (
+                <div className="mb-4 overflow-auto rounded-lg border border-gray-200">
+                  <div className="border-b border-gray-200 bg-gray-50 px-4 py-2 text-sm font-bold text-gray-800">ملخص أوراق الدرجات</div>
+                  <table className="w-full text-sm">
+                    <thead><tr><th className="px-3 py-2 text-right">الورقة</th><th className="px-3 py-2 text-right">المادة</th><th className="px-3 py-2 text-right">صالح</th><th className="px-3 py-2 text-right">جديد</th><th className="px-3 py-2 text-right">تحديث</th><th className="px-3 py-2 text-right">أخطاء</th></tr></thead>
+                    <tbody>{preview.sheets.map((sheet, index) => <tr key={`${sheet.sheet_name}-${index}`} className="border-t border-gray-100"><td className="px-3 py-2 font-medium">{sheet.sheet_name}</td><td className="px-3 py-2">{sheet.subject_name || 'حسب المطابقة'}</td><td className="px-3 py-2">{sheet.valid_rows}</td><td className="px-3 py-2">{sheet.new_rows}</td><td className="px-3 py-2">{sheet.update_rows}</td><td className="px-3 py-2 text-red-700">{sheet.error_rows}</td></tr>)}</tbody>
+                  </table>
                 </div>
               )}
               {selectedType === 'students' && preview.valid[0]?.data && (
@@ -1052,7 +1365,7 @@ export default function ImportExportPage() {
                     <tbody>
                       {preview.errors.map((e, i) => (
                         <tr key={i} className="border-t border-red-100">
-                          <td className="px-4 py-2 text-red-700 font-bold">{e.row}</td>
+                          <td className="px-4 py-2 text-red-700 font-bold">{e.label || (e.sheet ? `${e.sheet} — ${e.row ?? 'الورقة'}` : e.row)}</td>
                           <td className="px-4 py-2 text-red-600">{e.field}</td>
                           <td className="px-4 py-2 text-red-600">{e.message}</td>
                         </tr>
@@ -1062,16 +1375,36 @@ export default function ImportExportPage() {
                 </div>
               )}
 
+              {preview.warnings.length > 0 && (
+                <div className="mb-4 max-h-56 overflow-auto rounded-lg border border-amber-200">
+                  <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-800">تحذيرات المعاينة ({preview.warnings.length})</div>
+                  <ul className="divide-y divide-amber-100 text-sm">
+                    {preview.warnings.slice(0, 100).map((warning, index) => (
+                      <li key={index} className="px-4 py-2 text-amber-800"><strong>{warning.label || warning.row || 'عام'}:</strong> {warning.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {preview.duplicates.length > 0 && (
                 <div className="mb-4 max-h-48 overflow-auto rounded-lg border border-amber-200">
                   <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-700">صفوف مكررة</div>
                   <table className="w-full text-sm"><thead><tr><th className="px-4 py-2 text-right">صف Excel</th><th className="px-4 py-2 text-right">الطالب</th><th className="px-4 py-2 text-right">رقم الطالب</th></tr></thead><tbody>
-                    {preview.duplicates.map((duplicate, index) => <tr key={index} className="border-t border-amber-100"><td className="px-4 py-2">{duplicate.row}</td><td className="px-4 py-2">{duplicate.full_name || ''}</td><td className="px-4 py-2">{duplicate.student_number || ''}</td></tr>)}
+                      {preview.duplicates.map((duplicate, index) => <tr key={index} className="border-t border-amber-100"><td className="px-4 py-2">{duplicate.label || duplicate.row}</td><td className="px-4 py-2">{duplicate.full_name || duplicate.message || ''}</td><td className="px-4 py-2">{duplicate.student_number || ''}</td></tr>)}
                   </tbody></table>
                 </div>
               )}
 
-              {preview.valid.length > 0 && (
+              {selectedType === 'grades' && preview.valid.length > 0 && (
+                <div className="mb-4 max-h-80 overflow-auto rounded-lg border border-gray-200">
+                  <div className="border-b border-gray-200 bg-green-50 px-4 py-2 text-sm font-bold text-green-700">تغييرات الدرجات المخططة ({preview.valid_rows})</div>
+                  <table className="w-full text-sm"><thead className="sticky top-0 bg-gray-50"><tr><th className="px-3 py-2 text-right">المصدر</th><th className="px-3 py-2 text-right">الطالب</th><th className="px-3 py-2 text-right">الصف/الشعبة</th><th className="px-3 py-2 text-right">المادة</th><th className="px-3 py-2 text-right">التغييرات الخام</th><th className="px-3 py-2 text-right">الإجراء</th></tr></thead><tbody>
+                    {preview.valid.slice(0, 100).map((record, index) => <tr key={index} className="border-t border-gray-100 align-top"><td className="px-3 py-2">{record.sheet_name} — Excel row {record.excel_row_number}</td><td className="px-3 py-2">{record.student_name}{record.student_number ? ` (${record.student_number})` : ''}</td><td className="px-3 py-2">{record.class_name || '—'} / {record.section_name || '—'}</td><td className="px-3 py-2">{record.subject_name}</td><td className="px-3 py-2 text-xs">{record.changed_fields?.map((field: string) => `${field}: ${record.existing_values?.[field] ?? 'فارغ'} ← ${record.values?.[field] ?? 'فارغ'}`).join('، ') || '—'}</td><td className="px-3 py-2">{record.action === 'update' ? 'تحديث' : 'إنشاء'}{record.assignment_action === 'create' ? ' + تسجيل مادة' : record.assignment_action === 'reactivate' ? ' + إعادة تفعيل التسجيل' : ''}</td></tr>)}
+                  </tbody></table>
+                </div>
+              )}
+
+              {selectedType !== 'grades' && preview.valid.length > 0 && (
                 <div className="mb-4 max-h-80 overflow-auto border border-gray-200 rounded-lg">
                   <div className="bg-green-50 px-4 py-2 text-sm font-bold text-green-700 border-b border-green-200">الصفوف الصالحة ({preview.valid_rows})</div>
                   <table className="w-full text-sm">
@@ -1102,7 +1435,7 @@ export default function ImportExportPage() {
 
               <div className="flex gap-2">
                 <button onClick={() => setStep('mapping')} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">رجوع</button>
-                <button onClick={handleConfirm} disabled={loading || preview.valid_rows === 0 || !schoolId} className="bg-green-600 hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                <button onClick={handleConfirm} disabled={loading || preview.valid_rows === 0 || preview.error_rows > 0 || !schoolId} className="bg-green-600 hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
                   {loading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
                   تأكيد الاستيراد
                 </button>

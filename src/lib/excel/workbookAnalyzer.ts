@@ -13,6 +13,7 @@ import {
   profileColumns,
   studentHeaderSignal,
 } from './semanticInference.ts';
+import { inferGradeFields, inferSubjectFromSheetName, isGradeHeader } from './gradeSemantics.ts';
 import type {
   AnalyzeWorksheetOptions,
   DataRegion,
@@ -49,7 +50,7 @@ function scoreHeaderRow(row: ExcelCell[]): number {
       score += studentScore;
       recognized += 1;
     }
-    if (gradeHeaderSignal(value)) {
+    if (gradeHeaderSignal(value) || isGradeHeader(value)) {
       score += 2.5;
       recognized += 1;
     }
@@ -321,13 +322,17 @@ export function analyzeWorksheet(
   const metadata = extractMetadata(name, options.fileName, rows, region);
   const columns = profileColumns(rows, region, header.headerRowIndex);
   const fieldInferences = inferStudentFields(columns, metadata);
-  const classification = classifyFromAnalysis(name, columns, fieldInferences);
+  const gradeFieldInferences = inferGradeFields(columns, fieldInferences);
+  const rawGradeInferenceCount = gradeFieldInferences.filter(inference => inference.kind === 'raw_grade' && inference.confidence >= 0.7).length;
+  const classification = classifyFromAnalysis(name, columns, fieldInferences, rawGradeInferenceCount);
+  const subjectInference = inferSubjectFromSheetName(name, options.subjects);
   const table = {
     ...header,
     columnNames: columns.map(column => column.displayName),
     region,
     columns,
     fieldInferences,
+    gradeFieldInferences,
     category: classification.category,
     categoryConfidence: classification.confidence,
   };
@@ -342,6 +347,8 @@ export function analyzeWorksheet(
     tables: [table],
     metadata,
     columns,
+    gradeFieldInferences,
+    subjectInference,
   };
 }
 

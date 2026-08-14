@@ -44,6 +44,15 @@ export function normalizeSectionName(value: unknown): string {
   return simpleSections[normalized] || normalized;
 }
 
+export function normalizeSubjectName(value: unknown): string {
+  return normalizeHeader(value)
+    .replace(/^(?:ماده|درجات)\s+/u, '')
+    .replace(/^(?:اللغه|لغه)\s+/u, '')
+    .replace(/^ال/u, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function isCommonSectionValue(value: unknown): boolean {
   const normalized = normalizeSectionName(value);
   return ['ا', 'ب', 'ج', 'د'].includes(normalized);
