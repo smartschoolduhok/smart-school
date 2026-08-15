@@ -130,6 +130,49 @@ test('maps Iraqi raw grade headers deterministically and ignores calculated outc
   assert.equal(inferred.result_status.kind, 'ignored_calculated');
 });
 
+test('final suggested mapping assigns English Second Term only to third_month', async () => {
+  const headers = ['Student ID', 'Student Name', 'First Term', 'Mid Year', 'Second Term', 'Final Exam'];
+  const rows = Array.from({ length: 8 }, (_, index) => [`ID/${index + 1}`, `Student ${index + 1}`, 70, 75, 78, 82]);
+  const analysis = analyzeWorksheet('Sheet1', [headers, ...rows]);
+  const genericAutoMapping = {
+    student_number: 'column:0',
+    full_name: 'column:1',
+    first_month: 'column:2',
+    mid_year_exam: 'column:3',
+    third_month: 'column:4',
+    final_exam: 'column:5',
+  };
+  const mapping = gradeMappingFromAnalysis(analysis, genericAutoMapping);
+
+  assert.equal(mapping.first_month, 'column:2');
+  assert.equal(mapping.mid_year_exam, 'column:3');
+  assert.equal(mapping.third_month, 'column:4');
+  assert.equal(mapping.final_exam, 'column:5');
+  assert.notEqual(mapping.second_month, 'column:4');
+  const mappedRawColumns = RAW_GRADE_FIELDS.map(field => mapping[field]).filter(Boolean);
+  assert.equal(new Set(mappedRawColumns).size, mappedRawColumns.length, 'automatic raw mappings must use unique source columns');
+
+  const pageSource = await readFile(new URL('../src/modules/importExport/ImportExportPage.tsx', import.meta.url), 'utf8');
+  const secondMonthAliases = pageSource.match(/second_month:\s*\[([^\]]+)\]/)?.[1] || '';
+  const thirdMonthAliases = pageSource.match(/third_month:\s*\[([^\]]+)\]/)?.[1] || '';
+  assert.doesNotMatch(secondMonthAliases, /second term/i);
+  assert.match(secondMonthAliases, /second month/i);
+  assert.match(secondMonthAliases, /second effort/i);
+  assert.match(thirdMonthAliases, /second term/i);
+});
+
+test('strong semantic raw claims evict hostile generic mappings for the same column', () => {
+  const headers = ['Student ID', 'Student Name', 'Second Term'];
+  const rows = Array.from({ length: 8 }, (_, index) => [`ID/${index + 1}`, `Student ${index + 1}`, 78]);
+  const analysis = analyzeWorksheet('Sheet1', [headers, ...rows]);
+  const mapping = gradeMappingFromAnalysis(analysis, { second_month: 'column:2' });
+
+  assert.equal(mapping.third_month, 'column:2');
+  assert.equal(mapping.second_month, undefined);
+  const mappedRawColumns = RAW_GRADE_FIELDS.map(field => mapping[field]).filter(Boolean);
+  assert.equal(new Set(mappedRawColumns).size, mappedRawColumns.length);
+});
+
 test('supports the real Iraqi layout with header row 3, 11 columns, 26 students, and five raw mappings', () => {
   const subject = { id: 104, name: 'الرياضيات', status: 'active' };
   const realHeaders = ['ت', 'القيد', 'اسم الطالب', 'الشعبة', 'درجة الفصل الاول', 'درجة نصف السنة', 'درجة الفصل الثاني', 'درجة امتحان نهاية السنة', 'درجة الاكمال', 'السعي السنوي', 'النتيجة'];

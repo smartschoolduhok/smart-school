@@ -145,9 +145,16 @@ export function gradeMappingFromAnalysis(
   autoMapping: Record<string, string> = {},
 ): Record<string, string> {
   const mapping: Record<string, string> = { ...autoMapping };
+  const semanticRawColumnKeys = new Set(analysis.gradeFieldInferences
+    .filter(inference => inference.kind === 'raw_grade'
+      && inference.source.type === 'column'
+      && inference.confidence >= 0.7)
+    .map(inference => inference.source.type === 'column' ? inference.source.columnKey : ''));
   const calculatedColumnKeys = new Set([
     ...analysis.gradeFieldInferences
-      .filter(inference => inference.kind === 'ignored_calculated' && inference.source.type === 'column')
+      .filter(inference => inference.kind === 'ignored_calculated'
+        && inference.source.type === 'column'
+        && !semanticRawColumnKeys.has(inference.source.columnKey))
       .map(inference => inference.source.type === 'column' ? inference.source.columnKey : ''),
     ...analysis.columns.filter(column => isCalculatedGradeHeader(column.headerText)).map(column => column.key),
   ]);
@@ -156,11 +163,24 @@ export function gradeMappingFromAnalysis(
     if (inference.kind === 'ignored_calculated' || inference.source.type !== 'column') continue;
     const identityField = ['student_number', 'full_name', 'class_name', 'section_name', 'subject_name'].includes(inference.field);
     const minimum = identityField ? 0.48 : 0.7;
-    if (inference.confidence >= minimum) mapping[inference.field] = inference.source.columnKey;
+    if (inference.confidence < minimum) continue;
+    if (inference.kind === 'raw_grade') {
+      for (const otherField of RAW_GRADE_FIELDS) {
+        if (otherField !== inference.field && mapping[otherField] === inference.source.columnKey) delete mapping[otherField];
+      }
+    }
+    mapping[inference.field] = inference.source.columnKey;
   }
 
+  const claimedRawColumns = new Set<string>();
   for (const field of RAW_GRADE_FIELDS) {
-    if (calculatedColumnKeys.has(mapping[field])) delete mapping[field];
+    const sourceColumn = mapping[field];
+    if (!sourceColumn) continue;
+    if (calculatedColumnKeys.has(sourceColumn) || claimedRawColumns.has(sourceColumn)) {
+      delete mapping[field];
+      continue;
+    }
+    claimedRawColumns.add(sourceColumn);
   }
   return mapping;
 }
