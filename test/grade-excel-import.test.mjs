@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { analyzeWorksheet, analysisRowsToRecords } from '../src/lib/excelImport.ts';
+import { analyzeWorksheet, analysisRowsToRecords, gradeMappingFromAnalysis, RAW_GRADE_FIELDS } from '../src/lib/excelImport.ts';
 import { buildGradeImportPlan } from '../src/lib/gradeImport.ts';
 
 const subjectNames = [
@@ -333,13 +333,13 @@ test('rejects ambiguous student names, cross-school placement, invalid grades, a
   assert.ok(incompatiblePlan.errors.some(item => item.message.includes('لا تتوافق')));
 });
 
-test('detects same-subject multi-sheet conflicts and reports exact sheet plus Excel row', () => {
+test('allows the same subject in multiple sources and detects conflicts only by student plus subject', () => {
   const context = baseContext({ studentCount: 1 });
   const subject = context.subjects[0];
   const first = payloadSheet(subject, [{ _excel_row_number: 12, 'column:0': '5/001', 'column:2': 70 }], { student_number: 'column:0', first_month: 'column:2' });
   const second = payloadSheet(subject, [{ _excel_row_number: 23, 'column:0': '5/001', 'column:2': 80 }], { student_number: 'column:0', first_month: 'column:2' }, { sheet_name: `${subject.name} نسخة` });
   const plan = buildGradeImportPlan({ grade_sheets: [first, second] }, context);
-  assert.ok(plan.errors.some(item => item.field === 'subject' && item.sheet === second.sheet_name));
+  assert.ok(!plan.errors.some(item => item.field === 'subject'));
   assert.ok(plan.errors.some(item => item.field === 'conflict' && item.label.includes('Excel row 23')));
 });
 
@@ -376,6 +376,181 @@ test('calculated Excel values are warning-only and never become authoritative gr
   assert.ok(rejected.errors.some(item => item.field === 'first_month' && item.message.includes('عمود محسوب')));
 });
 
+test('calculated headers never compete with or auto-map to raw grade fields', () => {
+  const calculatedHeaders = [
+    'القيد', 'اسم الطالب', 'معدل الفصل الاول', 'معدل الفصل الثاني', 'السعي السنوي',
+    'الدرجة النهائية', 'النتيجة', 'المعدل', 'القرار',
+  ];
+  const calculatedRows = Array.from({ length: 8 }, (_, index) => [
+    `5/${String(index + 1).padStart(3, '0')}`, `طالب ${index + 1}`, 75, 78, 77, 80, 'ناجح', 80, 'ناجح',
+  ]);
+  const analysis = analyzeWorksheet('تقرير', [calculatedHeaders, ...calculatedRows]);
+  const inferred = Object.fromEntries(analysis.gradeFieldInferences.map(item => [item.field, item]));
+  const calculatedKeys = new Set(analysis.gradeFieldInferences
+    .filter(item => item.kind === 'ignored_calculated' && item.source.type === 'column')
+    .map(item => item.source.columnKey));
+  const hostileAutoMapping = {
+    first_month: 'column:2',
+    third_month: 'column:3',
+    fourth_month: 'column:4',
+    final_exam: 'column:5',
+  };
+  const mapping = gradeMappingFromAnalysis(analysis, hostileAutoMapping);
+
+  assert.notEqual(inferred.first_month.source.columnIndex, 2);
+  assert.notEqual(inferred.third_month.source.columnIndex, 3);
+  for (const field of RAW_GRADE_FIELDS) assert.ok(!calculatedKeys.has(mapping[field]), `${field} mapped to a calculated column`);
+  assert.equal(inferred.first_term_average.kind, 'ignored_calculated');
+  assert.equal(inferred.second_term_average.kind, 'ignored_calculated');
+  assert.equal(inferred.annual_effort.kind, 'ignored_calculated');
+  assert.equal(inferred.final_grade.kind, 'ignored_calculated');
+  assert.equal(inferred.result_status.kind, 'ignored_calculated');
+
+  const mixedHeaders = ['القيد', 'اسم الطالب', 'درجة الفصل الثاني', 'معدل الفصل الثاني'];
+  const mixed = analyzeWorksheet('Sheet1', [mixedHeaders, ...Array.from({ length: 8 }, (_, index) => [`5/${index + 1}`, `طالب ${index + 1}`, 74, 77])]);
+  const mixedMapping = gradeMappingFromAnalysis(mixed, { third_month: 'column:3' });
+  const mixedInferred = Object.fromEntries(mixed.gradeFieldInferences.map(item => [item.field, item]));
+  assert.equal(mixedMapping.third_month, 'column:2');
+  assert.equal(mixedInferred.second_term_average.source.columnIndex, 3);
+  assert.equal(mixedInferred.second_term_average.kind, 'ignored_calculated');
+});
+
+test('grade analysis is position independent and not fitted to the golden workbook dimensions', () => {
+  const englishHeaders = ['Unrelated', 'Final Exam', 'Student Name', 'Student ID', 'Mid Year', 'First Term', 'Second Term'];
+  const makeEnglishRows = count => Array.from({ length: count }, (_, index) => [
+    `note-${index}`, 80, `Student ${index + 1}`, `ID/${index + 1}`, 75, 70, 78,
+  ]);
+  const rowsAtSeven = [
+    ['School title'], [], ['Academic year 2026'], [], [''], ['Prepared report'],
+    englishHeaders,
+    ...makeEnglishRows(20),
+  ];
+  const analysis = analyzeWorksheet('Sheet1', rowsAtSeven);
+  const inferred = Object.fromEntries(analysis.gradeFieldInferences.map(item => [item.field, item]));
+  assert.equal(analysis.headerRowNumber, 7);
+  assert.equal(analysis.category, 'grade_sheet');
+  assert.equal(inferred.full_name.source.columnIndex, 2);
+  assert.equal(inferred.student_number.source.columnIndex, 3);
+  assert.equal(inferred.first_month.source.columnIndex, 5);
+  assert.equal(inferred.mid_year_exam.source.columnIndex, 4);
+  assert.equal(inferred.final_exam.source.columnIndex, 1);
+  assert.equal(inferred.third_month.source.columnIndex, 6);
+  assert.notEqual(inferred.second_month.source.columnIndex, 6);
+  assert.equal(analysis.subjectInference.subjectId, null);
+  assert.ok(analysis.subjectInference.confidence < 0.85, 'generic sheet subject must require correction');
+
+  const fiveStudents = analyzeWorksheet('Data', [englishHeaders, ...makeEnglishRows(5)]);
+  const manyStudents = analyzeWorksheet('Term Results', [englishHeaders, ...makeEnglishRows(150)]);
+  assert.equal(fiveStudents.rowCount, 5);
+  assert.equal(manyStudents.rowCount, 150);
+  assert.equal(fiveStudents.category, 'grade_sheet');
+  assert.equal(manyStudents.category, 'grade_sheet');
+
+  const partial = analyzeWorksheet('Marks', [
+    ['Student ID', 'Student Name', 'Final Exam'],
+    ...Array.from({ length: 7 }, (_, index) => [`ID/${index + 1}`, `Student ${index + 1}`, 65]),
+  ]);
+  assert.equal(partial.category, 'grade_sheet');
+  assert.equal(Object.fromEntries(partial.gradeFieldInferences.map(item => [item.field, item])).final_exam.source.columnIndex, 2);
+
+  const ambiguous = analyzeWorksheet('Data', [['Name', 'Value'], ['Only Student', 80]]);
+  assert.notEqual(ambiguous.category, 'grade_sheet', 'one ambiguous value must not be guessed as a grade table');
+});
+
+test('subjects outside the optional Iraqi hint list resolve from actual school subjects and metadata', () => {
+  const customSubject = { id: 700, name: 'الاقتصاد المتقدم', status: 'active' };
+  const headers = ['Student ID', 'Student Name', 'First Term', 'Mid Year', 'Final Exam'];
+  const rows = [
+    ['المادة: الاقتصاد المتقدم'],
+    ['صف دراسي'],
+    headers,
+    ...Array.from({ length: 6 }, (_, index) => [`ID/${index + 1}`, `Student ${index + 1}`, 70, 75, 80]),
+  ];
+  const analysis = analyzeWorksheet('Data', rows, { subjects: [customSubject] });
+  assert.equal(analysis.category, 'grade_sheet');
+  assert.equal(analysis.subjectInference.subjectId, customSubject.id);
+  assert.equal(analysis.subjectInference.source.type, 'metadata-cell');
+});
+
+test('one generic source resolves multiple subjects per row without treating them as duplicates', () => {
+  const context = baseContext({ studentCount: 1 });
+  const physics = context.subjects.find(subject => subject.name === 'الفيزياء');
+  const chemistry = context.subjects.find(subject => subject.name === 'الكيمياء');
+  const biology = context.subjects.find(subject => subject.name === 'الاحياء');
+  const source = {
+    source_id: 'Sheet1:region:1',
+    sheet_name: 'Sheet1',
+    region_id: '1',
+    subject_source: 'column',
+    mapping: { student_number: 'column:0', subject_name: 'column:1', first_month: 'column:2' },
+    rows: [
+      { _excel_row_number: 2, 'column:0': '5/001', 'column:1': 'الفيزياء', 'column:2': 80 },
+      { _excel_row_number: 3, 'column:0': '5/001', 'column:1': 'مادة الكيمياء', 'column:2': 70 },
+      { _excel_row_number: 4, 'column:0': '5/001', 'column:1': 'الاحياء', 'column:2': 90 },
+    ],
+  };
+  const plan = buildGradeImportPlan({ grade_sources: [source] }, context);
+  assert.equal(plan.errors.length, 0);
+  assert.deepEqual(new Set(plan.records.map(record => record.subject_id)), new Set([physics.id, chemistry.id, biology.id]));
+  assert.equal(plan.records.length, 3);
+
+  const missing = buildGradeImportPlan({ grade_sources: [{ ...source, rows: [{ _excel_row_number: 5, 'column:0': '5/001', 'column:1': 'مادة غير موجودة', 'column:2': 70 }] }] }, context);
+  assert.ok(missing.errors.some(item => item.field === 'subject' && item.message.includes('غير موجودة')));
+
+  const duplicatePhysics = { ...physics, id: 999 };
+  const ambiguous = buildGradeImportPlan({ grade_sources: [{ ...source, rows: [source.rows[0]] }] }, { ...context, subjects: [...context.subjects, duplicatePhysics] });
+  assert.ok(ambiguous.errors.some(item => item.field === 'subject' && item.message.includes('عدة مواد')));
+
+  const fixedOverride = buildGradeImportPlan({ grade_sources: [{
+    ...source,
+    source_id: 'Sheet1:fixed',
+    subject_source: 'fixed',
+    subject_id: chemistry.id,
+    rows: [source.rows[0]],
+  }] }, context);
+  assert.equal(fixedOverride.errors.length, 0);
+  assert.equal(fixedOverride.records[0].subject_id, chemistry.id);
+
+  const economics = { id: 777, school_id: 1, name: 'الاقتصاد', class_id: 10, section_id: null, status: 'active' };
+  const economicsAssignment = { id: 1777, school_id: 1, student_id: 1, subject_id: economics.id, class_id: 10, section_id: 20, is_active: 1 };
+  const outsideHints = buildGradeImportPlan({ grade_sources: [{
+    ...source,
+    source_id: 'Sheet1:economics',
+    rows: [{ _excel_row_number: 8, 'column:0': '5/001', 'column:1': 'درجات الاقتصاد', 'column:2': 88 }],
+  }] }, { ...context, subjects: [...context.subjects, economics], assignments: [...context.assignments, economicsAssignment] });
+  assert.equal(outsideHints.errors.length, 0);
+  assert.equal(outsideHints.records[0].subject_id, economics.id);
+});
+
+test('multiple logical sources may share one worksheet name and retain region identity', () => {
+  const context = baseContext({ studentCount: 2 });
+  const subject = context.subjects[0];
+  const common = {
+    sheet_name: 'الدرجات',
+    subject_source: 'fixed',
+    subject_id: subject.id,
+    subject_name: subject.name,
+    mapping: { student_number: 'column:0', first_month: 'column:1' },
+  };
+  const sources = [
+    { ...common, source_id: 'grades:region:a', region_id: 'A', row_start: 2, row_end: 20, rows: [{ _excel_row_number: 3, 'column:0': '5/001', 'column:1': 70 }] },
+    { ...common, source_id: 'grades:region:b', region_id: 'B', row_start: 25, row_end: 45, rows: [{ _excel_row_number: 26, 'column:0': '5/002', 'column:1': 80 }] },
+  ];
+  const plan = buildGradeImportPlan({ grade_sources: sources }, context);
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records.length, 2);
+  assert.equal(plan.sources.length, 2);
+  assert.equal(plan.summary.sources_selected, 2);
+  assert.equal(plan.summary.sheets_selected, 1);
+  assert.deepEqual(plan.records.map(record => record.region_id), ['A', 'B']);
+
+  const identical = buildGradeImportPlan({ grade_sources: [sources[0], { ...sources[1], rows: [{ _excel_row_number: 26, 'column:0': '5/001', 'column:1': 70 }] }] }, context);
+  assert.equal(identical.records.length, 1);
+  assert.equal(identical.duplicates.length, 1);
+  const conflict = buildGradeImportPlan({ grade_sources: [sources[0], { ...sources[1], rows: [{ _excel_row_number: 26, 'column:0': '5/001', 'column:1': 71 }] }] }, context);
+  assert.ok(conflict.errors.some(item => item.field === 'conflict' && item.region === 'B'));
+});
+
 test('grade preview remains write-free and confirm uses one transactional D1 batch', async () => {
   const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
   const previewStart = worker.indexOf("app.post('/api/import-export/:type/preview'");
@@ -387,4 +562,7 @@ test('grade preview remains write-free and confirm uses one transactional D1 bat
   assert.match(atomicWriter, /const results = await db\.batch\(statements\)/);
   assert.doesNotMatch(atomicWriter, /await db\.prepare[\s\S]*\.run\(\)/);
   assert.ok(atomicWriter.indexOf("INSERT INTO import_jobs") < atomicWriter.indexOf('db.batch(statements)'), 'job write must be part of the same batch');
+  assert.match(worker, /const requestedSources = Array\.isArray\(body\?\.grade_sources\)/);
+  assert.match(worker, /seenSourceIds/);
+  assert.doesNotMatch(worker, /seenNames\.has\(sheetName\)/);
 });

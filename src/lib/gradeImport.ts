@@ -6,20 +6,32 @@ import { normalizeStudentIdentity } from './studentImport.ts';
 
 export type GradeImportMode = 'update_existing' | 'skip_existing' | 'error_on_existing';
 export type GradeAssignmentMode = 'strict_existing_assignments' | 'auto_assign_missing_subjects';
+export type GradeSubjectSourceMode = 'fixed' | 'column' | 'inferred';
 
-export interface GradeImportSheetPayload {
+export interface GradeImportSourcePayload {
+  source_id: string;
   sheet_name: string;
+  region_id?: string | null;
+  row_start?: number | null;
+  row_end?: number | null;
   rows: Array<Record<string, unknown>>;
   mapping: Record<string, string>;
   column_headers?: Record<string, string>;
+  subject_source?: GradeSubjectSourceMode;
   subject_id?: number | null;
   subject_name?: string | null;
+  metadata_subject_name?: string | null;
   class_id?: number | null;
   section_id?: number | null;
 }
 
+/** @deprecated Use GradeImportSourcePayload. Kept for request compatibility. */
+export type GradeImportSheetPayload = GradeImportSourcePayload;
+
 export interface GradeImportPayload {
-  grade_sheets: GradeImportSheetPayload[];
+  grade_sources?: GradeImportSourcePayload[];
+  /** @deprecated Accepted for compatibility with the first Phase 2 preview payload. */
+  grade_sheets?: GradeImportSourcePayload[];
   mode?: GradeImportMode;
   assignment_mode?: GradeAssignmentMode;
   clear_empty_fields?: boolean;
@@ -94,7 +106,9 @@ export interface GradeImportContext {
 }
 
 export interface GradeImportIssue {
+  source_id: string;
   sheet: string;
+  region: string | null;
   row: number | null;
   field: string;
   message: string;
@@ -102,7 +116,9 @@ export interface GradeImportIssue {
 }
 
 export interface PlannedGradeImportRecord {
+  source_id: string;
   sheet_name: string;
+  region_id: string | null;
   excel_row_number: number;
   student_id: number;
   student_number: string | null;
@@ -123,8 +139,13 @@ export interface PlannedGradeImportRecord {
   existing_values: Partial<Record<RawGradeField | 'notes', number | string | null>>;
 }
 
-export interface GradeSheetPlanSummary {
+export interface GradeSourcePlanSummary {
+  source_id: string;
   sheet_name: string;
+  region_id: string | null;
+  row_start: number | null;
+  row_end: number | null;
+  subject_source: GradeSubjectSourceMode;
   subject_name: string | null;
   source_rows: number;
   valid_rows: number;
@@ -143,9 +164,10 @@ export interface GradeImportPlan {
   errors: GradeImportIssue[];
   warnings: GradeImportIssue[];
   duplicates: GradeImportIssue[];
-  sheets: GradeSheetPlanSummary[];
+  sources: GradeSourcePlanSummary[];
   summary: {
     sheets_selected: number;
+    sources_selected: number;
     total_source_rows: number;
     matched_students: number;
     valid_grade_rows: number;
@@ -164,14 +186,37 @@ const NOTES_FIELD = 'notes' as const;
 const IMPORTABLE_FIELDS = [...RAW_GRADE_FIELDS, NOTES_FIELD] as const;
 const EMPTY_MARKERS = new Set(['', '-', '—', '–']);
 
-function issue(sheet: string, row: number | null, field: string, message: string): GradeImportIssue {
+function sourceDisplay(source: Pick<GradeImportSourcePayload, 'sheet_name' | 'region_id'>): string {
+  return source.region_id ? `${source.sheet_name} — Region ${source.region_id}` : source.sheet_name;
+}
+
+function issue(source: GradeImportSourcePayload, row: number | null, field: string, message: string): GradeImportIssue {
+  const display = sourceDisplay(source);
   return {
-    sheet,
+    source_id: source.source_id,
+    sheet: source.sheet_name,
+    region: source.region_id || null,
     row,
     field,
     message,
-    label: row == null ? sheet : `${sheet} — Excel row ${row}`,
+    label: row == null ? display : `${display} — Excel row ${row}`,
   };
+}
+
+function gradeSources(payload: GradeImportPayload): GradeImportSourcePayload[] {
+  const provided = payload.grade_sources || payload.grade_sheets || [];
+  return provided.map((source, index) => ({
+    ...source,
+    source_id: String(source.source_id || `${source.sheet_name}:region:${index + 1}`),
+    region_id: source.region_id || null,
+  }));
+}
+
+function subjectSourceMode(source: GradeImportSourcePayload): GradeSubjectSourceMode {
+  if (source.subject_source) return source.subject_source;
+  if (source.subject_id != null) return 'fixed';
+  if (source.mapping.subject_name) return 'column';
+  return 'inferred';
 }
 
 function excelRowNumber(row: Record<string, unknown>, index: number): number {
@@ -209,27 +254,21 @@ function samePlannedValues(left: PlannedGradeImportRecord, right: PlannedGradeIm
   return IMPORTABLE_FIELDS.every(field => equalValue(left.values[field], right.values[field]));
 }
 
-function rawSheetSubjectKey(sheet: GradeImportSheetPayload): string | null {
-  if (sheet.subject_id != null && Number.isInteger(Number(sheet.subject_id))) return `id:${Number(sheet.subject_id)}`;
-  const normalized = normalizeSubjectName(sheet.subject_name || sheet.sheet_name);
-  return normalized ? `name:${normalized}` : null;
-}
-
 function validateManualPlacement(
-  sheet: GradeImportSheetPayload,
+  sheet: GradeImportSourcePayload,
   context: GradeImportContext,
 ): GradeImportIssue[] {
   const errors: GradeImportIssue[] = [];
   const targetClass = sheet.class_id == null ? null : context.classes.find(item => item.id === Number(sheet.class_id) && item.school_id === context.schoolId && item.status === 'active');
   const targetSection = sheet.section_id == null ? null : context.sections.find(item => item.id === Number(sheet.section_id) && item.school_id === context.schoolId && item.status === 'active');
-  if (sheet.class_id != null && !targetClass) errors.push(issue(sheet.sheet_name, null, 'class_id', 'الصف اليدوي غير موجود أو غير نشط في المدرسة المستهدفة'));
-  if (sheet.section_id != null && !targetSection) errors.push(issue(sheet.sheet_name, null, 'section_id', 'الشعبة اليدوية غير موجودة أو غير نشطة في المدرسة المستهدفة'));
-  if (targetClass && targetSection && targetSection.class_id !== targetClass.id) errors.push(issue(sheet.sheet_name, null, 'section_id', 'الشعبة اليدوية لا تتبع الصف اليدوي المحدد'));
+  if (sheet.class_id != null && !targetClass) errors.push(issue(sheet, null, 'class_id', 'الصف اليدوي غير موجود أو غير نشط في المدرسة المستهدفة'));
+  if (sheet.section_id != null && !targetSection) errors.push(issue(sheet, null, 'section_id', 'الشعبة اليدوية غير موجودة أو غير نشطة في المدرسة المستهدفة'));
+  if (targetClass && targetSection && targetSection.class_id !== targetClass.id) errors.push(issue(sheet, null, 'section_id', 'الشعبة اليدوية لا تتبع الصف اليدوي المحدد'));
   return errors;
 }
 
 function resolveStudent(
-  sheet: GradeImportSheetPayload,
+  sheet: GradeImportSourcePayload,
   row: Record<string, unknown>,
   context: GradeImportContext,
 ): { student: GradeImportStudent | null; error?: string } {
@@ -275,20 +314,25 @@ function resolveStudent(
 }
 
 function resolveSubject(
-  sheet: GradeImportSheetPayload,
+  sheet: GradeImportSourcePayload,
   row: Record<string, unknown>,
   student: GradeImportStudent,
   context: GradeImportContext,
 ): { subject: GradeImportSubject | null; error?: string } {
   const subjects = context.subjects.filter(subject => subject.school_id === context.schoolId && subject.status !== 'archived');
-  if (sheet.subject_id != null) {
+  const mode = subjectSourceMode(sheet);
+  if (mode === 'fixed') {
+    if (sheet.subject_id == null) return { subject: null, error: 'يجب اختيار مادة ثابتة لهذا المصدر' };
     const subject = subjects.find(item => item.id === Number(sheet.subject_id));
     if (!subject) return { subject: null, error: 'المادة المحددة غير موجودة في المدرسة المستهدفة' };
     if (!compatibleSubject(subject, student)) return { subject: null, error: 'المادة المحددة لا تتوافق مع صف أو شعبة الطالب' };
     return { subject };
   }
 
-  const sourceName = textValue(mappedValue(row, sheet.mapping, 'subject_name')) || textValue(sheet.subject_name) || sheet.sheet_name;
+  const sourceName = mode === 'column'
+    ? textValue(mappedValue(row, sheet.mapping, 'subject_name'))
+    : textValue(sheet.metadata_subject_name) || textValue(sheet.subject_name) || sheet.sheet_name;
+  if (mode === 'column' && !sourceName) return { subject: null, error: 'اسم المادة مفقود في عمود المادة لهذا الصف' };
   const normalized = normalizeSubjectName(sourceName);
   if (!normalized) return { subject: null, error: 'تعذر تحديد المادة لهذه الورقة' };
   const named = subjects.filter(subject => normalizeSubjectName(subject.name) === normalized);
@@ -331,12 +375,12 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
   const mode = payload.mode || 'update_existing';
   const assignmentMode = payload.assignment_mode || 'strict_existing_assignments';
   const clearEmptyFields = payload.clear_empty_fields === true;
+  const sources = gradeSources(payload);
   const errors: GradeImportIssue[] = [];
   const warnings: GradeImportIssue[] = [];
   const duplicates: GradeImportIssue[] = [];
   const records: PlannedGradeImportRecord[] = [];
   const matchedStudentIds = new Set<number>();
-  const seenSubjects = new Map<string, string>();
   const seenRecords = new Map<string, PlannedGradeImportRecord>();
   const gradeByAssignment = new Map(context.grades.filter(grade => grade.school_id === context.schoolId).map(grade => [grade.student_subject_id, grade]));
   const assignmentsByIdentity = new Map<string, GradeImportAssignment[]>();
@@ -350,33 +394,44 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
     values.sort((left, right) => Number(right.is_active) - Number(left.is_active) || Number(gradeByAssignment.has(right.id)) - Number(gradeByAssignment.has(left.id)) || right.id - left.id);
   }
 
-  const sheetSummaries: GradeSheetPlanSummary[] = payload.grade_sheets.map(sheet => ({
-    sheet_name: sheet.sheet_name,
-    subject_name: sheet.subject_name || null,
-    source_rows: sheet.rows.length,
-    valid_rows: 0,
-    new_rows: 0,
-    update_rows: 0,
-    noop_rows: 0,
-    error_rows: 0,
-    warning_rows: 0,
-  }));
-  const summaryBySheet = new Map(sheetSummaries.map(summary => [summary.sheet_name, summary]));
+  const sourceSummaries: GradeSourcePlanSummary[] = sources.map(source => {
+    const sourceMode = subjectSourceMode(source);
+    const fixedSubject = sourceMode === 'fixed'
+      ? context.subjects.find(subject => subject.school_id === context.schoolId && subject.id === Number(source.subject_id))
+      : null;
+    return {
+      source_id: source.source_id,
+      sheet_name: source.sheet_name,
+      region_id: source.region_id || null,
+      row_start: source.row_start ?? null,
+      row_end: source.row_end ?? null,
+      subject_source: sourceMode,
+      subject_name: sourceMode === 'column' ? null : fixedSubject?.name || source.subject_name || source.metadata_subject_name || null,
+      source_rows: source.rows.length,
+      valid_rows: 0,
+      new_rows: 0,
+      update_rows: 0,
+      noop_rows: 0,
+      error_rows: 0,
+      warning_rows: 0,
+    };
+  });
+  const summaryBySource = new Map(sourceSummaries.map(summary => [summary.source_id, summary]));
 
-  for (const sheet of payload.grade_sheets) {
-    const summary = summaryBySheet.get(sheet.sheet_name)!;
+  for (const sheet of sources) {
+    const summary = summaryBySource.get(sheet.source_id)!;
     const manualPlacementErrors = validateManualPlacement(sheet, context);
     errors.push(...manualPlacementErrors);
     summary.error_rows += manualPlacementErrors.length;
 
     const identityMapped = Boolean(sheet.mapping.student_number || sheet.mapping.full_name);
     if (!identityMapped) {
-      errors.push(issue(sheet.sheet_name, null, 'student', 'يجب تعيين رقم الطالب/القيد أو اسم الطالب'));
+      errors.push(issue(sheet, null, 'student', 'يجب تعيين رقم الطالب/القيد أو اسم الطالب'));
       summary.error_rows += 1;
     }
     const rawMappings = RAW_GRADE_FIELDS.filter(field => Boolean(sheet.mapping[field]));
     if (!rawMappings.length) {
-      errors.push(issue(sheet.sheet_name, null, 'grade_mapping', 'يجب تعيين حقل درجة خام واحد على الأقل'));
+      errors.push(issue(sheet, null, 'grade_mapping', 'يجب تعيين حقل درجة خام واحد على الأقل'));
       summary.error_rows += 1;
     }
     const calculatedAsRaw = rawMappings.filter(field => {
@@ -384,32 +439,35 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       return source && isCalculatedGradeHeader(sheet.column_headers?.[source]);
     });
     for (const field of calculatedAsRaw) {
-      errors.push(issue(sheet.sheet_name, null, field, 'لا يمكن ربط عمود محسوب بحقل درجة خام؛ سيعيد Smart School حساب هذا العمود'));
+      errors.push(issue(sheet, null, field, 'لا يمكن ربط عمود محسوب بحقل درجة خام؛ سيعيد Smart School حساب هذا العمود'));
       summary.error_rows += 1;
     }
     for (const calculated of CALCULATED_GRADE_FIELDS) {
       if (sheet.mapping[calculated]) {
-        warnings.push(issue(sheet.sheet_name, null, calculated, 'سيتم تجاهل العمود المحسوب؛ سيعيد Smart School حسابه'));
+        warnings.push(issue(sheet, null, calculated, 'سيتم تجاهل العمود المحسوب؛ سيعيد Smart School حسابه'));
         summary.warning_rows += 1;
       }
     }
-    const subjectKey = rawSheetSubjectKey(sheet);
-    if (subjectKey) {
-      const firstSheet = seenSubjects.get(subjectKey);
-      if (firstSheet && firstSheet !== sheet.sheet_name) {
-        errors.push(issue(sheet.sheet_name, null, 'subject', `المادة نفسها محددة أيضاً في الورقة "${firstSheet}"`));
-        summary.error_rows += 1;
-      } else seenSubjects.set(subjectKey, sheet.sheet_name);
+    const sourceMode = subjectSourceMode(sheet);
+    if (sourceMode === 'column' && !sheet.mapping.subject_name) {
+      errors.push(issue(sheet, null, 'subject_name', 'يجب تعيين عمود المادة عند اختيار المادة من العمود'));
+      summary.error_rows += 1;
+    }
+    if (sourceMode === 'fixed' && sheet.subject_id == null) {
+      errors.push(issue(sheet, null, 'subject_id', 'يجب اختيار مادة ثابتة لهذا المصدر'));
+      summary.error_rows += 1;
     }
 
-    if (manualPlacementErrors.length || !identityMapped || !rawMappings.length || calculatedAsRaw.length) continue;
+    if (manualPlacementErrors.length || !identityMapped || !rawMappings.length || calculatedAsRaw.length
+      || (sourceMode === 'column' && !sheet.mapping.subject_name)
+      || (sourceMode === 'fixed' && sheet.subject_id == null)) continue;
 
     sheet.rows.forEach((row, rowIndex) => {
       const rowNumber = excelRowNumber(row, rowIndex);
       const mappedSources = Object.values(sheet.mapping).filter(Boolean);
       const hasMappedContent = mappedSources.some(source => textValue(row[source]) != null);
       if (!hasMappedContent) {
-        warnings.push(issue(sheet.sheet_name, rowNumber, 'row', 'صف Excel فارغ وتم تجاهله'));
+        warnings.push(issue(sheet, rowNumber, 'row', 'صف Excel فارغ وتم تجاهله'));
         summary.noop_rows += 1;
         summary.warning_rows += 1;
         return;
@@ -422,7 +480,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
         if (!sheet.mapping[field]) continue;
         const parsed = parseGradeCell(mappedValue(row, sheet.mapping, field), field, context.settings, clearEmptyFields);
         if (parsed.error) {
-          errors.push(issue(sheet.sheet_name, rowNumber, field, parsed.error));
+          errors.push(issue(sheet, rowNumber, field, parsed.error));
           rowFatal = true;
         } else if (parsed.imported) {
           parsedGrades[field] = parsed.value ?? null;
@@ -433,7 +491,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       if (sheet.mapping.notes) {
         const rawNotes = mappedValue(row, sheet.mapping, 'notes');
         if (isExcelErrorValue(rawNotes)) {
-          errors.push(issue(sheet.sheet_name, rowNumber, 'notes', 'قيمة Excel غير صالحة في الملاحظات'));
+          errors.push(issue(sheet, rowNumber, 'notes', 'قيمة Excel غير صالحة في الملاحظات'));
           rowFatal = true;
         } else {
           const notesText = String(rawNotes ?? '').trim();
@@ -454,7 +512,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       const hasNonNullRawGrade = RAW_GRADE_FIELDS.some(field => parsedGrades[field] != null);
       const hasRawGradeInstruction = RAW_GRADE_FIELDS.some(field => importedFields.has(field));
       if (!hasRawGradeInstruction && importedNotes === undefined) {
-        warnings.push(issue(sheet.sheet_name, rowNumber, 'grade', 'لا توجد درجات خام في الصف؛ تم اعتباره بلا تغيير'));
+        warnings.push(issue(sheet, rowNumber, 'grade', 'لا توجد درجات خام في الصف؛ تم اعتباره بلا تغيير'));
         summary.noop_rows += 1;
         summary.warning_rows += 1;
         return;
@@ -462,20 +520,20 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
 
       const studentResolution = resolveStudent(sheet, row, context);
       if (!studentResolution.student) {
-        errors.push(issue(sheet.sheet_name, rowNumber, 'student', studentResolution.error || 'تعذر تحديد الطالب'));
+        errors.push(issue(sheet, rowNumber, 'student', studentResolution.error || 'تعذر تحديد الطالب'));
         summary.error_rows += 1;
         return;
       }
       const student = studentResolution.student;
       const placementError = validateResolvedStudentPlacement(student, context);
       if (placementError) {
-        errors.push(issue(sheet.sheet_name, rowNumber, 'student_placement', placementError));
+        errors.push(issue(sheet, rowNumber, 'student_placement', placementError));
         summary.error_rows += 1;
         return;
       }
       const subjectResolution = resolveSubject(sheet, row, student, context);
       if (!subjectResolution.subject) {
-        errors.push(issue(sheet.sheet_name, rowNumber, 'subject', subjectResolution.error || 'تعذر تحديد المادة'));
+        errors.push(issue(sheet, rowNumber, 'subject', subjectResolution.error || 'تعذر تحديد المادة'));
         summary.error_rows += 1;
         return;
       }
@@ -485,18 +543,18 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       const key = assignmentKey(student.id, subject.id);
       const assignment = assignmentsByIdentity.get(key)?.[0] || null;
       if (assignment && (assignment.class_id !== student.class_id || assignment.section_id !== student.section_id)) {
-        errors.push(issue(sheet.sheet_name, rowNumber, 'assignment', 'تسجيل الطالب في المادة لا يطابق صفه أو شعبته الحالية'));
+        errors.push(issue(sheet, rowNumber, 'assignment', 'تسجيل الطالب في المادة لا يطابق صفه أو شعبته الحالية'));
         summary.error_rows += 1;
         return;
       }
       const existingGrade = assignment ? gradeByAssignment.get(assignment.id) || null : null;
       if (existingGrade && mode === 'skip_existing') {
-        duplicates.push(issue(sheet.sheet_name, rowNumber, 'grade', 'درجة موجودة مسبقاً وتم تخطيها حسب وضع الاستيراد'));
+        duplicates.push(issue(sheet, rowNumber, 'grade', 'درجة موجودة مسبقاً وتم تخطيها حسب وضع الاستيراد'));
         summary.noop_rows += 1;
         return;
       }
       if (existingGrade && mode === 'error_on_existing') {
-        errors.push(issue(sheet.sheet_name, rowNumber, 'grade', 'درجة موجودة مسبقاً لهذا الطالب في هذه المادة'));
+        errors.push(issue(sheet, rowNumber, 'grade', 'درجة موجودة مسبقاً لهذا الطالب في هذه المادة'));
         summary.error_rows += 1;
         return;
       }
@@ -504,7 +562,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       let assignmentAction: PlannedGradeImportRecord['assignment_action'] = 'none';
       if (!assignment || !assignment.is_active) {
         if (assignmentMode === 'strict_existing_assignments') {
-          errors.push(issue(sheet.sheet_name, rowNumber, 'assignment', assignment ? 'التسجيل في المادة غير نشط' : 'الطالب غير مسجل في هذه المادة'));
+          errors.push(issue(sheet, rowNumber, 'assignment', assignment ? 'التسجيل في المادة غير نشط' : 'الطالب غير مسجل في هذه المادة'));
           summary.error_rows += 1;
           return;
         }
@@ -524,20 +582,22 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       const changedFields = IMPORTABLE_FIELDS.filter(field => !equalValue(existingValues[field], values[field]));
 
       if (!existingGrade && !hasNonNullRawGrade) {
-        warnings.push(issue(sheet.sheet_name, rowNumber, 'grade', 'لا توجد درجة خام غير فارغة لإنشاء سجل جديد؛ تم التخطي'));
+        warnings.push(issue(sheet, rowNumber, 'grade', 'لا توجد درجة خام غير فارغة لإنشاء سجل جديد؛ تم التخطي'));
         summary.noop_rows += 1;
         summary.warning_rows += 1;
         return;
       }
       if (existingGrade && !changedFields.length) {
-        warnings.push(issue(sheet.sheet_name, rowNumber, 'grade', 'القيم مطابقة للدرجات الموجودة؛ لا يوجد تغيير'));
+        warnings.push(issue(sheet, rowNumber, 'grade', 'القيم مطابقة للدرجات الموجودة؛ لا يوجد تغيير'));
         summary.noop_rows += 1;
         summary.warning_rows += 1;
         return;
       }
 
       const planned: PlannedGradeImportRecord = {
+        source_id: sheet.source_id,
         sheet_name: sheet.sheet_name,
+        region_id: sheet.region_id || null,
         excel_row_number: rowNumber,
         student_id: student.id,
         student_number: student.student_number,
@@ -561,11 +621,12 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       const duplicateKey = assignmentKey(student.id, subject.id);
       const previous = seenRecords.get(duplicateKey);
       if (previous) {
+        const previousSource = previous.region_id ? `${previous.sheet_name} — Region ${previous.region_id}` : previous.sheet_name;
         if (samePlannedValues(previous, planned)) {
-          duplicates.push(issue(sheet.sheet_name, rowNumber, 'duplicate', `تكرار مطابق للسجل في ${previous.sheet_name} — Excel row ${previous.excel_row_number}`));
+          duplicates.push(issue(sheet, rowNumber, 'duplicate', `تكرار مطابق للسجل في ${previousSource} — Excel row ${previous.excel_row_number}`));
           summary.noop_rows += 1;
         } else {
-          errors.push(issue(sheet.sheet_name, rowNumber, 'conflict', `قيم متعارضة مع السجل في ${previous.sheet_name} — Excel row ${previous.excel_row_number}`));
+          errors.push(issue(sheet, rowNumber, 'conflict', `قيم متعارضة مع السجل في ${previousSource} — Excel row ${previous.excel_row_number}`));
           summary.error_rows += 1;
         }
         return;
@@ -586,15 +647,16 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
     errors,
     warnings,
     duplicates,
-    sheets: sheetSummaries,
+    sources: sourceSummaries,
     summary: {
-      sheets_selected: payload.grade_sheets.length,
-      total_source_rows: sheetSummaries.reduce((sum, sheet) => sum + sheet.source_rows, 0),
+      sheets_selected: new Set(sources.map(source => source.sheet_name)).size,
+      sources_selected: sources.length,
+      total_source_rows: sourceSummaries.reduce((sum, source) => sum + source.source_rows, 0),
       matched_students: matchedStudentIds.size,
       valid_grade_rows: records.length,
       new_grade_rows: records.filter(record => record.action === 'create').length,
       update_rows: records.filter(record => record.action === 'update').length,
-      noop_rows: sheetSummaries.reduce((sum, sheet) => sum + sheet.noop_rows, 0),
+      noop_rows: sourceSummaries.reduce((sum, source) => sum + source.noop_rows, 0),
       duplicate_rows: duplicates.length,
       assignment_creates: records.filter(record => record.assignment_action === 'create').length,
       assignment_reactivations: records.filter(record => record.assignment_action === 'reactivate').length,

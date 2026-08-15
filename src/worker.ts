@@ -59,7 +59,7 @@ import {
   buildGradeImportPlan,
   type GradeImportContext,
   type GradeImportPayload,
-  type GradeImportSheetPayload,
+  type GradeImportSourcePayload,
   type PlannedGradeImportRecord,
 } from './lib/gradeImport'
 import { resolveRequiredWriteSchoolId } from './lib/tenantSchool'
@@ -7146,15 +7146,16 @@ function isValidPhone(v: any): string | null {
 }
 
 const PHASE13A_TYPES = ['students', 'classes-sections', 'subjects', 'employees', 'grades', 'student-subjects'];
-const GRADE_IMPORT_MAX_SHEETS = 40;
+const GRADE_IMPORT_MAX_SOURCES = 40;
 const GRADE_IMPORT_MAX_ROWS = 2000;
 
 function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPayload } | { ok: false; error: string } {
-  if (!Array.isArray(body?.grade_sheets) || body.grade_sheets.length === 0) {
-    return { ok: false, error: 'يجب اختيار ورقة درجات واحدة على الأقل' };
+  const requestedSources = Array.isArray(body?.grade_sources) ? body.grade_sources : body?.grade_sheets;
+  if (!Array.isArray(requestedSources) || requestedSources.length === 0) {
+    return { ok: false, error: 'يجب اختيار مصدر درجات واحد على الأقل' };
   }
-  if (body.grade_sheets.length > GRADE_IMPORT_MAX_SHEETS) {
-    return { ok: false, error: `عدد أوراق الدرجات يتجاوز الحد المسموح (${GRADE_IMPORT_MAX_SHEETS})` };
+  if (requestedSources.length > GRADE_IMPORT_MAX_SOURCES) {
+    return { ok: false, error: `عدد مصادر الدرجات يتجاوز الحد المسموح (${GRADE_IMPORT_MAX_SOURCES})` };
   }
   if (!['update_existing', 'skip_existing', 'error_on_existing'].includes(body.mode || 'update_existing')) {
     return { ok: false, error: 'وضع استيراد الدرجات غير صالح' };
@@ -7163,32 +7164,58 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
     return { ok: false, error: 'سياسة تسجيل الطالب في المادة غير صالحة' };
   }
 
-  const seenNames = new Set<string>();
+  const seenSourceIds = new Set<string>();
   let totalRows = 0;
-  const gradeSheets: GradeImportSheetPayload[] = [];
-  for (const candidate of body.grade_sheets) {
+  const gradeSources: GradeImportSourcePayload[] = [];
+  for (let sourceIndex = 0; sourceIndex < requestedSources.length; sourceIndex += 1) {
+    const candidate = requestedSources[sourceIndex];
     const sheetName = normalizeText(candidate?.sheet_name);
     if (!sheetName) return { ok: false, error: 'اسم ورقة الدرجات مطلوب' };
-    if (seenNames.has(sheetName)) return { ok: false, error: `ورقة الدرجات "${sheetName}" مكررة في الطلب` };
-    seenNames.add(sheetName);
+    const sourceId = normalizeText(candidate?.source_id) || `${sheetName}:region:${sourceIndex + 1}`;
+    if (seenSourceIds.has(sourceId)) return { ok: false, error: `معرف مصدر الدرجات "${sourceId}" مكرر في الطلب` };
+    seenSourceIds.add(sourceId);
     if (!Array.isArray(candidate.rows) || candidate.rows.length === 0) {
-      return { ok: false, error: `لا توجد صفوف قابلة للاستيراد في الورقة "${sheetName}"` };
+      return { ok: false, error: `لا توجد صفوف قابلة للاستيراد في المصدر "${sourceId}"` };
     }
     if (!candidate.mapping || typeof candidate.mapping !== 'object' || Array.isArray(candidate.mapping)) {
       return { ok: false, error: `تعيين الأعمدة غير صالح في الورقة "${sheetName}"` };
     }
     totalRows += candidate.rows.length;
-    gradeSheets.push({
+    const subjectSource = candidate.subject_source
+      || (candidate.subject_id != null ? 'fixed' : candidate.mapping.subject_name ? 'column' : 'inferred');
+    if (!['fixed', 'column', 'inferred'].includes(subjectSource)) {
+      return { ok: false, error: `مصدر المادة غير صالح في المصدر "${sourceId}"` };
+    }
+    const subjectId = candidate.subject_id == null ? null : Number(candidate.subject_id);
+    if (subjectId != null && (!Number.isInteger(subjectId) || subjectId <= 0)) {
+      return { ok: false, error: `معرف المادة غير صالح في المصدر "${sourceId}"` };
+    }
+    const classId = candidate.class_id == null ? null : Number(candidate.class_id);
+    const sectionId = candidate.section_id == null ? null : Number(candidate.section_id);
+    if (classId != null && (!Number.isInteger(classId) || classId <= 0)) return { ok: false, error: `معرف الصف غير صالح في المصدر "${sourceId}"` };
+    if (sectionId != null && (!Number.isInteger(sectionId) || sectionId <= 0)) return { ok: false, error: `معرف الشعبة غير صالح في المصدر "${sourceId}"` };
+    const rowStart = candidate.row_start == null ? null : Number(candidate.row_start);
+    const rowEnd = candidate.row_end == null ? null : Number(candidate.row_end);
+    if (rowStart != null && (!Number.isInteger(rowStart) || rowStart <= 0)) return { ok: false, error: `بداية نطاق الصفوف غير صالحة في المصدر "${sourceId}"` };
+    if (rowEnd != null && (!Number.isInteger(rowEnd) || rowEnd <= 0)) return { ok: false, error: `نهاية نطاق الصفوف غير صالحة في المصدر "${sourceId}"` };
+    if (rowStart != null && rowEnd != null && rowStart > rowEnd) return { ok: false, error: `نطاق الصفوف معكوس في المصدر "${sourceId}"` };
+    gradeSources.push({
+      source_id: sourceId,
       sheet_name: sheetName,
+      region_id: normalizeText(candidate.region_id),
+      row_start: rowStart,
+      row_end: rowEnd,
       rows: candidate.rows,
-      mapping: candidate.mapping,
+      mapping: Object.fromEntries(Object.entries(candidate.mapping).filter(([, value]) => typeof value === 'string' && value)) as Record<string, string>,
       column_headers: candidate.column_headers && typeof candidate.column_headers === 'object' && !Array.isArray(candidate.column_headers)
         ? Object.fromEntries(Object.entries(candidate.column_headers).filter(([, value]) => typeof value === 'string')) as Record<string, string>
         : {},
-      subject_id: candidate.subject_id == null ? null : Number(candidate.subject_id),
+      subject_source: subjectSource,
+      subject_id: subjectId,
       subject_name: normalizeText(candidate.subject_name),
-      class_id: candidate.class_id == null ? null : Number(candidate.class_id),
-      section_id: candidate.section_id == null ? null : Number(candidate.section_id),
+      metadata_subject_name: normalizeText(candidate.metadata_subject_name),
+      class_id: classId,
+      section_id: sectionId,
     });
   }
   if (totalRows > GRADE_IMPORT_MAX_ROWS) {
@@ -7198,7 +7225,7 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
   return {
     ok: true,
     payload: {
-      grade_sheets: gradeSheets,
+      grade_sources: gradeSources,
       mode: body.mode || 'update_existing',
       assignment_mode: body.assignment_mode || 'strict_existing_assignments',
       clear_empty_fields: body.clear_empty_fields === true,
@@ -7248,7 +7275,8 @@ function gradeImportPreviewData(plan: ReturnType<typeof buildGradeImportPlan>) {
     errors: plan.errors,
     warnings: plan.warnings,
     duplicates: plan.duplicates,
-    sheets: plan.sheets,
+    sources: plan.sources,
+    sheets: plan.sources,
     summary: plan.summary,
     assignment_mode: plan.assignment_mode,
     clear_empty_fields: plan.clear_empty_fields,
@@ -7849,7 +7877,8 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           updated_count: plan.summary.update_rows,
           error_count: 0,
           row_errors: [],
-          sheets: plan.sheets,
+          sources: plan.sources,
+          sheets: plan.sources,
           summary: plan.summary,
         },
       });

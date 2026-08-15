@@ -6,8 +6,11 @@ import type {
   FieldInference,
   GradeFieldInference,
   GradeSemanticField,
+  MetadataCandidate,
   SubjectInference,
+  WorksheetAnalysis,
 } from './types.ts';
+import { RAW_GRADE_FIELDS } from './types.ts';
 
 type GradeFieldDefinition = {
   kind: GradeFieldInference['kind'];
@@ -18,27 +21,27 @@ export const GRADE_FIELD_DEFINITIONS: Partial<Record<GradeSemanticField, GradeFi
   subject_name: { kind: 'subject', aliases: ['المادة', 'اسم المادة', 'subject', 'subject name'] },
   first_month: {
     kind: 'raw_grade',
-    aliases: ['درجة الفصل الاول', 'الفصل الاول', 'السعي الاول', 'الشهر الاول', 'first_month'],
+    aliases: ['درجة الفصل الاول', 'الفصل الاول', 'السعي الاول', 'الشهر الاول', 'first_month', 'first term', 'first term grade', 'term 1'],
   },
   second_month: {
     kind: 'raw_grade',
-    aliases: ['السعي الثاني', 'الشهر الثاني', 'second_month'],
+    aliases: ['السعي الثاني', 'الشهر الثاني', 'second_month', 'second month', 'second effort'],
   },
   third_month: {
     kind: 'raw_grade',
-    aliases: ['درجة الفصل الثاني', 'الفصل الثاني', 'السعي الثالث', 'الشهر الثالث', 'third_month'],
+    aliases: ['درجة الفصل الثاني', 'الفصل الثاني', 'السعي الثالث', 'الشهر الثالث', 'third_month', 'second term', 'second term grade', 'term 2'],
   },
   fourth_month: {
     kind: 'raw_grade',
-    aliases: ['السعي الرابع', 'الشهر الرابع', 'fourth_month'],
+    aliases: ['السعي الرابع', 'الشهر الرابع', 'fourth_month', 'fourth month', 'fourth effort'],
   },
   mid_year_exam: {
     kind: 'raw_grade',
-    aliases: ['درجة نصف السنة', 'نصف السنة', 'امتحان نصف السنة', 'mid_year_exam', 'mid year exam'],
+    aliases: ['درجة نصف السنة', 'نصف السنة', 'امتحان نصف السنة', 'mid_year_exam', 'mid year exam', 'mid year', 'midyear'],
   },
   final_exam: {
     kind: 'raw_grade',
-    aliases: ['درجة امتحان نهاية السنة', 'امتحان نهاية السنة', 'درجة نهاية السنة', 'final_exam', 'final exam'],
+    aliases: ['درجة امتحان نهاية السنة', 'امتحان نهاية السنة', 'درجة نهاية السنة', 'final_exam', 'final exam', 'final'],
   },
   completion_exam: {
     kind: 'raw_grade',
@@ -66,6 +69,13 @@ function headerCandidate(field: GradeSemanticField, definition: GradeFieldDefini
   const header = normalizeHeader(profile.headerText);
   if (!header || isExcelErrorValue(profile.headerText)) {
     return { source: { type: 'column', columnIndex: profile.columnIndex, columnKey: profile.key }, confidence: 0, reasons: [] };
+  }
+  if (definition.kind === 'raw_grade' && isCalculatedGradeHeader(profile.headerText)) {
+    return {
+      source: { type: 'column', columnIndex: profile.columnIndex, columnKey: profile.key },
+      confidence: 0,
+      reasons: ['العمود محسوب ولا يمكن اقتراحه كدرجة خام'],
+    };
   }
   const aliases = definition.aliases.map(normalizeHeader);
   const exact = aliases.some(alias => header === alias);
@@ -130,11 +140,39 @@ export function isCalculatedGradeHeader(value: unknown): boolean {
     }));
 }
 
-export function inferSubjectFromSheetName(
-  sheetName: string,
-  subjects: ExcelSubjectOption[] = [],
+export function gradeMappingFromAnalysis(
+  analysis: Pick<WorksheetAnalysis, 'columns' | 'gradeFieldInferences'>,
+  autoMapping: Record<string, string> = {},
+): Record<string, string> {
+  const mapping: Record<string, string> = { ...autoMapping };
+  const calculatedColumnKeys = new Set([
+    ...analysis.gradeFieldInferences
+      .filter(inference => inference.kind === 'ignored_calculated' && inference.source.type === 'column')
+      .map(inference => inference.source.type === 'column' ? inference.source.columnKey : ''),
+    ...analysis.columns.filter(column => isCalculatedGradeHeader(column.headerText)).map(column => column.key),
+  ]);
+
+  for (const inference of analysis.gradeFieldInferences) {
+    if (inference.kind === 'ignored_calculated' || inference.source.type !== 'column') continue;
+    const identityField = ['student_number', 'full_name', 'class_name', 'section_name', 'subject_name'].includes(inference.field);
+    const minimum = identityField ? 0.48 : 0.7;
+    if (inference.confidence >= minimum) mapping[inference.field] = inference.source.columnKey;
+  }
+
+  for (const field of RAW_GRADE_FIELDS) {
+    if (calculatedColumnKeys.has(mapping[field])) delete mapping[field];
+  }
+  return mapping;
+}
+
+function subjectInferenceFromName(
+  value: string,
+  subjects: ExcelSubjectOption[],
+  source: SubjectInference['source'],
+  matchedConfidence: number,
+  unmatchedConfidence: number,
 ): SubjectInference {
-  const normalizedName = normalizeSubjectName(sheetName);
+  const normalizedName = normalizeSubjectName(value);
   if (!normalizedName) {
     return {
       subjectId: null,
@@ -142,7 +180,7 @@ export function inferSubjectFromSheetName(
       normalizedName: null,
       confidence: 0,
       source: { type: 'ignore' },
-      reasons: ['اسم الورقة لا يقدم دلالة مادة'],
+      reasons: ['المصدر لا يقدم دلالة مادة'],
       alternatives: [],
       requiresPlacementResolution: false,
     };
@@ -151,24 +189,52 @@ export function inferSubjectFromSheetName(
   if (!matches.length) {
     return {
       subjectId: null,
-      subjectName: sheetName.trim() || null,
+      subjectName: value.trim() || null,
       normalizedName,
-      confidence: 0.62,
-      source: { type: 'sheet-name', value: sheetName },
-      reasons: ['اسم الورقة يشبه اسم مادة لكنه لم يُطابق مادة موجودة بشكل قاطع'],
+      confidence: unmatchedConfidence,
+      source,
+      reasons: ['اسم المصدر يشبه مادة لكنه لم يُطابق مادة موجودة بشكل قاطع'],
       alternatives: [],
       requiresPlacementResolution: false,
     };
   }
-  const canonicalName = matches[0].name;
   return {
     subjectId: matches.length === 1 ? matches[0].id : null,
-    subjectName: canonicalName,
+    subjectName: matches[0].name,
     normalizedName,
-    confidence: 0.98,
-    source: { type: 'sheet-name', value: sheetName },
-    reasons: ['اسم الورقة يطابق مادة موجودة بعد التطبيع العربي المحافظ'],
-    alternatives: matches.map(subject => ({ subjectId: subject.id, subjectName: subject.name, confidence: 0.98 })),
+    confidence: matchedConfidence,
+    source,
+    reasons: ['اسم المصدر يطابق مادة موجودة بعد التطبيع المحافظ'],
+    alternatives: matches.map(subject => ({ subjectId: subject.id, subjectName: subject.name, confidence: matchedConfidence })),
     requiresPlacementResolution: matches.length > 1,
   };
+}
+
+export function inferSubjectFromSheetName(
+  sheetName: string,
+  subjects: ExcelSubjectOption[] = [],
+): SubjectInference {
+  return subjectInferenceFromName(sheetName, subjects, { type: 'sheet-name', value: sheetName }, 0.98, 0.62);
+}
+
+export function inferSubjectFromWorkbookContext(
+  sheetName: string,
+  metadata: MetadataCandidate[],
+  subjects: ExcelSubjectOption[] = [],
+): SubjectInference {
+  const sheetInference = inferSubjectFromSheetName(sheetName, subjects);
+  const metadataCandidates = metadata
+    .flatMap(candidate => candidate.field === 'subject_name' && candidate.source.type === 'metadata-cell'
+      ? [subjectInferenceFromName(
+          candidate.source.value,
+          subjects,
+          candidate.source,
+          Math.min(0.97, Math.max(0.85, candidate.confidence)),
+          Math.min(0.68, candidate.confidence),
+        )]
+      : [])
+    .sort((left, right) => right.confidence - left.confidence);
+  return metadataCandidates[0] && metadataCandidates[0].confidence > sheetInference.confidence
+    ? metadataCandidates[0]
+    : sheetInference;
 }
