@@ -56,6 +56,14 @@ import {
 import { normalizeSectionName, RAW_GRADE_FIELDS, type RawGradeField } from './lib/excelImport'
 import { calculateGrades } from './lib/gradeCalculations'
 import {
+  activateAcademicYearAtomically,
+  createInactiveAcademicYear,
+  isDuplicateAcademicYearError,
+  updateAcademicYearDetails,
+  validateAcademicYearInput,
+  type AcademicYearRecord,
+} from './lib/academicYears'
+import {
   buildGradeImportPlan,
   type GradeImportContext,
   type GradeImportPayload,
@@ -375,6 +383,15 @@ function requireRoles(allowedRoles: readonly RoleKey[], message = 'غير مسم
     }
     await next();
   };
+}
+
+async function readJsonObject(c: any): Promise<Record<string, any> | null> {
+  try {
+    const value = await c.req.json()
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+  } catch {
+    return null
+  }
 }
 
 // ===========================================
@@ -1136,32 +1153,102 @@ app.get('/api/school-modules', requireSameSchoolOrAdmin(), async (c) => {
 app.get('/api/academic-years', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
-  const scope: 'all' | 'single' = c.get('scope')
-  const querySchoolId = c.req.query('school_id')
+  if (resolvedSchoolId == null) {
+    return c.json({ error: 'يجب تحديد مدرسة لعرض السنوات الدراسية' }, 400)
+  }
   try {
-    let query = `
+    const { results } = await db.prepare(`
       SELECT id, school_id, name, starts_at, ends_at, is_active, created_at
       FROM academic_years
-    `
-    const binds: (string | number)[] = []
-    const conditions: string[] = []
-
-    if (scope === 'single' && resolvedSchoolId != null) {
-      conditions.push('school_id = ?')
-      binds.push(resolvedSchoolId)
-    } else if (querySchoolId) {
-      conditions.push('school_id = ?')
-      binds.push(querySchoolId)
-    }
-
-    if (conditions.length > 0) {
-      query += ` WHERE ${conditions.join(' AND ')}`
-    }
-
-    const { results } = await db.prepare(query).bind(...binds).all()
+      WHERE school_id = ?
+      ORDER BY is_active DESC, starts_at DESC, id DESC
+    `).bind(resolvedSchoolId).all<AcademicYearRecord>()
     return c.json({ data: results || [] })
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب السنوات الدراسية', detail: err.message }, 500)
+  }
+})
+
+app.post('/api/academic-years', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات السنة الدراسية غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    if (body.activate !== undefined && typeof body.activate !== 'boolean') {
+      return c.json({ error: 'خيار تفعيل السنة الدراسية غير صالح' }, 400)
+    }
+    const validation = validateAcademicYearInput(body)
+    if (!validation.ok) return c.json({ error: validation.error }, 400)
+    const inserted = await createInactiveAcademicYear(db, targetSchool.schoolId, validation.value)
+
+    if (body.activate === true) {
+      const activation = await activateAcademicYearAtomically(db, inserted.id, targetSchool.schoolId)
+      if (!activation.ok) throw new Error('Created academic year could not be activated')
+      return c.json({ data: activation.year }, 201)
+    }
+    return c.json({ data: inserted }, 201)
+  } catch (error) {
+    if (isDuplicateAcademicYearError(error)) {
+      return c.json({ error: 'يوجد عام دراسي بالاسم نفسه لهذه المدرسة' }, 409)
+    }
+    return c.json({ error: 'فشل في إنشاء السنة الدراسية' }, 500)
+  }
+})
+
+app.put('/api/academic-years/:id', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف السنة الدراسية غير صالح' }, 400)
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات السنة الدراسية غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    if (Object.prototype.hasOwnProperty.call(body, 'is_active')) {
+      return c.json({ error: 'يجب استخدام إجراء التفعيل المخصص لتغيير حالة السنة الدراسية' }, 400)
+    }
+    const existing = await db.prepare('SELECT id, school_id FROM academic_years WHERE id = ?')
+      .bind(id).first<{ id: number; school_id: number }>()
+    if (!existing) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404)
+    if (existing.school_id !== targetSchool.schoolId) {
+      return c.json({ error: 'غير مسموح: السنة الدراسية لا تنتمي إلى المدرسة المستهدفة' }, 403)
+    }
+
+    const validation = validateAcademicYearInput(body)
+    if (!validation.ok) return c.json({ error: validation.error }, 400)
+    const updated = await updateAcademicYearDetails(db, id, targetSchool.schoolId, validation.value)
+    if (!updated) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404)
+    return c.json({ data: updated })
+  } catch (error) {
+    if (isDuplicateAcademicYearError(error)) {
+      return c.json({ error: 'يوجد عام دراسي بالاسم نفسه لهذه المدرسة' }, 409)
+    }
+    return c.json({ error: 'فشل في تعديل السنة الدراسية' }, 500)
+  }
+})
+
+app.put('/api/academic-years/:id/activate', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف السنة الدراسية غير صالح' }, 400)
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات السنة الدراسية غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    const activation = await activateAcademicYearAtomically(db, id, targetSchool.schoolId)
+    if (!activation.ok) {
+      if (activation.code === 'not_found') return c.json({ error: 'السنة الدراسية غير موجودة' }, 404)
+      return c.json({ error: 'غير مسموح: السنة الدراسية لا تنتمي إلى المدرسة المستهدفة' }, 403)
+    }
+    return c.json({ data: activation.year })
+  } catch {
+    return c.json({ error: 'فشل في تفعيل السنة الدراسية' }, 500)
   }
 })
 

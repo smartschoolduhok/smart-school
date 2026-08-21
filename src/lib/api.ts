@@ -4,6 +4,8 @@
 // Automatically injects Authorization: Bearer <token> header
 // ===========================================
 
+import type { AcademicYearRecord } from './academicYears';
+
 const API_BASE = import.meta.env.PROD ? '' : '';
 
 function getToken(): string | null {
@@ -150,7 +152,33 @@ export function getSchoolModules(schoolId?: number | null) {
 // ===========================================
 export function getAcademicYears(schoolId?: number | null) {
   const qs = schoolId != null ? `?school_id=${schoolId}` : '';
-  return fetchApi<Array<Record<string, any>>>(`/api/academic-years${qs}`);
+  return fetchApi<AcademicYearRecord[]>(`/api/academic-years${qs}`);
+}
+
+export function createAcademicYear(data: {
+  school_id: number;
+  name: string;
+  starts_at: string;
+  ends_at: string;
+  activate?: boolean;
+}) {
+  return fetchApi<AcademicYearRecord>('/api/academic-years', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateAcademicYear(id: number, data: {
+  school_id: number;
+  name: string;
+  starts_at: string;
+  ends_at: string;
+}) {
+  return fetchApi<AcademicYearRecord>(`/api/academic-years/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function activateAcademicYear(id: number, schoolId: number) {
+  return fetchApi<AcademicYearRecord>(`/api/academic-years/${id}/activate`, {
+    method: 'PUT',
+    body: JSON.stringify({ school_id: schoolId }),
+  });
 }
 
 // ===========================================

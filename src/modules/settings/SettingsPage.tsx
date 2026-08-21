@@ -46,6 +46,9 @@ export default function SettingsPage() {
   const [loadedSchoolId, setLoadedSchoolId] = useState<number | null>(null);
 
   const canEdit = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
+  const selectedSchoolName = isAdmin
+    ? schoolScope.schools.find(school => school.id === effectiveSchoolId)?.name || null
+    : user?.school_name || null;
 
   const loadSettings = useCallback(async () => {
     if (!effectiveSchoolId) {
@@ -196,8 +199,11 @@ export default function SettingsPage() {
             )}
             {activeTab === 'academic' && (
               <AcademicTab
-                data={schoolData}
+                schoolName={selectedSchoolName}
                 canEdit={canEdit}
+                schoolId={effectiveSchoolId}
+                onSuccess={handleSuccess}
+                onError={handleError}
               />
             )}
             {activeTab === 'document' && (
