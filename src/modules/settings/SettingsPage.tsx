@@ -198,6 +198,9 @@ export default function SettingsPage() {
               <AcademicTab
                 data={schoolData}
                 canEdit={canEdit}
+                schoolId={effectiveSchoolId}
+                onSuccess={handleSuccess}
+                onError={handleError}
               />
             )}
             {activeTab === 'document' && (
