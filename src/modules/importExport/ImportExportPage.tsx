@@ -20,7 +20,13 @@ import {
   type WorksheetCategory,
   type WorksheetRows,
 } from '../../lib/excelImport';
-import { discoverGradeSpecialMarkers, type GradeSpecialValueAction } from '../../lib/gradeImport';
+import {
+  analyzeGradeZeroPatterns,
+  copyCompatibleGradeZeroValues,
+  discoverGradeSpecialMarkers,
+  type GradeSpecialValueAction,
+  type GradeZeroValueInterpretation,
+} from '../../lib/gradeImport';
 import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, XCircle, FileText, History, ChevronRight, ArrowLeft, ArrowRight, Loader2, BookOpen, Layers, GraduationCap, Users } from 'lucide-react';
 
 // ===========================================
@@ -86,6 +92,7 @@ interface GradeSheetConfig {
   classId: number | null;
   sectionId: number | null;
   specialValues: Record<string, GradeSpecialValueAction>;
+  zeroValues: Partial<Record<(typeof RAW_GRADE_FIELDS)[number], GradeZeroValueInterpretation>>;
   acknowledged: boolean;
 }
 
@@ -465,6 +472,7 @@ export default function ImportExportPage() {
           classId: null,
           sectionId: null,
           specialValues: {},
+          zeroValues: {},
           acknowledged: false,
         };
       }));
@@ -493,7 +501,7 @@ export default function ImportExportPage() {
         setMapping(gradeMapping);
         setMode('update_existing');
         setGradeSheetConfigs(previous => previous.map(config => config.sheetName === info.name
-          ? { ...config, selected: true, mapping: gradeMapping }
+          ? { ...config, selected: true, mapping: gradeMapping, zeroValues: {} }
           : config));
       }
       setImportTypeConfirmed(true);
@@ -539,6 +547,7 @@ export default function ImportExportPage() {
           subjectName: analysis.subjectInference.subjectName,
           rowStart: analysis.regions[0] ? analysis.regions[0].startRow + 1 : null,
           rowEnd: analysis.regions[0] ? analysis.regions[0].endRow + 1 : null,
+          zeroValues: {},
           acknowledged: false,
         } : config));
       }
@@ -577,7 +586,9 @@ export default function ImportExportPage() {
       const nextMapping = { ...config.mapping };
       if (columnKey) nextMapping[field] = columnKey;
       else delete nextMapping[field];
-      return { ...config, mapping: nextMapping, acknowledged: false };
+      const zeroValues = { ...config.zeroValues };
+      if (RAW_GRADE_FIELDS.includes(field as (typeof RAW_GRADE_FIELDS)[number])) delete zeroValues[field as (typeof RAW_GRADE_FIELDS)[number]];
+      return { ...config, mapping: nextMapping, zeroValues, acknowledged: false };
     }));
     setPreview(null);
     setGradeConfirmPayload(null);
@@ -592,6 +603,15 @@ export default function ImportExportPage() {
     updateGradeSheetConfig(sourceId, { specialValues });
   };
 
+  const changeGradeZeroValue = (sourceId: string, field: (typeof RAW_GRADE_FIELDS)[number], interpretation: GradeZeroValueInterpretation) => {
+    const config = gradeSheetConfigs.find(item => item.sourceId === sourceId);
+    if (!config) return;
+    const zeroValues = { ...config.zeroValues };
+    if (interpretation === 'blank') zeroValues[field] = 'blank';
+    else delete zeroValues[field];
+    updateGradeSheetConfig(sourceId, { zeroValues });
+  };
+
   const applyGradeMappingToCompatibleSheets = (sourceId: string) => {
     const sourceConfig = gradeSheetConfigs.find(config => config.sourceId === sourceId);
     const sourceInfo = sheets.find(sheet => sheet.name === sourceConfig?.sheetName);
@@ -600,7 +620,33 @@ export default function ImportExportPage() {
     setGradeSheetConfigs(previous => previous.map(config => {
       const info = sheets.find(sheet => sheet.name === config.sheetName);
       const compatible = info?.analysis.columns.map(column => normalizeHeader(column.headerText || column.displayName)).join('|') === signature;
-      return config.selected && compatible ? { ...config, mapping: { ...sourceConfig.mapping }, acknowledged: false } : config;
+      return config.selected && compatible ? { ...config, mapping: { ...sourceConfig.mapping }, zeroValues: {}, acknowledged: false } : config;
+    }));
+    setPreview(null);
+    setGradeConfirmPayload(null);
+  };
+
+  const applyGradeZeroValuesToCompatibleSources = (sourceId: string) => {
+    const sourceConfig = gradeSheetConfigs.find(config => config.sourceId === sourceId);
+    const sourceInfo = sheets.find(sheet => sheet.name === sourceConfig?.sheetName);
+    if (!sourceConfig || !sourceInfo) return;
+    const signature = sourceInfo.analysis.columns.map(column => normalizeHeader(column.headerText || column.displayName)).join('|');
+    const zeroFields = analyzeGradeZeroPatterns(
+      analysisRowsToRecords(sourceInfo.rows, sourceInfo.analysis),
+      sourceConfig.mapping,
+    ).map(pattern => pattern.field);
+    const zeroFieldMapping = Object.fromEntries(zeroFields
+      .filter(field => sourceConfig.mapping[field])
+      .map(field => [field, sourceConfig.mapping[field]]));
+    setGradeSheetConfigs(previous => previous.map(config => {
+      if (config.sourceId === sourceId || !config.selected) return config;
+      const info = sheets.find(sheet => sheet.name === config.sheetName);
+      const compatible = info?.analysis.columns.map(column => normalizeHeader(column.headerText || column.displayName)).join('|') === signature;
+      if (!compatible) return config;
+      return {
+        ...config,
+        zeroValues: copyCompatibleGradeZeroValues(sourceConfig.zeroValues, zeroFieldMapping, config.zeroValues, config.mapping),
+      };
     }));
     setPreview(null);
     setGradeConfirmPayload(null);
@@ -620,7 +666,7 @@ export default function ImportExportPage() {
       if (type === 'grades') {
         setMode('update_existing');
         setGradeSheetConfigs(previous => previous.map(config => config.sheetName === info.name
-          ? { ...config, selected: true, mapping: nextMapping }
+          ? { ...config, selected: true, mapping: nextMapping, zeroValues: {} }
           : config));
       }
     }
@@ -704,6 +750,7 @@ export default function ImportExportPage() {
             class_id: config.classId,
             section_id: config.sectionId,
             special_values: config.specialValues,
+            zero_values: config.zeroValues,
           };
         });
         const payload = {
@@ -1124,10 +1171,9 @@ export default function ImportExportPage() {
                     const calculatedColumnKeys = new Set(info.analysis.columns
                       .filter(column => isCalculatedGradeHeader(column.headerText))
                       .map(column => column.key));
-                    const discoveredMarkers = discoverGradeSpecialMarkers(
-                      analysisRowsToRecords(info.rows, info.analysis),
-                      config.mapping,
-                    );
+                    const gradeRows = analysisRowsToRecords(info.rows, info.analysis);
+                    const discoveredMarkers = discoverGradeSpecialMarkers(gradeRows, config.mapping);
+                    const zeroPatterns = analyzeGradeZeroPatterns(gradeRows, config.mapping);
                     const needsAcknowledgement = gradeConfigNeedsAcknowledgement(config, info);
                     const filteredSections = sections.filter(section => section.status === 'active' && (!config.classId || section.class_id === config.classId));
                     const filteredSubjects = subjects.filter(subject => subject.status !== 'archived'
@@ -1256,6 +1302,44 @@ export default function ImportExportPage() {
                                   </td>
                                 </tr>
                               ))}</tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        {zeroPatterns.length > 0 && (
+                          <div className="mt-4 overflow-auto rounded-lg border border-cyan-200 bg-cyan-50/40">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-cyan-200 px-3 py-2">
+                              <div>
+                                <p className="text-sm font-bold text-cyan-900">تحليل قيم الصفر</p>
+                                <p className="text-xs text-cyan-700">الافتراضي أن 0 درجة فعلية. غيّر التفسير صراحةً فقط عندما يكون الصفر عنصرًا نائبًا في هذا المصدر.</p>
+                              </div>
+                              <button type="button" onClick={() => applyGradeZeroValuesToCompatibleSources(config.sourceId)} className="rounded-md border border-cyan-300 bg-white px-3 py-2 text-xs font-medium text-cyan-800">تطبيق تفسير الأصفار على المصادر المتوافقة</button>
+                            </div>
+                            <table className="w-full text-sm">
+                              <thead><tr><th className="px-3 py-2 text-right">الحقل الخام</th><th className="px-3 py-2 text-right">الأصفار</th><th className="px-3 py-2 text-right">القيم الرقمية</th><th className="px-3 py-2 text-right">النسبة</th><th className="px-3 py-2 text-right">تفسير الصفر</th></tr></thead>
+                              <tbody>{zeroPatterns.map(pattern => {
+                                const highlighted = pattern.signal === 'all_zero'
+                                  ? 'bg-red-50 text-red-800'
+                                  : pattern.signal === 'high_zero' ? 'bg-amber-50 text-amber-800' : '';
+                                return (
+                                  <tr key={pattern.field} className={`border-t border-cyan-100 ${highlighted}`}>
+                                    <td className="px-3 py-2 font-medium">{SYSTEM_FIELDS.grades.find(field => field.key === pattern.field)?.label || pattern.field}</td>
+                                    <td className="px-3 py-2">{pattern.zero_count}</td>
+                                    <td className="px-3 py-2">{pattern.numeric_count}</td>
+                                    <td className="px-3 py-2 font-bold">{Math.round(pattern.zero_percentage * 100)}%{pattern.signal === 'all_zero' ? ' — جميع القيم الرقمية صفر' : pattern.signal === 'high_zero' ? ' — نسبة مرتفعة جداً' : ''}</td>
+                                    <td className="px-3 py-2">
+                                      <select
+                                        value={config.zeroValues[pattern.field] || 'numeric'}
+                                        onChange={event => changeGradeZeroValue(config.sourceId, pattern.field, event.target.value as GradeZeroValueInterpretation)}
+                                        className="w-full min-w-52 rounded-md border border-cyan-200 bg-white px-2 py-1.5"
+                                      >
+                                        <option value="numeric">0 = درجة فعلية</option>
+                                        <option value="blank">0 = فارغ / لم تُدخل الدرجة</option>
+                                      </select>
+                                    </td>
+                                  </tr>
+                                );
+                              })}</tbody>
                             </table>
                           </div>
                         )}

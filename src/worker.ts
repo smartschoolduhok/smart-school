@@ -53,7 +53,7 @@ import {
   type LoginThrottlePolicy,
   type LoginThrottleRecord,
 } from './lib/apiSecurity'
-import { normalizeSectionName } from './lib/excelImport'
+import { normalizeSectionName, RAW_GRADE_FIELDS, type RawGradeField } from './lib/excelImport'
 import { calculateGrades } from './lib/gradeCalculations'
 import {
   buildGradeImportPlan,
@@ -7215,6 +7215,20 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
       if (action !== 'not_applicable') return { ok: false, error: `تفسير القيمة الخاصة "${marker}" غير مدعوم` };
       specialValues[marker] = action;
     }
+    const candidateZeroValues = candidate.zero_values ?? {};
+    if (typeof candidateZeroValues !== 'object' || Array.isArray(candidateZeroValues)) {
+      return { ok: false, error: `تفسير قيم الصفر غير صالح في المصدر "${sourceId}"` };
+    }
+    const zeroValueEntries = Object.entries(candidateZeroValues);
+    if (zeroValueEntries.length > RAW_GRADE_FIELDS.length) {
+      return { ok: false, error: `عدد تفسيرات الصفر غير صالح في المصدر "${sourceId}"` };
+    }
+    const zeroValues: NonNullable<GradeImportSourcePayload['zero_values']> = {};
+    for (const [field, interpretation] of zeroValueEntries) {
+      if (!RAW_GRADE_FIELDS.includes(field as RawGradeField)) return { ok: false, error: `حقل تفسير الصفر "${field}" غير صالح` };
+      if (!['numeric', 'blank'].includes(String(interpretation))) return { ok: false, error: `تفسير الصفر للحقل "${field}" غير مدعوم` };
+      zeroValues[field as RawGradeField] = interpretation as 'numeric' | 'blank';
+    }
     gradeSources.push({
       source_id: sourceId,
       sheet_name: sheetName,
@@ -7233,6 +7247,7 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
       class_id: classId,
       section_id: sectionId,
       special_values: specialValues,
+      zero_values: zeroValues,
     });
   }
   if (totalRows > GRADE_IMPORT_MAX_ROWS) {

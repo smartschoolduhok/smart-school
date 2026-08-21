@@ -8,12 +8,21 @@ export type GradeImportMode = 'update_existing' | 'skip_existing' | 'error_on_ex
 export type GradeAssignmentMode = 'strict_existing_assignments' | 'auto_assign_missing_subjects';
 export type GradeSubjectSourceMode = 'fixed' | 'column' | 'inferred';
 export type GradeSpecialValueAction = 'not_applicable';
+export type GradeZeroValueInterpretation = 'numeric' | 'blank';
 
 export interface DiscoveredGradeSpecialMarker {
   value: string;
   normalized_value: string;
   count: number;
   fields: RawGradeField[];
+}
+
+export interface GradeZeroPattern {
+  field: RawGradeField;
+  zero_count: number;
+  numeric_count: number;
+  zero_percentage: number;
+  signal: 'all_zero' | 'high_zero' | 'normal';
 }
 
 export interface GradeImportSourcePayload {
@@ -32,6 +41,7 @@ export interface GradeImportSourcePayload {
   class_id?: number | null;
   section_id?: number | null;
   special_values?: Record<string, GradeSpecialValueAction>;
+  zero_values?: Partial<Record<RawGradeField, GradeZeroValueInterpretation>>;
 }
 
 /** @deprecated Use GradeImportSourcePayload. Kept for request compatibility. */
@@ -178,6 +188,7 @@ export interface GradeSourcePlanSummary {
   error_rows: number;
   warning_rows: number;
   discovered_markers: DiscoveredGradeSpecialMarker[];
+  zero_patterns: GradeZeroPattern[];
 }
 
 export interface GradeImportPlan {
@@ -246,6 +257,55 @@ export function discoverGradeSpecialMarkers(
       fields: [...marker.fields],
     }))
     .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value));
+}
+
+export function analyzeGradeZeroPatterns(
+  rows: Array<Record<string, unknown>>,
+  mapping: Record<string, string>,
+): GradeZeroPattern[] {
+  const patterns: GradeZeroPattern[] = [];
+  for (const field of RAW_GRADE_FIELDS) {
+    const sourceColumn = mapping[field];
+    if (!sourceColumn) continue;
+    let zeroCount = 0;
+    let numericCount = 0;
+    for (const row of rows) {
+      const rawValue = row[sourceColumn];
+      if (rawValue == null || isExcelErrorValue(rawValue)) continue;
+      const text = String(rawValue).trim();
+      if (EMPTY_MARKERS.has(text) || !NUMERIC_GRADE_PATTERN.test(text)) continue;
+      const numeric = Number(text);
+      if (!Number.isFinite(numeric)) continue;
+      numericCount += 1;
+      if (numeric === 0) zeroCount += 1;
+    }
+    if (zeroCount === 0) continue;
+    const zeroPercentage = numericCount > 0 ? zeroCount / numericCount : 0;
+    patterns.push({
+      field,
+      zero_count: zeroCount,
+      numeric_count: numericCount,
+      zero_percentage: Number(zeroPercentage.toFixed(4)),
+      signal: zeroPercentage === 1 ? 'all_zero' : zeroPercentage >= 0.8 ? 'high_zero' : 'normal',
+    });
+  }
+  return patterns;
+}
+
+export function copyCompatibleGradeZeroValues(
+  sourceZeroValues: Partial<Record<RawGradeField, GradeZeroValueInterpretation>>,
+  sourceMapping: Record<string, string>,
+  targetZeroValues: Partial<Record<RawGradeField, GradeZeroValueInterpretation>>,
+  targetMapping: Record<string, string>,
+): Partial<Record<RawGradeField, GradeZeroValueInterpretation>> {
+  const next = { ...targetZeroValues };
+  for (const field of RAW_GRADE_FIELDS) {
+    if (!sourceMapping[field] || !targetMapping[field]) continue;
+    const interpretation = sourceZeroValues[field] || 'numeric';
+    if (interpretation === 'blank') next[field] = 'blank';
+    else delete next[field];
+  }
+  return next;
 }
 
 function sourceDisplay(source: Pick<GradeImportSourcePayload, 'sheet_name' | 'region_id'>): string {
@@ -441,6 +501,7 @@ function parseGradeCell(
   settings: GradeCalculationSettings,
   clearEmptyFields: boolean,
   specialValueActions: ReadonlyMap<string, GradeSpecialValueAction>,
+  zeroValueInterpretation: GradeZeroValueInterpretation,
 ): ParsedGradeCell {
   if (isExcelErrorValue(value)) return { kind: 'invalid_text', imported: false, error: `قيمة Excel غير صالحة في ${field}` };
   const text = String(value ?? '').trim();
@@ -455,6 +516,9 @@ function parseGradeCell(
   const numeric = Number(text);
   if (!Number.isFinite(numeric) || numeric < 0 || numeric > settings.max_grade) {
     return { kind: 'invalid_text', imported: false, error: `القيمة في ${field} يجب أن تكون بين ٠ و ${settings.max_grade}` };
+  }
+  if (numeric === 0 && zeroValueInterpretation === 'blank') {
+    return clearEmptyFields ? { kind: 'blank', imported: true, value: null } : { kind: 'blank', imported: false };
   }
   return { kind: 'numeric', imported: true, value: numeric };
 }
@@ -506,6 +570,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       error_rows: 0,
       warning_rows: 0,
       discovered_markers: discoverGradeSpecialMarkers(source.rows, source.mapping),
+      zero_patterns: analyzeGradeZeroPatterns(source.rows, source.mapping),
     };
   });
   const summaryBySource = new Map(sourceSummaries.map(summary => [summary.source_id, summary]));
@@ -572,7 +637,14 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       let rowFatal = false;
       for (const field of RAW_GRADE_FIELDS) {
         if (!sheet.mapping[field]) continue;
-        const parsed = parseGradeCell(mappedValue(row, sheet.mapping, field), field, context.settings, clearEmptyFields, specialValueActions);
+        const parsed = parseGradeCell(
+          mappedValue(row, sheet.mapping, field),
+          field,
+          context.settings,
+          clearEmptyFields,
+          specialValueActions,
+          sheet.zero_values?.[field] || 'numeric',
+        );
         if (parsed.kind === 'invalid_text') {
           errors.push(issue(sheet, rowNumber, field, parsed.error));
           rowFatal = true;

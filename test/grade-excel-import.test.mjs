@@ -3,7 +3,12 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { analyzeWorksheet, analysisRowsToRecords, gradeMappingFromAnalysis, RAW_GRADE_FIELDS } from '../src/lib/excelImport.ts';
-import { buildGradeImportPlan, discoverGradeSpecialMarkers } from '../src/lib/gradeImport.ts';
+import {
+  analyzeGradeZeroPatterns,
+  buildGradeImportPlan,
+  copyCompatibleGradeZeroValues,
+  discoverGradeSpecialMarkers,
+} from '../src/lib/gradeImport.ts';
 
 const subjectNames = [
   'الاسلامية', 'العربية', 'الانكليزية', 'الاجتماعيات', 'الرياضيات', 'الحاسوب',
@@ -360,6 +365,162 @@ test('discovers grade text markers without assigning a meaning to them', () => {
   assert.deepEqual(markers[1].fields, ['mid_year_exam']);
 });
 
+test('reports advisory zero counts, numeric counts, and suspicious percentages', () => {
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    'column:2': 0,
+    'column:3': index < 9 ? 0 : 75,
+  }));
+  const patterns = analyzeGradeZeroPatterns(rows, { third_month: 'column:2', final_exam: 'column:3' });
+
+  assert.deepEqual(patterns[0], {
+    field: 'third_month',
+    zero_count: 10,
+    numeric_count: 10,
+    zero_percentage: 1,
+    signal: 'all_zero',
+  });
+  assert.deepEqual(patterns[1], {
+    field: 'final_exam',
+    zero_count: 9,
+    numeric_count: 10,
+    zero_percentage: 0.9,
+    signal: 'high_zero',
+  });
+});
+
+test('zero defaults to a real numeric grade', () => {
+  const context = baseContext();
+  const subject = context.subjects[0];
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 4, 'column:0': '5/001', 'column:2': 0 },
+  ], { student_number: 'column:0', first_month: 'column:2' });
+  const plan = buildGradeImportPlan({ grade_sources: [sheet] }, context);
+
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records.length, 1);
+  assert.equal(plan.records[0].values.first_month, 0);
+  assert.deepEqual(plan.records[0].changed_fields, ['first_month']);
+});
+
+test('explicit zero-as-blank does not import zero when clearing is disabled', () => {
+  const context = baseContext();
+  const subject = context.subjects[0];
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 5, 'column:0': '5/001', 'column:2': 0 },
+  ], { student_number: 'column:0', first_month: 'column:2' }, {
+    zero_values: { first_month: 'blank' },
+  });
+  const plan = buildGradeImportPlan({ grade_sources: [sheet] }, context);
+
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records.length, 0);
+  assert.equal(plan.summary.noop_rows, 1);
+  assert.equal(plan.not_applicable.length, 0);
+});
+
+test('zero-as-blank preserves existing values unless clear_empty_fields is enabled', () => {
+  const context = baseContext();
+  const subject = context.subjects[0];
+  const assignment = context.assignments.find(item => item.student_id === 1 && item.subject_id === subject.id);
+  context.grades = [{
+    id: 991,
+    school_id: 1,
+    student_subject_id: assignment.id,
+    first_month: 55,
+    second_month: 60,
+    third_month: null,
+    fourth_month: null,
+    mid_year_exam: null,
+    final_exam: null,
+    completion_exam: null,
+    notes: null,
+  }];
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 6, 'column:0': '5/001', 'column:2': 0, 'column:3': 70 },
+  ], { student_number: 'column:0', first_month: 'column:2', second_month: 'column:3' }, {
+    zero_values: { first_month: 'blank' },
+  });
+  const preservePlan = buildGradeImportPlan({ grade_sources: [sheet] }, context);
+  assert.equal(preservePlan.errors.length, 0);
+  assert.equal(preservePlan.records[0].values.first_month, 55);
+  assert.equal(preservePlan.records[0].values.second_month, 70);
+  assert.deepEqual(preservePlan.records[0].changed_fields, ['second_month']);
+
+  const clearSheet = payloadSheet(subject, [
+    { _excel_row_number: 7, 'column:0': '5/001', 'column:2': 0 },
+  ], { student_number: 'column:0', first_month: 'column:2' }, {
+    zero_values: { first_month: 'blank' },
+  });
+  const clearPlan = buildGradeImportPlan({ clear_empty_fields: true, grade_sources: [clearSheet] }, context);
+  assert.equal(clearPlan.errors.length, 0);
+  assert.equal(clearPlan.records[0].values.first_month, null);
+  assert.deepEqual(clearPlan.records[0].changed_fields, ['first_month']);
+});
+
+test('zero interpretation remains field-specific and source-specific', () => {
+  const context = baseContext({ studentCount: 1 });
+  const firstSubject = context.subjects[0];
+  const secondSubject = context.subjects[1];
+  const commonRow = { _excel_row_number: 8, 'column:0': '5/001', 'column:2': 0, 'column:3': 0, 'column:4': 75 };
+  const firstSource = payloadSheet(firstSubject, [commonRow], {
+    student_number: 'column:0', first_month: 'column:2', second_month: 'column:3', third_month: 'column:4',
+  }, { zero_values: { first_month: 'blank' } });
+  const secondSource = payloadSheet(secondSubject, [{ ...commonRow, _excel_row_number: 9 }], {
+    student_number: 'column:0', first_month: 'column:2',
+  });
+  const plan = buildGradeImportPlan({ grade_sources: [firstSource, secondSource] }, context);
+
+  assert.equal(plan.errors.length, 0);
+  const firstRecord = plan.records.find(record => record.subject_id === firstSubject.id);
+  const secondRecord = plan.records.find(record => record.subject_id === secondSubject.id);
+  assert.equal(firstRecord.values.first_month, null);
+  assert.equal(firstRecord.values.second_month, 0);
+  assert.equal(firstRecord.values.third_month, 75);
+  assert.equal(secondRecord.values.first_month, 0);
+});
+
+test('compatible zero settings copy only matching logical mapped fields', async () => {
+  const copied = copyCompatibleGradeZeroValues(
+    { third_month: 'blank', final_exam: 'blank' },
+    { third_month: 'column:4', final_exam: 'column:5' },
+    { first_month: 'blank' },
+    { first_month: 'column:7', third_month: 'column:2' },
+  );
+  assert.deepEqual(copied, { first_month: 'blank', third_month: 'blank' });
+  const resetToNumeric = copyCompatibleGradeZeroValues(
+    {},
+    { third_month: 'column:4' },
+    { third_month: 'blank', final_exam: 'blank' },
+    { third_month: 'column:9', final_exam: 'column:10' },
+  );
+  assert.deepEqual(resetToNumeric, { final_exam: 'blank' });
+
+  const pageSource = await readFile(new URL('../src/modules/importExport/ImportExportPage.tsx', import.meta.url), 'utf8');
+  assert.match(pageSource, /0 = درجة فعلية/);
+  assert.match(pageSource, /0 = فارغ \/ لم تُدخل الدرجة/);
+  assert.match(pageSource, /applyGradeZeroValuesToCompatibleSources/);
+});
+
+test('Not Applicable plus explicitly blank zero placeholders resolves cleanly', () => {
+  const context = baseContext({ includeAssignments: false });
+  const subject = context.subjects[0];
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 10, 'column:0': '5/001', 'column:2': 'غ.م', 'column:3': 'غ.م', 'column:4': 0, 'column:5': 0 },
+  ], {
+    student_number: 'column:0', first_month: 'column:2', mid_year_exam: 'column:3', third_month: 'column:4', final_exam: 'column:5',
+  }, {
+    special_values: { 'غ.م': 'not_applicable' },
+    zero_values: { third_month: 'blank', final_exam: 'blank' },
+  });
+  const plan = buildGradeImportPlan({ assignment_mode: 'auto_assign_missing_subjects', grade_sources: [sheet] }, context);
+
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records.length, 0);
+  assert.equal(plan.not_applicable.length, 1);
+  assert.equal(plan.summary.assignment_creates, 0);
+  assert.equal(plan.summary.assignment_reactivations, 0);
+});
+
 test('explicit Not Applicable markers create no grade or assignment writes', () => {
   const context = baseContext({ includeAssignments: false });
   const subject = context.subjects[0];
@@ -465,9 +626,10 @@ test('Not Applicable combined with a numeric raw grade is a fatal conflict', () 
   const context = baseContext();
   const subject = context.subjects[0];
   const sheet = payloadSheet(subject, [
-    { _excel_row_number: 9, 'column:0': '5/001', 'column:2': 'غ م', 'column:3': 80 },
-  ], { student_number: 'column:0', first_month: 'column:2', mid_year_exam: 'column:3' }, {
+    { _excel_row_number: 9, 'column:0': '5/001', 'column:2': 'غ م', 'column:3': 80, 'column:4': 0 },
+  ], { student_number: 'column:0', first_month: 'column:2', mid_year_exam: 'column:3', third_month: 'column:4' }, {
     special_values: { 'غ م': 'not_applicable' },
+    zero_values: { third_month: 'blank' },
   });
   const plan = buildGradeImportPlan({ grade_sources: [sheet] }, context);
 
@@ -777,6 +939,8 @@ test('grade preview remains write-free and confirm uses one transactional D1 bat
   assert.match(worker, /const requestedSources = Array\.isArray\(body\?\.grade_sources\)/);
   assert.match(worker, /candidate\.special_values/);
   assert.match(worker, /special_values: specialValues/);
+  assert.match(worker, /candidate\.zero_values/);
+  assert.match(worker, /zero_values: zeroValues/);
   assert.match(worker, /seenSourceIds/);
   assert.doesNotMatch(worker, /seenNames\.has\(sheetName\)/);
 });
