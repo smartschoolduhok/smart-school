@@ -19,6 +19,7 @@ const initialSchema = readFileSync(join(rootDir, 'migrations', '0001_initial_sch
 const integrityMigration = readFileSync(join(rootDir, 'migrations', '0017_academic_year_integrity.sql'), 'utf8');
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 const academicTabSource = readFileSync(join(rootDir, 'src', 'modules', 'settings', 'AcademicTab.tsx'), 'utf8');
+const settingsPageSource = readFileSync(join(rootDir, 'src', 'modules', 'settings', 'SettingsPage.tsx'), 'utf8');
 
 class LocalPreparedStatement {
   constructor(owner, sql, params = []) {
@@ -260,4 +261,13 @@ test('Academic Settings uses real API data, exposes management actions, and has 
   assert.match(academicTabSource, /سيتم إيقاف السنة الدراسية الحالية وتفعيل السنة المحددة/);
   assert.doesNotMatch(academicTabSource, /2025-2026/);
   assert.doesNotMatch(workerSource, /app\.delete\('\/api\/academic-years/);
+});
+
+test('Academic Settings receives the current tenant school name explicitly', () => {
+  assert.match(academicTabSource, /schoolName: string \| null/);
+  assert.match(academicTabSource, /\{schoolName \|\| 'المدرسة المحددة'\}/);
+  assert.doesNotMatch(academicTabSource, /data\?\.school\?\.name/);
+  assert.match(settingsPageSource, /schoolScope\.schools\.find\(school => school\.id === effectiveSchoolId\)\?\.name/);
+  assert.match(settingsPageSource, /: user\?\.school_name \|\| null/);
+  assert.match(settingsPageSource, /<AcademicTab[\s\S]*?schoolName=\{selectedSchoolName\}/);
 });

@@ -10,7 +10,7 @@ import {
 import type { AcademicYearRecord } from '../../lib/academicYears';
 
 interface Props {
-  data: Record<string, any>;
+  schoolName: string | null;
   canEdit: boolean;
   schoolId: number;
   onSuccess: (message: string) => void;
@@ -31,7 +31,7 @@ function formatAcademicDate(value: string): string {
   return date.toLocaleDateString('ar-IQ', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
 
-export default function AcademicTab({ data, canEdit, schoolId, onSuccess, onError }: Props) {
+export default function AcademicTab({ schoolName, canEdit, schoolId, onSuccess, onError }: Props) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [years, setYears] = useState<AcademicYearRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -167,7 +167,7 @@ export default function AcademicTab({ data, canEdit, schoolId, onSuccess, onErro
         <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
           <div>
             <h3 className="font-bold text-gray-900">سجل السنوات الدراسية</h3>
-            <p className="mt-0.5 text-xs text-gray-500">{data?.school?.name || 'المدرسة المحددة'}</p>
+            <p className="mt-0.5 text-xs text-gray-500">{schoolName || 'المدرسة المحددة'}</p>
           </div>
         </div>
         {loading ? (
