@@ -381,9 +381,31 @@ test('explicit Not Applicable markers create no grade or assignment writes', () 
   assert.equal(plan.summary.assignment_reactivations, 0);
   assert.equal(plan.summary.new_grade_rows, 0);
   assert.equal(plan.sources[0].not_applicable_rows, 1);
+  assert.equal(plan.warnings.some(item => item.field === 'existing_assignment'), false);
 });
 
-test('Not Applicable never reactivates an inactive student-subject assignment', () => {
+test('Not Applicable warns and preserves an existing active assignment without grades', () => {
+  const context = baseContext();
+  const subject = context.subjects[0];
+  const assignment = context.assignments.find(item => item.student_id === 1 && item.subject_id === subject.id);
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 8, 'column:0': '5/001', 'column:2': 'غ م' },
+  ], { student_number: 'column:0', first_month: 'column:2' }, {
+    special_values: { 'غ م': 'not_applicable' },
+  });
+  const plan = buildGradeImportPlan({ assignment_mode: 'auto_assign_missing_subjects', grade_sources: [sheet] }, context);
+
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records.length, 0);
+  assert.equal(plan.not_applicable.length, 1);
+  assert.ok(plan.warnings.some(item => item.field === 'existing_assignment' && item.message.includes('نشطاً') && item.message.includes('سيبقى دون تغيير')));
+  assert.equal(plan.summary.assignment_creates, 0);
+  assert.equal(plan.summary.assignment_reactivations, 0);
+  assert.equal(plan.summary.new_grade_rows, 0);
+  assert.equal(assignment?.is_active, 1);
+});
+
+test('Not Applicable warns and never reactivates an inactive student-subject assignment', () => {
   const context = baseContext();
   const subject = context.subjects[0];
   context.assignments = context.assignments.map(assignment => assignment.student_id === 1 && assignment.subject_id === subject.id
@@ -399,7 +421,44 @@ test('Not Applicable never reactivates an inactive student-subject assignment', 
   assert.equal(plan.errors.length, 0);
   assert.equal(plan.records.length, 0);
   assert.equal(plan.not_applicable.length, 1);
+  assert.ok(plan.warnings.some(item => item.field === 'existing_assignment' && item.message.includes('غير نشط') && item.message.includes('سيبقى دون تغيير')));
+  assert.equal(plan.summary.assignment_creates, 0);
   assert.equal(plan.summary.assignment_reactivations, 0);
+  assert.equal(plan.summary.new_grade_rows, 0);
+  assert.equal(context.assignments.find(assignment => assignment.student_id === 1 && assignment.subject_id === subject.id)?.is_active, 0);
+});
+
+test('stored numeric grades make incoming Not Applicable a fatal conflict', () => {
+  const context = baseContext();
+  const subject = context.subjects[0];
+  const assignment = context.assignments.find(item => item.student_id === 1 && item.subject_id === subject.id);
+  context.grades = [{
+    id: 990,
+    school_id: 1,
+    student_subject_id: assignment.id,
+    first_month: 75,
+    second_month: null,
+    third_month: null,
+    fourth_month: null,
+    mid_year_exam: null,
+    final_exam: null,
+    completion_exam: null,
+    notes: null,
+  }];
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 9, 'column:0': '5/001', 'column:2': 'غ م' },
+  ], { student_number: 'column:0', first_month: 'column:2' }, {
+    special_values: { 'غ م': 'not_applicable' },
+  });
+  const plan = buildGradeImportPlan({ assignment_mode: 'auto_assign_missing_subjects', grade_sources: [sheet] }, context);
+
+  assert.equal(plan.records.length, 0);
+  assert.equal(plan.not_applicable.length, 0, 'stored numeric grades must prevent a clean Not Applicable result');
+  assert.ok(plan.errors.some(item => item.field === 'special_value_conflict' && item.message.includes('درجات رقمية محفوظة') && item.message.includes('مراجعة إدارية')));
+  assert.equal(plan.summary.assignment_creates, 0);
+  assert.equal(plan.summary.assignment_reactivations, 0);
+  assert.equal(plan.summary.new_grade_rows, 0);
+  assert.equal(context.grades[0].first_month, 75);
 });
 
 test('Not Applicable combined with a numeric raw grade is a fatal conflict', () => {

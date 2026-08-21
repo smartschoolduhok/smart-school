@@ -316,6 +316,10 @@ function samePlannedValues(left: PlannedGradeImportRecord, right: PlannedGradeIm
   return IMPORTABLE_FIELDS.every(field => equalValue(left.values[field], right.values[field]));
 }
 
+function hasMeaningfulRawGrade(grade: ExistingGradeImportRecord | null | undefined): boolean {
+  return Boolean(grade && RAW_GRADE_FIELDS.some(field => typeof grade[field] === 'number' && Number.isFinite(grade[field])));
+}
+
 function validateManualPlacement(
   sheet: GradeImportSourcePayload,
   context: GradeImportContext,
@@ -638,6 +642,9 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       matchedStudentIds.add(student.id);
 
       const key = assignmentKey(student.id, subject.id);
+      const existingAssignments = assignmentsByIdentity.get(key) || [];
+      const assignment = existingAssignments[0] || null;
+      const existingGrade = assignment ? gradeByAssignment.get(assignment.id) || null : null;
       if (specialMarkers.length > 0) {
         const previousGrade = seenRecords.get(key);
         if (previousGrade) {
@@ -650,6 +657,19 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
           duplicates.push(issue(sheet, rowNumber, 'duplicate', `تكرار غير منطبق للسجل في ${previousNotApplicable.sheet_name} — Excel row ${previousNotApplicable.excel_row_number}`));
           summary.noop_rows += 1;
           return;
+        }
+        const conflictingStoredGrade = existingAssignments
+          .map(existingAssignment => gradeByAssignment.get(existingAssignment.id))
+          .find(hasMeaningfulRawGrade);
+        if (conflictingStoredGrade) {
+          errors.push(issue(sheet, rowNumber, 'special_value_conflict', 'توجد درجات رقمية محفوظة لهذا الطالب في هذه المادة وتتعارض مع علامة غير منطبق؛ لم تتغير البيانات ويتطلب الأمر مراجعة إدارية'));
+          summary.error_rows += 1;
+          return;
+        }
+        if (assignment) {
+          const state = assignment.is_active ? 'نشطاً' : 'غير نشط';
+          warnings.push(issue(sheet, rowNumber, 'existing_assignment', `يوجد تسجيل ${state} للطالب في المادة وسيبقى دون تغيير؛ علامة غير منطبق لا تزيل التسجيل وتتطلب مراجعة إدارية`));
+          summary.warning_rows += 1;
         }
         const skipped: PlannedNotApplicableGradeRecord = {
           source_id: sheet.source_id,
@@ -675,13 +695,11 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
         summary.error_rows += 1;
         return;
       }
-      const assignment = assignmentsByIdentity.get(key)?.[0] || null;
       if (assignment && (assignment.class_id !== student.class_id || assignment.section_id !== student.section_id)) {
         errors.push(issue(sheet, rowNumber, 'assignment', 'تسجيل الطالب في المادة لا يطابق صفه أو شعبته الحالية'));
         summary.error_rows += 1;
         return;
       }
-      const existingGrade = assignment ? gradeByAssignment.get(assignment.id) || null : null;
       if (existingGrade && mode === 'skip_existing') {
         duplicates.push(issue(sheet, rowNumber, 'grade', 'درجة موجودة مسبقاً وتم تخطيها حسب وضع الاستيراد'));
         summary.noop_rows += 1;
