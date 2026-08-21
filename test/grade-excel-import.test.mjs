@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { analyzeWorksheet, analysisRowsToRecords, gradeMappingFromAnalysis, RAW_GRADE_FIELDS } from '../src/lib/excelImport.ts';
-import { buildGradeImportPlan } from '../src/lib/gradeImport.ts';
+import { buildGradeImportPlan, discoverGradeSpecialMarkers } from '../src/lib/gradeImport.ts';
 
 const subjectNames = [
   'الاسلامية', 'العربية', 'الانكليزية', 'الاجتماعيات', 'الرياضيات', 'الحاسوب',
@@ -341,10 +341,118 @@ test('rejects unexpected grade text and treats rows without raw grade instructio
   assert.ok(textPlan.errors.some(item => item.field === 'first_month'));
   assert.equal(textPlan.records.length, 0);
 
-  const blankPlan = buildGradeImportPlan({ grade_sheets: [payloadSheet(subject, [{ _excel_row_number: 3, 'column:0': '5/001', 'column:2': '' }], { student_number: 'column:0', first_month: 'column:2' })] }, context);
+  const blankPlan = buildGradeImportPlan({ grade_sheets: [payloadSheet(subject, [{ _excel_row_number: 3, 'column:0': '5/001', 'column:2': '' }], { student_number: 'column:0', first_month: 'column:2' }, { special_values: { 'غ م': 'not_applicable' } })] }, context);
   assert.equal(blankPlan.errors.length, 0);
   assert.equal(blankPlan.records.length, 0);
+  assert.equal(blankPlan.not_applicable.length, 0);
   assert.equal(blankPlan.summary.noop_rows, 1);
+});
+
+test('discovers grade text markers without assigning a meaning to them', () => {
+  const markers = discoverGradeSpecialMarkers([
+    { 'column:2': 'غ م', 'column:3': 'N/A' },
+    { 'column:2': ' غ م ', 'column:3': 80 },
+    { 'column:2': '', 'column:3': '#N/A' },
+  ], { first_month: 'column:2', mid_year_exam: 'column:3' });
+
+  assert.deepEqual(markers.map(marker => [marker.value, marker.count]), [['غ م', 2], ['N/A', 1]]);
+  assert.deepEqual(markers[0].fields, ['first_month']);
+  assert.deepEqual(markers[1].fields, ['mid_year_exam']);
+});
+
+test('explicit Not Applicable markers create no grade or assignment writes', () => {
+  const context = baseContext({ includeAssignments: false });
+  const subject = context.subjects[0];
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 7, 'column:0': '5/001', 'column:2': 'غ م', 'column:3': '' },
+  ], { student_number: 'column:0', first_month: 'column:2', mid_year_exam: 'column:3' }, {
+    special_values: { 'غ م': 'not_applicable' },
+  });
+  const plan = buildGradeImportPlan({ assignment_mode: 'auto_assign_missing_subjects', grade_sources: [sheet] }, context);
+
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records.length, 0, 'Not Applicable rows must never reach grade/assignment writers');
+  assert.equal(plan.not_applicable.length, 1);
+  assert.equal(plan.not_applicable[0].student_id, 1);
+  assert.equal(plan.not_applicable[0].subject_id, subject.id);
+  assert.deepEqual(plan.not_applicable[0].markers, [{ field: 'first_month', value: 'غ م' }]);
+  assert.equal(plan.summary.not_applicable_rows, 1);
+  assert.equal(plan.summary.assignment_creates, 0);
+  assert.equal(plan.summary.assignment_reactivations, 0);
+  assert.equal(plan.summary.new_grade_rows, 0);
+  assert.equal(plan.sources[0].not_applicable_rows, 1);
+});
+
+test('Not Applicable never reactivates an inactive student-subject assignment', () => {
+  const context = baseContext();
+  const subject = context.subjects[0];
+  context.assignments = context.assignments.map(assignment => assignment.student_id === 1 && assignment.subject_id === subject.id
+    ? { ...assignment, is_active: 0 }
+    : assignment);
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 8, 'column:0': '5/001', 'column:2': 'N/A' },
+  ], { student_number: 'column:0', first_month: 'column:2' }, {
+    special_values: { 'N/A': 'not_applicable' },
+  });
+  const plan = buildGradeImportPlan({ assignment_mode: 'auto_assign_missing_subjects', grade_sources: [sheet] }, context);
+
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records.length, 0);
+  assert.equal(plan.not_applicable.length, 1);
+  assert.equal(plan.summary.assignment_reactivations, 0);
+});
+
+test('Not Applicable combined with a numeric raw grade is a fatal conflict', () => {
+  const context = baseContext();
+  const subject = context.subjects[0];
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 9, 'column:0': '5/001', 'column:2': 'غ م', 'column:3': 80 },
+  ], { student_number: 'column:0', first_month: 'column:2', mid_year_exam: 'column:3' }, {
+    special_values: { 'غ م': 'not_applicable' },
+  });
+  const plan = buildGradeImportPlan({ grade_sources: [sheet] }, context);
+
+  assert.equal(plan.records.length, 0);
+  assert.equal(plan.not_applicable.length, 0);
+  assert.ok(plan.errors.some(item => item.field === 'special_value_conflict'));
+});
+
+test('different Arabic and English markers are interpreted independently', () => {
+  const context = baseContext({ includeAssignments: false });
+  const subject = context.subjects[0];
+  const rows = [
+    { _excel_row_number: 10, 'column:0': '5/001', 'column:2': 'غ م' },
+    { _excel_row_number: 11, 'column:0': '5/002', 'column:2': 'N/A' },
+  ];
+  const partiallyMapped = payloadSheet(subject, rows, { student_number: 'column:0', first_month: 'column:2' }, {
+    special_values: { 'غ م': 'not_applicable' },
+  });
+  const partialPlan = buildGradeImportPlan({ assignment_mode: 'auto_assign_missing_subjects', grade_sources: [partiallyMapped] }, context);
+  assert.equal(partialPlan.not_applicable.length, 1);
+  assert.ok(partialPlan.errors.some(item => item.message.includes('N/A')));
+
+  const fullyMapped = { ...partiallyMapped, special_values: { 'غ م': 'not_applicable', 'N/A': 'not_applicable' } };
+  const fullPlan = buildGradeImportPlan({ assignment_mode: 'auto_assign_missing_subjects', grade_sources: [fullyMapped] }, context);
+  assert.equal(fullPlan.errors.length, 0);
+  assert.equal(fullPlan.not_applicable.length, 2);
+  assert.equal(fullPlan.records.length, 0);
+  assert.deepEqual(fullPlan.not_applicable.map(record => record.markers[0].value), ['غ م', 'N/A']);
+});
+
+test('ordinary numeric grade imports remain unchanged with special-value support', () => {
+  const context = baseContext();
+  const subject = context.subjects[0];
+  const sheet = payloadSheet(subject, [
+    { _excel_row_number: 12, 'column:0': '5/001', 'column:2': 81 },
+  ], { student_number: 'column:0', first_month: 'column:2' }, {
+    special_values: { 'غ م': 'not_applicable' },
+  });
+  const plan = buildGradeImportPlan({ grade_sources: [sheet] }, context);
+
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.not_applicable.length, 0);
+  assert.equal(plan.records.length, 1);
+  assert.equal(plan.records[0].values.first_month, 81);
 });
 
 test('rejects ambiguous student names, cross-school placement, invalid grades, and incompatible subjects', () => {
@@ -603,9 +711,13 @@ test('grade preview remains write-free and confirm uses one transactional D1 bat
   assert.doesNotMatch(worker.slice(worker.indexOf('async function loadGradeImportContext'), worker.indexOf('function gradeImportPreviewData')), /\.run\(\)/);
   const atomicWriter = worker.slice(worker.indexOf('async function executeGradeImportPlan'), previewStart);
   assert.match(atomicWriter, /const results = await db\.batch\(statements\)/);
+  assert.match(atomicWriter, /const assignmentCreates = plan\.records\.filter/);
+  assert.match(atomicWriter, /const gradeCreates = plan\.records\.filter/);
   assert.doesNotMatch(atomicWriter, /await db\.prepare[\s\S]*\.run\(\)/);
   assert.ok(atomicWriter.indexOf("INSERT INTO import_jobs") < atomicWriter.indexOf('db.batch(statements)'), 'job write must be part of the same batch');
   assert.match(worker, /const requestedSources = Array\.isArray\(body\?\.grade_sources\)/);
+  assert.match(worker, /candidate\.special_values/);
+  assert.match(worker, /special_values: specialValues/);
   assert.match(worker, /seenSourceIds/);
   assert.doesNotMatch(worker, /seenNames\.has\(sheetName\)/);
 });

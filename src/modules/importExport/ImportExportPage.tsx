@@ -20,6 +20,7 @@ import {
   type WorksheetCategory,
   type WorksheetRows,
 } from '../../lib/excelImport';
+import { discoverGradeSpecialMarkers, type GradeSpecialValueAction } from '../../lib/gradeImport';
 import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, XCircle, FileText, History, ChevronRight, ArrowLeft, ArrowRight, Loader2, BookOpen, Layers, GraduationCap, Users } from 'lucide-react';
 
 // ===========================================
@@ -64,6 +65,8 @@ interface PreviewResult {
   errors: any[];
   warnings: any[];
   duplicates: any[];
+  not_applicable?: any[];
+  not_applicable_rows?: number;
   sources?: any[];
   sheets?: any[];
   summary?: Record<string, number>;
@@ -82,6 +85,7 @@ interface GradeSheetConfig {
   subjectName: string | null;
   classId: number | null;
   sectionId: number | null;
+  specialValues: Record<string, GradeSpecialValueAction>;
   acknowledged: boolean;
 }
 
@@ -460,6 +464,7 @@ export default function ImportExportPage() {
           subjectName: info.analysis.subjectInference.subjectName,
           classId: null,
           sectionId: null,
+          specialValues: {},
           acknowledged: false,
         };
       }));
@@ -578,6 +583,15 @@ export default function ImportExportPage() {
     setGradeConfirmPayload(null);
   };
 
+  const changeGradeSpecialValue = (sourceId: string, marker: string, action: GradeSpecialValueAction | '') => {
+    const config = gradeSheetConfigs.find(item => item.sourceId === sourceId);
+    if (!config) return;
+    const specialValues = { ...config.specialValues };
+    if (action) specialValues[marker] = action;
+    else delete specialValues[marker];
+    updateGradeSheetConfig(sourceId, { specialValues });
+  };
+
   const applyGradeMappingToCompatibleSheets = (sourceId: string) => {
     const sourceConfig = gradeSheetConfigs.find(config => config.sourceId === sourceId);
     const sourceInfo = sheets.find(sheet => sheet.name === sourceConfig?.sheetName);
@@ -689,6 +703,7 @@ export default function ImportExportPage() {
               : null,
             class_id: config.classId,
             section_id: config.sectionId,
+            special_values: config.specialValues,
           };
         });
         const payload = {
@@ -1109,6 +1124,10 @@ export default function ImportExportPage() {
                     const calculatedColumnKeys = new Set(info.analysis.columns
                       .filter(column => isCalculatedGradeHeader(column.headerText))
                       .map(column => column.key));
+                    const discoveredMarkers = discoverGradeSpecialMarkers(
+                      analysisRowsToRecords(info.rows, info.analysis),
+                      config.mapping,
+                    );
                     const needsAcknowledgement = gradeConfigNeedsAcknowledgement(config, info);
                     const filteredSections = sections.filter(section => section.status === 'active' && (!config.classId || section.class_id === config.classId));
                     const filteredSubjects = subjects.filter(subject => subject.status !== 'archived'
@@ -1210,6 +1229,36 @@ export default function ImportExportPage() {
                             </tbody>
                           </table>
                         </div>
+
+                        {discoveredMarkers.length > 0 && (
+                          <div className="mt-4 overflow-auto rounded-lg border border-violet-200 bg-violet-50/40">
+                            <div className="border-b border-violet-200 px-3 py-2">
+                              <p className="text-sm font-bold text-violet-900">قيم نصية خاصة مكتشفة</p>
+                              <p className="text-xs text-violet-700">لا يفترض النظام معنى أي علامة. اختر تفسيراً صريحاً لكل علامة؛ وإلا ستبقى خطأ تحقق.</p>
+                            </div>
+                            <table className="w-full text-sm">
+                              <thead><tr><th className="px-3 py-2 text-right">القيمة</th><th className="px-3 py-2 text-right">الحقول/التكرار</th><th className="px-3 py-2 text-right">التفسير لهذا المصدر</th></tr></thead>
+                              <tbody>{discoveredMarkers.map(marker => (
+                                <tr key={marker.normalized_value} className="border-t border-violet-100">
+                                  <td className="px-3 py-2 font-bold text-violet-900">{marker.value}</td>
+                                  <td className="px-3 py-2 text-xs text-violet-800">
+                                    {marker.fields.map(field => SYSTEM_FIELDS.grades.find(item => item.key === field)?.label || field).join('، ')} — {marker.count} خلية
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    <select
+                                      value={config.specialValues[marker.normalized_value] || ''}
+                                      onChange={event => changeGradeSpecialValue(config.sourceId, marker.normalized_value, event.target.value as GradeSpecialValueAction | '')}
+                                      className="w-full min-w-56 rounded-md border border-violet-200 bg-white px-2 py-1.5"
+                                    >
+                                      <option value="">غير مفسرة — ستظهر كخطأ</option>
+                                      <option value="not_applicable">غير منطبق / غير مشمول — تخطي المادة</option>
+                                    </select>
+                                  </td>
+                                </tr>
+                              ))}</tbody>
+                            </table>
+                          </div>
+                        )}
 
                         <div className="mt-3 flex flex-wrap items-center gap-3">
                           <button type="button" onClick={() => applyGradeMappingToCompatibleSheets(config.sourceId)} className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700">تطبيق الربط على المصادر المتوافقة</button>
@@ -1373,8 +1422,8 @@ export default function ImportExportPage() {
                 <div className="mb-4 overflow-auto rounded-lg border border-gray-200">
                   <div className="border-b border-gray-200 bg-gray-50 px-4 py-2 text-sm font-bold text-gray-800">ملخص مصادر الدرجات</div>
                   <table className="w-full text-sm">
-                    <thead><tr><th className="px-3 py-2 text-right">المصدر</th><th className="px-3 py-2 text-right">مصدر المادة</th><th className="px-3 py-2 text-right">صالح</th><th className="px-3 py-2 text-right">جديد</th><th className="px-3 py-2 text-right">تحديث</th><th className="px-3 py-2 text-right">أخطاء</th></tr></thead>
-                    <tbody>{(preview.sources || preview.sheets || []).map((source, index) => <tr key={source.source_id || `${source.sheet_name}-${index}`} className="border-t border-gray-100"><td className="px-3 py-2 font-medium">{source.sheet_name}{source.region_id ? ` — Region ${source.region_id}` : ''}</td><td className="px-3 py-2">{source.subject_source === 'column' ? 'من عمود المادة' : source.subject_name || 'حسب المطابقة'}</td><td className="px-3 py-2">{source.valid_rows}</td><td className="px-3 py-2">{source.new_rows}</td><td className="px-3 py-2">{source.update_rows}</td><td className="px-3 py-2 text-red-700">{source.error_rows}</td></tr>)}</tbody>
+                    <thead><tr><th className="px-3 py-2 text-right">المصدر</th><th className="px-3 py-2 text-right">مصدر المادة</th><th className="px-3 py-2 text-right">صالح</th><th className="px-3 py-2 text-right">غير منطبق</th><th className="px-3 py-2 text-right">جديد</th><th className="px-3 py-2 text-right">تحديث</th><th className="px-3 py-2 text-right">أخطاء</th></tr></thead>
+                    <tbody>{(preview.sources || preview.sheets || []).map((source, index) => <tr key={source.source_id || `${source.sheet_name}-${index}`} className="border-t border-gray-100"><td className="px-3 py-2 font-medium">{source.sheet_name}{source.region_id ? ` — Region ${source.region_id}` : ''}</td><td className="px-3 py-2">{source.subject_source === 'column' ? 'من عمود المادة' : source.subject_name || 'حسب المطابقة'}</td><td className="px-3 py-2">{source.valid_rows}</td><td className="px-3 py-2 text-violet-700">{source.not_applicable_rows || 0}</td><td className="px-3 py-2">{source.new_rows}</td><td className="px-3 py-2">{source.update_rows}</td><td className="px-3 py-2 text-red-700">{source.error_rows}</td></tr>)}</tbody>
                   </table>
                 </div>
               )}
@@ -1384,7 +1433,7 @@ export default function ImportExportPage() {
                   {' — '}الشعبة: <strong>{studentSources.section_name?.type === 'ignore' ? 'بلا شعبة' : (preview.valid[0].data.section_name || 'مشتقة لكل صف')}</strong>
                 </div>
               )}
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+              <div className={`grid grid-cols-2 gap-3 mb-4 ${selectedType === 'grades' ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
                   <p className="text-2xl font-bold text-blue-700">{preview.total_rows}</p>
                   <p className="text-xs text-blue-600">إجمالي الصفوف</p>
@@ -1393,6 +1442,12 @@ export default function ImportExportPage() {
                   <p className="text-2xl font-bold text-green-700">{preview.valid_rows}</p>
                   <p className="text-xs text-green-600">صالح</p>
                 </div>
+                {selectedType === 'grades' && (
+                  <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-center">
+                    <p className="text-2xl font-bold text-violet-700">{preview.not_applicable_rows || 0}</p>
+                    <p className="text-xs text-violet-600">غير منطبق/متخطى</p>
+                  </div>
+                )}
                 <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
                   <p className="text-2xl font-bold text-red-700">{preview.error_rows}</p>
                   <p className="text-xs text-red-600">خطأ</p>
@@ -1435,6 +1490,23 @@ export default function ImportExportPage() {
                       <li key={index} className="px-4 py-2 text-amber-800"><strong>{warning.label || warning.row || 'عام'}:</strong> {warning.message}</li>
                     ))}
                   </ul>
+                </div>
+              )}
+
+              {selectedType === 'grades' && (preview.not_applicable?.length || 0) > 0 && (
+                <div className="mb-4 max-h-56 overflow-auto rounded-lg border border-violet-200">
+                  <div className="border-b border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-800">صفوف غير منطبقة تم تخطيها ({preview.not_applicable_rows || 0})</div>
+                  <table className="w-full text-sm">
+                    <thead><tr><th className="px-3 py-2 text-right">المصدر</th><th className="px-3 py-2 text-right">الطالب</th><th className="px-3 py-2 text-right">المادة</th><th className="px-3 py-2 text-right">العلامة</th></tr></thead>
+                    <tbody>{preview.not_applicable?.map((record, index) => (
+                      <tr key={record.source_id ? `${record.source_id}:${record.excel_row_number}:${record.subject_id}` : index} className="border-t border-violet-100">
+                        <td className="px-3 py-2">{record.sheet_name}{record.region_id ? ` — Region ${record.region_id}` : ''} — Excel row {record.excel_row_number}</td>
+                        <td className="px-3 py-2">{record.student_name}{record.student_number ? ` (${record.student_number})` : ''}</td>
+                        <td className="px-3 py-2">{record.subject_name}</td>
+                        <td className="px-3 py-2">{record.markers?.map((marker: any) => `${marker.value} (${SYSTEM_FIELDS.grades.find(field => field.key === marker.field)?.label || marker.field})`).join('، ')}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
                 </div>
               )}
 
@@ -1487,7 +1559,7 @@ export default function ImportExportPage() {
 
               <div className="flex gap-2">
                 <button onClick={() => setStep('mapping')} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">رجوع</button>
-                <button onClick={handleConfirm} disabled={loading || preview.valid_rows === 0 || preview.error_rows > 0 || !schoolId} className="bg-green-600 hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                <button onClick={handleConfirm} disabled={loading || (preview.valid_rows === 0 && (preview.not_applicable_rows || 0) === 0) || preview.error_rows > 0 || !schoolId} className="bg-green-600 hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 text-white px-6 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
                   {loading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
                   تأكيد الاستيراد
                 </button>

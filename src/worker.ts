@@ -7148,6 +7148,7 @@ function isValidPhone(v: any): string | null {
 const PHASE13A_TYPES = ['students', 'classes-sections', 'subjects', 'employees', 'grades', 'student-subjects'];
 const GRADE_IMPORT_MAX_SOURCES = 40;
 const GRADE_IMPORT_MAX_ROWS = 2000;
+const GRADE_IMPORT_MAX_SPECIAL_VALUES = 50;
 
 function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPayload } | { ok: false; error: string } {
   const requestedSources = Array.isArray(body?.grade_sources) ? body.grade_sources : body?.grade_sheets;
@@ -7199,6 +7200,21 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
     if (rowStart != null && (!Number.isInteger(rowStart) || rowStart <= 0)) return { ok: false, error: `بداية نطاق الصفوف غير صالحة في المصدر "${sourceId}"` };
     if (rowEnd != null && (!Number.isInteger(rowEnd) || rowEnd <= 0)) return { ok: false, error: `نهاية نطاق الصفوف غير صالحة في المصدر "${sourceId}"` };
     if (rowStart != null && rowEnd != null && rowStart > rowEnd) return { ok: false, error: `نطاق الصفوف معكوس في المصدر "${sourceId}"` };
+    const candidateSpecialValues = candidate.special_values ?? {};
+    if (typeof candidateSpecialValues !== 'object' || Array.isArray(candidateSpecialValues)) {
+      return { ok: false, error: `تفسير القيم الخاصة غير صالح في المصدر "${sourceId}"` };
+    }
+    const specialValueEntries = Object.entries(candidateSpecialValues);
+    if (specialValueEntries.length > GRADE_IMPORT_MAX_SPECIAL_VALUES) {
+      return { ok: false, error: `عدد القيم الخاصة يتجاوز الحد المسموح في المصدر "${sourceId}"` };
+    }
+    const specialValues: NonNullable<GradeImportSourcePayload['special_values']> = {};
+    for (const [rawMarker, action] of specialValueEntries) {
+      const marker = normalizeText(rawMarker);
+      if (!marker || marker.length > 100) return { ok: false, error: `علامة القيمة الخاصة غير صالحة في المصدر "${sourceId}"` };
+      if (action !== 'not_applicable') return { ok: false, error: `تفسير القيمة الخاصة "${marker}" غير مدعوم` };
+      specialValues[marker] = action;
+    }
     gradeSources.push({
       source_id: sourceId,
       sheet_name: sheetName,
@@ -7216,6 +7232,7 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
       metadata_subject_name: normalizeText(candidate.metadata_subject_name),
       class_id: classId,
       section_id: sectionId,
+      special_values: specialValues,
     });
   }
   if (totalRows > GRADE_IMPORT_MAX_ROWS) {
@@ -7271,7 +7288,9 @@ function gradeImportPreviewData(plan: ReturnType<typeof buildGradeImportPlan>) {
     error_rows: plan.summary.errors,
     duplicate_rows: plan.summary.duplicate_rows,
     skipped_rows: plan.summary.noop_rows,
+    not_applicable_rows: plan.summary.not_applicable_rows,
     valid: plan.records,
+    not_applicable: plan.not_applicable,
     errors: plan.errors,
     warnings: plan.warnings,
     duplicates: plan.duplicates,
@@ -7408,7 +7427,7 @@ async function executeGradeImportPlan(
     plan.summary.total_source_rows,
     plan.records.length,
     plan.summary.new_grade_rows,
-    plan.summary.noop_rows,
+    plan.summary.noop_rows + plan.summary.not_applicable_rows,
     plan.summary.update_rows,
     JSON.stringify(summary),
     userId,
@@ -7873,7 +7892,8 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
         data: {
           job_id: jobId,
           imported_count: plan.summary.new_grade_rows,
-          skipped_count: plan.summary.noop_rows,
+          skipped_count: plan.summary.noop_rows + plan.summary.not_applicable_rows,
+          not_applicable_count: plan.summary.not_applicable_rows,
           updated_count: plan.summary.update_rows,
           error_count: 0,
           row_errors: [],

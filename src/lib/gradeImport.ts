@@ -7,6 +7,14 @@ import { normalizeStudentIdentity } from './studentImport.ts';
 export type GradeImportMode = 'update_existing' | 'skip_existing' | 'error_on_existing';
 export type GradeAssignmentMode = 'strict_existing_assignments' | 'auto_assign_missing_subjects';
 export type GradeSubjectSourceMode = 'fixed' | 'column' | 'inferred';
+export type GradeSpecialValueAction = 'not_applicable';
+
+export interface DiscoveredGradeSpecialMarker {
+  value: string;
+  normalized_value: string;
+  count: number;
+  fields: RawGradeField[];
+}
 
 export interface GradeImportSourcePayload {
   source_id: string;
@@ -23,6 +31,7 @@ export interface GradeImportSourcePayload {
   metadata_subject_name?: string | null;
   class_id?: number | null;
   section_id?: number | null;
+  special_values?: Record<string, GradeSpecialValueAction>;
 }
 
 /** @deprecated Use GradeImportSourcePayload. Kept for request compatibility. */
@@ -139,6 +148,19 @@ export interface PlannedGradeImportRecord {
   existing_values: Partial<Record<RawGradeField | 'notes', number | string | null>>;
 }
 
+export interface PlannedNotApplicableGradeRecord {
+  source_id: string;
+  sheet_name: string;
+  region_id: string | null;
+  excel_row_number: number;
+  student_id: number;
+  student_number: string | null;
+  student_name: string;
+  subject_id: number;
+  subject_name: string;
+  markers: Array<{ field: RawGradeField; value: string }>;
+}
+
 export interface GradeSourcePlanSummary {
   source_id: string;
   sheet_name: string;
@@ -152,8 +174,10 @@ export interface GradeSourcePlanSummary {
   new_rows: number;
   update_rows: number;
   noop_rows: number;
+  not_applicable_rows: number;
   error_rows: number;
   warning_rows: number;
+  discovered_markers: DiscoveredGradeSpecialMarker[];
 }
 
 export interface GradeImportPlan {
@@ -161,6 +185,7 @@ export interface GradeImportPlan {
   assignment_mode: GradeAssignmentMode;
   clear_empty_fields: boolean;
   records: PlannedGradeImportRecord[];
+  not_applicable: PlannedNotApplicableGradeRecord[];
   errors: GradeImportIssue[];
   warnings: GradeImportIssue[];
   duplicates: GradeImportIssue[];
@@ -174,6 +199,7 @@ export interface GradeImportPlan {
     new_grade_rows: number;
     update_rows: number;
     noop_rows: number;
+    not_applicable_rows: number;
     duplicate_rows: number;
     assignment_creates: number;
     assignment_reactivations: number;
@@ -185,6 +211,42 @@ export interface GradeImportPlan {
 const NOTES_FIELD = 'notes' as const;
 const IMPORTABLE_FIELDS = [...RAW_GRADE_FIELDS, NOTES_FIELD] as const;
 const EMPTY_MARKERS = new Set(['', '-', '—', '–']);
+const NUMERIC_GRADE_PATTERN = /^-?\d+(?:\.\d+)?$/u;
+
+export function normalizeGradeSpecialMarker(value: unknown): string {
+  return normalizeHeader(value);
+}
+
+export function discoverGradeSpecialMarkers(
+  rows: Array<Record<string, unknown>>,
+  mapping: Record<string, string>,
+): DiscoveredGradeSpecialMarker[] {
+  const discovered = new Map<string, { value: string; count: number; fields: Set<RawGradeField> }>();
+  for (const row of rows) {
+    for (const field of RAW_GRADE_FIELDS) {
+      const sourceColumn = mapping[field];
+      if (!sourceColumn) continue;
+      const rawValue = row[sourceColumn];
+      if (rawValue == null || isExcelErrorValue(rawValue)) continue;
+      const value = String(rawValue).trim();
+      if (EMPTY_MARKERS.has(value) || NUMERIC_GRADE_PATTERN.test(value)) continue;
+      const normalized = normalizeGradeSpecialMarker(value);
+      if (!normalized) continue;
+      const existing = discovered.get(normalized) || { value, count: 0, fields: new Set<RawGradeField>() };
+      existing.count += 1;
+      existing.fields.add(field);
+      discovered.set(normalized, existing);
+    }
+  }
+  return [...discovered.entries()]
+    .map(([normalized_value, marker]) => ({
+      value: marker.value,
+      normalized_value,
+      count: marker.count,
+      fields: [...marker.fields],
+    }))
+    .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value));
+}
 
 function sourceDisplay(source: Pick<GradeImportSourcePayload, 'sheet_name' | 'region_id'>): string {
   return source.region_id ? `${source.sheet_name} — Region ${source.region_id}` : source.sheet_name;
@@ -354,21 +416,43 @@ function validateResolvedStudentPlacement(student: GradeImportStudent, context: 
   return null;
 }
 
+type ParsedGradeCell =
+  | { kind: 'blank'; imported: boolean; value?: null }
+  | { kind: 'numeric'; imported: true; value: number }
+  | { kind: 'special_marker'; imported: false; action: GradeSpecialValueAction; marker: string }
+  | { kind: 'invalid_text'; imported: false; error: string };
+
+function normalizedSpecialValueActions(source: GradeImportSourcePayload): Map<string, GradeSpecialValueAction> {
+  const actions = new Map<string, GradeSpecialValueAction>();
+  for (const [marker, action] of Object.entries(source.special_values || {})) {
+    const normalized = normalizeGradeSpecialMarker(marker);
+    if (normalized && action === 'not_applicable') actions.set(normalized, action);
+  }
+  return actions;
+}
+
 function parseGradeCell(
   value: unknown,
   field: RawGradeField,
   settings: GradeCalculationSettings,
   clearEmptyFields: boolean,
-): { imported: boolean; value?: number | null; error?: string } {
-  if (isExcelErrorValue(value)) return { imported: false, error: `قيمة Excel غير صالحة في ${field}` };
+  specialValueActions: ReadonlyMap<string, GradeSpecialValueAction>,
+): ParsedGradeCell {
+  if (isExcelErrorValue(value)) return { kind: 'invalid_text', imported: false, error: `قيمة Excel غير صالحة في ${field}` };
   const text = String(value ?? '').trim();
-  if (value == null || EMPTY_MARKERS.has(text)) return clearEmptyFields ? { imported: true, value: null } : { imported: false };
-  if (!/^-?\d+(?:\.\d+)?$/u.test(text)) return { imported: false, error: `القيمة "${text}" في ${field} ليست درجة رقمية` };
+  if (value == null || EMPTY_MARKERS.has(text)) {
+    return clearEmptyFields ? { kind: 'blank', imported: true, value: null } : { kind: 'blank', imported: false };
+  }
+  if (!NUMERIC_GRADE_PATTERN.test(text)) {
+    const action = specialValueActions.get(normalizeGradeSpecialMarker(text));
+    if (action) return { kind: 'special_marker', imported: false, action, marker: text };
+    return { kind: 'invalid_text', imported: false, error: `القيمة "${text}" في ${field} ليست درجة رقمية ولم يتم تفسيرها كقيمة خاصة` };
+  }
   const numeric = Number(text);
   if (!Number.isFinite(numeric) || numeric < 0 || numeric > settings.max_grade) {
-    return { imported: false, error: `القيمة في ${field} يجب أن تكون بين ٠ و ${settings.max_grade}` };
+    return { kind: 'invalid_text', imported: false, error: `القيمة في ${field} يجب أن تكون بين ٠ و ${settings.max_grade}` };
   }
-  return { imported: true, value: numeric };
+  return { kind: 'numeric', imported: true, value: numeric };
 }
 
 export function buildGradeImportPlan(payload: GradeImportPayload, context: GradeImportContext): GradeImportPlan {
@@ -380,8 +464,10 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
   const warnings: GradeImportIssue[] = [];
   const duplicates: GradeImportIssue[] = [];
   const records: PlannedGradeImportRecord[] = [];
+  const notApplicable: PlannedNotApplicableGradeRecord[] = [];
   const matchedStudentIds = new Set<number>();
   const seenRecords = new Map<string, PlannedGradeImportRecord>();
+  const notApplicableByIdentity = new Map<string, PlannedNotApplicableGradeRecord>();
   const gradeByAssignment = new Map(context.grades.filter(grade => grade.school_id === context.schoolId).map(grade => [grade.student_subject_id, grade]));
   const assignmentsByIdentity = new Map<string, GradeImportAssignment[]>();
   for (const assignment of context.assignments.filter(item => item.school_id === context.schoolId)) {
@@ -412,14 +498,17 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       new_rows: 0,
       update_rows: 0,
       noop_rows: 0,
+      not_applicable_rows: 0,
       error_rows: 0,
       warning_rows: 0,
+      discovered_markers: discoverGradeSpecialMarkers(source.rows, source.mapping),
     };
   });
   const summaryBySource = new Map(sourceSummaries.map(summary => [summary.source_id, summary]));
 
   for (const sheet of sources) {
     const summary = summaryBySource.get(sheet.source_id)!;
+    const specialValueActions = normalizedSpecialValueActions(sheet);
     const manualPlacementErrors = validateManualPlacement(sheet, context);
     errors.push(...manualPlacementErrors);
     summary.error_rows += manualPlacementErrors.length;
@@ -475,13 +564,16 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
 
       const parsedGrades: Partial<Record<RawGradeField, number | null>> = {};
       const importedFields = new Set<RawGradeField | 'notes'>();
+      const specialMarkers: Array<{ field: RawGradeField; value: string }> = [];
       let rowFatal = false;
       for (const field of RAW_GRADE_FIELDS) {
         if (!sheet.mapping[field]) continue;
-        const parsed = parseGradeCell(mappedValue(row, sheet.mapping, field), field, context.settings, clearEmptyFields);
-        if (parsed.error) {
+        const parsed = parseGradeCell(mappedValue(row, sheet.mapping, field), field, context.settings, clearEmptyFields, specialValueActions);
+        if (parsed.kind === 'invalid_text') {
           errors.push(issue(sheet, rowNumber, field, parsed.error));
           rowFatal = true;
+        } else if (parsed.kind === 'special_marker') {
+          specialMarkers.push({ field, value: parsed.marker });
         } else if (parsed.imported) {
           parsedGrades[field] = parsed.value ?? null;
           importedFields.add(field);
@@ -511,7 +603,12 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
 
       const hasNonNullRawGrade = RAW_GRADE_FIELDS.some(field => parsedGrades[field] != null);
       const hasRawGradeInstruction = RAW_GRADE_FIELDS.some(field => importedFields.has(field));
-      if (!hasRawGradeInstruction && importedNotes === undefined) {
+      if (specialMarkers.length > 0 && hasNonNullRawGrade) {
+        errors.push(issue(sheet, rowNumber, 'special_value_conflict', 'يحتوي الصف على قيمة غير منطبقة ودرجة رقمية معاً؛ راجع القيم قبل الاستيراد'));
+        summary.error_rows += 1;
+        return;
+      }
+      if (!hasRawGradeInstruction && specialMarkers.length === 0 && importedNotes === undefined) {
         warnings.push(issue(sheet, rowNumber, 'grade', 'لا توجد درجات خام في الصف؛ تم اعتباره بلا تغيير'));
         summary.noop_rows += 1;
         summary.warning_rows += 1;
@@ -541,6 +638,43 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       matchedStudentIds.add(student.id);
 
       const key = assignmentKey(student.id, subject.id);
+      if (specialMarkers.length > 0) {
+        const previousGrade = seenRecords.get(key);
+        if (previousGrade) {
+          errors.push(issue(sheet, rowNumber, 'special_value_conflict', `القيمة غير المنطبقة تتعارض مع درجات رقمية في ${previousGrade.sheet_name} — Excel row ${previousGrade.excel_row_number}`));
+          summary.error_rows += 1;
+          return;
+        }
+        const previousNotApplicable = notApplicableByIdentity.get(key);
+        if (previousNotApplicable) {
+          duplicates.push(issue(sheet, rowNumber, 'duplicate', `تكرار غير منطبق للسجل في ${previousNotApplicable.sheet_name} — Excel row ${previousNotApplicable.excel_row_number}`));
+          summary.noop_rows += 1;
+          return;
+        }
+        const skipped: PlannedNotApplicableGradeRecord = {
+          source_id: sheet.source_id,
+          sheet_name: sheet.sheet_name,
+          region_id: sheet.region_id || null,
+          excel_row_number: rowNumber,
+          student_id: student.id,
+          student_number: student.student_number,
+          student_name: student.full_name,
+          subject_id: subject.id,
+          subject_name: subject.name,
+          markers: specialMarkers,
+        };
+        notApplicableByIdentity.set(key, skipped);
+        notApplicable.push(skipped);
+        summary.not_applicable_rows += 1;
+        return;
+      }
+
+      const previousNotApplicable = notApplicableByIdentity.get(key);
+      if (previousNotApplicable) {
+        errors.push(issue(sheet, rowNumber, 'special_value_conflict', `الدرجات الرقمية تتعارض مع قيمة غير منطبقة في ${previousNotApplicable.sheet_name} — Excel row ${previousNotApplicable.excel_row_number}`));
+        summary.error_rows += 1;
+        return;
+      }
       const assignment = assignmentsByIdentity.get(key)?.[0] || null;
       if (assignment && (assignment.class_id !== student.class_id || assignment.section_id !== student.section_id)) {
         errors.push(issue(sheet, rowNumber, 'assignment', 'تسجيل الطالب في المادة لا يطابق صفه أو شعبته الحالية'));
@@ -644,6 +778,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
     assignment_mode: assignmentMode,
     clear_empty_fields: clearEmptyFields,
     records,
+    not_applicable: notApplicable,
     errors,
     warnings,
     duplicates,
@@ -657,6 +792,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       new_grade_rows: records.filter(record => record.action === 'create').length,
       update_rows: records.filter(record => record.action === 'update').length,
       noop_rows: sourceSummaries.reduce((sum, source) => sum + source.noop_rows, 0),
+      not_applicable_rows: notApplicable.length,
       duplicate_rows: duplicates.length,
       assignment_creates: records.filter(record => record.assignment_action === 'create').length,
       assignment_reactivations: records.filter(record => record.assignment_action === 'reactivate').length,
