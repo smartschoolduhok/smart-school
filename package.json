@@ -18,7 +18,7 @@
     "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate && npm run db:seed",
     "test:api": "curl -s http://localhost:3000/api/schools | head -c 200",
     "test:security": "node --experimental-strip-types --test test/auth-security.test.mjs",
-    "test:excel-import": "node --experimental-strip-types --test test/excel-import.test.mjs"
+    "test:excel-import": "node --experimental-strip-types --test test/excel-import.test.mjs test/grade-excel-import.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.4",

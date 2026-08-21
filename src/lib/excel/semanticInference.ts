@@ -31,7 +31,12 @@ const GRADE_HEADERS = ['الفصل الاول', 'نصف السنه', 'الفصل
 const SUMMARY_NAMES = ['ملخص', 'النتيجه النهائيه', 'نصف السنه', 'القرار', 'كنترول', 'تدقيق', 'تجييك', 'تجييك قابل للمسح', 'summary', 'control', 'report', 'result'];
 const SUMMARY_HEADERS = ['المجموع', 'المعدل', 'النتيجه', 'القرار', 'الناجح', 'الراسب', 'summary', 'total', 'average', 'result'];
 const STUDENT_NAMES = ['ادخال الاسماء', 'الاسماء', 'الطلاب', 'اسماء الطلاب', 'students', 'student names'];
-const SUBJECT_NAMES = ['فيزياء', 'كيمياء', 'احياء', 'العربيه', 'انكليزي', 'رياضيات', 'علوم', 'اجتماعيات', 'حاسوب', 'اسلاميه', 'physics', 'chemistry', 'biology', 'arabic', 'english', 'mathematics', 'math', 'science'];
+const SUBJECT_NAMES = [
+  'الاسلاميه', 'العربيه', 'الانكليزيه', 'الاجتماعيات', 'الرياضيات', 'الحاسوب',
+  'الفيزياء', 'الكيمياء', 'الاحياء', 'الاخلاقيه', 'الرياضه', 'الفنيه', 'الفرنسيه',
+  'فيزياء', 'كيمياء', 'احياء', 'انكليزي', 'رياضيات', 'علوم', 'اجتماعيات', 'حاسوب', 'اسلاميه',
+  'physics', 'chemistry', 'biology', 'arabic', 'english', 'mathematics', 'math', 'science', 'french',
+];
 
 function clamp(value: number): number {
   return Math.max(0, Math.min(1, Number(value.toFixed(3))));
@@ -227,6 +232,7 @@ export function classifyFromAnalysis(
   sheetName: string,
   profiles: ColumnProfile[],
   inferences: FieldInference[],
+  rawGradeInferenceCount = 0,
 ): { category: WorksheetCategory; confidence: number } {
   const gradeHeaderCount = profiles.filter(profile => GRADE_HEADERS.some(alias => normalizeHeader(profile.headerText).includes(normalizeHeader(alias)))).length;
   const strongGradeHeaderCount = profiles.filter(profile => GRADE_HEADERS.some(alias => {
@@ -246,8 +252,11 @@ export function classifyFromAnalysis(
   if (hasSummaryName && sparseOrNonStudentStructure) {
     return { category: 'summary', confidence: clamp(0.72 + Math.min(reportHeaderCount, 2) * 0.08 + (sampleCount <= 5 ? 0.1 : 0)) };
   }
-  if (gradeHeaderCount >= 2 || (strongGradeHeaderCount >= 1 && gradeNumericSignal >= 0.7) || (containsAlias(sheetName, SUBJECT_NAMES) && gradeHeaderCount >= 1)) {
-    return { category: 'grade_sheet', confidence: clamp(0.65 + gradeHeaderCount * 0.1 + gradeNumericSignal * 0.1) };
+  if (rawGradeInferenceCount >= 2 || gradeHeaderCount >= 2 || (strongGradeHeaderCount >= 1 && gradeNumericSignal >= 0.7) || (containsAlias(sheetName, SUBJECT_NAMES) && gradeHeaderCount >= 1)) {
+    return {
+      category: 'grade_sheet',
+      confidence: clamp(0.68 + Math.min(rawGradeInferenceCount, 5) * 0.05 + gradeHeaderCount * 0.035 + (containsAlias(sheetName, SUBJECT_NAMES) ? 0.05 : 0)),
+    };
   }
   const nameSignal = containsAlias(sheetName, STUDENT_NAMES) ? 0.2 : 0;
   const studentConfidence = clamp(nameInference * 0.68 + identityInference * 0.2 + nameSignal);

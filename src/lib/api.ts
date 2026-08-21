@@ -625,11 +625,11 @@ export function archiveTreasuryCategory(id: number | string) {
 // ===========================================
 // Import / Export (Phase 9)
 // ===========================================
-export function previewImport(type: string, data: { school_id: number; rows: any[]; mode?: string; file_name?: string; [key: string]: unknown }) {
+export function previewImport(type: string, data: { school_id: number; rows?: any[]; mode?: string; file_name?: string; [key: string]: unknown }) {
   return fetchApi<Record<string, any>>(`/api/import-export/${type}/preview`, { method: 'POST', body: JSON.stringify(data) });
 }
 
-export function confirmImport(type: string, data: { school_id: number; rows: any[]; mode?: string; file_name?: string; [key: string]: unknown }) {
+export function confirmImport(type: string, data: { school_id: number; rows?: any[]; mode?: string; file_name?: string; [key: string]: unknown }) {
   return fetchApi<Record<string, any>>(`/api/import-export/${type}/confirm`, { method: 'POST', body: JSON.stringify(data) });
 }
 

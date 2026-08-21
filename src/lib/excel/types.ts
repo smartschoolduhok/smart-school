@@ -11,6 +11,41 @@ export type StudentSemanticField =
   | 'gender'
   | 'phone';
 
+export const RAW_GRADE_FIELDS = [
+  'first_month',
+  'second_month',
+  'third_month',
+  'fourth_month',
+  'mid_year_exam',
+  'final_exam',
+  'completion_exam',
+] as const;
+
+export type RawGradeField = typeof RAW_GRADE_FIELDS[number];
+
+export const CALCULATED_GRADE_FIELDS = [
+  'first_term_average',
+  'second_term_average',
+  'annual_effort',
+  'final_grade',
+  'grade_after_completion',
+  'effective_grade',
+  'result_status',
+  'exemption_status',
+] as const;
+
+export type CalculatedGradeField = typeof CALCULATED_GRADE_FIELDS[number];
+
+export type GradeSemanticField =
+  | 'student_number'
+  | 'full_name'
+  | 'class_name'
+  | 'section_name'
+  | 'subject_name'
+  | RawGradeField
+  | 'notes'
+  | CalculatedGradeField;
+
 export interface DataRegion {
   startRow: number;
   endRow: number;
@@ -72,6 +107,31 @@ export interface FieldInference extends FieldCandidate {
   alternatives: FieldCandidate[];
 }
 
+export interface GradeFieldInference extends FieldCandidate {
+  field: GradeSemanticField;
+  kind: 'student_identity' | 'placement' | 'subject' | 'raw_grade' | 'notes' | 'ignored_calculated';
+  alternatives: FieldCandidate[];
+}
+
+export interface ExcelSubjectOption {
+  id: number;
+  name: string;
+  class_id?: number | null;
+  section_id?: number | null;
+  status?: string;
+}
+
+export interface SubjectInference {
+  subjectId: number | null;
+  subjectName: string | null;
+  normalizedName: string | null;
+  confidence: number;
+  source: Extract<FieldSource, { type: 'sheet-name' | 'metadata-cell' }> | { type: 'ignore' };
+  reasons: string[];
+  alternatives: Array<{ subjectId: number; subjectName: string; confidence: number }>;
+  requiresPlacementResolution: boolean;
+}
+
 export interface MetadataCandidate {
   field: 'class_name' | 'section_name' | 'subject_name' | 'school_year';
   source: Extract<FieldSource, { type: 'metadata-cell' | 'sheet-name' | 'file-name' }>;
@@ -84,6 +144,7 @@ export interface TableAnalysis extends HeaderDetection {
   region: DataRegion;
   columns: ColumnProfile[];
   fieldInferences: FieldInference[];
+  gradeFieldInferences: GradeFieldInference[];
   category: WorksheetCategory;
   categoryConfidence: number;
 }
@@ -97,11 +158,14 @@ export interface WorksheetAnalysis extends HeaderDetection {
   tables: TableAnalysis[];
   metadata: MetadataCandidate[];
   columns: ColumnProfile[];
+  gradeFieldInferences: GradeFieldInference[];
+  subjectInference: SubjectInference;
 }
 
 export interface AnalyzeWorksheetOptions {
   fileName?: string;
   headerRowIndex?: number | null;
+  subjects?: ExcelSubjectOption[];
 }
 
 export interface SheetRecord extends Record<string, unknown> {
