@@ -54,7 +54,13 @@ import {
   type LoginThrottleRecord,
 } from './lib/apiSecurity'
 import { normalizeSectionName, RAW_GRADE_FIELDS, type RawGradeField } from './lib/excelImport'
-import { calculateGrades } from './lib/gradeCalculations'
+import { calculateGrades, type RawGradeValues } from './lib/gradeCalculations'
+import {
+  disabledRawGradeFields,
+  normalizeGradeSchemeSettings,
+  RAW_GRADE_FIELD_LABELS,
+  validateGradeSchemeSettings,
+} from './lib/gradeScheme'
 import {
   activateAcademicYearAtomically,
   createInactiveAcademicYear,
@@ -2307,6 +2313,38 @@ function validateGradeValue(value: any, maxGrade: number, fieldName: string): { 
   return { ok: true, numeric: num };
 }
 
+function withNormalizedGradeScheme<T extends Record<string, any>>(settings: T): T {
+  return { ...settings, ...normalizeGradeSchemeSettings(settings) };
+}
+
+function buildRawGradeUpdates(
+  payload: Record<string, any>,
+  settings: Record<string, any>,
+): { ok: true; updates: Partial<Record<RawGradeField, number | null>> } | { ok: false; error: string } {
+  const updates: Partial<Record<RawGradeField, number | null>> = {};
+  const disabledField = disabledRawGradeFields(payload, settings)[0];
+  if (disabledField) {
+    return { ok: false, error: `الحقل «${RAW_GRADE_FIELD_LABELS[disabledField]}» غير مفعّل في نظام الدرجات الحالي` };
+  }
+  for (const field of RAW_GRADE_FIELDS) {
+    if (payload[field] === undefined) continue;
+    const validated = validateGradeValue(payload[field], settings.max_grade, RAW_GRADE_FIELD_LABELS[field]);
+    if (!validated.ok) return { ok: false, error: validated.error! };
+    updates[field] = validated.numeric ?? null;
+  }
+  return { ok: true, updates };
+}
+
+function gradeCalculationInput(
+  gradeRow: Record<string, any>,
+  updates: Partial<Record<RawGradeField, number | null>>,
+): RawGradeValues {
+  return Object.fromEntries(RAW_GRADE_FIELDS.map(field => [
+    field,
+    updates[field] !== undefined ? updates[field] : gradeRow[field] ?? null,
+  ])) as RawGradeValues;
+}
+
 // ===========================================
 // Grade Settings Routes
 // ===========================================
@@ -2327,14 +2365,14 @@ app.get('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
           VALUES (?, 100, 50, 90, 85, 75, unixepoch(), unixepoch())
         `).bind(resolvedSchoolId).run();
         const newRow = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(resolvedSchoolId).first<any>();
-        return c.json({ data: newRow });
+        return c.json({ data: newRow ? withNormalizedGradeScheme(newRow) : null });
       }
-      return c.json({ data: row });
+      return c.json({ data: withNormalizedGradeScheme(row) });
     }
 
     // Admin can list all
     const rows = await db.prepare('SELECT * FROM grade_settings ORDER BY school_id').all<any>();
-    return c.json({ data: rows.results || [] });
+    return c.json({ data: (rows.results || []).map(withNormalizedGradeScheme) });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب إعدادات الدرجات', detail: err.message }, 500);
   }
@@ -2350,6 +2388,9 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
       first_term_formula, second_term_formula, annual_effort_formula,
       final_grade_formula, completion_formula, effective_formula } = body;
 
+    const schemeError = validateGradeSchemeSettings(body);
+    if (schemeError) return c.json({ error: schemeError }, 400);
+
     const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const targetSchoolId = targetSchool.schoolId;
@@ -2364,6 +2405,7 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
     const effExempt = exemption_grade !== undefined && exemption_grade !== null ? Number(exemption_grade) : (existingRow?.exemption_grade ?? 90);
     const effGenAvg = general_exemption_average_grade !== undefined && general_exemption_average_grade !== null ? Number(general_exemption_average_grade) : (existingRow?.general_exemption_average_grade ?? 85);
     const effGenMin = general_exemption_min_subject_grade !== undefined && general_exemption_min_subject_grade !== null ? Number(general_exemption_min_subject_grade) : (existingRow?.general_exemption_min_subject_grade ?? 75);
+    const effectiveScheme = normalizeGradeSchemeSettings({ ...existingRow, ...body });
 
     if (!isFinite(effMax) || !isFinite(effPass) || !isFinite(effExempt) || !isFinite(effGenAvg) || !isFinite(effGenMin)) {
       return c.json({ error: 'قيم الدرجات يجب أن تكون أرقاماً صالحة' }, 400);
@@ -2395,6 +2437,11 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
           exemption_grade = COALESCE(?, exemption_grade),
           general_exemption_average_grade = COALESCE(?, general_exemption_average_grade),
           general_exemption_min_subject_grade = COALESCE(?, general_exemption_min_subject_grade),
+          first_term_input_mode = COALESCE(?, first_term_input_mode),
+          second_term_input_mode = COALESCE(?, second_term_input_mode),
+          mid_year_exam_enabled = COALESCE(?, mid_year_exam_enabled),
+          final_exam_enabled = COALESCE(?, final_exam_enabled),
+          completion_exam_enabled = COALESCE(?, completion_exam_enabled),
           first_term_formula = COALESCE(?, first_term_formula),
           second_term_formula = COALESCE(?, second_term_formula),
           annual_effort_formula = COALESCE(?, annual_effort_formula),
@@ -2407,17 +2454,24 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
       `).bind(
         max_grade ?? null, passing_grade ?? null, exemption_grade ?? null,
         general_exemption_average_grade ?? null, general_exemption_min_subject_grade ?? null,
+        body.first_term_input_mode === undefined ? null : effectiveScheme.first_term_input_mode,
+        body.second_term_input_mode === undefined ? null : effectiveScheme.second_term_input_mode,
+        body.mid_year_exam_enabled === undefined ? null : effectiveScheme.mid_year_exam_enabled,
+        body.final_exam_enabled === undefined ? null : effectiveScheme.final_exam_enabled,
+        body.completion_exam_enabled === undefined ? null : effectiveScheme.completion_exam_enabled,
         first_term_formula ?? null, second_term_formula ?? null, annual_effort_formula ?? null,
         final_grade_formula ?? null, completion_formula ?? null, effective_formula ?? null,
         user?.id || null, targetSchoolId
       ).run();
     } else {
       await db.prepare(`
-        INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade, first_term_formula, second_term_formula, annual_effort_formula, final_grade_formula, completion_formula, effective_formula, updated_by_user_id, created_at, updated_at)
-        VALUES (?, COALESCE(?, 100), COALESCE(?, 50), COALESCE(?, 90), COALESCE(?, 85), COALESCE(?, 75), ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+        INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade, first_term_input_mode, second_term_input_mode, mid_year_exam_enabled, final_exam_enabled, completion_exam_enabled, first_term_formula, second_term_formula, annual_effort_formula, final_grade_formula, completion_formula, effective_formula, updated_by_user_id, created_at, updated_at)
+        VALUES (?, COALESCE(?, 100), COALESCE(?, 50), COALESCE(?, 90), COALESCE(?, 85), COALESCE(?, 75), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
       `).bind(
         targetSchoolId, max_grade ?? null, passing_grade ?? null, exemption_grade ?? null,
         general_exemption_average_grade ?? null, general_exemption_min_subject_grade ?? null,
+        effectiveScheme.first_term_input_mode, effectiveScheme.second_term_input_mode,
+        effectiveScheme.mid_year_exam_enabled, effectiveScheme.final_exam_enabled, effectiveScheme.completion_exam_enabled,
         first_term_formula ?? null, second_term_formula ?? null, annual_effort_formula ?? null,
         final_grade_formula ?? null, completion_formula ?? null, effective_formula ?? null,
         user?.id || null
@@ -2425,7 +2479,7 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
     }
 
     const row = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(targetSchoolId).first<any>();
-    return c.json({ data: row, message: 'تم حفظ إعدادات الدرجات بنجاح' });
+    return c.json({ data: row ? withNormalizedGradeScheme(row) : null, message: 'تم حفظ إعدادات الدرجات بنجاح' });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث إعدادات الدرجات', detail: err.message }, 500);
   }
@@ -2443,9 +2497,10 @@ async function getGradeSettings(db: D1Database, schoolId: number): Promise<any> 
       INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade, created_at, updated_at)
       VALUES (?, 100, 50, 90, 85, 75, unixepoch(), unixepoch())
     `).bind(schoolId).run();
-    return db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(schoolId).first<any>();
+    const inserted = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(schoolId).first<any>();
+    return inserted ? withNormalizedGradeScheme(inserted) : null;
   }
-  return row;
+  return withNormalizedGradeScheme(row);
 }
 
 async function getActiveStudentSubjects(db: D1Database, studentId: number, schoolId: number): Promise<any[]> {
@@ -2689,50 +2744,14 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     }
 
     const settings = await getGradeSettings(db, gradeRow.school_id);
-    const { first_month, second_month, third_month, fourth_month,
-      mid_year_exam, final_exam, completion_exam, notes, change_reason } = body;
-
-    // Validate inputs
-    const fields = [
-      { val: first_month, name: 'الشهر الأول' },
-      { val: second_month, name: 'الشهر الثاني' },
-      { val: third_month, name: 'الشهر الثالث' },
-      { val: fourth_month, name: 'الشهر الرابع' },
-      { val: mid_year_exam, name: 'امتحان منتصف العام' },
-      { val: final_exam, name: 'الامتحان النهائي' },
-      { val: completion_exam, name: 'امتحان التكميل' },
-    ];
-
-    for (const f of fields) {
-      if (f.val !== undefined) {
-        const check = validateGradeValue(f.val, settings.max_grade, f.name);
-        if (!check.ok) return c.json({ error: check.error }, 400);
-      }
-    }
-
-    // Build update values
-    const updates: Record<string, any> = {};
-    const setNull = (v: any) => (v === '' || v === null || v === undefined) ? null : Number(v);
-
-    if (first_month !== undefined) updates.first_month = setNull(first_month);
-    if (second_month !== undefined) updates.second_month = setNull(second_month);
-    if (third_month !== undefined) updates.third_month = setNull(third_month);
-    if (fourth_month !== undefined) updates.fourth_month = setNull(fourth_month);
-    if (mid_year_exam !== undefined) updates.mid_year_exam = setNull(mid_year_exam);
-    if (final_exam !== undefined) updates.final_exam = setNull(final_exam);
-    if (completion_exam !== undefined) updates.completion_exam = setNull(completion_exam);
+    const { notes, change_reason } = body;
+    const rawUpdates = buildRawGradeUpdates(body, settings);
+    if (!rawUpdates.ok) return c.json({ error: rawUpdates.error }, 400);
+    const updates: Record<string, any> = { ...rawUpdates.updates };
     if (notes !== undefined) updates.notes = notes;
 
     // Calculate derived fields using new + existing values
-    const calcInput = {
-      first_month: updates.first_month !== undefined ? updates.first_month : gradeRow.first_month,
-      second_month: updates.second_month !== undefined ? updates.second_month : gradeRow.second_month,
-      third_month: updates.third_month !== undefined ? updates.third_month : gradeRow.third_month,
-      fourth_month: updates.fourth_month !== undefined ? updates.fourth_month : gradeRow.fourth_month,
-      mid_year_exam: updates.mid_year_exam !== undefined ? updates.mid_year_exam : gradeRow.mid_year_exam,
-      final_exam: updates.final_exam !== undefined ? updates.final_exam : gradeRow.final_exam,
-      completion_exam: updates.completion_exam !== undefined ? updates.completion_exam : gradeRow.completion_exam,
-    };
+    const calcInput = gradeCalculationInput(gradeRow, rawUpdates.updates);
 
     const derived = calculateGrades(calcInput, settings);
 
@@ -2759,8 +2778,7 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ? AND school_id = ?`).bind(...bindVals).run();
 
     // Audit log for changed scalar fields
-    const auditFields = ['first_month', 'second_month', 'third_month', 'fourth_month',
-      'mid_year_exam', 'final_exam', 'completion_exam', 'notes'];
+    const auditFields: Array<RawGradeField | 'notes'> = [...RAW_GRADE_FIELDS, 'notes'];
     for (const field of auditFields) {
       if (body[field] !== undefined) {
         const oldVal = gradeRow[field] === null || gradeRow[field] === undefined ? '' : String(gradeRow[field]);
@@ -2800,8 +2818,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
     const errors: string[] = [];
 
     for (const entry of entries) {
-      const { grade_id, first_month, second_month, third_month, fourth_month,
-        mid_year_exam, final_exam, completion_exam, notes, change_reason } = entry;
+      const { grade_id, notes, change_reason } = entry;
       if (!grade_id) { errors.push('معرف الدرجة مفقود في أحد المدخلات'); continue; }
 
       const gradeRow = await db.prepare('SELECT * FROM grades WHERE id = ?').bind(Number(grade_id)).first<any>();
@@ -2813,45 +2830,12 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
 
       const settings = await getGradeSettings(db, gradeRow.school_id);
 
-      // Validate
-      const fields = [
-        { val: first_month, name: 'الشهر الأول' },
-        { val: second_month, name: 'الشهر الثاني' },
-        { val: third_month, name: 'الشهر الثالث' },
-        { val: fourth_month, name: 'الشهر الرابع' },
-        { val: mid_year_exam, name: 'امتحان منتصف العام' },
-        { val: final_exam, name: 'الامتحان النهائي' },
-        { val: completion_exam, name: 'امتحان التكميل' },
-      ];
-      let valid = true;
-      for (const f of fields) {
-        if (f.val !== undefined) {
-          const check = validateGradeValue(f.val, settings.max_grade, f.name);
-          if (!check.ok) { errors.push(check.error!); valid = false; }
-        }
-      }
-      if (!valid) continue;
-
-      const setNull = (v: any) => (v === '' || v === null || v === undefined) ? null : Number(v);
-      const updates: Record<string, any> = {};
-      if (first_month !== undefined) updates.first_month = setNull(first_month);
-      if (second_month !== undefined) updates.second_month = setNull(second_month);
-      if (third_month !== undefined) updates.third_month = setNull(third_month);
-      if (fourth_month !== undefined) updates.fourth_month = setNull(fourth_month);
-      if (mid_year_exam !== undefined) updates.mid_year_exam = setNull(mid_year_exam);
-      if (final_exam !== undefined) updates.final_exam = setNull(final_exam);
-      if (completion_exam !== undefined) updates.completion_exam = setNull(completion_exam);
+      const rawUpdates = buildRawGradeUpdates(entry, settings);
+      if (!rawUpdates.ok) { errors.push(rawUpdates.error); continue; }
+      const updates: Record<string, any> = { ...rawUpdates.updates };
       if (notes !== undefined) updates.notes = notes;
 
-      const calcInput = {
-        first_month: updates.first_month !== undefined ? updates.first_month : gradeRow.first_month,
-        second_month: updates.second_month !== undefined ? updates.second_month : gradeRow.second_month,
-        third_month: updates.third_month !== undefined ? updates.third_month : gradeRow.third_month,
-        fourth_month: updates.fourth_month !== undefined ? updates.fourth_month : gradeRow.fourth_month,
-        mid_year_exam: updates.mid_year_exam !== undefined ? updates.mid_year_exam : gradeRow.mid_year_exam,
-        final_exam: updates.final_exam !== undefined ? updates.final_exam : gradeRow.final_exam,
-        completion_exam: updates.completion_exam !== undefined ? updates.completion_exam : gradeRow.completion_exam,
-      };
+      const calcInput = gradeCalculationInput(gradeRow, rawUpdates.updates);
 
       const derived = calculateGrades(calcInput, settings);
       updates.first_term_average = derived.first_term_average;
@@ -2874,8 +2858,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ? AND school_id = ?`).bind(...bindVals).run();
 
       // Audit log
-      const auditFields = ['first_month', 'second_month', 'third_month', 'fourth_month',
-        'mid_year_exam', 'final_exam', 'completion_exam', 'notes'];
+      const auditFields: Array<RawGradeField | 'notes'> = [...RAW_GRADE_FIELDS, 'notes'];
       for (const field of auditFields) {
         if (entry[field] !== undefined) {
           const oldVal = gradeRow[field] === null || gradeRow[field] === undefined ? '' : String(gradeRow[field]);
@@ -7354,21 +7337,23 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
 
 async function loadGradeImportContext(db: D1Database, schoolId: number): Promise<GradeImportContext> {
   const [settingsResult, studentsResult, subjectsResult, assignmentsResult, gradesResult, classesResult, sectionsResult] = await db.batch<any>([
-    db.prepare(`SELECT max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade FROM grade_settings WHERE school_id = ?`).bind(schoolId),
+    db.prepare(`SELECT max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade,
+                       first_term_input_mode, second_term_input_mode, mid_year_exam_enabled, final_exam_enabled, completion_exam_enabled
+                FROM grade_settings WHERE school_id = ?`).bind(schoolId),
     db.prepare(`SELECT id, school_id, student_number, full_name, class_id, section_id FROM students WHERE school_id = ? AND status != 'archived'`).bind(schoolId),
     db.prepare(`SELECT id, school_id, name, class_id, section_id, status FROM subjects WHERE school_id = ? AND status != 'archived'`).bind(schoolId),
     db.prepare(`SELECT id, school_id, student_id, subject_id, class_id, section_id, is_active FROM student_subjects WHERE school_id = ?`).bind(schoolId),
-    db.prepare(`SELECT id, school_id, student_subject_id, first_month, second_month, third_month, fourth_month, mid_year_exam, final_exam, completion_exam, notes FROM grades WHERE school_id = ?`).bind(schoolId),
+    db.prepare(`SELECT id, school_id, student_subject_id, first_term_grade, first_month, second_month, second_term_grade, third_month, fourth_month, mid_year_exam, final_exam, completion_exam, notes FROM grades WHERE school_id = ?`).bind(schoolId),
     db.prepare(`SELECT id, school_id, name, status FROM classes WHERE school_id = ?`).bind(schoolId),
     db.prepare(`SELECT id, school_id, class_id, name, status FROM sections WHERE school_id = ?`).bind(schoolId),
   ]);
-  const settings = settingsResult.results?.[0] || {
+  const settings = withNormalizedGradeScheme(settingsResult.results?.[0] || {
     max_grade: 100,
     passing_grade: 50,
     exemption_grade: 90,
     general_exemption_average_grade: 85,
     general_exemption_min_subject_grade: 75,
-  };
+  });
   return {
     schoolId,
     settings,
@@ -7459,13 +7444,15 @@ async function executeGradeImportPlan(
   if (gradeCreates.length) {
     statements.push(db.prepare(`
       INSERT INTO grades (
-        school_id, student_subject_id, first_month, second_month, third_month, fourth_month,
+        school_id, student_subject_id, first_term_grade, first_month, second_month, second_term_grade, third_month, fourth_month,
         mid_year_exam, final_exam, completion_exam, first_term_average, second_term_average,
         annual_effort, final_grade, grade_after_completion, effective_grade, result_status,
         exemption_status, notes, is_active, created_at, updated_at, updated_by_user_id
       )
       SELECT ?, ss.id,
+        json_extract(p.value, '$.values.first_term_grade'),
         json_extract(p.value, '$.values.first_month'), json_extract(p.value, '$.values.second_month'),
+        json_extract(p.value, '$.values.second_term_grade'),
         json_extract(p.value, '$.values.third_month'), json_extract(p.value, '$.values.fourth_month'),
         json_extract(p.value, '$.values.mid_year_exam'), json_extract(p.value, '$.values.final_exam'),
         json_extract(p.value, '$.values.completion_exam'), json_extract(p.value, '$.calculated.first_term_average'),
@@ -7485,8 +7472,10 @@ async function executeGradeImportPlan(
   if (gradeUpdates.length) {
     statements.push(db.prepare(`
       UPDATE grades AS g SET
+        first_term_grade = json_extract(p.value, '$.values.first_term_grade'),
         first_month = json_extract(p.value, '$.values.first_month'),
         second_month = json_extract(p.value, '$.values.second_month'),
+        second_term_grade = json_extract(p.value, '$.values.second_term_grade'),
         third_month = json_extract(p.value, '$.values.third_month'),
         fourth_month = json_extract(p.value, '$.values.fourth_month'),
         mid_year_exam = json_extract(p.value, '$.values.mid_year_exam'),
@@ -8401,7 +8390,7 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
     } else if (type === 'grades') {
       const res = await db.prepare(`
         SELECT st.student_number, st.full_name as student_name, c.name as class_name, sec.name as section_name, s.name as subject_name,
-               g.first_month, g.second_month, g.third_month, g.fourth_month, g.mid_year_exam, g.final_exam, g.completion_exam,
+               g.first_term_grade, g.first_month, g.second_month, g.second_term_grade, g.third_month, g.fourth_month, g.mid_year_exam, g.final_exam, g.completion_exam,
                g.first_term_average, g.second_term_average, g.annual_effort, g.final_grade, g.grade_after_completion, g.effective_grade, g.result_status, g.exemption_status, g.notes
         FROM grades g
         JOIN student_subjects ss ON g.student_subject_id = ss.id

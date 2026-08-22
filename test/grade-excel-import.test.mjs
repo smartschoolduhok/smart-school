@@ -16,8 +16,8 @@ const subjectNames = [
 ];
 
 const gradeHeaders = [
-  'القيد', 'اسم الطالب', 'درجة الفصل الاول', 'السعي الثاني', 'درجة نصف السنة',
-  'درجة الفصل الثاني', 'السعي الرابع', 'درجة امتحان نهاية السنة', 'السعي السنوي', 'الدرجة النهائية', 'القرار',
+  'القيد', 'اسم الطالب', 'الشهر الاول', 'السعي الثاني', 'درجة نصف السنة',
+  'الشهر الثالث', 'السعي الرابع', 'درجة امتحان نهاية السنة', 'السعي السنوي', 'الدرجة النهائية', 'القرار',
 ];
 
 const gradeMapping = {
@@ -127,7 +127,7 @@ test('maps Iraqi raw grade headers deterministically and ignores calculated outc
   assert.equal(inferred.first_month.source.columnIndex, 2);
   assert.equal(inferred.second_month.source.columnIndex, 3);
   assert.equal(inferred.third_month.source.columnIndex, 5);
-  assert.notEqual(inferred.second_month.source.columnIndex, 5, 'درجة الفصل الثاني must never map to second_month');
+  assert.notEqual(inferred.second_month.source.columnIndex, 5, 'الشهر الثالث must never map to second_month');
   assert.equal(inferred.mid_year_exam.source.columnIndex, 4);
   assert.equal(inferred.final_exam.source.columnIndex, 7);
   assert.equal(inferred.annual_effort.kind, 'ignored_calculated');
@@ -135,23 +135,23 @@ test('maps Iraqi raw grade headers deterministically and ignores calculated outc
   assert.equal(inferred.result_status.kind, 'ignored_calculated');
 });
 
-test('final suggested mapping assigns English Second Term only to third_month', async () => {
+test('final suggested mapping assigns direct English term headers only to direct fields', async () => {
   const headers = ['Student ID', 'Student Name', 'First Term', 'Mid Year', 'Second Term', 'Final Exam'];
   const rows = Array.from({ length: 8 }, (_, index) => [`ID/${index + 1}`, `Student ${index + 1}`, 70, 75, 78, 82]);
   const analysis = analyzeWorksheet('Sheet1', [headers, ...rows]);
   const genericAutoMapping = {
     student_number: 'column:0',
     full_name: 'column:1',
-    first_month: 'column:2',
+    first_term_grade: 'column:2',
     mid_year_exam: 'column:3',
-    third_month: 'column:4',
+    second_term_grade: 'column:4',
     final_exam: 'column:5',
   };
   const mapping = gradeMappingFromAnalysis(analysis, genericAutoMapping);
 
-  assert.equal(mapping.first_month, 'column:2');
+  assert.equal(mapping.first_term_grade, 'column:2');
   assert.equal(mapping.mid_year_exam, 'column:3');
-  assert.equal(mapping.third_month, 'column:4');
+  assert.equal(mapping.second_term_grade, 'column:4');
   assert.equal(mapping.final_exam, 'column:5');
   assert.notEqual(mapping.second_month, 'column:4');
   const mappedRawColumns = RAW_GRADE_FIELDS.map(field => mapping[field]).filter(Boolean);
@@ -159,11 +159,11 @@ test('final suggested mapping assigns English Second Term only to third_month', 
 
   const pageSource = await readFile(new URL('../src/modules/importExport/ImportExportPage.tsx', import.meta.url), 'utf8');
   const secondMonthAliases = pageSource.match(/second_month:\s*\[([^\]]+)\]/)?.[1] || '';
-  const thirdMonthAliases = pageSource.match(/third_month:\s*\[([^\]]+)\]/)?.[1] || '';
+  const secondTermAliases = pageSource.match(/second_term_grade:\s*\[([^\]]+)\]/)?.[1] || '';
   assert.doesNotMatch(secondMonthAliases, /second term/i);
   assert.match(secondMonthAliases, /second month/i);
   assert.match(secondMonthAliases, /second effort/i);
-  assert.match(thirdMonthAliases, /second term/i);
+  assert.match(secondTermAliases, /second term/i);
 });
 
 test('strong semantic raw claims evict hostile generic mappings for the same column', () => {
@@ -172,7 +172,7 @@ test('strong semantic raw claims evict hostile generic mappings for the same col
   const analysis = analyzeWorksheet('Sheet1', [headers, ...rows]);
   const mapping = gradeMappingFromAnalysis(analysis, { second_month: 'column:2' });
 
-  assert.equal(mapping.third_month, 'column:2');
+  assert.equal(mapping.second_term_grade, 'column:2');
   assert.equal(mapping.second_month, undefined);
   const mappedRawColumns = RAW_GRADE_FIELDS.map(field => mapping[field]).filter(Boolean);
   assert.equal(new Set(mappedRawColumns).size, mappedRawColumns.length);
@@ -194,9 +194,9 @@ test('supports the real Iraqi layout with header row 3, 11 columns, 26 students,
   assert.equal(analysis.columns.length, 11);
   assert.equal(analysis.rowCount, 26);
   assert.equal(analysis.subjectInference.subjectId, 104);
-  assert.equal(inferred.first_month.source.columnIndex, 4);
+  assert.equal(inferred.first_term_grade.source.columnIndex, 4);
   assert.equal(inferred.mid_year_exam.source.columnIndex, 5);
-  assert.equal(inferred.third_month.source.columnIndex, 6);
+  assert.equal(inferred.second_term_grade.source.columnIndex, 6);
   assert.equal(inferred.final_exam.source.columnIndex, 7);
   assert.equal(inferred.completion_exam.source.columnIndex, 8);
 });
@@ -731,7 +731,11 @@ test('deduplicates identical student-subject rows and rejects differing values',
 test('calculated Excel values are warning-only and never become authoritative grade values', () => {
   const context = baseContext({ studentCount: 1 });
   const subject = context.subjects[0];
-  const sheet = payloadSheet(subject, [{ _excel_row_number: 2, 'column:0': '5/001', 'column:2': 80, 'column:8': 999, 'column:9': 'راسب' }], gradeMapping);
+  const sheet = payloadSheet(subject, [{
+    _excel_row_number: 2, 'column:0': '5/001', 'column:2': 80, 'column:3': 80,
+    'column:4': 80, 'column:5': 80, 'column:6': 80, 'column:7': 80,
+    'column:8': 999, 'column:9': 'راسب',
+  }], gradeMapping);
   const plan = buildGradeImportPlan({ grade_sheets: [sheet] }, context);
   assert.equal(plan.errors.length, 0);
   assert.equal(plan.records[0].values.first_month, 80);
@@ -782,7 +786,8 @@ test('calculated headers never compete with or auto-map to raw grade fields', ()
   const mixed = analyzeWorksheet('Sheet1', [mixedHeaders, ...Array.from({ length: 8 }, (_, index) => [`5/${index + 1}`, `طالب ${index + 1}`, 74, 77])]);
   const mixedMapping = gradeMappingFromAnalysis(mixed, { third_month: 'column:3' });
   const mixedInferred = Object.fromEntries(mixed.gradeFieldInferences.map(item => [item.field, item]));
-  assert.equal(mixedMapping.third_month, 'column:2');
+  assert.equal(mixedMapping.second_term_grade, 'column:2');
+  assert.equal(mixedMapping.third_month, undefined);
   assert.equal(mixedInferred.second_term_average.source.columnIndex, 3);
   assert.equal(mixedInferred.second_term_average.kind, 'ignored_calculated');
 });
@@ -803,10 +808,10 @@ test('grade analysis is position independent and not fitted to the golden workbo
   assert.equal(analysis.category, 'grade_sheet');
   assert.equal(inferred.full_name.source.columnIndex, 2);
   assert.equal(inferred.student_number.source.columnIndex, 3);
-  assert.equal(inferred.first_month.source.columnIndex, 5);
+  assert.equal(inferred.first_term_grade.source.columnIndex, 5);
   assert.equal(inferred.mid_year_exam.source.columnIndex, 4);
   assert.equal(inferred.final_exam.source.columnIndex, 1);
-  assert.equal(inferred.third_month.source.columnIndex, 6);
+  assert.equal(inferred.second_term_grade.source.columnIndex, 6);
   assert.notEqual(inferred.second_month.source.columnIndex, 6);
   assert.equal(analysis.subjectInference.subjectId, null);
   assert.ok(analysis.subjectInference.confidence < 0.85, 'generic sheet subject must require correction');

@@ -1,4 +1,5 @@
 import { calculateGrades, type CalculatedGradeValues, type GradeCalculationSettings, type RawGradeValues } from './gradeCalculations.ts';
+import { enabledRawGradeFields, RAW_GRADE_FIELD_LABELS } from './gradeScheme.ts';
 import { isExcelErrorValue, normalizeHeader, normalizeSectionName, normalizeSubjectName } from './excel/normalizers.ts';
 import { CALCULATED_GRADE_FIELDS, RAW_GRADE_FIELDS, type RawGradeField } from './excel/types.ts';
 import { isCalculatedGradeHeader } from './excel/gradeSemantics.ts';
@@ -88,8 +89,10 @@ export interface ExistingGradeImportRecord {
   id: number;
   school_id: number;
   student_subject_id: number;
+  first_term_grade: number | null;
   first_month: number | null;
   second_month: number | null;
+  second_term_grade: number | null;
   third_month: number | null;
   fourth_month: number | null;
   mid_year_exam: number | null;
@@ -537,6 +540,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
   const seenRecords = new Map<string, PlannedGradeImportRecord>();
   const notApplicableByIdentity = new Map<string, PlannedNotApplicableGradeRecord>();
   const gradeByAssignment = new Map(context.grades.filter(grade => grade.school_id === context.schoolId).map(grade => [grade.student_subject_id, grade]));
+  const enabledGradeFields = new Set(enabledRawGradeFields(context.settings));
   const assignmentsByIdentity = new Map<string, GradeImportAssignment[]>();
   for (const assignment of context.assignments.filter(item => item.school_id === context.schoolId)) {
     const key = assignmentKey(assignment.student_id, assignment.subject_id);
@@ -592,6 +596,11 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       errors.push(issue(sheet, null, 'grade_mapping', 'يجب تعيين حقل درجة خام واحد على الأقل'));
       summary.error_rows += 1;
     }
+    const disabledMappings = rawMappings.filter(field => !enabledGradeFields.has(field));
+    for (const field of disabledMappings) {
+      errors.push(issue(sheet, null, field, `الحقل «${RAW_GRADE_FIELD_LABELS[field]}» غير مفعّل في نظام الدرجات الحالي لهذه المدرسة`));
+      summary.error_rows += 1;
+    }
     const calculatedAsRaw = rawMappings.filter(field => {
       const source = sheet.mapping[field];
       return source && isCalculatedGradeHeader(sheet.column_headers?.[source]);
@@ -616,7 +625,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
       summary.error_rows += 1;
     }
 
-    if (manualPlacementErrors.length || !identityMapped || !rawMappings.length || calculatedAsRaw.length
+    if (manualPlacementErrors.length || !identityMapped || !rawMappings.length || disabledMappings.length || calculatedAsRaw.length
       || (sourceMode === 'column' && !sheet.mapping.subject_name)
       || (sourceMode === 'fixed' && sheet.subject_id == null)) continue;
 

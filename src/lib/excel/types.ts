@@ -11,17 +11,8 @@ export type StudentSemanticField =
   | 'gender'
   | 'phone';
 
-export const RAW_GRADE_FIELDS = [
-  'first_month',
-  'second_month',
-  'third_month',
-  'fourth_month',
-  'mid_year_exam',
-  'final_exam',
-  'completion_exam',
-] as const;
-
-export type RawGradeField = typeof RAW_GRADE_FIELDS[number];
+export { RAW_GRADE_FIELDS, type RawGradeField } from '../gradeScheme.ts';
+import type { RawGradeField } from '../gradeScheme.ts';
 
 export const CALCULATED_GRADE_FIELDS = [
   'first_term_average',
