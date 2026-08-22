@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import { calculateGrades } from '../src/lib/gradeCalculations.ts';
+import { RECALCULATE_SCHOOL_GRADES_SQL } from '../src/lib/gradeRecalculationSql.ts';
 import {
   DEFAULT_GRADE_SCHEME_SETTINGS,
   disabledRawGradeFields,
@@ -16,6 +18,127 @@ import { buildGradeImportPlan } from '../src/lib/gradeImport.ts';
 import { hasRole, SCHOOL_MANAGEMENT_ROLES } from '../src/lib/rbac.ts';
 
 const thresholds = { max_grade: 100, passing_grade: 50, exemption_grade: 90 };
+
+const rawGradeColumns = [
+  'first_term_grade', 'first_month', 'second_month', 'second_term_grade',
+  'third_month', 'fourth_month', 'mid_year_exam', 'final_exam', 'completion_exam',
+];
+const derivedGradeColumns = [
+  'first_term_average', 'second_term_average', 'annual_effort', 'final_grade',
+  'grade_after_completion', 'effective_grade', 'result_status', 'exemption_status',
+];
+
+function createRecalculationDatabase() {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE grade_settings (
+      school_id INTEGER PRIMARY KEY,
+      max_grade REAL NOT NULL,
+      passing_grade REAL NOT NULL,
+      exemption_grade REAL NOT NULL,
+      first_term_input_mode TEXT NOT NULL,
+      second_term_input_mode TEXT NOT NULL,
+      mid_year_exam_enabled INTEGER NOT NULL,
+      final_exam_enabled INTEGER NOT NULL,
+      completion_exam_enabled INTEGER NOT NULL
+    );
+    CREATE TABLE grades (
+      id INTEGER PRIMARY KEY,
+      school_id INTEGER NOT NULL,
+      first_term_grade REAL,
+      first_month REAL,
+      second_month REAL,
+      second_term_grade REAL,
+      third_month REAL,
+      fourth_month REAL,
+      mid_year_exam REAL,
+      final_exam REAL,
+      completion_exam REAL,
+      first_term_average REAL,
+      second_term_average REAL,
+      annual_effort REAL,
+      final_grade REAL,
+      grade_after_completion REAL,
+      effective_grade REAL,
+      result_status TEXT,
+      exemption_status INTEGER DEFAULT 0,
+      notes TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+  `);
+  return db;
+}
+
+function replaceSettings(db, overrides = {}) {
+  const settings = {
+    school_id: 1,
+    max_grade: 100,
+    passing_grade: 50,
+    exemption_grade: 90,
+    first_term_input_mode: 'monthly',
+    second_term_input_mode: 'monthly',
+    mid_year_exam_enabled: 1,
+    final_exam_enabled: 1,
+    completion_exam_enabled: 1,
+    ...overrides,
+  };
+  const columns = Object.keys(settings);
+  db.prepare(`INSERT OR REPLACE INTO grade_settings (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
+    .run(...columns.map(column => settings[column]));
+  return settings;
+}
+
+function insertGrade(db, overrides = {}) {
+  const row = {
+    id: 1,
+    school_id: 1,
+    first_term_grade: null,
+    first_month: null,
+    second_month: null,
+    second_term_grade: null,
+    third_month: null,
+    fourth_month: null,
+    mid_year_exam: null,
+    final_exam: null,
+    completion_exam: null,
+    first_term_average: 999,
+    second_term_average: 999,
+    annual_effort: 999,
+    final_grade: 999,
+    grade_after_completion: 999,
+    effective_grade: 999,
+    result_status: 'قديم',
+    exemption_status: 1,
+    notes: 'ملاحظة تدقيق محفوظة',
+    is_active: 1,
+    ...overrides,
+  };
+  const columns = Object.keys(row);
+  db.prepare(`INSERT INTO grades (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
+    .run(...columns.map(column => row[column]));
+  return row;
+}
+
+function recalculateSchool(db, schoolId = 1) {
+  return db.prepare(RECALCULATE_SCHOOL_GRADES_SQL).run(schoolId, schoolId);
+}
+
+function readGrade(db, id = 1) {
+  return db.prepare('SELECT * FROM grades WHERE id = ?').get(id);
+}
+
+function assertRawGradeValuesUnchanged(before, after) {
+  for (const field of rawGradeColumns) assert.equal(after[field], before[field], field);
+  assert.equal(after.notes, before.notes);
+}
+
+function assertSqlMatchesCalculator(row, settings) {
+  const expected = calculateGrades(
+    Object.fromEntries(rawGradeColumns.map(field => [field, row[field]])),
+    settings,
+  );
+  for (const field of derivedGradeColumns) assert.equal(row[field], expected[field], field);
+}
 
 test('legacy settings normalize to the unchanged monthly/exam scheme', () => {
   assert.deepEqual(normalizeGradeSchemeSettings(thresholds), DEFAULT_GRADE_SCHEME_SETTINGS);
@@ -94,6 +217,179 @@ test('disabled components are excluded rather than treated as zero or missing', 
   assert.equal(result.final_grade, 80);
   assert.equal(result.effective_grade, 80);
   assert.equal(result.result_status, 'ناجح');
+});
+
+test('disabled final exam never grants exemption and annual effort becomes final grade', () => {
+  const result = calculateGrades({ first_term_grade: 95 }, {
+    ...thresholds,
+    first_term_input_mode: 'direct',
+    second_term_input_mode: 'disabled',
+    mid_year_exam_enabled: 0,
+    final_exam_enabled: 0,
+    completion_exam_enabled: 0,
+  });
+  assert.equal(result.annual_effort, 95);
+  assert.equal(result.exemption_status, 0);
+  assert.equal(result.final_grade, 95);
+  assert.equal(result.effective_grade, 95);
+  assert.equal(result.result_status, 'ناجح');
+});
+
+test('set-based recalculation clears stale derived values when direct input is missing', () => {
+  const db = createRecalculationDatabase();
+  const settings = replaceSettings(db, {
+    first_term_input_mode: 'direct',
+    second_term_input_mode: 'disabled',
+    mid_year_exam_enabled: 0,
+    final_exam_enabled: 0,
+    completion_exam_enabled: 0,
+  });
+  const before = insertGrade(db, { first_month: 80, second_month: 90 });
+
+  const result = recalculateSchool(db);
+  const after = readGrade(db);
+
+  assert.equal(result.changes, 1);
+  for (const field of derivedGradeColumns.slice(0, -1)) assert.equal(after[field], null, field);
+  assert.equal(after.exemption_status, 0);
+  assertRawGradeValuesUnchanged(before, after);
+  assertSqlMatchesCalculator(after, settings);
+  db.close();
+});
+
+test('set-based recalculation uses preserved hidden direct values after a scheme switch', () => {
+  const db = createRecalculationDatabase();
+  const settings = replaceSettings(db, {
+    first_term_input_mode: 'direct',
+    second_term_input_mode: 'disabled',
+    mid_year_exam_enabled: 0,
+    final_exam_enabled: 0,
+    completion_exam_enabled: 0,
+  });
+  const before = insertGrade(db, {
+    first_term_grade: 88,
+    first_month: 10,
+    second_month: 20,
+  });
+
+  recalculateSchool(db);
+  const after = readGrade(db);
+
+  assert.equal(after.first_term_average, 88);
+  assert.equal(after.annual_effort, 88);
+  assert.equal(after.final_grade, 88);
+  assert.equal(after.exemption_status, 0);
+  assertRawGradeValuesUnchanged(before, after);
+  assertSqlMatchesCalculator(after, settings);
+  db.close();
+});
+
+test('disabling second term preserves its raw months and recalculates enabled components only', () => {
+  const db = createRecalculationDatabase();
+  const settings = replaceSettings(db, {
+    second_term_input_mode: 'disabled',
+    final_exam_enabled: 0,
+    completion_exam_enabled: 0,
+  });
+  const before = insertGrade(db, {
+    first_month: 80,
+    second_month: 90,
+    mid_year_exam: 70,
+    third_month: 20,
+    fourth_month: 30,
+  });
+
+  recalculateSchool(db);
+  const after = readGrade(db);
+
+  assert.equal(after.first_term_average, 85);
+  assert.equal(after.second_term_average, null);
+  assert.equal(after.annual_effort, 78);
+  assert.equal(after.final_grade, 78);
+  assert.equal(after.third_month, 20);
+  assert.equal(after.fourth_month, 30);
+  assertRawGradeValuesUnchanged(before, after);
+  assertSqlMatchesCalculator(after, settings);
+  db.close();
+});
+
+test('changing the passing threshold immediately updates the stored result status', () => {
+  const db = createRecalculationDatabase();
+  const baseScheme = {
+    first_term_input_mode: 'direct',
+    second_term_input_mode: 'disabled',
+    mid_year_exam_enabled: 0,
+    final_exam_enabled: 0,
+    completion_exam_enabled: 0,
+  };
+  insertGrade(db, { first_term_grade: 55 });
+
+  let settings = replaceSettings(db, { ...baseScheme, passing_grade: 60 });
+  recalculateSchool(db);
+  let after = readGrade(db);
+  assert.equal(after.result_status, 'راسب');
+  assertSqlMatchesCalculator(after, settings);
+
+  settings = replaceSettings(db, { ...baseScheme, passing_grade: 50 });
+  recalculateSchool(db);
+  after = readGrade(db);
+  assert.equal(after.result_status, 'ناجح');
+  assertSqlMatchesCalculator(after, settings);
+  db.close();
+});
+
+test('changing the exemption threshold immediately updates exemption, final and status', () => {
+  const db = createRecalculationDatabase();
+  const baseScheme = {
+    first_term_input_mode: 'direct',
+    second_term_input_mode: 'disabled',
+    mid_year_exam_enabled: 0,
+    final_exam_enabled: 1,
+    completion_exam_enabled: 0,
+    passing_grade: 70,
+  };
+  const before = insertGrade(db, { first_term_grade: 90, final_exam: 30 });
+
+  let settings = replaceSettings(db, { ...baseScheme, exemption_grade: 95 });
+  recalculateSchool(db);
+  let after = readGrade(db);
+  assert.equal(after.exemption_status, 0);
+  assert.equal(after.final_grade, 60);
+  assert.equal(after.result_status, 'راسب');
+  assertSqlMatchesCalculator(after, settings);
+
+  settings = replaceSettings(db, { ...baseScheme, exemption_grade: 85 });
+  recalculateSchool(db);
+  after = readGrade(db);
+  assert.equal(after.exemption_status, 1);
+  assert.equal(after.final_grade, 90);
+  assert.equal(after.result_status, 'ناجح');
+  assertRawGradeValuesUnchanged(before, after);
+  assertSqlMatchesCalculator(after, settings);
+  db.close();
+});
+
+test('set-based recalculation is tenant-scoped and ignores inactive grades', () => {
+  const db = createRecalculationDatabase();
+  replaceSettings(db, {
+    first_term_input_mode: 'direct', second_term_input_mode: 'disabled',
+    mid_year_exam_enabled: 0, final_exam_enabled: 0, completion_exam_enabled: 0,
+  });
+  replaceSettings(db, {
+    school_id: 2, first_term_input_mode: 'direct', second_term_input_mode: 'disabled',
+    mid_year_exam_enabled: 0, final_exam_enabled: 0, completion_exam_enabled: 0,
+  });
+  insertGrade(db, { id: 1, school_id: 1, first_term_grade: 80 });
+  insertGrade(db, { id: 2, school_id: 1, first_term_grade: 70, is_active: 0 });
+  insertGrade(db, { id: 3, school_id: 2, first_term_grade: 60 });
+
+  const result = recalculateSchool(db, 1);
+
+  assert.equal(result.changes, 1);
+  assert.equal(readGrade(db, 1).effective_grade, 80);
+  assert.equal(readGrade(db, 2).effective_grade, 999);
+  assert.equal(readGrade(db, 3).effective_grade, 999);
+  db.close();
 });
 
 test('enabled final exam remains incomplete until entered for a non-exempt student', () => {
@@ -214,8 +510,30 @@ test('backend routes keep school-management RBAC, tenancy and centralized disabl
   const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
   assert.match(worker, /app\.put\('\/api\/grade-settings',[\s\S]*?requireRoles\(SCHOOL_MANAGEMENT_ROLES\)/);
   assert.match(worker, /resolveActiveWriteSchool\(db, user, school_id\)/);
+  assert.match(worker, /db\.batch\(\[settingsStatement, recalculationStatement\]\)/);
+  assert.match(worker, /meta: \{ recalculated_grades: recalculatedGrades \}/);
   assert.match(worker, /disabledRawGradeFields\(payload, settings\)/);
   assert.match(worker, /const auditFields: Array<RawGradeField \| 'notes'> = \[\.\.\.RAW_GRADE_FIELDS, 'notes'\]/);
+});
+
+test('grade-settings reads always require exactly one authorized school scope', async () => {
+  const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
+  const routeStart = worker.indexOf("app.get('/api/grade-settings'");
+  const routeEnd = worker.indexOf("app.put('/api/grade-settings'", routeStart);
+  const route = worker.slice(routeStart, routeEnd);
+
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.match(route, /scope !== 'single' \|\| !resolvedSchoolId/);
+  assert.match(route, /يجب تحديد المدرسة المستهدفة لعرض إعدادات الدرجات/);
+  assert.match(route, /SELECT \* FROM grade_settings WHERE school_id = \?/);
+  assert.doesNotMatch(route, /SELECT \* FROM grade_settings ORDER BY school_id/);
+});
+
+test('grade-settings recalculation stays one tenant-scoped set-based statement', () => {
+  assert.equal((RECALCULATE_SCHOOL_GRADES_SQL.match(/UPDATE grades AS g/g) || []).length, 1);
+  assert.match(RECALCULATE_SCHOOL_GRADES_SQL, /WHERE g\.school_id = \? AND g\.is_active = 1/);
+  assert.match(RECALCULATE_SCHOOL_GRADES_SQL, /g\.id = calculated\.id AND g\.school_id = \? AND g\.is_active = 1/);
+  assert.doesNotMatch(RECALCULATE_SCHOOL_GRADES_SQL, /\bDELETE\b|first_month\s*=|notes\s*=/i);
 });
 
 test('student and section grade UIs share scheme-driven descriptors', async () => {

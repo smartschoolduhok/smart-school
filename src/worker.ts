@@ -55,6 +55,7 @@ import {
 } from './lib/apiSecurity'
 import { normalizeSectionName, RAW_GRADE_FIELDS, type RawGradeField } from './lib/excelImport'
 import { calculateGrades, type RawGradeValues } from './lib/gradeCalculations'
+import { RECALCULATE_SCHOOL_GRADES_SQL } from './lib/gradeRecalculationSql'
 import {
   disabledRawGradeFields,
   normalizeGradeSchemeSettings,
@@ -2351,28 +2352,25 @@ function gradeCalculationInput(
 
 app.get('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
-  const user: UserContext | null = c.get('user') || null;
   try {
     const scope = c.get('scope');
     const resolvedSchoolId = c.get('resolvedSchoolId');
 
-    if (scope === 'single' && resolvedSchoolId) {
-      const row = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(resolvedSchoolId).first<any>();
-      if (!row) {
-        // Auto-create default settings for this school
-        await db.prepare(`
-          INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade, created_at, updated_at)
-          VALUES (?, 100, 50, 90, 85, 75, unixepoch(), unixepoch())
-        `).bind(resolvedSchoolId).run();
-        const newRow = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(resolvedSchoolId).first<any>();
-        return c.json({ data: newRow ? withNormalizedGradeScheme(newRow) : null });
-      }
-      return c.json({ data: withNormalizedGradeScheme(row) });
+    if (scope !== 'single' || !resolvedSchoolId) {
+      return c.json({ error: 'يجب تحديد المدرسة المستهدفة لعرض إعدادات الدرجات' }, 400);
     }
 
-    // Admin can list all
-    const rows = await db.prepare('SELECT * FROM grade_settings ORDER BY school_id').all<any>();
-    return c.json({ data: (rows.results || []).map(withNormalizedGradeScheme) });
+    const row = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(resolvedSchoolId).first<any>();
+    if (!row) {
+      // Auto-create default settings for this school
+      await db.prepare(`
+        INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade, created_at, updated_at)
+        VALUES (?, 100, 50, 90, 85, 75, unixepoch(), unixepoch())
+      `).bind(resolvedSchoolId).run();
+      const newRow = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(resolvedSchoolId).first<any>();
+      return c.json({ data: newRow ? withNormalizedGradeScheme(newRow) : null });
+    }
+    return c.json({ data: withNormalizedGradeScheme(row) });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب إعدادات الدرجات', detail: err.message }, 500);
   }
@@ -2429,8 +2427,9 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
       return c.json({ error: 'أدنى درجة للإعفاء العام يجب أن تكون بين درجة النجاح ومتوسط الإعفاء العام' }, 400);
     }
 
+    let settingsStatement: D1PreparedStatement;
     if (existing) {
-      await db.prepare(`
+      settingsStatement = db.prepare(`
         UPDATE grade_settings SET
           max_grade = COALESCE(?, max_grade),
           passing_grade = COALESCE(?, passing_grade),
@@ -2462,9 +2461,9 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
         first_term_formula ?? null, second_term_formula ?? null, annual_effort_formula ?? null,
         final_grade_formula ?? null, completion_formula ?? null, effective_formula ?? null,
         user?.id || null, targetSchoolId
-      ).run();
+      );
     } else {
-      await db.prepare(`
+      settingsStatement = db.prepare(`
         INSERT INTO grade_settings (school_id, max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade, first_term_input_mode, second_term_input_mode, mid_year_exam_enabled, final_exam_enabled, completion_exam_enabled, first_term_formula, second_term_formula, annual_effort_formula, final_grade_formula, completion_formula, effective_formula, updated_by_user_id, created_at, updated_at)
         VALUES (?, COALESCE(?, 100), COALESCE(?, 50), COALESCE(?, 90), COALESCE(?, 85), COALESCE(?, 75), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
       `).bind(
@@ -2475,11 +2474,22 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
         first_term_formula ?? null, second_term_formula ?? null, annual_effort_formula ?? null,
         final_grade_formula ?? null, completion_formula ?? null, effective_formula ?? null,
         user?.id || null
-      ).run();
+      );
     }
 
+    // D1 batch is transactional: settings and all derived grade values commit
+    // together, while the set-based recalculation keeps the query count fixed.
+    const recalculationStatement = db.prepare(RECALCULATE_SCHOOL_GRADES_SQL)
+      .bind(targetSchoolId, targetSchoolId);
+    const batchResults = await db.batch([settingsStatement, recalculationStatement]);
+    const recalculatedGrades = Number(batchResults[1]?.meta?.changes || 0);
+
     const row = await db.prepare('SELECT * FROM grade_settings WHERE school_id = ?').bind(targetSchoolId).first<any>();
-    return c.json({ data: row ? withNormalizedGradeScheme(row) : null, message: 'تم حفظ إعدادات الدرجات بنجاح' });
+    return c.json({
+      data: row ? withNormalizedGradeScheme(row) : null,
+      meta: { recalculated_grades: recalculatedGrades },
+      message: 'تم حفظ إعدادات الدرجات وإعادة حساب الدرجات النشطة بنجاح',
+    });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث إعدادات الدرجات', detail: err.message }, 500);
   }

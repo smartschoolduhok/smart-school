@@ -70,7 +70,7 @@ export function calculateGrades(
   let resultStatus: string | null = null;
   let exemptionStatus = 0;
 
-  exemptionStatus = annualEffort !== null && annualEffort >= settings.exemption_grade ? 1 : 0;
+  exemptionStatus = scheme.final_exam_enabled && annualEffort !== null && annualEffort >= settings.exemption_grade ? 1 : 0;
   const finalGrade = annualEffort === null
     ? null
     : exemptionStatus === 1 || !scheme.final_exam_enabled
