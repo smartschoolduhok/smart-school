@@ -15,6 +15,7 @@ import {
 } from '../src/lib/gradeScheme.ts';
 import { analyzeWorksheet, gradeMappingFromAnalysis } from '../src/lib/excelImport.ts';
 import { buildGradeImportPlan } from '../src/lib/gradeImport.ts';
+import { createPerKeyTaskQueue, mergeUpdatedRow } from '../src/lib/perKeyTaskQueue.ts';
 import { hasRole, SCHOOL_MANAGEMENT_ROLES } from '../src/lib/rbac.ts';
 
 const thresholds = { max_grade: 100, passing_grade: 50, exemption_grade: 90 };
@@ -424,6 +425,92 @@ test('completion behavior distinguishes pending, disabled, passing and failing c
   assert.equal(calculateGrades({ ...inputs, completion_exam: 45 }, scheme).result_status, 'راسب');
 });
 
+test('verified direct-entry calculations remain unchanged for normal, zero-final and completion saves', () => {
+  const scheme = {
+    ...thresholds,
+    first_term_input_mode: 'direct',
+    second_term_input_mode: 'direct',
+    mid_year_exam_enabled: 1,
+    final_exam_enabled: 1,
+    completion_exam_enabled: 1,
+  };
+  const annualInputs = { first_term_grade: 80, mid_year_exam: 93, second_term_grade: 70 };
+
+  const normal = calculateGrades({ ...annualInputs, final_exam: 60 }, scheme);
+  assert.equal(normal.annual_effort, 81);
+  assert.equal(normal.final_grade, 71);
+  assert.equal(normal.effective_grade, 71);
+  assert.equal(normal.result_status, 'ناجح');
+
+  const zeroFinal = calculateGrades({ ...annualInputs, final_exam: 0 }, scheme);
+  assert.equal(zeroFinal.annual_effort, 81);
+  assert.equal(zeroFinal.final_grade, 41);
+  assert.equal(zeroFinal.effective_grade, 41);
+  assert.equal(zeroFinal.result_status, 'مكمل');
+
+  const completion = calculateGrades({ ...annualInputs, final_exam: 0, completion_exam: 60 }, scheme);
+  assert.equal(completion.grade_after_completion, 60);
+  assert.equal(completion.effective_grade, 60);
+  assert.equal(completion.result_status, 'ناجح');
+});
+
+test('per-grade save queue serializes one row while different rows remain independent', async () => {
+  const queue = createPerKeyTaskQueue();
+  const events = [];
+  let releaseFirst;
+  let rows = [{ id: 1, value: 0 }, { id: 2, value: 0 }];
+
+  const first = queue.enqueue(1, async () => {
+    events.push('row-1:first:start');
+    await new Promise(resolve => { releaseFirst = resolve; });
+    rows = mergeUpdatedRow(rows, { id: 1, value: 1 });
+    events.push('row-1:first:end');
+  });
+  await Promise.resolve();
+
+  const second = queue.enqueue(1, async () => {
+    events.push('row-1:second:start');
+    rows = mergeUpdatedRow(rows, { id: 1, value: 2 });
+    events.push('row-1:second:end');
+  });
+  const otherRow = queue.enqueue(2, async () => {
+    events.push('row-2:start');
+    rows = mergeUpdatedRow(rows, { id: 2, value: 9 });
+    events.push('row-2:end');
+  });
+
+  await otherRow;
+  assert.equal(rows.find(row => row.id === 2).value, 9);
+  assert.equal(events.includes('row-1:second:start'), false);
+  assert.equal(queue.hasPending(1), true);
+
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(events.filter(event => event.startsWith('row-1')), [
+    'row-1:first:start', 'row-1:first:end', 'row-1:second:start', 'row-1:second:end',
+  ]);
+  assert.equal(rows.find(row => row.id === 1).value, 2);
+  assert.equal(queue.hasPending(1), false);
+});
+
+test('grade response merging updates one row and preserves joined display fields', () => {
+  const original = [
+    { id: 1, subject_name: 'الرياضيات', annual_effort: 70, result_status: 'مكمل' },
+    { id: 2, subject_name: 'العربية', annual_effort: 80, result_status: 'ناجح' },
+  ];
+  const merged = mergeUpdatedRow(original, {
+    id: 1,
+    annual_effort: 85,
+    result_status: 'ناجح',
+  });
+
+  assert.equal(merged[0].subject_name, 'الرياضيات');
+  assert.equal(merged[0].annual_effort, 85);
+  assert.equal(merged[0].result_status, 'ناجح');
+  assert.equal(merged[1], original[1]);
+  assert.equal(original[0].annual_effort, 70);
+});
+
 test('scheme validation and descriptors expose only editable enabled raw fields', () => {
   assert.equal(validateGradeSchemeSettings({ first_term_input_mode: 'quarterly' }), 'first_term_input_mode يجب أن يكون monthly أو direct أو disabled');
   assert.equal(validateGradeSchemeSettings({ final_exam_enabled: 2 }), 'final_exam_enabled يجب أن يكون 0 أو 1');
@@ -514,6 +601,43 @@ test('backend routes keep school-management RBAC, tenancy and centralized disabl
   assert.match(worker, /meta: \{ recalculated_grades: recalculatedGrades \}/);
   assert.match(worker, /disabledRawGradeFields\(payload, settings\)/);
   assert.match(worker, /const auditFields: Array<RawGradeField \| 'notes'> = \[\.\.\.RAW_GRADE_FIELDS, 'notes'\]/);
+});
+
+test('single-grade PUT recalculates and returns the complete tenant-scoped row with auditing', async () => {
+  const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
+  const routeStart = worker.indexOf("app.put('/api/grades/:id'");
+  const routeEnd = worker.indexOf("app.post('/api/grades/bulk-entry'", routeStart);
+  const route = worker.slice(routeStart, routeEnd);
+
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.match(route, /requireRoles\(GRADE_MANAGEMENT_ROLES\)/);
+  assert.match(route, /resolveActiveWriteSchool\(db, user, body\.school_id\)/);
+  assert.match(route, /gradeRow\.school_id !== targetSchool\.schoolId/);
+  assert.match(route, /buildRawGradeUpdates\(body, settings\)/);
+  assert.match(route, /calculateGrades\(calcInput, settings\)/);
+  for (const field of [
+    'first_term_average', 'second_term_average', 'annual_effort', 'final_grade',
+    'grade_after_completion', 'effective_grade', 'result_status', 'exemption_status',
+  ]) {
+    assert.match(route, new RegExp(`updates\\.${field} = derived\\.${field}`), field);
+  }
+  assert.match(route, /INSERT INTO grade_change_logs/);
+  assert.match(route, /SELECT \* FROM grades WHERE id = \? AND school_id = \?/);
+  assert.match(route, /return c\.json\(\{ data: updated \}\)/);
+});
+
+test('student-grade autosave patches the returned row without a full-list refetch', async () => {
+  const page = await readFile(new URL('../src/modules/grades/GradesPage.tsx', import.meta.url), 'utf8');
+  const handlerStart = page.indexOf('async function handleSaveGrade');
+  const handlerEnd = page.indexOf('function fieldNameArabic', handlerStart);
+  const handler = page.slice(handlerStart, handlerEnd);
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  assert.match(handler, /gradeSaveQueue\.enqueue\(grade\.id/);
+  assert.match(handler, /updateGrade\(grade\.id, payload, schoolId\)/);
+  assert.match(handler, /setGrades\(\(current\) => mergeUpdatedRow\(current, updated\)\)/);
+  assert.doesNotMatch(handler, /loadStudentGrades/);
+  assert.doesNotMatch(handler, /type: 'success'/);
 });
 
 test('grade-settings reads always require exactly one authorized school scope', async () => {

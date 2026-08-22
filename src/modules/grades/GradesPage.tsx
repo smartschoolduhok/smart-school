@@ -12,6 +12,7 @@ import {
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import type { GradeCalculationSettings } from '../../lib/gradeCalculations';
+import { createPerKeyTaskQueue, mergeUpdatedRow } from '../../lib/perKeyTaskQueue';
 import {
   gradeInputColumns,
   gradeSchemeSummary,
@@ -186,9 +187,9 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
   const [settings, setSettings] = useState<GradeSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [initLoading, setInitLoading] = useState(false);
-  const [saveLoading, setSaveLoading] = useState<Record<number, boolean>>({});
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [studentName, setStudentName] = useState('');
+  const [gradeSaveQueue] = useState(() => createPerKeyTaskQueue<number>());
   const inputColumns = useMemo(() => settings ? gradeInputColumns(settings) : [], [settings]);
 
   useEffect(() => {
@@ -199,7 +200,6 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
     setStudentName('');
     setLoading(false);
     setInitLoading(false);
-    setSaveLoading({});
     setMessage(null);
     void loadStudents();
   }, [schoolId]);
@@ -258,19 +258,33 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
 
     if (schoolId == null) return;
     const isCurrent = captureSchoolRequest();
-    setSaveLoading((prev) => ({ ...prev, [grade.id]: true }));
     const payload: Record<string, any> = { [field]: field === 'notes' ? value : num };
-    const res = await updateGrade(grade.id, payload, schoolId);
-    if (!isCurrent()) return;
-    setSaveLoading((prev) => ({ ...prev, [grade.id]: false }));
+    try {
+      await gradeSaveQueue.enqueue(grade.id, async () => {
+        if (!isCurrent()) return;
+        const res = await updateGrade(grade.id, payload, schoolId);
+        if (!isCurrent()) return;
 
-    if (res.error) {
-      setMessage({ text: res.error, type: 'error' });
-    } else {
-      await loadStudentGrades(selectedStudentId);
-      setMessage({ text: 'تم حفظ الدرجة بنجاح — اضغط Enter أو انقر خارج الحقل لحفظ القيمة', type: 'success' });
+        if (res.error) {
+          setMessage({ text: res.error, type: 'error' });
+          setTimeout(() => setMessage(null), 3000);
+          return;
+        }
+
+        if (!res.data || Number(res.data.id) !== grade.id) {
+          setMessage({ text: 'تعذر تحديث الدرجة من استجابة الخادم', type: 'error' });
+          setTimeout(() => setMessage(null), 3000);
+          return;
+        }
+
+        const updated = { ...res.data, id: Number(res.data.id) } as Partial<GradeRecord> & Pick<GradeRecord, 'id'>;
+        setGrades((current) => mergeUpdatedRow(current, updated));
+      });
+    } catch {
+      if (!isCurrent()) return;
+      setMessage({ text: 'فشل حفظ الدرجة، يرجى المحاولة مرة أخرى', type: 'error' });
+      setTimeout(() => setMessage(null), 3000);
     }
-    setTimeout(() => setMessage(null), 3000);
   }
 
   function fieldNameArabic(field: string): string {
@@ -392,7 +406,7 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
                               const field = column.key as RawGradeField;
                               const val = e.target.value.trim();
                               const current = g[field] === null ? '' : toArabicDigits(String(g[field]));
-                              if (val !== current) handleSaveGrade(g, field, val);
+                              if (val !== current) void handleSaveGrade(g, field, val);
                             }}
                             onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                             className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
@@ -411,7 +425,7 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
                         defaultValue={g.notes || ''}
                         onBlur={(e) => {
                           const val = e.target.value.trim();
-                          if (val !== (g.notes || '')) handleSaveGrade(g, 'notes', val);
+                          if (val !== (g.notes || '')) void handleSaveGrade(g, 'notes', val);
                         }}
                         className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
                         placeholder="—"
