@@ -821,7 +821,10 @@ test('Result Card presentation uses a compact optional-field layout and balanced
   assert.match(component, /academicPlacementItems: StudentInfoItem\[\]/);
   assert.match(component, /optionalStudentInfoItems: StudentInfoItem\[\]/);
   assert.match(component, /student\.student_number !== null[\s\S]*?student\.student_number !== ''/);
-  assert.match(component, /card\.card_number\)[\s\S]*?studentIdentityItems\.push\(\{ label: 'رقم الكارت'/);
+  assert.match(component, /card\.status !== 'preview' && card\.card_number\)[\s\S]*?studentIdentityItems\.push\(\{ label: 'رقم الكارت'/);
+  assert.doesNotMatch(component, /معاينة مباشرة غير محفوظة/);
+  assert.doesNotMatch(component, /معاينة غير محفوظة/);
+  assert.match(component, /card\.status === 'cancelled'[\s\S]*?كارت ملغى — غير صالح للاستخدام الرسمي/);
   assert.match(component, /className\) academicPlacementItems\.push\(\{ label: 'الصف'/);
   assert.match(component, /sectionName\) academicPlacementItems\.push\(\{ label: 'الشعبة'/);
   assert.equal((component.match(/label: 'الصف'/g) || []).length, 1);
@@ -839,7 +842,10 @@ test('Result Card presentation uses a compact optional-field layout and balanced
   assert.match(component, /result-card-subject-column/);
   assert.match(component, /summary\.overall_average !== null[\s\S]*?summary\.overall_average !== undefined/);
   assert.match(component, /generalExemption[\s\S]*?\? \{ label: 'الإعفاء العام'/);
-  assert.match(component, /note \? \([\s\S]*?result-card-note-body/);
+  assert.match(component, /const showDecisionNote = displaySettings\.show_notes_decisions && note\.length > 0/);
+  assert.match(component, /result-card-summary grid gap-3 \$\{showDecisionNote \? 'sm:grid-cols-2' : ''\}/);
+  assert.match(component, /\{showDecisionNote && \([\s\S]*?result-card-note-body/);
+  assert.doesNotMatch(component, /لا توجد ملاحظات أو قرارات مسجلة/);
   assert.match(component, /grid grid-cols-3 items-end gap-3/);
   assert.match(component, /<QRCodeSVG value=\{verificationUrl\} size=\{100\} level="M"/);
   assert.match(component, /يُنشأ رمز QR عند إصدار الكارت/);

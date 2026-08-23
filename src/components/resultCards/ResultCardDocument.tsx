@@ -95,6 +95,7 @@ export function ResultCardDocument({
   const studentName = student.name || card.student_name_snapshot || '—';
   const studentGender = normalizeResultCardGender(student.gender);
   const note = typeof data?.decision_note === 'string' ? data.decision_note.trim() : '';
+  const showDecisionNote = displaySettings.show_notes_decisions && note.length > 0;
   const logoUrl = displaySettings.show_school_logo && documentSettings.logo_url
     ? documentSettings.logo_url
     : null;
@@ -115,7 +116,7 @@ export function ResultCardDocument({
   ) {
     studentIdentityItems.push({ label: 'رقم الطالب', value: displayValue(student.student_number) });
   }
-  if (card.card_number) {
+  if (card.status !== 'preview' && card.card_number) {
     studentIdentityItems.push({ label: 'رقم الكارت', value: displayValue(card.card_number) });
   }
 
@@ -258,15 +259,9 @@ export function ResultCardDocument({
         )}
       </section>
 
-      {(card.status === 'preview' || card.status === 'cancelled') && (
-        <div role="note" className={`result-card-notice rounded-md border px-3 py-1.5 text-center text-xs font-bold sm:text-sm ${
-          card.status === 'cancelled'
-            ? 'border-red-400 bg-red-50 text-red-900'
-            : 'border-slate-400 bg-slate-50 text-slate-800'
-        }`}>
-          {card.status === 'cancelled'
-            ? 'كارت ملغى — غير صالح للاستخدام الرسمي'
-            : 'معاينة مباشرة غير محفوظة'}
+      {card.status === 'cancelled' && (
+        <div role="note" className="result-card-notice rounded-md border border-red-400 bg-red-50 px-3 py-1.5 text-center text-xs font-bold text-red-900 sm:text-sm">
+          كارت ملغى — غير صالح للاستخدام الرسمي
         </div>
       )}
 
@@ -338,7 +333,7 @@ export function ResultCardDocument({
         </table>
       </section>
 
-      <section className={`result-card-summary grid gap-3 ${displaySettings.show_notes_decisions ? 'sm:grid-cols-2' : ''}`}>
+      <section className={`result-card-summary grid gap-3 ${showDecisionNote ? 'sm:grid-cols-2' : ''}`}>
         <div className="rounded-lg border-2 border-slate-700 p-3">
           <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black">الخلاصة العامة</h2>
           <div className="grid grid-cols-2 gap-2">
@@ -355,14 +350,10 @@ export function ResultCardDocument({
             )}
           </div>
         </div>
-        {displaySettings.show_notes_decisions && (
+        {showDecisionNote && (
           <div className="rounded-lg border border-slate-400 p-3">
             <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black">الملاحظات والقرارات</h2>
-            {note ? (
-              <p className="result-card-note-body min-h-12 whitespace-pre-line text-sm leading-relaxed text-slate-700">{note}</p>
-            ) : (
-              <p className="text-xs text-slate-400">لا توجد ملاحظات أو قرارات مسجلة.</p>
-            )}
+            <p className="result-card-note-body min-h-12 whitespace-pre-line text-sm leading-relaxed text-slate-700">{note}</p>
           </div>
         )}
       </section>
