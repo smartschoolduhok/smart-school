@@ -4,7 +4,13 @@ import {
   type GradeSchemeSettings,
   type RawGradeField,
 } from './gradeScheme.ts';
-import { resultCardAppreciation } from './resultCardPresentation.ts';
+import {
+  isResultCardNumericColumnKey,
+  resultCardAppreciation,
+  type ResultCardColumnAverages,
+  type ResultCardColumnDescriptor,
+  type ResultCardNumericColumnKey,
+} from './resultCardPresentation.ts';
 
 export type ResultCardAcademicStatus = 'ناجح' | 'راسب' | 'مكمل';
 export type ResultCardOverallStatus = ResultCardAcademicStatus | 'غير مكتمل';
@@ -117,6 +123,73 @@ function blankGrade(subject: ResultCardSubject): ResultCardGrade {
 function roundedAverage(values: number[]): number | null {
   if (values.length === 0) return null;
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function expectsResultCardColumn(
+  grade: ResultCardGrade | undefined,
+  key: ResultCardNumericColumnKey,
+  settings: ResultCardSettings,
+  generalExemptionEligible: boolean | null,
+): boolean {
+  if (key === 'final_exam') {
+    return !grade || (
+      grade.exemption_status !== 1 && generalExemptionEligible !== true
+    );
+  }
+  if (key === 'completion_exam') {
+    return !!grade &&
+      settings.completion_exam_enabled === 1 &&
+      isFiniteNumber(grade.final_grade) &&
+      grade.final_grade < settings.passing_grade;
+  }
+  return true;
+}
+
+export function calculateResultCardColumnAverages(
+  activeSubjects: ResultCardSubject[],
+  grades: ResultCardGrade[],
+  settingsInput: ResultCardSettings,
+  visibleColumns: readonly ResultCardColumnDescriptor[],
+  generalExemptionEligible: boolean | null,
+): ResultCardColumnAverages {
+  const settings: ResultCardSettings = {
+    ...settingsInput,
+    ...normalizeGradeSchemeSettings(settingsInput),
+  };
+  const countedSubjectIds = activeSubjects
+    .filter((subject) => subject.counts_in_average === 1)
+    .map((subject) => subject.id);
+  const gradesBySubject = new Map(grades.map((grade) => [grade.subject_id, grade]));
+  const averages: ResultCardColumnAverages = {};
+
+  for (const column of visibleColumns) {
+    if (!isResultCardNumericColumnKey(column.key)) continue;
+    const key = column.key;
+    if (countedSubjectIds.length === 0) {
+      averages[key] = null;
+      continue;
+    }
+
+    const expectedGrades = countedSubjectIds
+      .map((subjectId) => gradesBySubject.get(subjectId))
+      .filter((grade) => expectsResultCardColumn(
+        grade,
+        key,
+        settings,
+        generalExemptionEligible,
+      ));
+    if (expectedGrades.length === 0 || expectedGrades.some((grade) =>
+      !grade || !isFiniteNumber(grade[key])
+    )) {
+      averages[key] = null;
+      continue;
+    }
+    averages[key] = roundedAverage(
+      expectedGrades.map((grade) => grade?.[key] as number),
+    );
+  }
+
+  return averages;
 }
 
 export function evaluateResultCard(

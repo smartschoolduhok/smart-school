@@ -6,8 +6,10 @@ import {
 } from '../../lib/gradePresentation';
 import { formatUnixSecondsDate } from '../../lib/resultCardPrint';
 import {
+  isResultCardNumericColumnKey,
   normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
+  snapshotResultCardColumnAverages,
   snapshotResultCardColumns,
   type ResultCardColumnKey,
 } from '../../lib/resultCardPresentation';
@@ -67,6 +69,10 @@ export function ResultCardDocument({
     documentSettings.result_card_display_settings,
   );
   const columns = snapshotResultCardColumns(data?.visible_columns);
+  const columnAverages = snapshotResultCardColumnAverages(
+    data?.column_averages,
+    columns,
+  );
   const subjects = Array.isArray(data?.subjects) ? data.subjects : [];
   const isPartial = data?.card_mode === 'partial' ||
     summary.overall_result_status === 'غير مكتمل' ||
@@ -193,6 +199,24 @@ export function ResultCardDocument({
                 ))}
               </tr>
             ))}
+            {columnAverages && (
+              <tr className="border-t-2 border-slate-500 bg-slate-100 font-bold">
+                {columns.map((column) => (
+                  <td
+                    key={column.key}
+                    className={`border-l border-slate-300 px-2 py-2 text-center last:border-l-0 ${
+                      column.key === 'subject_name' ? 'text-right' : ''
+                    }`}
+                  >
+                    {column.key === 'subject_name'
+                      ? 'المعدل'
+                      : isResultCardNumericColumnKey(column.key)
+                        ? displayValue(columnAverages[column.key])
+                        : '—'}
+                  </td>
+                ))}
+              </tr>
+            )}
           </tbody>
         </table>
       </section>

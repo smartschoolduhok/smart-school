@@ -406,7 +406,7 @@ export default function SubjectsPage() {
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الشعبة</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الترتيب</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">نجاح/إعفاء</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">المعدل/كشف</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">كارت النتيجة / حساب المعدل</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الحالة</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الإجراءات</th>
                 </tr>
@@ -424,9 +424,13 @@ export default function SubjectsPage() {
                     <td className="px-4 py-3 text-sm text-gray-600">{toArabicDigits(s.order_index)}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{toArabicDigits(s.passing_grade)} / {toArabicDigits(s.exemption_grade)}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">
-                      <div className="flex gap-1">
-                        {s.counts_in_average && <span className="px-1.5 py-0.5 bg-green-50 text-green-700 rounded text-xs">معدل</span>}
-                        {s.appears_in_report_card && <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded text-xs">كشف</span>}
+                      <div className="flex flex-wrap gap-1">
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${s.appears_in_report_card ? 'bg-blue-50 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                          يظهر في الكارت: {s.appears_in_report_card ? 'نعم' : 'لا'}
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${s.counts_in_average ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                          يدخل في المعدل: {s.counts_in_average ? 'نعم' : 'لا'}
+                        </span>
                       </div>
                     </td>
                     <td className="px-4 py-3">
@@ -562,15 +566,18 @@ export default function SubjectsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">درجة الإعفاء</label>
                   <input type="number" value={form.exemption_grade} onChange={(e) => setForm({ ...form, exemption_grade: Number(e.target.value) })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
-                <div className="sm:col-span-2 flex items-center gap-4">
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={form.counts_in_average} onChange={(e) => setForm({ ...form, counts_in_average: e.target.checked })} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
-                    <span className="text-sm text-gray-700">تُحتسب في المعدل</span>
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={form.appears_in_report_card} onChange={(e) => setForm({ ...form, appears_in_report_card: e.target.checked })} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
-                    <span className="text-sm text-gray-700">تظهر في كشف العلامات</span>
-                  </label>
+                <div className="sm:col-span-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="mb-2 text-xs text-gray-500">خيارا العرض في الكارت والدخول في المعدل مستقلان.</p>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={form.counts_in_average} onChange={(e) => setForm({ ...form, counts_in_average: e.target.checked })} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                      <span className="text-sm text-gray-700">يدخل في حساب المعدل</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={form.appears_in_report_card} onChange={(e) => setForm({ ...form, appears_in_report_card: e.target.checked })} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                      <span className="text-sm text-gray-700">يظهر في كارت النتيجة</span>
+                    </label>
+                  </div>
                 </div>
               </div>
             </div>

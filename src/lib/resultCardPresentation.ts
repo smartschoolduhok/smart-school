@@ -52,15 +52,15 @@ export const DEFAULT_RESULT_CARD_DISPLAY_SETTINGS: ResultCardDisplaySettings = {
   show_overall_average: true,
   show_appreciation: false,
   show_subject_status: true,
-  show_exemption_detail: true,
+  show_exemption_detail: false,
   show_first_term_inputs: true,
   show_mid_year_exam: true,
   show_second_term_inputs: true,
   show_final_exam: true,
   show_annual_effort: true,
-  show_final_grade: true,
-  show_effective_grade: true,
-  show_completion_exam: true,
+  show_final_grade: false,
+  show_effective_grade: false,
+  show_completion_exam: false,
   show_qr_code: true,
   show_verification_code_text: true,
   show_notes_decisions: true,
@@ -135,6 +135,34 @@ export type ResultCardColumnKey =
 export interface ResultCardColumnDescriptor {
   key: ResultCardColumnKey;
   label: string;
+}
+
+export const RESULT_CARD_NUMERIC_COLUMN_KEYS = [
+  'first_term_grade',
+  'first_month',
+  'second_month',
+  'mid_year_exam',
+  'second_term_grade',
+  'third_month',
+  'fourth_month',
+  'annual_effort',
+  'final_exam',
+  'completion_exam',
+  'final_grade',
+  'effective_grade',
+] as const satisfies readonly ResultCardColumnKey[];
+
+export type ResultCardNumericColumnKey = typeof RESULT_CARD_NUMERIC_COLUMN_KEYS[number];
+export type ResultCardColumnAverages = Partial<Record<ResultCardNumericColumnKey, number | null>>;
+
+const RESULT_CARD_NUMERIC_COLUMN_KEY_SET = new Set<ResultCardColumnKey>(
+  RESULT_CARD_NUMERIC_COLUMN_KEYS,
+);
+
+export function isResultCardNumericColumnKey(
+  key: ResultCardColumnKey,
+): key is ResultCardNumericColumnKey {
+  return RESULT_CARD_NUMERIC_COLUMN_KEY_SET.has(key);
 }
 
 const RESULT_CARD_DERIVED_COLUMN_LABELS: Record<Exclude<ResultCardColumnKey, RawGradeField>, string> = {
@@ -238,6 +266,23 @@ export function snapshotResultCardColumns(input: unknown): ResultCardColumnDescr
     return [{ key, label: typeof record.label === 'string' && record.label.trim() ? record.label : fallbackLabel }];
   });
   return columns.length > 0 ? columns : [...LEGACY_RESULT_CARD_COLUMNS];
+}
+
+export function snapshotResultCardColumnAverages(
+  input: unknown,
+  columns: readonly ResultCardColumnDescriptor[],
+): ResultCardColumnAverages | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const record = input as Record<string, unknown>;
+  const averages: ResultCardColumnAverages = {};
+  for (const column of columns) {
+    if (!isResultCardNumericColumnKey(column.key)) continue;
+    const value = record[column.key];
+    averages[column.key] = typeof value === 'number' && Number.isFinite(value)
+      ? value
+      : null;
+  }
+  return averages;
 }
 
 export function resultCardAppreciation(average: number | null, maxGrade: number): string | null {

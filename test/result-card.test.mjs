@@ -15,10 +15,15 @@ import {
   LEGACY_RESULT_CARD_COLUMNS,
   normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
+  parseResultCardDisplaySettings,
   RESULT_CARD_DISPLAY_SETTING_KEYS,
+  snapshotResultCardColumnAverages,
   snapshotResultCardColumns,
 } from '../src/lib/resultCardPresentation.ts';
-import { evaluateResultCard } from '../src/lib/resultCards.ts';
+import {
+  calculateResultCardColumnAverages,
+  evaluateResultCard,
+} from '../src/lib/resultCards.ts';
 
 const academicYear = { id: 1, name: '2026-2027' };
 const monthlySettings = {
@@ -37,6 +42,13 @@ const directSettings = {
   ...monthlySettings,
   first_term_input_mode: 'direct',
   second_term_input_mode: 'direct',
+};
+const fullDisplaySettings = {
+  ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+  show_completion_exam: true,
+  show_final_grade: true,
+  show_effective_grade: true,
+  show_exemption_detail: true,
 };
 
 test('Result Card gender presentation normalizes known values and hides unsafe values', async () => {
@@ -97,6 +109,28 @@ function directGrade(subject_id, overrides = {}) {
     fourth_month: null,
     ...overrides,
   });
+}
+
+function columnAveragesFor({
+  subjects,
+  grades,
+  settings = monthlySettings,
+  display = DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+}) {
+  const evaluation = evaluateResultCard(subjects, grades, settings, academicYear);
+  assert.equal(evaluation.ok, true);
+  const columns = buildResultCardColumns(settings, display);
+  return {
+    evaluation,
+    columns,
+    averages: calculateResultCardColumnAverages(
+      subjects,
+      evaluation.grades,
+      settings,
+      columns,
+      evaluation.summary.general_exemption_eligible,
+    ),
+  };
 }
 
 test('partial card accepts missing enabled fields without hard failure', () => {
@@ -390,6 +424,203 @@ test('average participation does not change canonical subject ordering', () => {
   assert.deepEqual(result.grades.map((grade) => grade.subject_id), [2, 1]);
 });
 
+test('non-average subjects are excluded from every direct-term card column average', () => {
+  const counted = directGrade(1, {
+    first_term_grade: 80,
+    mid_year_exam: 82,
+    second_term_grade: 84,
+    annual_effort: 82,
+    final_exam: 86,
+    final_grade: 84,
+    effective_grade: 84,
+  });
+  const excluded = directGrade(2, {
+    first_term_grade: 10,
+    mid_year_exam: 10,
+    second_term_grade: 10,
+    annual_effort: 10,
+    final_exam: 10,
+    final_grade: 10,
+    effective_grade: 10,
+    result_status: 'راسب',
+  });
+  const { evaluation, averages } = columnAveragesFor({
+    subjects: [subject(1), subject(2, 'رياضة', 0)],
+    grades: [counted, excluded],
+    settings: directSettings,
+    display: fullDisplaySettings,
+  });
+
+  assert.deepEqual(evaluation.grades.map((grade) => grade.subject_id), [1, 2]);
+  assert.equal(averages.first_term_grade, 80);
+  assert.equal(averages.mid_year_exam, 82);
+  assert.equal(averages.second_term_grade, 84);
+  assert.equal(averages.annual_effort, 82);
+  assert.equal(averages.final_exam, 86);
+  assert.equal(averages.final_grade, 84);
+  assert.equal(averages.effective_grade, 84);
+});
+
+test('missing counted value nulls only its specific visible column average', () => {
+  const { averages } = columnAveragesFor({
+    subjects: [subject(1), subject(2)],
+    grades: [
+      directGrade(1, { first_term_grade: 80, mid_year_exam: 70 }),
+      directGrade(2, { first_term_grade: 90, mid_year_exam: null }),
+    ],
+    settings: directSettings,
+  });
+
+  assert.equal(averages.first_term_grade, 85);
+  assert.equal(averages.mid_year_exam, null);
+  assert.equal(averages.second_term_grade, 90);
+  assert.equal(averages.annual_effort, 90);
+});
+
+test('complete counted monthly values produce rounded per-column averages', () => {
+  const { averages } = columnAveragesFor({
+    subjects: [subject(1), subject(2)],
+    grades: [
+      monthlyGrade(1, {
+        first_month: 80,
+        second_month: 82,
+        mid_year_exam: 84,
+        third_month: 86,
+        fourth_month: 88,
+        annual_effort: 84,
+        final_exam: 90,
+        final_grade: 87,
+        effective_grade: 87,
+      }),
+      monthlyGrade(2, {
+        first_month: 90,
+        second_month: 92,
+        mid_year_exam: 94,
+        third_month: 96,
+        fourth_month: 98,
+        annual_effort: 94,
+        final_exam: 100,
+        final_grade: 97,
+        effective_grade: 97,
+      }),
+    ],
+    display: fullDisplaySettings,
+  });
+
+  assert.deepEqual(averages, {
+    first_month: 85,
+    second_month: 87,
+    mid_year_exam: 89,
+    third_month: 91,
+    fourth_month: 93,
+    annual_effort: 89,
+    final_exam: 95,
+    completion_exam: null,
+    final_grade: 92,
+    effective_grade: 92,
+  });
+});
+
+test('direct-term card averages use direct fields instead of hidden monthly fields', () => {
+  const { columns, averages } = columnAveragesFor({
+    subjects: [subject(1), subject(2)],
+    grades: [
+      directGrade(1, { first_term_grade: 80, mid_year_exam: 70, second_term_grade: 90 }),
+      directGrade(2, { first_term_grade: 85, mid_year_exam: 80, second_term_grade: 95 }),
+    ],
+    settings: directSettings,
+  });
+
+  assert.deepEqual(columns.map((column) => column.key), [
+    'subject_name',
+    'first_term_grade',
+    'mid_year_exam',
+    'second_term_grade',
+    'annual_effort',
+    'final_exam',
+    'result_status',
+  ]);
+  assert.equal(averages.first_term_grade, 83);
+  assert.equal(averages.mid_year_exam, 75);
+  assert.equal(averages.second_term_grade, 93);
+  assert.ok(!Object.hasOwn(averages, 'first_month'));
+  assert.ok(!Object.hasOwn(averages, 'third_month'));
+});
+
+test('zero counted subjects produce nulls for all visible numeric column averages', () => {
+  const { averages } = columnAveragesFor({
+    subjects: [subject(1, 'رياضة', 0), subject(2, 'نشاط', 0)],
+    grades: [monthlyGrade(1), monthlyGrade(2)],
+  });
+
+  assert.ok(Object.keys(averages).length > 0);
+  assert.ok(Object.values(averages).every((value) => value === null));
+});
+
+test('column averages contain visible numeric columns only', () => {
+  const { columns, averages } = columnAveragesFor({
+    subjects: [subject(1)],
+    grades: [monthlyGrade(1, { annual_effort: 88 })],
+    display: {
+      ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+      show_first_term_inputs: false,
+      show_mid_year_exam: false,
+      show_second_term_inputs: false,
+      show_final_exam: false,
+      show_annual_effort: true,
+      show_subject_status: true,
+      show_exemption_detail: true,
+    },
+  });
+
+  assert.deepEqual(columns.map((column) => column.key), [
+    'subject_name',
+    'annual_effort',
+    'result_status',
+    'exemption_detail',
+  ]);
+  assert.deepEqual(averages, { annual_effort: 88 });
+  assert.ok(!Object.hasOwn(averages, 'final_exam'));
+  assert.ok(!Object.hasOwn(averages, 'result_status'));
+  assert.ok(!Object.hasOwn(averages, 'exemption_detail'));
+});
+
+test('completion-exam display and average are controlled independently', () => {
+  const subjects = [subject(1), subject(2)];
+  const grades = [
+    directGrade(1, { final_grade: 40, completion_exam: 60, effective_grade: 60 }),
+    directGrade(2, { final_grade: 30, completion_exam: 70, effective_grade: 70 }),
+  ];
+  const hidden = columnAveragesFor({ subjects, grades, settings: directSettings });
+  const shown = columnAveragesFor({
+    subjects,
+    grades,
+    settings: directSettings,
+    display: { ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS, show_completion_exam: true },
+  });
+
+  assert.ok(!hidden.columns.some((column) => column.key === 'completion_exam'));
+  assert.ok(!Object.hasOwn(hidden.averages, 'completion_exam'));
+  assert.ok(shown.columns.some((column) => column.key === 'completion_exam'));
+  assert.equal(shown.averages.completion_exam, 65);
+});
+
+test('calculating column averages does not mutate Result Card evaluation or calculations', () => {
+  const subjects = [subject(1), subject(2, 'رياضة', 0)];
+  const grades = [monthlyGrade(1), monthlyGrade(2)];
+  const evaluation = evaluateResultCard(subjects, grades, monthlySettings, academicYear);
+  assert.equal(evaluation.ok, true);
+  const before = structuredClone(evaluation);
+  calculateResultCardColumnAverages(
+    subjects,
+    evaluation.grades,
+    monthlySettings,
+    buildResultCardColumns(monthlySettings, DEFAULT_RESULT_CARD_DISPLAY_SETTINGS),
+    evaluation.summary.general_exemption_eligible,
+  );
+  assert.deepEqual(evaluation, before);
+});
+
 test('generation still requires an active academic year and at least one visible subject', () => {
   assert.deepEqual(evaluateResultCard([subject(1)], [monthlyGrade(1)], monthlySettings, null), {
     ok: false,
@@ -414,6 +645,48 @@ test('display options deterministically hide and show card columns', () => {
   const normalized = normalizeResultCardDisplaySettings({ show_qr_code: 0, show_phone: 1 });
   assert.equal(normalized.show_qr_code, false);
   assert.equal(normalized.show_phone, true);
+});
+
+test('clean Result Card defaults show academic inputs and hide optional technical details', () => {
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_inputs, true);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_mid_year_exam, true);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_second_term_inputs, true);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_annual_effort, true);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_final_exam, true);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_subject_status, true);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_completion_exam, false);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_final_grade, false);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_effective_grade, false);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_exemption_detail, false);
+  assert.deepEqual(
+    buildResultCardColumns(directSettings, null).map((column) => column.key),
+    [
+      'subject_name',
+      'first_term_grade',
+      'mid_year_exam',
+      'second_term_grade',
+      'annual_effort',
+      'final_exam',
+      'result_status',
+    ],
+  );
+});
+
+test('saved custom display settings override the new defaults without being rewritten', () => {
+  const stored = JSON.stringify({
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    show_completion_exam: true,
+    show_final_grade: true,
+    show_effective_grade: true,
+    show_exemption_detail: true,
+    show_first_term_inputs: false,
+  });
+  const parsed = parseResultCardDisplaySettings(stored);
+  assert.equal(parsed.show_completion_exam, true);
+  assert.equal(parsed.show_final_grade, true);
+  assert.equal(parsed.show_effective_grade, true);
+  assert.equal(parsed.show_exemption_detail, true);
+  assert.equal(parsed.show_first_term_inputs, false);
 });
 
 test('raw academic columns are independently optional presentation settings', () => {
@@ -497,13 +770,65 @@ test('old snapshots keep the legacy safe column shape', () => {
   assert.deepEqual(snapshotResultCardColumns([{ key: 'unknown' }]), [...LEGACY_RESULT_CARD_COLUMNS]);
 });
 
+test('snapshot column averages are immutable and old snapshots remain safe', () => {
+  const columns = buildResultCardColumns(directSettings, DEFAULT_RESULT_CARD_DISPLAY_SETTINGS);
+  assert.equal(snapshotResultCardColumnAverages(undefined, columns), null);
+
+  const stored = {
+    first_term_grade: 85,
+    mid_year_exam: 80,
+    second_term_grade: 87,
+    annual_effort: 84,
+    final_exam: 86,
+    result_status: 99,
+  };
+  const parsed = snapshotResultCardColumnAverages(stored, columns);
+  stored.first_term_grade = 1;
+  assert.deepEqual(parsed, {
+    first_term_grade: 85,
+    mid_year_exam: 80,
+    second_term_grade: 87,
+    annual_effort: 84,
+    final_exam: 86,
+  });
+});
+
+test('Result Card document renders one aligned print-safe average row from the snapshot only', async () => {
+  const component = await readFile(
+    new URL('../src/components/resultCards/ResultCardDocument.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(component, /snapshotResultCardColumnAverages\(\s*data\?\.column_averages,\s*columns/);
+  assert.match(component, /columnAverages &&/);
+  assert.match(component, /column\.key === 'subject_name'[\s\S]*?\? 'المعدل'/);
+  assert.match(component, /isResultCardNumericColumnKey\(column\.key\)/);
+  assert.match(component, /: '—'/);
+  assert.match(component, /border-t-2 border-slate-500 bg-slate-100 font-bold/);
+  assert.doesNotMatch(component, /calculateResultCardColumnAverages/);
+});
+
+test('Subjects settings clearly expose independent card visibility and average controls', async () => {
+  const subjectsPage = await readFile(
+    new URL('../src/modules/subjects/SubjectsPage.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(subjectsPage, /يظهر في كارت النتيجة/);
+  assert.match(subjectsPage, /يدخل في حساب المعدل/);
+  assert.match(subjectsPage, /خيارا العرض في الكارت والدخول في المعدل مستقلان/);
+  assert.match(subjectsPage, /checked=\{form\.counts_in_average\}/);
+  assert.match(subjectsPage, /checked=\{form\.appears_in_report_card\}/);
+});
+
 test('snapshot builder freezes order, branding, note, display settings and verification identity', async () => {
   const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
   const start = worker.indexOf('async function buildResultCardSnapshot');
   const end = worker.indexOf('async function createResultCardForStudent', start);
   const builder = worker.slice(start, end);
-  assert.match(builder, /schema_version: 2/);
-  assert.match(builder, /visible_columns: buildResultCardColumns\(settings, displaySettings\)/);
+  assert.match(builder, /schema_version: 3/);
+  assert.match(builder, /const visibleColumns = buildResultCardColumns\(settings, displaySettings\)/);
+  assert.match(builder, /const columnAverages = calculateResultCardColumnAverages\(/);
+  assert.match(builder, /visible_columns: visibleColumns/);
+  assert.match(builder, /column_averages: columnAverages/);
   assert.match(builder, /subjects: evaluation\.grades/);
   assert.match(builder, /decision_note: options\.decisionNote/);
   assert.match(builder, /phone: student\.school_phone/);

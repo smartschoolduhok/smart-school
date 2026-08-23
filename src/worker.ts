@@ -25,6 +25,7 @@ import {
   hasRole,
 } from './lib/rbac'
 import {
+  calculateResultCardColumnAverages,
   evaluateResultCard,
   type ResultCardAcademicYear,
   type ResultCardEvaluation,
@@ -3757,7 +3758,11 @@ async function loadResultCardEvaluation(
   db: D1Database,
   studentId: number,
   schoolId: number,
-): Promise<{ evaluation: ResultCardEvaluation; settings: ResultCardSettings }> {
+): Promise<{
+  evaluation: ResultCardEvaluation;
+  settings: ResultCardSettings;
+  subjects: ResultCardSubject[];
+}> {
   const subjectRows = await db.prepare(`
     SELECT su.id, su.name AS subject_name, su.counts_in_average
     FROM student_subjects ss
@@ -3839,6 +3844,7 @@ async function loadResultCardEvaluation(
       academicYear,
     ),
     settings,
+    subjects: subjectRows.results || [],
   };
 }
 
@@ -3915,7 +3921,7 @@ async function buildResultCardSnapshot(
     };
   }
 
-  const { evaluation, settings } = await loadResultCardEvaluation(
+  const { evaluation, settings, subjects } = await loadResultCardEvaluation(
     db,
     student.id,
     student.school_id,
@@ -3935,8 +3941,16 @@ async function buildResultCardSnapshot(
   const verificationUrl = identity.token
     ? `/verify/result-card/${identity.token}`
     : null;
+  const visibleColumns = buildResultCardColumns(settings, displaySettings);
+  const columnAverages = calculateResultCardColumnAverages(
+    subjects,
+    evaluation.grades,
+    settings,
+    visibleColumns,
+    evaluation.summary.general_exemption_eligible,
+  );
   const cardData = {
-    schema_version: 2,
+    schema_version: 3,
     card_mode: evaluation.card_mode,
     school: {
       id: student.school_id,
@@ -3963,7 +3977,8 @@ async function buildResultCardSnapshot(
     decision_note: options.decisionNote,
     grade_scheme: settings,
     required_fields: evaluation.required_fields,
-    visible_columns: buildResultCardColumns(settings, displaySettings),
+    visible_columns: visibleColumns,
+    column_averages: columnAverages,
     subjects: evaluation.grades,
     incomplete_subjects: evaluation.incomplete_subjects,
     summary: evaluation.summary,
