@@ -3,10 +3,11 @@ import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
-import { getSubjects, getClasses, getSections, createSubject, updateSubject, archiveSubject } from '../../lib/api';
+import { getSubjects, getClasses, getSections, createSubject, updateSubject, archiveSubject, reorderSubjects } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
-import { Search, Plus, Filter, Archive, Edit2, X, Check, BookOpen, ListOrdered, Tag, Users } from 'lucide-react';
+import { mergeReturnedSubjectOrder, moveOrderedItem } from '../../lib/subjectOrdering';
+import { Search, Plus, Filter, Archive, Edit2, X, Check, BookOpen, ListOrdered, Tag, Users, GripVertical, ArrowUp, ArrowDown } from 'lucide-react';
 
 interface SubjectRecord {
   id: number;
@@ -30,6 +31,8 @@ interface SubjectRecord {
 interface ClassRecord {
   id: number;
   name: string;
+  order_index: number;
+  status?: 'active' | 'inactive' | 'archived';
 }
 
 interface SectionRecord {
@@ -47,7 +50,6 @@ const emptyForm = {
   appears_in_report_card: true,
   passing_grade: 50,
   exemption_grade: 25,
-  order_index: 0,
 };
 
 export default function SubjectsPage() {
@@ -77,12 +79,25 @@ export default function SubjectsPage() {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const [reorderOpen, setReorderOpen] = useState(false);
+  const [reorderClassId, setReorderClassId] = useState('');
+  const [orderedSubjects, setOrderedSubjects] = useState<SubjectRecord[]>([]);
+  const [draggedSubjectId, setDraggedSubjectId] = useState<number | null>(null);
+  const [reorderSaving, setReorderSaving] = useState(false);
+  const [reorderError, setReorderError] = useState('');
+
   useEffect(() => {
     setSubjects([]);
     setClasses([]);
     setSections([]);
     setFilterClass('');
     setModalOpen(false);
+    setReorderOpen(false);
+    setReorderClassId('');
+    setOrderedSubjects([]);
+    setDraggedSubjectId(null);
+    setReorderSaving(false);
+    setReorderError('');
     setEditingId(null);
     setForm(emptyForm);
     setLoading(false);
@@ -121,8 +136,14 @@ export default function SubjectsPage() {
       const q = search.trim().toLowerCase();
       list = list.filter((s) => s.name.toLowerCase().includes(q) || (s.class_name && s.class_name.toLowerCase().includes(q)));
     }
-    return list.sort((a, b) => (a.class_id - b.class_id) || (a.order_index - b.order_index));
-  }, [subjects, search, filterClass, filterType, filterStatus]);
+    const classOrder = new Map(classes.map((item) => [item.id, item.order_index]));
+    return [...list].sort((a, b) =>
+      ((classOrder.get(a.class_id) ?? 0) - (classOrder.get(b.class_id) ?? 0))
+      || (a.class_id - b.class_id)
+      || (a.order_index - b.order_index)
+      || (a.id - b.id)
+    );
+  }, [subjects, classes, search, filterClass, filterType, filterStatus]);
 
   function openCreate() {
     if (schoolId == null) return;
@@ -144,7 +165,6 @@ export default function SubjectsPage() {
       appears_in_report_card: !!s.appears_in_report_card,
       passing_grade: s.passing_grade,
       exemption_grade: s.exemption_grade,
-      order_index: s.order_index,
     });
     setFormError('');
     setModalMode('edit');
@@ -168,7 +188,6 @@ export default function SubjectsPage() {
       appears_in_report_card: form.appears_in_report_card,
       passing_grade: Number(form.passing_grade) || 50,
       exemption_grade: Number(form.exemption_grade) || 25,
-      order_index: Number(form.order_index) || 0,
     };
     if (modalMode === 'create') {
       const res = await createSubject(payload);
@@ -194,6 +213,74 @@ export default function SubjectsPage() {
     else loadData();
   }
 
+  function subjectsForReorder(classId: string): SubjectRecord[] {
+    if (!classId) return [];
+    return subjects
+      .filter((subject) => subject.status === 'active' && String(subject.class_id) === classId)
+      .sort((a, b) => (a.order_index - b.order_index) || (a.id - b.id));
+  }
+
+  function openReorder() {
+    if (schoolId == null) return;
+    const initialClassId = filterClass && classes.some((item) =>
+      String(item.id) === filterClass && item.status === 'active'
+    ) ? filterClass : '';
+    setReorderClassId(initialClassId);
+    setOrderedSubjects(subjectsForReorder(initialClassId));
+    setDraggedSubjectId(null);
+    setReorderError('');
+    setReorderSaving(false);
+    setReorderOpen(true);
+  }
+
+  function selectReorderClass(classId: string) {
+    setReorderClassId(classId);
+    setOrderedSubjects(subjectsForReorder(classId));
+    setDraggedSubjectId(null);
+    setReorderError('');
+  }
+
+  function moveSubject(subjectId: number, direction: -1 | 1) {
+    setOrderedSubjects((current) => {
+      const index = current.findIndex((subject) => subject.id === subjectId);
+      const target = current[index + direction];
+      return target ? moveOrderedItem(current, subjectId, target.id) : current;
+    });
+  }
+
+  function dropSubject(targetId: number) {
+    if (draggedSubjectId == null) return;
+    setOrderedSubjects((current) => moveOrderedItem(current, draggedSubjectId, targetId));
+    setDraggedSubjectId(null);
+  }
+
+  async function saveSubjectOrder() {
+    setReorderError('');
+    if (schoolId == null || !reorderClassId) {
+      setReorderError('يجب اختيار المدرسة والصف أولاً');
+      return;
+    }
+
+    const isCurrentRequest = captureSchoolRequest();
+    setReorderSaving(true);
+    const response = await reorderSubjects(
+      schoolId,
+      Number(reorderClassId),
+      orderedSubjects.map((subject) => subject.id),
+    );
+    if (!isCurrentRequest()) return;
+    setReorderSaving(false);
+    if (response.error) {
+      setReorderError(response.error);
+      return;
+    }
+
+    const returned = (response.data || []) as SubjectRecord[];
+    setSubjects((current) => mergeReturnedSubjectOrder(current, returned));
+    setOrderedSubjects(returned);
+    setReorderOpen(false);
+  }
+
   const sectionsForClass = useMemo(() => {
     if (!form.class_id) return [];
     return sections.filter((sec) => String(sec.class_id) === String(form.class_id));
@@ -207,10 +294,16 @@ export default function SubjectsPage() {
           <p className="text-sm text-gray-500 mt-1">إدارة المواد وإعدادات الدرجات والكشوف</p>
         </div>
         {canManageSelectedSchool && (
-          <button onClick={openCreate} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
-            <Plus size={18} />
-            <span>إضافة مادة</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={openReorder} className="flex items-center gap-2 px-4 py-2.5 border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-sm font-medium transition-colors">
+              <ListOrdered size={18} />
+              <span>ترتيب المواد</span>
+            </button>
+            <button onClick={openCreate} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
+              <Plus size={18} />
+              <span>إضافة مادة</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -361,6 +454,70 @@ export default function SubjectsPage() {
         )}
       </div>
 
+      {reorderOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" role="dialog" aria-modal="true" aria-labelledby="subject-order-title">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-gray-100">
+              <div>
+                <h2 id="subject-order-title" className="text-xl font-bold text-gray-900">ترتيب المواد</h2>
+                <p className="text-sm text-gray-500 mt-1">اختر الصف ثم اسحب جميع مواده النشطة إلى الترتيب المطلوب</p>
+              </div>
+              <button onClick={() => setReorderOpen(false)} disabled={reorderSaving} aria-label="إغلاق ترتيب المواد" className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-50"><X size={20} /></button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto">
+              {reorderError && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{reorderError}</div>}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">الصف <span className="text-red-500">*</span></label>
+                <select value={reorderClassId} onChange={(event) => selectReorderClass(event.target.value)} disabled={reorderSaving} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100">
+                  <option value="">اختر الصف</option>
+                  {classes.filter((item) => item.status === 'active').map((item) => (
+                    <option key={item.id} value={String(item.id)}>{item.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {reorderClassId && orderedSubjects.length === 0 ? (
+                <div className="p-8 text-center text-sm text-gray-500 border border-dashed border-gray-200 rounded-xl">لا توجد مواد نشطة في هذا الصف</div>
+              ) : (
+                <div className="space-y-2" aria-label="قائمة ترتيب المواد">
+                  {orderedSubjects.map((subject, index) => (
+                    <div
+                      key={subject.id}
+                      draggable={!reorderSaving}
+                      onDragStart={() => setDraggedSubjectId(subject.id)}
+                      onDragEnd={() => setDraggedSubjectId(null)}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={() => dropSubject(subject.id)}
+                      className={`flex items-center gap-3 p-3 border rounded-xl bg-white transition-colors ${draggedSubjectId === subject.id ? 'border-blue-400 bg-blue-50' : 'border-gray-200'}`}
+                    >
+                      <GripVertical size={20} className="text-gray-400 shrink-0 cursor-grab" aria-hidden="true" />
+                      <span className="w-7 h-7 rounded-full bg-blue-50 text-blue-700 flex items-center justify-center text-sm font-semibold shrink-0">{toArabicDigits(index + 1)}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">{subject.name}</p>
+                        <p className="text-xs text-gray-500">{subject.section_name ? `الشعبة: ${subject.section_name}` : 'كل الشعب'}</p>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button type="button" onClick={() => moveSubject(subject.id, -1)} disabled={reorderSaving || index === 0} aria-label={`نقل ${subject.name} إلى الأعلى`} className="p-1.5 text-gray-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg disabled:opacity-30"><ArrowUp size={16} /></button>
+                        <button type="button" onClick={() => moveSubject(subject.id, 1)} disabled={reorderSaving || index === orderedSubjects.length - 1} aria-label={`نقل ${subject.name} إلى الأسفل`} className="p-1.5 text-gray-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg disabled:opacity-30"><ArrowDown size={16} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-100">
+              <button onClick={() => setReorderOpen(false)} disabled={reorderSaving} className="px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50">إلغاء</button>
+              <button onClick={saveSubjectOrder} disabled={reorderSaving || !reorderClassId || orderedSubjects.length === 0} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-lg text-sm font-medium transition-colors">
+                {reorderSaving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Check size={18} />}
+                <span>حفظ الترتيب</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
@@ -396,10 +553,6 @@ export default function SubjectsPage() {
                     <option value="أساسية">أساسية</option>
                     <option value="اختيارية">اختيارية</option>
                   </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">الترتيب</label>
-                  <input type="number" value={form.order_index} onChange={(e) => setForm({ ...form, order_index: Number(e.target.value) })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">درجة النجاح</label>

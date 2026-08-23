@@ -11,6 +11,19 @@ import {
   getStudents, getClasses, getSections, getSubjects
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import type { GradeCalculationSettings } from '../../lib/gradeCalculations';
+import { displayGradeStatus } from '../../lib/gradePresentation';
+import { createPerKeyTaskQueue, mergeUpdatedRow } from '../../lib/perKeyTaskQueue';
+import {
+  gradeInputColumns,
+  gradeSchemeSummary,
+  normalizeGradeSchemeSettings,
+  RAW_GRADE_FIELD_LABELS,
+  validateGradeSchemeSettings,
+  type GradeEnabledFlag,
+  type GradeTermInputMode,
+  type RawGradeField,
+} from '../../lib/gradeScheme';
 import {
   Calculator, Save, Loader2, AlertCircle, CheckCircle, Search, User, Users,
   Settings, History, BookOpen, ChevronDown, ChevronUp
@@ -22,13 +35,26 @@ function displayNum(n: number | null | undefined): string {
   return toArabicDigits(String(n));
 }
 
+function statusBadge(status: string | null) {
+  if (!status) return <span className="text-gray-400">—</span>;
+  const cls =
+    status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' :
+    status === 'راسب' ? 'bg-red-100 text-red-700' :
+    status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
+    status === 'معفو' ? 'bg-indigo-100 text-indigo-700' :
+    'bg-gray-100 text-gray-700';
+  return <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cls}`}>{status}</span>;
+}
+
 /* ─── Types ─── */
 interface GradeRecord {
   id: number;
   school_id: number;
   student_subject_id: number;
+  first_term_grade: number | null;
   first_month: number | null;
   second_month: number | null;
+  second_term_grade: number | null;
   third_month: number | null;
   fourth_month: number | null;
   mid_year_exam: number | null;
@@ -64,12 +90,9 @@ interface ClassRecord { id: number; name: string; }
 interface SectionRecord { id: number; name: string; class_id: number; }
 interface SubjectRecord { id: number; name: string; class_id: number | null; section_id: number | null; }
 
-interface GradeSettings {
+interface GradeSettings extends GradeCalculationSettings {
   id?: number;
   school_id: number;
-  max_grade: number;
-  passing_grade: number;
-  exemption_grade: number;
   general_exemption_average_grade: number;
   general_exemption_min_subject_grade: number;
   first_term_formula?: string;
@@ -98,6 +121,11 @@ const DEFAULT_GRADE_SETTINGS_FORM = {
   exemption_grade: '90',
   general_exemption_average_grade: '85',
   general_exemption_min_subject_grade: '75',
+  first_term_input_mode: 'monthly' as GradeTermInputMode,
+  second_term_input_mode: 'monthly' as GradeTermInputMode,
+  mid_year_exam_enabled: 1 as GradeEnabledFlag,
+  final_exam_enabled: 1 as GradeEnabledFlag,
+  completion_exam_enabled: 1 as GradeEnabledFlag,
 };
 
 const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; roles?: readonly RoleKey[] }[] = [
@@ -172,9 +200,10 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
   const [settings, setSettings] = useState<GradeSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [initLoading, setInitLoading] = useState(false);
-  const [saveLoading, setSaveLoading] = useState<Record<number, boolean>>({});
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [studentName, setStudentName] = useState('');
+  const [gradeSaveQueue] = useState(() => createPerKeyTaskQueue<number>());
+  const inputColumns = useMemo(() => settings ? gradeInputColumns(settings) : [], [settings]);
 
   useEffect(() => {
     setStudents([]);
@@ -184,7 +213,6 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
     setStudentName('');
     setLoading(false);
     setInitLoading(false);
-    setSaveLoading({});
     setMessage(null);
     void loadStudents();
   }, [schoolId]);
@@ -228,14 +256,14 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
     setTimeout(() => setMessage(null), 4000);
   }
 
-  async function handleSaveGrade(grade: GradeRecord, field: string, value: string) {
-    const num = value === '' ? null : Number(value);
-    if (value !== '' && (num === null || isNaN(num))) {
+  async function handleSaveGrade(grade: GradeRecord, field: RawGradeField | 'notes', value: string) {
+    const num = field === 'notes' ? null : value === '' ? null : Number(value);
+    if (field !== 'notes' && value !== '' && (num === null || isNaN(num))) {
       setMessage({ text: `القيمة في حقل ${fieldNameArabic(field)} ليست رقمًا صحيحًا`, type: 'error' });
       setTimeout(() => setMessage(null), 3000);
       return;
     }
-    if (num !== null && settings && (num < 0 || num > settings.max_grade)) {
+    if (field !== 'notes' && num !== null && settings && (num < 0 || num > settings.max_grade)) {
       setMessage({ text: `القيمة يجب أن تكون بين ٠ و ${toArabicDigits(String(settings.max_grade))}`, type: 'error' });
       setTimeout(() => setMessage(null), 3000);
       return;
@@ -243,44 +271,41 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
 
     if (schoolId == null) return;
     const isCurrent = captureSchoolRequest();
-    setSaveLoading((prev) => ({ ...prev, [grade.id]: true }));
-    const payload: Record<string, any> = { [field]: num };
-    const res = await updateGrade(grade.id, payload, schoolId);
-    if (!isCurrent()) return;
-    setSaveLoading((prev) => ({ ...prev, [grade.id]: false }));
+    const payload: Record<string, any> = { [field]: field === 'notes' ? value : num };
+    try {
+      await gradeSaveQueue.enqueue(grade.id, async () => {
+        if (!isCurrent()) return;
+        const res = await updateGrade(grade.id, payload, schoolId);
+        if (!isCurrent()) return;
 
-    if (res.error) {
-      setMessage({ text: res.error, type: 'error' });
-    } else {
-      await loadStudentGrades(selectedStudentId);
-      setMessage({ text: 'تم حفظ الدرجة بنجاح — اضغط Enter أو انقر خارج الحقل لحفظ القيمة', type: 'success' });
+        if (res.error) {
+          setMessage({ text: res.error, type: 'error' });
+          setTimeout(() => setMessage(null), 3000);
+          return;
+        }
+
+        if (!res.data || Number(res.data.id) !== grade.id) {
+          setMessage({ text: 'تعذر تحديث الدرجة من استجابة الخادم', type: 'error' });
+          setTimeout(() => setMessage(null), 3000);
+          return;
+        }
+
+        const updated = { ...res.data, id: Number(res.data.id) } as Partial<GradeRecord> & Pick<GradeRecord, 'id'>;
+        setGrades((current) => mergeUpdatedRow(current, updated));
+      });
+    } catch {
+      if (!isCurrent()) return;
+      setMessage({ text: 'فشل حفظ الدرجة، يرجى المحاولة مرة أخرى', type: 'error' });
+      setTimeout(() => setMessage(null), 3000);
     }
-    setTimeout(() => setMessage(null), 3000);
   }
 
   function fieldNameArabic(field: string): string {
     const map: Record<string, string> = {
-      first_month: 'الشهر الأول',
-      second_month: 'الشهر الثاني',
-      third_month: 'الشهر الثالث',
-      fourth_month: 'الشهر الرابع',
-      mid_year_exam: 'نصف السنة',
-      final_exam: 'الامتحان النهائي',
-      completion_exam: 'درجة الإكمال',
+      ...RAW_GRADE_FIELD_LABELS,
       notes: 'ملاحظات',
     };
     return map[field] || field;
-  }
-
-  function statusBadge(status: string | null) {
-    if (!status) return <span className="text-gray-400">—</span>;
-    const cls =
-      status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' :
-      status === 'راسب' ? 'bg-red-100 text-red-700' :
-      status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
-      status === 'معفى' ? 'bg-blue-100 text-blue-700' :
-      'bg-gray-100 text-gray-700';
-    return <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cls}`}>{status}</span>;
   }
 
   return (
@@ -355,122 +380,54 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-gray-600 text-xs">
-                  <th rowSpan={2} className="px-3 py-2 text-right font-medium border-b border-gray-200 align-middle">المادة</th>
-                  <th colSpan={3} className="px-2 py-1 text-center font-medium border-b border-gray-200 border-l border-gray-200 bg-blue-50/40">الفصل الأول</th>
-                  <th colSpan={3} className="px-2 py-1 text-center font-medium border-b border-gray-200 border-l border-gray-200 bg-emerald-50/40">الفصل الثاني</th>
-                  <th colSpan={3} className="px-2 py-1 text-center font-medium border-b border-gray-200 border-l border-gray-200 bg-amber-50/40">السنوي</th>
-                  <th colSpan={2} className="px-2 py-1 text-center font-medium border-b border-gray-200 border-l border-gray-200 bg-rose-50/40">النهائي</th>
-                  <th rowSpan={2} className="px-2 py-2 text-center font-medium border-b border-gray-200 w-20 align-middle">الحالة</th>
-                  <th rowSpan={2} className="px-2 py-2 text-center font-medium border-b border-gray-200 w-20 align-middle">ملاحظات</th>
-                </tr>
-                <tr className="bg-gray-50 text-gray-500 text-[10px]">
-                  {/* First term sub-columns */}
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الشهر ١</th>
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الشهر ٢</th>
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">نصف السنة</th>
-                  {/* Second term sub-columns */}
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الشهر ٣</th>
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الشهر ٤</th>
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">معدل الفصل</th>
-                  {/* Annual sub-columns */}
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">السعي</th>
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">النهائي</th>
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الدرجة</th>
-                  {/* Final sub-columns */}
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الإكمال</th>
-                  <th className="px-1 py-1 text-center font-medium border-b border-gray-200 w-20">الفعّالة</th>
+                  <th className="px-3 py-2 text-right font-medium border-b border-gray-200">المادة</th>
+                  {inputColumns.map((column) => (
+                    <th key={column.key} className="px-2 py-2 text-center font-medium border-b border-gray-200 min-w-24">
+                      {column.label}{!column.editable && <span className="block text-[9px] text-gray-400">محسوب</span>}
+                    </th>
+                  ))}
+                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 min-w-20">السعي السنوي</th>
+                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 min-w-20">الدرجة النهائية</th>
+                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 min-w-20">الدرجة الفعّالة</th>
+                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 min-w-20">الحالة</th>
+                  <th className="px-2 py-2 text-center font-medium border-b border-gray-200 min-w-24">ملاحظات</th>
                 </tr>
               </thead>
               <tbody>
                 {grades.map((g) => (
                   <tr key={g.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-3 py-2 border-b border-gray-100 font-medium text-gray-900">{g.subject_name}</td>
-                    {/* First term: editable */}
-                    {(['first_month','second_month','mid_year_exam'] as const).map((field) => (
-                      <td key={field} className="px-1 py-1 border-b border-gray-100">
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          defaultValue={displayNum(g[field] as any)}
-                          onBlur={(e) => {
-                            const val = e.target.value.trim();
-                            const current = g[field] === null ? '' : toArabicDigits(String(g[field]));
-                            if (val !== current) handleSaveGrade(g, field, val);
-                          }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                          className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
-                          placeholder="—"
-                        />
+                    {inputColumns.map((column) => (
+                      <td key={column.key} className={`px-1 py-1 border-b border-gray-100 ${column.editable ? '' : 'text-center text-gray-600 font-medium bg-gray-50/50'}`}>
+                        {column.editable ? (
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            defaultValue={displayNum(g[column.key])}
+                            onBlur={(e) => {
+                              const field = column.key as RawGradeField;
+                              const val = e.target.value.trim();
+                              const current = g[field] === null ? '' : toArabicDigits(String(g[field]));
+                              if (val !== current) void handleSaveGrade(g, field, val);
+                            }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                            className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                            placeholder="—"
+                          />
+                        ) : displayNum(g[column.key])}
                       </td>
                     ))}
-                    {/* Second term: editable */}
-                    {(['third_month','fourth_month'] as const).map((field) => (
-                      <td key={field} className="px-1 py-1 border-b border-gray-100">
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          defaultValue={displayNum(g[field] as any)}
-                          onBlur={(e) => {
-                            const val = e.target.value.trim();
-                            const current = g[field] === null ? '' : toArabicDigits(String(g[field]));
-                            if (val !== current) handleSaveGrade(g, field, val);
-                          }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                          className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
-                          placeholder="—"
-                        />
-                      </td>
-                    ))}
-                    {/* Second term average: read-only */}
-                    <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.second_term_average)}</td>
-                    {/* Annual: read-only effort */}
                     <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-amber-50/30">{displayNum(g.annual_effort)}</td>
-                    {/* Final exam: editable */}
-                    <td className="px-1 py-1 border-b border-gray-100">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        defaultValue={displayNum(g.final_exam as any)}
-                        onBlur={(e) => {
-                          const val = e.target.value.trim();
-                          const current = g.final_exam === null ? '' : toArabicDigits(String(g.final_exam));
-                          if (val !== current) handleSaveGrade(g, 'final_exam', val);
-                        }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                        className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
-                        placeholder="—"
-                      />
-                    </td>
-                    {/* Final grade: read-only */}
                     <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-amber-50/30">{displayNum(g.final_grade)}</td>
-                    {/* Completion exam: editable */}
-                    <td className="px-1 py-1 border-b border-gray-100">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        defaultValue={displayNum(g.completion_exam as any)}
-                        onBlur={(e) => {
-                          const val = e.target.value.trim();
-                          const current = g.completion_exam === null ? '' : toArabicDigits(String(g.completion_exam));
-                          if (val !== current) handleSaveGrade(g, 'completion_exam', val);
-                        }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                        className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
-                        placeholder="—"
-                      />
-                    </td>
-                    {/* Effective grade: read-only (same as completion or final) */}
                     <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-rose-50/30">{displayNum(g.effective_grade ?? g.final_grade)}</td>
-                    {/* Status */}
-                    <td className="px-2 py-2 border-b border-gray-100 text-center">{statusBadge(g.result_status)}</td>
-                    {/* Notes */}
+                    <td className="px-2 py-2 border-b border-gray-100 text-center">{statusBadge(displayGradeStatus(g.result_status, g.exemption_status))}</td>
                     <td className="px-1 py-1 border-b border-gray-100">
                       <input
                         type="text"
                         defaultValue={g.notes || ''}
                         onBlur={(e) => {
                           const val = e.target.value.trim();
-                          if (val !== (g.notes || '')) handleSaveGrade(g, 'notes', val);
+                          if (val !== (g.notes || '')) void handleSaveGrade(g, 'notes', val);
                         }}
                         className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
                         placeholder="—"
@@ -482,15 +439,8 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
             </table>
           </div>
           <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-500 space-y-1">
-            <p className="flex flex-wrap gap-x-3 gap-y-1">
-              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400 inline-block"></span> الفصل الأول: الشهر ١ + الشهر ٢ + نصف السنة</span>
-              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span> الفصل الثاني: الشهر ٣ + الشهر ٤</span>
-              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400 inline-block"></span> السعي السنوي = معدل الفصل الأول + معدل الفصل الثاني</span>
-            </p>
-            <p className="flex flex-wrap gap-x-3 gap-y-1">
-              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-rose-400 inline-block"></span> الدرجة الفعّالة = النهائي (أو الإكمال إذا أقل من النجاح)</span>
-              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-gray-300 inline-block"></span> الحقول الرمادية تُحسب تلقائيًا</span>
-            </p>
+            <p>{gradeSchemeSummary(settings)}</p>
+            <p>لا تُحسب النتائج حتى تكتمل جميع مكونات النظام المفعّلة. الحقول الرمادية تُحسب تلقائيًا.</p>
           </div>
         </div>
       )}
@@ -510,7 +460,8 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
   const [selectedSectionId, setSelectedSectionId] = useState('');
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
   const [grades, setGrades] = useState<GradeRecord[]>([]);
-  const [fieldToEdit, setFieldToEdit] = useState<string>('first_month');
+  const [settings, setSettings] = useState<GradeSettings | null>(null);
+  const [fieldToEdit, setFieldToEdit] = useState<string>('');
   const [edits, setEdits] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(false);
   const [initLoading, setInitLoading] = useState(false);
@@ -518,15 +469,7 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
 
-  const editableFields = [
-    { key: 'first_month', label: 'الشهر الأول' },
-    { key: 'second_month', label: 'الشهر الثاني' },
-    { key: 'mid_year_exam', label: 'نصف السنة' },
-    { key: 'third_month', label: 'الشهر الثالث' },
-    { key: 'fourth_month', label: 'الشهر الرابع' },
-    { key: 'final_exam', label: 'الامتحان النهائي' },
-    { key: 'completion_exam', label: 'درجة الإكمال' },
-  ];
+  const editableFields = useMemo(() => settings ? gradeInputColumns(settings).filter(column => column.editable) : [], [settings]);
 
   useEffect(() => {
     setClasses([]);
@@ -536,6 +479,8 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
     setSelectedSectionId('');
     setSelectedSubjectId('');
     setGrades([]);
+    setSettings(null);
+    setFieldToEdit('');
     setEdits({});
     setLoading(false);
     setInitLoading(false);
@@ -544,7 +489,15 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
     setShowConfirm(false);
     void loadClasses();
     void loadSubjects();
+    void loadSettings();
   }, [schoolId]);
+  useEffect(() => {
+    if (!editableFields.some(field => field.key === fieldToEdit)) {
+      setFieldToEdit(editableFields[0]?.key || '');
+      setEdits({});
+      setShowConfirm(false);
+    }
+  }, [editableFields, fieldToEdit]);
   useEffect(() => {
     if (selectedClassId) loadSections(selectedClassId);
     else { setSections([]); setSelectedSectionId(''); }
@@ -570,6 +523,14 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
     const res = await getSubjects(schoolId, null, null);
     if (!isCurrent()) return;
     if (res.data) setSubjects(res.data as SubjectRecord[]);
+  }
+  async function loadSettings() {
+    if (schoolId == null) { setSettings(null); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getGradeSettings(schoolId);
+    if (!isCurrent()) return;
+    const data = Array.isArray(res.data) ? res.data[0] : res.data;
+    setSettings(data ? data as GradeSettings : null);
   }
 
   async function loadGrades() {
@@ -614,6 +575,10 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
   }
 
   function handleBulkSave() {
+    if (!fieldToEdit) {
+      setMessage({ text: 'لا توجد حقول درجات مفعّلة للإدخال', type: 'error' });
+      return;
+    }
     const entries = Object.entries(edits)
       .filter(([, v]) => v !== '')
       .map(([gradeId, value]) => ({
@@ -700,7 +665,8 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
         </div>
         <div className="w-40">
           <label className="block text-xs font-medium text-gray-700 mb-1">الحقل</label>
-          <select value={fieldToEdit} onChange={(e) => setFieldToEdit(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+          <select value={fieldToEdit} onChange={(e) => { setFieldToEdit(e.target.value); setEdits({}); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!editableFields.length}>
+            {!editableFields.length && <option value="">لا توجد حقول مفعّلة</option>}
             {editableFields.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
           </select>
         </div>
@@ -717,7 +683,7 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-sm text-gray-600">{toArabicDigits(String(grades.length))} طالب</p>
-            <button onClick={handleBulkSave} disabled={saveLoading || Object.keys(edits).filter((k) => edits[Number(k)] !== '').length === 0} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50">
+            <button onClick={handleBulkSave} disabled={saveLoading || !fieldToEdit || Object.keys(edits).filter((k) => edits[Number(k)] !== '').length === 0} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50">
               {saveLoading ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
               حفظ الجميع
             </button>
@@ -749,14 +715,7 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
                       </td>
                       <td className="px-2 py-2 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.annual_effort)}</td>
                       <td className="px-2 py-2 border-b border-gray-100 text-center">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                          g.result_status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' :
-                          g.result_status === 'راسب' ? 'bg-red-100 text-red-700' :
-                          g.result_status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
-                          'bg-gray-100 text-gray-700'
-                        }`}>
-                          {g.result_status || '—'}
-                        </span>
+                        {statusBadge(displayGradeStatus(g.result_status, g.exemption_status))}
                       </td>
                     </tr>
                   ))}
@@ -783,7 +742,6 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
 function SettingsTab({ schoolId }: { schoolId: number | null }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const { user } = useAuth();
-  const isTeacher = user?.role_key === 'teacher';
   const canEdit = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
   const [settings, setSettings] = useState<GradeSettings | null>(null);
   const [loading, setLoading] = useState(false);
@@ -815,13 +773,15 @@ function SettingsTab({ schoolId }: { schoolId: number | null }) {
     }
     const data = Array.isArray(res.data) ? res.data[0] : res.data;
     if (data) {
-      setSettings(data as GradeSettings);
+      const scheme = normalizeGradeSchemeSettings(data);
+      setSettings({ ...data, ...scheme } as GradeSettings);
       setForm({
         max_grade: String(data.max_grade ?? 100),
         passing_grade: String(data.passing_grade ?? 50),
         exemption_grade: String(data.exemption_grade ?? 90),
         general_exemption_average_grade: String(data.general_exemption_average_grade ?? 85),
         general_exemption_min_subject_grade: String(data.general_exemption_min_subject_grade ?? 75),
+        ...scheme,
       });
     } else {
       setSettings(null);
@@ -848,6 +808,8 @@ function SettingsTab({ schoolId }: { schoolId: number | null }) {
     if (generalAvg > maxGrade) { setMessage({ text: 'متوسط الإعفاء العام يجب أن يكون ≤ الدرجة العظمى', type: 'error' }); return; }
     if (generalMin < passingGrade) { setMessage({ text: 'أدنى درجة للإعفاء العام يجب أن تكون ≥ درجة النجاح', type: 'error' }); return; }
     if (generalMin > generalAvg) { setMessage({ text: 'أدنى درجة للإعفاء العام يجب أن تكون ≤ متوسط الإعفاء العام', type: 'error' }); return; }
+    const schemeError = validateGradeSchemeSettings(form);
+    if (schemeError) { setMessage({ text: schemeError, type: 'error' }); return; }
 
     setSaving(true);
     const isCurrent = captureSchoolRequest();
@@ -857,6 +819,11 @@ function SettingsTab({ schoolId }: { schoolId: number | null }) {
       exemption_grade: exemptionGrade,
       general_exemption_average_grade: generalAvg,
       general_exemption_min_subject_grade: generalMin,
+      first_term_input_mode: form.first_term_input_mode,
+      second_term_input_mode: form.second_term_input_mode,
+      mid_year_exam_enabled: form.mid_year_exam_enabled,
+      final_exam_enabled: form.final_exam_enabled,
+      completion_exam_enabled: form.completion_exam_enabled,
     };
     const res = await updateGradeSettings(payload, schoolId);
     if (!isCurrent()) return;
@@ -867,7 +834,7 @@ function SettingsTab({ schoolId }: { schoolId: number | null }) {
       const apiMessage = (res.data as any)?.message || 'تم حفظ إعدادات الدرجات بنجاح';
       setMessage({ text: apiMessage, type: 'success' });
       const data = Array.isArray(res.data) ? res.data[0] : res.data;
-      if (data) setSettings(data as GradeSettings);
+      if (data) setSettings({ ...data, ...normalizeGradeSchemeSettings(data) } as GradeSettings);
     }
     setTimeout(() => setMessage(null), 4000);
   }
@@ -893,29 +860,72 @@ function SettingsTab({ schoolId }: { schoolId: number | null }) {
             <p className="text-sm text-gray-500">تُستخدم هذه القيم لحساب النتائج والإعفاءات</p>
           </div>
 
+          <div className="rounded-lg border border-primary-100 bg-primary-50/40 p-4 space-y-4">
+            <div>
+              <h4 className="text-sm font-bold text-gray-900">نظام إدخال الدرجات</h4>
+              <p className="text-xs text-gray-500 mt-1">اختر المكونات التي تعتمدها المدرسة. لا تُحتسب المكونات المعطّلة.</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {(['first_term_input_mode', 'second_term_input_mode'] as const).map((key, index) => (
+                <div key={key}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">إدخال الفصل {index === 0 ? 'الأول' : 'الثاني'}</label>
+                  <select
+                    value={form[key]}
+                    disabled={!canEdit}
+                    onChange={(event) => setForm(current => ({ ...current, [key]: event.target.value as GradeTermInputMode }))}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white disabled:bg-gray-100"
+                  >
+                    <option value="monthly">شهري: الشهر {index === 0 ? 'الأول + الشهر الثاني' : 'الثالث + الشهر الرابع'}</option>
+                    <option value="direct">درجة فصل مباشرة</option>
+                    <option value="disabled">غير مستخدم</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {([
+                ['mid_year_exam_enabled', 'امتحان نصف السنة'],
+                ['final_exam_enabled', 'امتحان نهاية السنة'],
+                ['completion_exam_enabled', 'امتحان الإكمال'],
+              ] as const).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={form[key] === 1}
+                    disabled={!canEdit}
+                    onChange={(event) => setForm(current => ({ ...current, [key]: event.target.checked ? 1 : 0 }))}
+                    className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-primary-800 leading-6"><strong>الملخص:</strong> {gradeSchemeSummary(form)}</p>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">الدرجة العظمى</label>
-              <input type="number" value={form.max_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, max_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
+              <input type="number" value={form.max_grade} disabled={!canEdit} onChange={(e) => setForm((f) => ({ ...f, max_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">درجة النجاح</label>
-              <input type="number" value={form.passing_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, passing_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
+              <input type="number" value={form.passing_grade} disabled={!canEdit} onChange={(e) => setForm((f) => ({ ...f, passing_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">درجة الإعفاء الفردي (المادة)</label>
-              <input type="number" value={form.exemption_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, exemption_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
+              <input type="number" value={form.exemption_grade} disabled={!canEdit} onChange={(e) => setForm((f) => ({ ...f, exemption_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
               <p className="text-xs text-gray-500 mt-1">إذا كان السعي السنوي ≥ هذه القيمة ⇒ معفى فرديًا</p>
             </div>
             <div />
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">متوسط الإعفاء العام</label>
-              <input type="number" value={form.general_exemption_average_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, general_exemption_average_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
+              <input type="number" value={form.general_exemption_average_grade} disabled={!canEdit} onChange={(e) => setForm((f) => ({ ...f, general_exemption_average_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
               <p className="text-xs text-gray-500 mt-1">متوسط السعي السنوي لجميع المواد يجب أن يكون ≥ هذه القيمة</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">أدنى درجة للإعفاء العام (لكل مادة)</label>
-              <input type="number" value={form.general_exemption_min_subject_grade} disabled={isTeacher} onChange={(e) => setForm((f) => ({ ...f, general_exemption_min_subject_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
+              <input type="number" value={form.general_exemption_min_subject_grade} disabled={!canEdit} onChange={(e) => setForm((f) => ({ ...f, general_exemption_min_subject_grade: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100 disabled:text-gray-500" />
               <p className="text-xs text-gray-500 mt-1">أدنى سعي سنوي بين جميع المواد يجب أن يكون ≥ هذه القيمة</p>
             </div>
           </div>
@@ -939,6 +949,7 @@ function SettingsTab({ schoolId }: { schoolId: number | null }) {
             <div className="bg-gray-50 rounded-lg p-4 text-xs text-gray-600 space-y-1">
               <p><strong>الحالي:</strong> الدرجة العظمى = {toArabicDigits(String(settings.max_grade))} | النجاح = {toArabicDigits(String(settings.passing_grade))} | الإعفاء الفردي = {toArabicDigits(String(settings.exemption_grade))}</p>
               <p>الإعفاء العام: متوسط ≥ {toArabicDigits(String(settings.general_exemption_average_grade))} | أدنى مادة ≥ {toArabicDigits(String(settings.general_exemption_min_subject_grade))}</p>
+              <p>{gradeSchemeSummary(settings)}</p>
             </div>
           )}
         </div>
@@ -1025,7 +1036,7 @@ function HistoryTab({ schoolId }: { schoolId: number | null }) {
               className={`text-right p-3 rounded-lg border transition-colors ${selectedGradeId === g.id ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'}`}
             >
               <p className="font-medium text-sm text-gray-900">{g.subject_name}</p>
-              <p className="text-xs text-gray-500 mt-1">السعي السنوي: {displayNum(g.annual_effort)} | الحالة: {g.result_status || '—'}</p>
+              <p className="text-xs text-gray-500 mt-1">السعي السنوي: {displayNum(g.annual_effort)} | الحالة: {displayGradeStatus(g.result_status, g.exemption_status) || '—'}</p>
             </button>
           ))}
         </div>
@@ -1076,13 +1087,7 @@ function HistoryTab({ schoolId }: { schoolId: number | null }) {
 
 function fieldLabel(name: string): string {
   const map: Record<string, string> = {
-    first_month: 'الشهر الأول',
-    second_month: 'الشهر الثاني',
-    third_month: 'الشهر الثالث',
-    fourth_month: 'الشهر الرابع',
-    mid_year_exam: 'نصف السنة',
-    final_exam: 'الامتحان النهائي',
-    completion_exam: 'درجة الإكمال',
+    ...RAW_GRADE_FIELD_LABELS,
     notes: 'ملاحظات',
   };
   return map[name] || name;

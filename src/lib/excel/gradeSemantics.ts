@@ -19,17 +19,25 @@ type GradeFieldDefinition = {
 
 export const GRADE_FIELD_DEFINITIONS: Partial<Record<GradeSemanticField, GradeFieldDefinition>> = {
   subject_name: { kind: 'subject', aliases: ['المادة', 'اسم المادة', 'subject', 'subject name'] },
+  first_term_grade: {
+    kind: 'raw_grade',
+    aliases: ['درجة الفصل الاول', 'الفصل الاول', 'first_term_grade', 'first term', 'first term grade', 'term 1'],
+  },
   first_month: {
     kind: 'raw_grade',
-    aliases: ['درجة الفصل الاول', 'الفصل الاول', 'السعي الاول', 'الشهر الاول', 'first_month', 'first term', 'first term grade', 'term 1'],
+    aliases: ['السعي الاول', 'الشهر الاول', 'الشهر 1', 'الشهر ١', 'first_month', 'first month', 'first effort'],
   },
   second_month: {
     kind: 'raw_grade',
     aliases: ['السعي الثاني', 'الشهر الثاني', 'second_month', 'second month', 'second effort'],
   },
+  second_term_grade: {
+    kind: 'raw_grade',
+    aliases: ['درجة الفصل الثاني', 'الفصل الثاني', 'second_term_grade', 'second term', 'second term grade', 'term 2'],
+  },
   third_month: {
     kind: 'raw_grade',
-    aliases: ['درجة الفصل الثاني', 'الفصل الثاني', 'السعي الثالث', 'الشهر الثالث', 'third_month', 'second term', 'second term grade', 'term 2'],
+    aliases: ['السعي الثالث', 'الشهر الثالث', 'الشهر 3', 'الشهر ٣', 'third_month', 'third month', 'third effort'],
   },
   fourth_month: {
     kind: 'raw_grade',

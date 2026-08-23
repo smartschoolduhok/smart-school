@@ -1,6 +1,13 @@
+import {
+  normalizeGradeSchemeSettings,
+  type GradeSchemeSettings,
+} from './gradeScheme.ts';
+
 export interface RawGradeValues {
+  first_term_grade?: number | null;
   first_month?: number | null;
   second_month?: number | null;
+  second_term_grade?: number | null;
   third_month?: number | null;
   fourth_month?: number | null;
   mid_year_exam?: number | null;
@@ -8,7 +15,7 @@ export interface RawGradeValues {
   completion_exam?: number | null;
 }
 
-export interface GradeCalculationSettings {
+export interface GradeCalculationSettings extends Partial<GradeSchemeSettings> {
   passing_grade: number;
   exemption_grade: number;
   max_grade: number;
@@ -32,40 +39,59 @@ function roundGrade(value: number | null | undefined): number | null {
   return Math.round(value);
 }
 
-function average(values: Array<number | null | undefined>): number | null {
-  const valid = values.filter(value => value !== null && value !== undefined && !Number.isNaN(value)) as number[];
-  if (!valid.length) return null;
-  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+function completeAverage(values: Array<number | null | undefined>): number | null {
+  if (!values.length || values.some(value => value === null || value === undefined || Number.isNaN(value))) return null;
+  return (values as number[]).reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 export function calculateGrades(
   grade: RawGradeValues,
   settings: GradeCalculationSettings,
 ): CalculatedGradeValues {
-  const firstTermAverage = roundGrade(average([grade.first_month, grade.second_month]));
-  const secondTermAverage = roundGrade(average([grade.third_month, grade.fourth_month]));
-  const annualEffort = roundGrade(average([firstTermAverage, grade.mid_year_exam, secondTermAverage]));
-  const finalGrade = roundGrade(average([annualEffort, grade.final_exam]));
+  const scheme = normalizeGradeSchemeSettings(settings);
+  const firstTermAverage = scheme.first_term_input_mode === 'monthly'
+    ? roundGrade(completeAverage([grade.first_month, grade.second_month]))
+    : scheme.first_term_input_mode === 'direct'
+      ? roundGrade(grade.first_term_grade)
+      : null;
+  const secondTermAverage = scheme.second_term_input_mode === 'monthly'
+    ? roundGrade(completeAverage([grade.third_month, grade.fourth_month]))
+    : scheme.second_term_input_mode === 'direct'
+      ? roundGrade(grade.second_term_grade)
+      : null;
+  const annualComponents: Array<number | null | undefined> = [];
+  if (scheme.first_term_input_mode !== 'disabled') annualComponents.push(firstTermAverage);
+  if (scheme.mid_year_exam_enabled) annualComponents.push(grade.mid_year_exam);
+  if (scheme.second_term_input_mode !== 'disabled') annualComponents.push(secondTermAverage);
+  const annualEffort = roundGrade(completeAverage(annualComponents));
 
   let gradeAfterCompletion: number | null = null;
   let effectiveGrade: number | null = null;
   let resultStatus: string | null = null;
   let exemptionStatus = 0;
 
+  exemptionStatus = scheme.final_exam_enabled && annualEffort !== null && annualEffort >= settings.exemption_grade ? 1 : 0;
+  const finalGrade = annualEffort === null
+    ? null
+    : exemptionStatus === 1 || !scheme.final_exam_enabled
+      ? annualEffort
+      : roundGrade(completeAverage([annualEffort, grade.final_exam]));
+
   if (finalGrade !== null) {
-    if (finalGrade >= settings.passing_grade) {
+    if (exemptionStatus === 1 || finalGrade >= settings.passing_grade) {
       effectiveGrade = finalGrade;
       resultStatus = 'ناجح';
-    } else if (grade.completion_exam != null) {
+    } else if (!scheme.completion_exam_enabled) {
+      effectiveGrade = finalGrade;
+      resultStatus = 'راسب';
+    } else if (grade.completion_exam == null || Number.isNaN(grade.completion_exam)) {
+      effectiveGrade = finalGrade;
+      resultStatus = 'مكمل';
+    } else {
       gradeAfterCompletion = Math.max(finalGrade, grade.completion_exam);
       effectiveGrade = gradeAfterCompletion;
       resultStatus = effectiveGrade >= settings.passing_grade ? 'ناجح' : 'راسب';
-    } else {
-      effectiveGrade = finalGrade;
-      resultStatus = 'مكمل';
     }
-
-    if (annualEffort !== null && annualEffort >= settings.exemption_grade) exemptionStatus = 1;
   }
 
   return {
