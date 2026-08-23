@@ -1,79 +1,27 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { PrintLayout, usePrintExport } from '../../components/print';
+import {
+  ResultCardDocument,
+  type ResultCardDocumentRecord,
+} from '../../components/resultCards/ResultCardDocument';
 import { useAuth } from '../../hooks/useAuth';
 import { getResultCard, markResultCardPrinted } from '../../lib/api';
-import { toArabicDigits } from '../../lib/arabicDigits';
-import {
-  displayGradeStatus,
-  displayIndividualExemptionDetail,
-} from '../../lib/gradePresentation';
-import {
-  formatExemptionStatus,
-  formatUnixSecondsDate,
-  shouldRegisterResultCardPrint,
-  type ExemptionStatus,
-} from '../../lib/resultCardPrint';
 import {
   hasRole,
   RESULT_CARD_PRINT_ROLES,
   RESULT_CARD_VIEW_ROLES,
 } from '../../lib/rbac';
+import { shouldRegisterResultCardPrint } from '../../lib/resultCardPrint';
 import type { RoleKey } from '../../types';
-import {
-  PrintLayout,
-  DocumentHeader,
-  DocumentFooter,
-  QRBlock,
-  PrintableTable,
-  usePrintExport,
-} from '../../components/print';
-import type { PrintableTableColumn } from '../../components/print';
 
-interface SubjectRow {
-  subject_name: string;
-  annual_effort: number | null;
-  final_exam: number | null;
-  effective_grade: number | null;
-  result_status: string;
-  exemption_status: ExemptionStatus;
-}
-
-interface CardSummary {
-  annual_effort_average?: number | null;
-  min_annual_effort?: number | null;
-  overall_result_status?: string;
-}
-
-interface ResultCardDocumentSettings {
-  result_card_header_text?: string | null;
-  result_card_footer_text?: string | null;
-  verification_note_text?: string | null;
-  logo_url?: string | null;
-  official_stamp_url?: string | null;
-}
-
-interface CardData {
-  subjects?: SubjectRow[];
-  summary?: CardSummary;
-  document_settings?: ResultCardDocumentSettings;
-}
-
-interface CardRecord {
+interface CardRecord extends ResultCardDocumentRecord {
   id: number;
   school_id: number;
   card_number: string;
-  student_name_snapshot: string;
-  class_name_snapshot: string;
-  section_name_snapshot: string;
-  school_name_snapshot: string;
-  academic_year_snapshot: string;
-  general_exemption_status: ExemptionStatus;
-  overall_result_status: string;
-  generated_at: number | string;
-  printed_at: number | string | null;
   status: string;
   verification_token: string;
-  card_data_parsed?: CardData;
+  card_data_parsed?: Record<string, any>;
 }
 
 function canViewResultCards(roleKey?: RoleKey) {
@@ -82,20 +30,22 @@ function canViewResultCards(roleKey?: RoleKey) {
 
 export default function PrintResultCardPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { user, isLoading: authLoading } = useAuth();
   const [card, setCard] = useState<CardRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const documentSettings = card?.card_data_parsed?.document_settings ?? {};
-
+  const requestedSchoolId = Number(searchParams.get('school_id'));
+  const explicitSchoolId = Number.isInteger(requestedSchoolId) && requestedSchoolId > 0
+    ? requestedSchoolId
+    : null;
   const base = typeof window !== 'undefined' ? window.location.origin : '';
   const verificationUrl = card?.verification_token
     ? `${base}/verify/result-card/${card.verification_token}`
-    : '';
+    : null;
 
-  const { handlePrint, isPrinting } = usePrintExport({
+  const { handlePrint } = usePrintExport({
     documentTitle: card?.card_number ? `كارت نتيجة ${card.card_number}` : 'كارت نتيجة',
     onBeforePrint: async () => {
       if (!card || !shouldRegisterResultCardPrint(
@@ -105,7 +55,7 @@ export default function PrintResultCardPage() {
       try {
         await markResultCardPrinted(String(card.id), card.school_id);
       } catch {
-        // Non-blocking: print record is best-effort
+        // Printing remains available when the best-effort audit marker fails.
       }
     },
   });
@@ -114,14 +64,11 @@ export default function PrintResultCardPage() {
     if (!id) return;
     setLoading(true);
     setError(null);
-    const res = await getResultCard(id);
-    if (res.error) {
-      setError(res.error);
-    } else if (res.data) {
-      setCard(res.data as CardRecord);
-    }
+    const res = await getResultCard(id, explicitSchoolId);
+    if (res.error) setError(res.error);
+    else if (res.data) setCard(res.data as CardRecord);
     setLoading(false);
-  }, [id]);
+  }, [explicitSchoolId, id]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -134,49 +81,25 @@ export default function PrintResultCardPage() {
       setLoading(false);
       return;
     }
-    fetchCard();
-  }, [authLoading, user, navigate, fetchCard]);
-
-  const subjects = card?.card_data_parsed?.subjects || [];
-  const summary = card?.card_data_parsed?.summary || {};
-
-  const subjectColumns: PrintableTableColumn<any>[] = [
-    { key: 'subject_name', header: 'المادة', align: 'right' },
-    { key: 'annual_effort', header: 'السعي السنوي', align: 'center', render: (r) => toArabicDigits(String(r.annual_effort ?? '-')) },
-    { key: 'final_exam', header: 'النهائي', align: 'center', render: (r) => toArabicDigits(String(r.final_exam ?? '-')) },
-    { key: 'effective_grade', header: 'الدرجة الفعّالة', align: 'center', render: (r) => toArabicDigits(String(r.effective_grade ?? '-')) },
-    { key: 'result_status', header: 'الحالة', align: 'center', render: (r) => displayGradeStatus(r.result_status, r.exemption_status) ?? '-' },
-    { key: 'exemption_status', header: 'إعفاء', align: 'center', render: (r) => displayIndividualExemptionDetail(r.exemption_status) },
-  ];
+    if (user.role_key === 'system_admin' && explicitSchoolId == null) {
+      setError('يجب فتح الكارت من مدرسة محددة');
+      setLoading(false);
+      return;
+    }
+    void fetchCard();
+  }, [authLoading, explicitSchoolId, fetchCard, navigate, user]);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-100">
-        <div className="text-gray-600">جاري التحميل...</div>
-      </div>
-    );
+    return <div className="flex min-h-screen items-center justify-center bg-gray-100 text-gray-600">جاري التحميل...</div>;
   }
 
-  if (error) {
+  if (error || !card) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-100">
-        <div className="bg-white p-6 rounded-xl shadow text-center">
-          <div className="text-red-600 font-bold mb-2">{error}</div>
-          <button
-            onClick={() => navigate(-1)}
-            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded text-sm"
-          >
-            رجوع
-          </button>
+      <div className="flex min-h-screen items-center justify-center bg-gray-100">
+        <div className="rounded-xl bg-white p-6 text-center shadow">
+          <div className="mb-2 font-bold text-red-600">{error || 'كارت النتيجة غير موجود'}</div>
+          <button onClick={() => navigate(-1)} className="rounded bg-gray-100 px-4 py-2 text-sm hover:bg-gray-200">رجوع</button>
         </div>
-      </div>
-    );
-  }
-
-  if (!card) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-100">
-        <div className="text-gray-600">كارت النتيجة غير موجود</div>
       </div>
     );
   }
@@ -185,64 +108,15 @@ export default function PrintResultCardPage() {
     <PrintLayout
       onPrint={handlePrint}
       backButton={
-        <button
-          onClick={() => navigate(-1)}
-          className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-md text-sm"
-        >
+        <button onClick={() => navigate(-1)} className="rounded-md bg-gray-100 px-3 py-2 text-sm hover:bg-gray-200">
           رجوع
         </button>
       }
     >
-      <DocumentHeader
-        schoolName={card.school_name_snapshot}
-        logoUrl={documentSettings.logo_url ?? null}
-        headerText={documentSettings.result_card_header_text ?? null}
-        title="كارت النتيجة"
-        subtitle={`العام الدراسي: ${toArabicDigits(card.academic_year_snapshot)}`}
-      />
-
-      <div className="grid grid-cols-2 gap-4 text-sm mb-4">
-        <div><span className="font-semibold">رقم الكارت:</span> {toArabicDigits(card.card_number)}</div>
-        <div><span className="font-semibold">الطالب:</span> {card.student_name_snapshot}</div>
-        <div><span className="font-semibold">الصف:</span> {card.class_name_snapshot}</div>
-        <div><span className="font-semibold">الفصل:</span> {card.section_name_snapshot}</div>
-      </div>
-
-      {card.status === 'cancelled' && (
-        <div className="bg-red-100 text-red-700 text-center font-bold py-2 mb-4 rounded">
-          كارت ملغى — غير صالح للاستخدام الرسمي
-        </div>
-      )}
-
-      <div className="mb-4">
-        <PrintableTable
-          columns={subjectColumns}
-          data={subjects}
-          caption="تفاصيل الدرجات"
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 text-sm mb-4">
-        <div><span className="font-semibold">متوسط السعي السنوي:</span> {toArabicDigits(String(summary.annual_effort_average ?? '-'))}</div>
-        <div><span className="font-semibold">أدنى سعي سنوي:</span> {toArabicDigits(String(summary.min_annual_effort ?? '-'))}</div>
-        <div><span className="font-semibold">النتيجة العامة:</span> {summary.overall_result_status || card.overall_result_status || '-'}</div>
-        <div><span className="font-semibold">حالة الإعفاء العام:</span> {formatExemptionStatus(card.general_exemption_status, 'general')}</div>
-      </div>
-
-      <div className="flex items-center justify-between mt-6">
-        <QRBlock url={verificationUrl} label="امسح للتحقق من صحة الكارت" />
-        <div className="text-sm text-gray-600">
-          <div>تاريخ الإصدار: {toArabicDigits(formatUnixSecondsDate(card.generated_at))}</div>
-          {card.printed_at && (
-            <div>تاريخ أول طباعة: {toArabicDigits(formatUnixSecondsDate(card.printed_at))}</div>
-          )}
-        </div>
-      </div>
-
-      <DocumentFooter
-        footerText={documentSettings.result_card_footer_text ?? null}
-        stampUrl={documentSettings.official_stamp_url ?? null}
-        verificationNote={documentSettings.verification_note_text ?? undefined}
+      <ResultCardDocument
+        card={card}
+        data={card.card_data_parsed}
+        verificationUrl={verificationUrl}
       />
     </PrintLayout>
   );

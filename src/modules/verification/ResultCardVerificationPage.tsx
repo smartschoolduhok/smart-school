@@ -16,6 +16,9 @@ interface VerifyResult {
   status?: string;
   overall_result_status?: string;
   general_exemption_status?: boolean;
+  card_mode?: 'partial' | 'complete';
+  decision_note?: string | null;
+  verification_note?: string | null;
 }
 
 export default function ResultCardVerificationPage() {
@@ -162,21 +165,32 @@ export default function ResultCardVerificationPage() {
                 </div>
                 <div className="text-center p-3 bg-gray-50 rounded-xl">
                   <p className="text-xs text-gray-500 mb-1">النتيجة العامة</p>
-                  <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${result.overall_result_status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' : result.overall_result_status === 'راسب' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-700'}`}>
+                  <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${result.overall_result_status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' : result.overall_result_status === 'راسب' ? 'bg-red-100 text-red-700' : result.overall_result_status === 'غير مكتمل' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'}`}>
                     {result.overall_result_status || '---'}
                   </span>
                 </div>
                 <div className="text-center p-3 bg-gray-50 rounded-xl">
-                  <p className="text-xs text-gray-500 mb-1">الاعفاء العام</p>
+                  <p className="text-xs text-gray-500 mb-1">الإعفاء العام</p>
                   <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${result.general_exemption_status ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-700'}`}>
-                    {result.general_exemption_status ? 'مُعفى' : 'غير مُعفى'}
+                    {result.general_exemption_status ? 'معفى عام' : '—'}
                   </span>
                 </div>
               </div>
 
+              {result.decision_note && (
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                  <p className="mb-1 text-xs text-gray-500">الملاحظة / القرار</p>
+                  <p className="whitespace-pre-line text-sm font-medium text-gray-900">{result.decision_note}</p>
+                </div>
+              )}
+
+              {result.verification_note && (
+                <p className="text-center text-xs text-gray-500">{result.verification_note}</p>
+              )}
+
               <div className="border-t border-gray-100 pt-4 text-center">
                 <p className="text-xs text-gray-400">
-                  تم إصدار البطاقة: {result.generated_at ? new Date(result.generated_at).toLocaleString('ar-SA') : '---'}
+                  تم إصدار البطاقة: {result.generated_at ? new Date(Number(result.generated_at) * 1000).toLocaleString('ar-SA') : '---'}
                 </p>
               </div>
             </div>

@@ -492,15 +492,45 @@ export function getResultCards(filters?: {
   return fetchApi<Array<Record<string, any>>>(`/api/result-cards${qs}`);
 }
 
-export function getResultCard(id: number | string) {
-  return fetchApi<Record<string, any>>(`/api/result-cards/${id}`);
+export function getResultCard(id: number | string, schoolId?: number | null) {
+  const qs = schoolId != null ? `?school_id=${schoolId}` : '';
+  return fetchApi<Record<string, any>>(`/api/result-cards/${id}${qs}`);
 }
 
-export function generateStudentResultCard(studentId: number | string, schoolId: number) {
-  return fetchApi<Record<string, any>>(`/api/result-cards/generate-student/${studentId}`, { method: 'POST', body: JSON.stringify({ school_id: schoolId }) });
+export interface ResultCardIssueOptions {
+  decision_note?: string | null;
+  exam_round?: string;
 }
 
-export function generateSectionResultCards(data: { school_id: number; class_id: number; section_id: number }) {
+export function previewStudentResultCard(
+  studentId: number | string,
+  schoolId: number,
+  options: ResultCardIssueOptions = {},
+) {
+  return fetchApi<Record<string, any>>(`/api/result-cards/preview-student/${studentId}`, {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, ...options }),
+  });
+}
+
+export function generateStudentResultCard(
+  studentId: number | string,
+  schoolId: number,
+  options: ResultCardIssueOptions = {},
+) {
+  return fetchApi<Record<string, any>>(`/api/result-cards/generate-student/${studentId}`, {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, ...options }),
+  });
+}
+
+export function generateSectionResultCards(data: {
+  school_id: number;
+  class_id: number;
+  section_id: number;
+  decision_note?: string | null;
+  exam_round?: string;
+}) {
   return fetchApi<Record<string, any>>('/api/result-cards/generate-section', { method: 'POST', body: JSON.stringify(data) });
 }
 

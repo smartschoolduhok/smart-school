@@ -57,11 +57,21 @@ import { normalizeSectionName, RAW_GRADE_FIELDS, type RawGradeField } from './li
 import { calculateGrades, type RawGradeValues } from './lib/gradeCalculations'
 import { RECALCULATE_SCHOOL_GRADES_SQL } from './lib/gradeRecalculationSql'
 import {
+  DEFAULT_GRADE_SCHEME_SETTINGS,
   disabledRawGradeFields,
   normalizeGradeSchemeSettings,
   RAW_GRADE_FIELD_LABELS,
   validateGradeSchemeSettings,
 } from './lib/gradeScheme'
+import {
+  buildResultCardColumns,
+  normalizeResultCardDecisionNote,
+  normalizeResultCardDisplaySettings,
+  parseResultCardDisplaySettings,
+  validateResultCardDecisionNote,
+  validateResultCardDisplaySettings,
+  type ResultCardDisplaySettings,
+} from './lib/resultCardPresentation'
 import {
   RAW_GRADE_MAX_CONFLICT_SQL,
   shouldCheckRawGradeMaxConflict,
@@ -3696,11 +3706,22 @@ interface ResultCardStudentSnapshot {
   school_id: number;
   full_name: string;
   student_number: string;
+  gender: string | null;
+  photo_url: string | null;
   class_id: number | null;
   section_id: number | null;
   class_name: string | null;
+  class_stage: string | null;
   section_name: string | null;
   school_name: string;
+  school_name_en: string | null;
+  school_address: string | null;
+  school_phone: string | null;
+  school_email: string | null;
+  school_website: string | null;
+  principal_name: string | null;
+  logo_url: string | null;
+  official_stamp_url: string | null;
 }
 
 type ResultCardCreation =
@@ -3718,8 +3739,12 @@ async function loadResultCardStudent(
   studentId: number,
 ): Promise<ResultCardStudentSnapshot | null> {
   return db.prepare(`
-    SELECT s.id, s.school_id, s.full_name, s.student_number, s.class_id, s.section_id,
-           c.name AS class_name, sec.name AS section_name, sch.name AS school_name
+    SELECT s.id, s.school_id, s.full_name, s.student_number, s.gender, s.photo_url,
+           s.class_id, s.section_id, c.name AS class_name, c.stage AS class_stage,
+           sec.name AS section_name, sch.name AS school_name, sch.name_en AS school_name_en,
+           sch.address AS school_address, sch.phone AS school_phone, sch.email AS school_email,
+           sch.website AS school_website, sch.principal_name, sch.logo_url,
+           sch.official_stamp_url
     FROM students s
     LEFT JOIN classes c ON s.class_id = c.id AND c.school_id = s.school_id
     LEFT JOIN sections sec ON s.section_id = sec.id AND sec.school_id = s.school_id
@@ -3739,7 +3764,7 @@ async function loadResultCardEvaluation(
     INNER JOIN subjects su
       ON ss.subject_id = su.id AND su.school_id = ss.school_id
     WHERE ss.student_id = ? AND ss.school_id = ?
-      AND ss.is_active = 1 AND su.status = 'active'
+      AND ss.is_active = 1 AND su.status = 'active' AND su.appears_in_report_card = 1
     ORDER BY su.order_index, su.id
   `).bind(studentId, schoolId).all<ResultCardSubject>();
 
@@ -3747,6 +3772,13 @@ async function loadResultCardEvaluation(
     SELECT
       su.id AS subject_id,
       su.name AS subject_name,
+      g.first_term_grade,
+      g.first_month,
+      g.second_month,
+      g.mid_year_exam,
+      g.second_term_grade,
+      g.third_month,
+      g.fourth_month,
       g.annual_effort,
       g.final_exam,
       g.final_grade,
@@ -3754,12 +3786,7 @@ async function loadResultCardEvaluation(
       g.grade_after_completion,
       g.effective_grade,
       g.result_status,
-      g.exemption_status,
-      g.first_month,
-      g.second_month,
-      g.third_month,
-      g.fourth_month,
-      g.mid_year_exam
+      g.exemption_status
     FROM grades g
     INNER JOIN student_subjects ss
       ON g.student_subject_id = ss.id
@@ -3769,18 +3796,32 @@ async function loadResultCardEvaluation(
       ON ss.subject_id = su.id
       AND su.school_id = ss.school_id
       AND su.status = 'active'
+      AND su.appears_in_report_card = 1
     WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1
     ORDER BY su.order_index, su.id
   `).bind(studentId, schoolId).all<ResultCardGrade>();
 
-  const gradeSettings = await getGradeSettings(db, schoolId);
+  const storedGradeSettings = await db.prepare(
+    'SELECT * FROM grade_settings WHERE school_id = ?',
+  ).bind(schoolId).first<any>();
+  const gradeSettings = withNormalizedGradeScheme({
+    max_grade: 100,
+    passing_grade: 50,
+    exemption_grade: 90,
+    general_exemption_average_grade: 85,
+    general_exemption_min_subject_grade: 75,
+    ...DEFAULT_GRADE_SCHEME_SETTINGS,
+    ...storedGradeSettings,
+  });
   const settings: ResultCardSettings = {
+    max_grade: gradeSettings.max_grade,
     passing_grade: gradeSettings.passing_grade,
     exemption_grade: gradeSettings.exemption_grade,
     general_exemption_average_grade:
       gradeSettings.general_exemption_average_grade ?? 85,
     general_exemption_min_subject_grade:
       gradeSettings.general_exemption_min_subject_grade ?? 75,
+    ...normalizeGradeSchemeSettings(gradeSettings),
   };
   const academicYear = await db.prepare(`
     SELECT id, name
@@ -3803,27 +3844,62 @@ async function loadResultCardEvaluation(
 
 function resultCardEvaluationFailure(
   evaluation: Extract<ResultCardEvaluation, { ok: false }>,
-): ResultCardCreation {
+): Extract<ResultCardCreation, { ok: false }> {
   const messages: Record<typeof evaluation.code, string> = {
     no_active_academic_year: 'لا توجد سنة دراسية فعالة لهذه المدرسة',
     no_active_subjects: 'لا توجد مواد مفعلة مسندة لهذا الطالب',
-    missing_grade_records: 'توجد مواد فعالة بلا سجل درجات',
-    incomplete_grades: 'توجد درجات لازمة غير مكتملة',
   };
   return {
     ok: false,
     status: 400,
     code: evaluation.code,
     error: messages[evaluation.code],
-    subjects: evaluation.subjects,
   };
 }
 
-async function createResultCardForStudent(
+interface ResultCardIssueOptions {
+  decisionNote: string | null;
+  examRound: string;
+}
+
+type ResultCardSnapshotBuild =
+  | {
+      ok: true;
+      evaluation: Extract<ResultCardEvaluation, { ok: true }>;
+      cardData: Record<string, any>;
+      generatedAt: number;
+    }
+  | Extract<ResultCardCreation, { ok: false }>;
+
+function resultCardIssueOptions(body: Record<string, any>):
+  | { ok: true; options: ResultCardIssueOptions }
+  | { ok: false; error: string } {
+  const noteError = validateResultCardDecisionNote(body.decision_note);
+  if (noteError) return { ok: false, error: noteError };
+  if (
+    body.exam_round !== undefined &&
+    (typeof body.exam_round !== 'string' || body.exam_round.trim().length > 100)
+  ) {
+    return { ok: false, error: 'الدور يجب أن يكون نصاً لا يتجاوز 100 حرف' };
+  }
+  return {
+    ok: true,
+    options: {
+      decisionNote: normalizeResultCardDecisionNote(body.decision_note),
+      examRound: typeof body.exam_round === 'string' && body.exam_round.trim()
+        ? body.exam_round.trim()
+        : 'الدور الأول',
+    },
+  };
+}
+
+async function buildResultCardSnapshot(
   db: D1Database,
   user: UserContext,
   student: ResultCardStudentSnapshot,
-): Promise<ResultCardCreation> {
+  options: ResultCardIssueOptions,
+  identity: { cardNumber: string | null; token: string | null },
+): Promise<ResultCardSnapshotBuild> {
   const placement = await validateStudentPlacement(
     db,
     student.school_id,
@@ -3844,9 +3920,101 @@ async function createResultCardForStudent(
     student.id,
     student.school_id,
   );
-  if (!evaluation.ok) {
-    return resultCardEvaluationFailure(evaluation);
-  }
+  if (!evaluation.ok) return resultCardEvaluationFailure(evaluation);
+
+  const schoolSettings = await db.prepare(`
+    SELECT result_card_header_text, result_card_footer_text, verification_note_text,
+           use_school_logo_on_docs, use_school_stamp_on_docs,
+           result_card_display_settings_json
+    FROM school_settings WHERE school_id = ?
+  `).bind(student.school_id).first<any>();
+  const displaySettings = parseResultCardDisplaySettings(
+    schoolSettings?.result_card_display_settings_json,
+  );
+  const generatedAt = Math.floor(Date.now() / 1000);
+  const verificationUrl = identity.token
+    ? `/verify/result-card/${identity.token}`
+    : null;
+  const cardData = {
+    schema_version: 2,
+    card_mode: evaluation.card_mode,
+    school: {
+      id: student.school_id,
+      name: student.school_name,
+      name_en: student.school_name_en,
+      address: student.school_address,
+      phone: student.school_phone,
+      email: student.school_email,
+      website: student.school_website,
+      principal_name: student.principal_name,
+    },
+    student: {
+      id: student.id,
+      name: student.full_name,
+      student_number: student.student_number,
+      exam_number: null,
+      gender: student.gender,
+      photo_url: student.photo_url,
+    },
+    class: { id: student.class_id, name: student.class_name, stage: student.class_stage },
+    section: { id: student.section_id, name: student.section_name },
+    academic_year: evaluation.academicYear,
+    exam_round: options.examRound,
+    decision_note: options.decisionNote,
+    grade_scheme: settings,
+    required_fields: evaluation.required_fields,
+    visible_columns: buildResultCardColumns(settings, displaySettings),
+    subjects: evaluation.grades,
+    incomplete_subjects: evaluation.incomplete_subjects,
+    summary: evaluation.summary,
+    document_settings: {
+      result_card_header_text: schoolSettings?.result_card_header_text || null,
+      result_card_footer_text: schoolSettings?.result_card_footer_text || null,
+      verification_note_text: schoolSettings?.verification_note_text || null,
+      use_school_logo_on_docs: schoolSettings?.use_school_logo_on_docs === 1,
+      use_school_stamp_on_docs: schoolSettings?.use_school_stamp_on_docs === 1,
+      logo_url:
+        schoolSettings?.use_school_logo_on_docs === 1 && student.logo_url
+          ? student.logo_url
+          : null,
+      official_stamp_url:
+        schoolSettings?.use_school_stamp_on_docs === 1 && student.official_stamp_url
+          ? student.official_stamp_url
+          : null,
+      result_card_display_settings: displaySettings,
+    },
+    verification: identity.token
+      ? {
+          token: identity.token,
+          code: identity.token,
+          url: verificationUrl,
+          card_number: identity.cardNumber,
+        }
+      : null,
+    generated_by: user.id,
+    generated_at: generatedAt,
+  };
+
+  return { ok: true, evaluation, cardData, generatedAt };
+}
+
+async function createResultCardForStudent(
+  db: D1Database,
+  user: UserContext,
+  student: ResultCardStudentSnapshot,
+  options: ResultCardIssueOptions,
+): Promise<ResultCardCreation> {
+  const token = generateVerificationToken();
+  const cardNumber = generateCardNumber(student.school_id, student.id);
+  const snapshot = await buildResultCardSnapshot(
+    db,
+    user,
+    student,
+    options,
+    { cardNumber, token },
+  );
+  if (!snapshot.ok) return snapshot;
+  const { evaluation, cardData, generatedAt } = snapshot;
 
   const existingActive = await db.prepare(`
     SELECT id FROM result_cards
@@ -3862,51 +4030,7 @@ async function createResultCardForStudent(
     };
   }
 
-  const token = generateVerificationToken();
   const tokenHash = await hashToken(token);
-  const cardNumber = generateCardNumber(student.school_id, student.id);
-  const schoolSettings = await db.prepare(`
-    SELECT result_card_header_text, result_card_footer_text, verification_note_text,
-           use_school_logo_on_docs, use_school_stamp_on_docs
-    FROM school_settings WHERE school_id = ?
-  `).bind(student.school_id).first<any>();
-  const schoolLogoInfo = await db.prepare(`
-    SELECT logo_url, official_stamp_url FROM schools WHERE id = ?
-  `).bind(student.school_id).first<any>();
-
-  const cardData = {
-    school: { id: student.school_id, name: student.school_name },
-    student: {
-      id: student.id,
-      name: student.full_name,
-      student_number: student.student_number,
-    },
-    class: { id: student.class_id, name: student.class_name },
-    section: { id: student.section_id, name: student.section_name },
-    academic_year: evaluation.academicYear,
-    settings,
-    subjects: evaluation.grades,
-    summary: evaluation.summary,
-    document_settings: {
-      result_card_header_text: schoolSettings?.result_card_header_text || null,
-      result_card_footer_text: schoolSettings?.result_card_footer_text || null,
-      verification_note_text: schoolSettings?.verification_note_text || null,
-      use_school_logo_on_docs: schoolSettings?.use_school_logo_on_docs === 1,
-      use_school_stamp_on_docs: schoolSettings?.use_school_stamp_on_docs === 1,
-      logo_url:
-        schoolSettings?.use_school_logo_on_docs === 1 && schoolLogoInfo?.logo_url
-          ? schoolLogoInfo.logo_url
-          : null,
-      official_stamp_url:
-        schoolSettings?.use_school_stamp_on_docs === 1 &&
-        schoolLogoInfo?.official_stamp_url
-          ? schoolLogoInfo.official_stamp_url
-          : null,
-    },
-    generated_by: user.id,
-    generated_at: Math.floor(Date.now() / 1000),
-  };
-
   await db.prepare(`
     INSERT INTO result_cards (
       school_id, student_id, class_id, section_id, academic_year_id,
@@ -3937,12 +4061,13 @@ async function createResultCardForStudent(
     evaluation.summary.overall_result_status,
     JSON.stringify(cardData),
     user.id,
-    Math.floor(Date.now() / 1000),
+    generatedAt,
   ).run();
 
   const card = await db.prepare(`
     SELECT * FROM result_cards WHERE verification_token = ? AND school_id = ?
   `).bind(token, student.school_id).first<any>();
+  if (card) card.card_data_parsed = cardData;
   return { ok: true, card, cardNumber };
 }
 
@@ -3959,22 +4084,17 @@ app.get(
   const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
 
   try {
+    if (!resolvedSchoolId) {
+      return c.json({ error: 'يجب تحديد المدرسة المستهدفة لعرض كارتات النتائج' }, 400);
+    }
     const query = c.req.query();
     const classId = query.class_id ? parseInt(query.class_id, 10) : null;
     const sectionId = query.section_id ? parseInt(query.section_id, 10) : null;
     const studentId = query.student_id ? parseInt(query.student_id, 10) : null;
     const status = query.status || null;
 
-    let sql = `SELECT rc.id, rc.card_number, rc.student_name_snapshot, rc.class_name_snapshot, rc.section_name_snapshot, rc.school_name_snapshot, rc.academic_year_snapshot, rc.general_exemption_status, rc.overall_result_status, rc.generated_at, rc.printed_at, rc.status, rc.verification_token FROM result_cards rc WHERE 1=1`;
-    const params: any[] = [];
-
-    if (scope === 'single' && resolvedSchoolId) {
-      sql += ` AND rc.school_id = ?`;
-      params.push(resolvedSchoolId);
-    } else if (query.school_id && user?.role_key === 'system_admin') {
-      sql += ` AND rc.school_id = ?`;
-      params.push(parseInt(query.school_id, 10));
-    }
+    let sql = `SELECT rc.id, rc.school_id, rc.card_number, rc.student_name_snapshot, rc.class_name_snapshot, rc.section_name_snapshot, rc.school_name_snapshot, rc.academic_year_snapshot, rc.general_exemption_status, rc.overall_result_status, rc.generated_at, rc.printed_at, rc.status, rc.verification_token FROM result_cards rc WHERE rc.school_id = ?`;
+    const params: any[] = [resolvedSchoolId];
 
     if (classId) { sql += ` AND rc.class_id = ?`; params.push(classId); }
     if (sectionId) { sql += ` AND rc.section_id = ?`; params.push(sectionId); }
@@ -4006,11 +4126,14 @@ app.get(
   const id = parseInt(c.req.param('id'), 10);
 
   try {
+    if (!resolvedSchoolId) {
+      return c.json({ error: 'يجب تحديد المدرسة المستهدفة لعرض كارت النتيجة' }, 400);
+    }
     const row = await db.prepare(`SELECT * FROM result_cards WHERE id = ?`).bind(id).first<any>();
     if (!row) {
       return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
     }
-    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
+    if (row.school_id !== resolvedSchoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى هذا الكارت' }, 403);
     }
     let data = row;
@@ -4021,6 +4144,74 @@ app.get(
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب كارت النتيجة', detail: err.message }, 500);
   }
+  },
+);
+
+// POST /api/result-cards/preview-student/:student_id
+// Builds a live, read-only card without issuing an identity or writing a snapshot.
+// ===========================================
+app.post(
+  '/api/result-cards/preview-student/:student_id',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_MANAGEMENT_ROLES),
+  async (c) => {
+    const db = c.env.DB;
+    const user = c.get('user') as UserContext;
+    const studentId = parseInt(c.req.param('student_id'), 10);
+    if (!Number.isInteger(studentId)) {
+      return c.json({ error: 'معرّف الطالب غير صالح' }, 400);
+    }
+
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+      if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+      const parsedOptions = resultCardIssueOptions(body);
+      if (!parsedOptions.ok) return c.json({ error: parsedOptions.error }, 400);
+      const student = await loadResultCardStudent(db, studentId);
+      if (!student) return c.json({ error: 'الطالب غير موجود أو غير فعال' }, 404);
+      if (student.school_id !== targetSchool.schoolId) {
+        return c.json({ error: 'غير مسموح: لا يمكنك معاينة طالب من مدرسة أخرى' }, 403);
+      }
+
+      const snapshot = await buildResultCardSnapshot(
+        db,
+        user,
+        student,
+        parsedOptions.options,
+        { cardNumber: null, token: null },
+      );
+      if (!snapshot.ok) {
+        return c.json({ error: snapshot.error, code: snapshot.code }, snapshot.status);
+      }
+      return c.json({
+        data: {
+          card: {
+            id: null,
+            school_id: student.school_id,
+            card_number: 'معاينة غير محفوظة',
+            verification_token: null,
+            student_name_snapshot: student.full_name,
+            class_name_snapshot: student.class_name,
+            section_name_snapshot: student.section_name,
+            school_name_snapshot: student.school_name,
+            academic_year_snapshot: snapshot.evaluation.academicYear.name,
+            general_exemption_status:
+              snapshot.evaluation.summary.general_exemption_eligible === true ? 1 : 0,
+            overall_result_status: snapshot.evaluation.summary.overall_result_status,
+            generated_at: snapshot.generatedAt,
+            printed_at: null,
+            status: 'preview',
+            card_data_parsed: snapshot.cardData,
+          },
+        },
+        message: snapshot.evaluation.card_mode === 'partial'
+          ? 'تم إعداد معاينة جزئية دون حفظ'
+          : 'تم إعداد معاينة مكتملة دون حفظ',
+      });
+    } catch (err: any) {
+      return c.json({ error: 'فشل في معاينة كارت النتيجة', detail: err.message }, 500);
+    }
   },
 );
 
@@ -4045,6 +4236,8 @@ app.post(
       const body = await c.req.json().catch(() => ({}));
       const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
       if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+      const parsedOptions = resultCardIssueOptions(body);
+      if (!parsedOptions.ok) return c.json({ error: parsedOptions.error }, 400);
       const student = await loadResultCardStudent(db, studentId);
       if (!student) {
         return c.json({ error: 'الطالب غير موجود أو غير فعال' }, 404);
@@ -4056,7 +4249,7 @@ app.post(
         );
       }
 
-      const created = await createResultCardForStudent(db, user, student);
+      const created = await createResultCardForStudent(db, user, student, parsedOptions.options);
       if (!created.ok) {
         return c.json(
           {
@@ -4107,6 +4300,8 @@ app.post(
     try {
       const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
       if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+      const parsedOptions = resultCardIssueOptions(body);
+      if (!parsedOptions.ok) return c.json({ error: parsedOptions.error }, 400);
       const section = await db.prepare(`
         SELECT id, school_id, class_id, status
         FROM sections
@@ -4168,6 +4363,7 @@ app.post(
         student_id: number;
         student_name: string;
         card_number: string;
+        card_mode: 'partial' | 'complete';
       }> = [];
       const skipped: Array<{
         student_id: number;
@@ -4188,7 +4384,7 @@ app.post(
           continue;
         }
 
-        const created = await createResultCardForStudent(db, user, student);
+        const created = await createResultCardForStudent(db, user, student, parsedOptions.options);
         if (!created.ok) {
           skipped.push({
             student_id: row.id,
@@ -4203,6 +4399,7 @@ app.post(
           student_id: row.id,
           student_name: student.full_name,
           card_number: created.cardNumber,
+          card_mode: created.card?.overall_result_status === 'غير مكتمل' ? 'partial' : 'complete',
         });
       }
 
@@ -4328,6 +4525,10 @@ app.get('/api/verify/result-card/:token', async (c) => {
       cardData = JSON.parse(row.card_data_json || '{}');
     } catch { /* ignore */ }
     const docSettings = cardData?.document_settings || {};
+    const displaySettings = parseResultCardDisplaySettings(
+      docSettings.result_card_display_settings,
+    );
+    const summary = cardData?.summary || {};
     return c.json({
       valid: true,
       card_number: row.card_number,
@@ -4338,8 +4539,13 @@ app.get('/api/verify/result-card/:token', async (c) => {
       academic_year: row.academic_year_snapshot,
       generated_at: row.generated_at,
       status: row.status,
-      overall_result_status: row.overall_result_status,
+      card_mode: cardData?.card_mode || 'complete',
+      overall_result_status:
+        summary.overall_result_status || row.overall_result_status,
       general_exemption_status: row.general_exemption_status === 1,
+      decision_note: displaySettings.show_notes_decisions
+        ? cardData?.decision_note || null
+        : null,
       verification_note: docSettings.verification_note_text || null,
     });
   } catch (err: any) {
@@ -6357,6 +6563,18 @@ app.get('/api/treasury/categories', requireSameSchoolOrAdmin(), async (c) => {
 // PHASE 11: SETTINGS MODULE
 // ═══════════════════════════════════════════════════════════════
 
+function withResultCardDisplaySettings<T extends Record<string, any>>(row: T): T & {
+  result_card_display_settings: ResultCardDisplaySettings;
+} {
+  const { result_card_display_settings_json: _storedDisplaySettings, ...settings } = row;
+  return {
+    ...settings,
+    result_card_display_settings: parseResultCardDisplaySettings(
+      row.result_card_display_settings_json,
+    ),
+  } as T & { result_card_display_settings: ResultCardDisplaySettings };
+}
+
 // ===========================================
 // GET /api/settings/school
 // Returns: school profile + document settings + system settings merged
@@ -6384,6 +6602,7 @@ app.get('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
     // Fetch school_settings (document + system preferences)
     let settings = await db.prepare(`
       SELECT school_id, result_card_header_text, result_card_footer_text, receipt_footer_text, official_book_header_text, official_book_footer_text, verification_note_text,
+             result_card_display_settings_json,
              use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size,
              use_arabic_indic_digits, currency_label, date_format, created_at, updated_at
       FROM school_settings WHERE school_id = ?
@@ -6398,13 +6617,19 @@ app.get('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
       `).bind(targetSchoolId).run();
       settings = await db.prepare(`
         SELECT school_id, result_card_header_text, result_card_footer_text, receipt_footer_text, official_book_header_text, official_book_footer_text, verification_note_text,
+               result_card_display_settings_json,
                use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size,
                use_arabic_indic_digits, currency_label, date_format, created_at, updated_at
         FROM school_settings WHERE school_id = ?
       `).bind(targetSchoolId).first<any>();
     }
 
-    return c.json({ data: { school, settings } });
+    return c.json({
+      data: {
+        school,
+        settings: settings ? withResultCardDisplaySettings(settings) : settings,
+      },
+    });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب إعدادات المدرسة', detail: err.message }, 500);
   }
@@ -6468,6 +6693,7 @@ app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
   try {
     let row = await db.prepare(`
       SELECT result_card_header_text, result_card_footer_text, receipt_footer_text, official_book_header_text, official_book_footer_text, verification_note_text,
+             result_card_display_settings_json,
              use_school_logo_on_docs, use_school_stamp_on_docs, default_print_size, default_receipt_size, updated_at
       FROM school_settings WHERE school_id = ?
     `).bind(targetSchoolId).first<any>();
@@ -6481,6 +6707,7 @@ app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
         official_book_header_text: null,
         official_book_footer_text: null,
         verification_note_text: null,
+        result_card_display_settings: normalizeResultCardDisplaySettings(null),
         use_school_logo_on_docs: 1,
         use_school_stamp_on_docs: 0,
         default_print_size: 'A4',
@@ -6488,7 +6715,7 @@ app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
       }});
     }
 
-    return c.json({ data: row });
+    return c.json({ data: withResultCardDisplaySettings(row) });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب إعدادات الوثائق', detail: err.message }, 500);
   }
@@ -6511,6 +6738,10 @@ app.put('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const targetSchoolId = targetSchool.schoolId;
+    const displaySettingsError = validateResultCardDisplaySettings(
+      body.result_card_display_settings,
+    );
+    if (displaySettingsError) return c.json({ error: displaySettingsError }, 400);
 
     // Ensure row exists
     const existing = await db.prepare(`SELECT id FROM school_settings WHERE school_id = ?`).bind(targetSchoolId).first<any>();
@@ -6532,6 +6763,12 @@ app.put('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
         updates.push(`${key} = ?`);
         params.push(body[key]);
       }
+    }
+    if (body.result_card_display_settings !== undefined) {
+      updates.push('result_card_display_settings_json = ?');
+      params.push(JSON.stringify(normalizeResultCardDisplaySettings(
+        body.result_card_display_settings,
+      )));
     }
 
     // Always update updated_at explicitly (no trigger)

@@ -21,6 +21,7 @@
     "test:academic-years": "node --experimental-strip-types --test test/academic-years.test.mjs",
     "test:flexible-grades": "node --experimental-strip-types --test test/flexible-grade-scheme.test.mjs",
     "test:grade-presentation": "node --experimental-strip-types --test test/grade-presentation.test.mjs",
+    "test:result-cards": "node --experimental-strip-types --test test/result-card.test.mjs",
     "test:subject-order": "node --experimental-strip-types --test test/subject-order.test.mjs",
     "test:excel-import": "node --experimental-strip-types --test test/excel-import.test.mjs test/grade-excel-import.test.mjs"
   },

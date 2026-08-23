@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react';
 import { updateDocumentSettings } from '../../lib/api';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import {
+  normalizeResultCardDisplaySettings,
+  type ResultCardDisplaySettingKey,
+} from '../../lib/resultCardPresentation';
 import { Save, Loader2, FileText, Printer, Image, Stamp, CheckSquare, Square } from 'lucide-react';
 
 interface Props {
@@ -22,6 +26,35 @@ const RECEIPT_SIZES = [
   { value: 'A4', label: 'A4 (القياسي)' },
 ];
 
+const RESULT_CARD_DISPLAY_OPTIONS: Array<{
+  key: ResultCardDisplaySettingKey;
+  label: string;
+}> = [
+  { key: 'show_school_logo', label: 'شعار المدرسة' },
+  { key: 'show_school_subtitle', label: 'العنوان الفرعي / الشعار النصي' },
+  { key: 'show_phone', label: 'رقم الهاتف' },
+  { key: 'show_address', label: 'العنوان' },
+  { key: 'show_email_website', label: 'البريد والموقع الإلكتروني' },
+  { key: 'show_class_section_in_header', label: 'الصف والشعبة في الرأس' },
+  { key: 'show_student_number', label: 'رقم الطالب' },
+  { key: 'show_exam_number', label: 'الرقم الامتحاني عند توفره' },
+  { key: 'show_gender', label: 'الجنس' },
+  { key: 'show_exam_round', label: 'الدور' },
+  { key: 'show_overall_average', label: 'المعدل العام' },
+  { key: 'show_appreciation', label: 'التقدير' },
+  { key: 'show_subject_status', label: 'حالة المادة' },
+  { key: 'show_exemption_detail', label: 'تفصيل الإعفاء الفردي' },
+  { key: 'show_annual_effort', label: 'السعي السنوي' },
+  { key: 'show_final_grade', label: 'الدرجة النهائية' },
+  { key: 'show_effective_grade', label: 'الدرجة الفعّالة' },
+  { key: 'show_completion_exam', label: 'امتحان الإكمال عند تفعيله' },
+  { key: 'show_qr_code', label: 'رمز QR' },
+  { key: 'show_verification_code_text', label: 'نص رمز التحقق' },
+  { key: 'show_notes_decisions', label: 'الملاحظات والقرارات' },
+  { key: 'show_signatures_block', label: 'كتلة التواقيع' },
+  { key: 'show_school_stamp_placeholder', label: 'الختم أو موضعه' },
+];
+
 export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onError }: Props) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const settings = data || {};
@@ -39,6 +72,9 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
       use_school_stamp_on_docs: settings.use_school_stamp_on_docs ?? 0,
       default_print_size: settings.default_print_size || 'A4',
       default_receipt_size: settings.default_receipt_size || 'A5',
+      result_card_display_settings: normalizeResultCardDisplaySettings(
+        settings.result_card_display_settings,
+      ),
     });
     setSaving(false);
     setChanged(false);
@@ -51,6 +87,17 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
 
   const toggleBool = (key: string) => {
     handleChange(key, form[key] ? 0 : 1);
+  };
+
+  const toggleResultCardDisplay = (key: ResultCardDisplaySettingKey) => {
+    setForm(prev => ({
+      ...prev,
+      result_card_display_settings: {
+        ...normalizeResultCardDisplaySettings(prev.result_card_display_settings),
+        [key]: !normalizeResultCardDisplaySettings(prev.result_card_display_settings)[key],
+      },
+    }));
+    setChanged(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -210,6 +257,36 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
             <Stamp size={16} />
             <span>استخدام الختم الرسمي على الوثائق</span>
           </button>
+        </div>
+      </div>
+
+      <div className="border-t border-gray-200 pt-5">
+        <h3 className="mb-1 text-sm font-semibold text-gray-700">محتوى كارت النتيجة</h3>
+        <p className="mb-4 text-xs text-gray-500">
+          تُحفظ هذه الخيارات داخل كل كارت عند إصداره، لذلك تبقى الكارتات القديمة كما صدرت.
+        </p>
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+          {RESULT_CARD_DISPLAY_OPTIONS.map((option) => {
+            const enabled = normalizeResultCardDisplaySettings(
+              form.result_card_display_settings,
+            )[option.key];
+            return (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => toggleResultCardDisplay(option.key)}
+                disabled={!canEdit}
+                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-right text-xs transition-colors ${
+                  enabled
+                    ? 'border-primary-200 bg-primary-50 text-primary-700'
+                    : 'border-gray-200 bg-white text-gray-600'
+                } ${canEdit ? 'hover:bg-gray-50' : 'cursor-not-allowed opacity-70'}`}
+              >
+                {enabled ? <CheckSquare size={16} /> : <Square size={16} />}
+                <span>{option.label}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
