@@ -103,7 +103,7 @@ test('overall result-card status remains academic and is never converted to مع
     exemption_status: 1,
   };
   const evaluation = evaluateResultCard(
-    [{ id: 1, subject_name: 'الرياضيات' }],
+    [{ id: 1, subject_name: 'الرياضيات', counts_in_average: 1 }],
     [exemptGrade],
     {
       passing_grade: 50,

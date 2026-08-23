@@ -3759,7 +3759,7 @@ async function loadResultCardEvaluation(
   schoolId: number,
 ): Promise<{ evaluation: ResultCardEvaluation; settings: ResultCardSettings }> {
   const subjectRows = await db.prepare(`
-    SELECT su.id, su.name AS subject_name
+    SELECT su.id, su.name AS subject_name, su.counts_in_average
     FROM student_subjects ss
     INNER JOIN subjects su
       ON ss.subject_id = su.id AND su.school_id = ss.school_id

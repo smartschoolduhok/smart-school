@@ -13,6 +13,7 @@ export type ResultCardMode = 'partial' | 'complete';
 export interface ResultCardSubject {
   id: number;
   subject_name: string;
+  counts_in_average: number;
 }
 
 export interface ResultCardGrade {
@@ -141,16 +142,23 @@ export function evaluateResultCard(
     (field) => field !== 'final_exam',
   );
   const gradesBySubject = new Map(grades.map((grade) => [grade.subject_id, grade]));
+  const countedSubjectIds = new Set(
+    activeSubjects
+      .filter((subject) => subject.counts_in_average === 1)
+      .map((subject) => subject.id),
+  );
   const orderedGrades = activeSubjects.map(
     (subject) => gradesBySubject.get(subject.id) ?? blankGrade(subject),
   );
+  const countedGrades = orderedGrades.filter((grade) => countedSubjectIds.has(grade.subject_id));
 
-  const annualDataComplete = orderedGrades.every((grade) =>
-    annualInputFields.every((field) => isFiniteNumber(grade[field])) &&
-    isFiniteNumber(grade.annual_effort),
+  const annualDataComplete = countedGrades.length > 0 && countedGrades.every(
+    (grade) =>
+      annualInputFields.every((field) => isFiniteNumber(grade[field])) &&
+      isFiniteNumber(grade.annual_effort),
   );
   const annualEfforts = annualDataComplete
-    ? orderedGrades.map((grade) => grade.annual_effort as number)
+    ? countedGrades.map((grade) => grade.annual_effort as number)
     : [];
   const annualEffortAverage = annualDataComplete ? roundedAverage(annualEfforts) : null;
   const minAnnualEffort = annualDataComplete ? Math.min(...annualEfforts) : null;
@@ -223,10 +231,20 @@ export function evaluateResultCard(
       : hasCompletion
         ? 'مكمل'
         : 'ناجح';
-  const effectiveGrades = cardMode === 'complete'
-    ? evaluatedGrades.map((grade) => grade.effective_grade).filter(isFiniteNumber)
-    : [];
-  const overallAverage = effectiveGrades.length === evaluatedGrades.length
+  const countedEvaluatedGrades = evaluatedGrades.filter(
+    (grade) => countedSubjectIds.has(grade.subject_id),
+  );
+  const incompleteCountedSubjectIds = new Set(
+    incompleteSubjects
+      .filter((subject) => countedSubjectIds.has(subject.subject_id))
+      .map((subject) => subject.subject_id),
+  );
+  const effectiveGrades = countedEvaluatedGrades
+    .map((grade) => grade.effective_grade)
+    .filter(isFiniteNumber);
+  const overallAverage = countedEvaluatedGrades.length > 0 &&
+    incompleteCountedSubjectIds.size === 0 &&
+    effectiveGrades.length === countedEvaluatedGrades.length
     ? roundedAverage(effectiveGrades)
     : null;
 

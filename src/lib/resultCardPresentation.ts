@@ -1,5 +1,4 @@
 import {
-  enabledRawGradeFields,
   normalizeGradeSchemeSettings,
   RAW_GRADE_FIELD_LABELS,
   type GradeSchemeSettingsInput,
@@ -21,6 +20,10 @@ export const RESULT_CARD_DISPLAY_SETTING_KEYS = [
   'show_appreciation',
   'show_subject_status',
   'show_exemption_detail',
+  'show_first_term_inputs',
+  'show_mid_year_exam',
+  'show_second_term_inputs',
+  'show_final_exam',
   'show_annual_effort',
   'show_final_grade',
   'show_effective_grade',
@@ -50,6 +53,10 @@ export const DEFAULT_RESULT_CARD_DISPLAY_SETTINGS: ResultCardDisplaySettings = {
   show_appreciation: false,
   show_subject_status: true,
   show_exemption_detail: true,
+  show_first_term_inputs: true,
+  show_mid_year_exam: true,
+  show_second_term_inputs: true,
+  show_final_exam: true,
   show_annual_effort: true,
   show_final_grade: true,
   show_effective_grade: true,
@@ -146,15 +153,36 @@ export function buildResultCardColumns(
 ): ResultCardColumnDescriptor[] {
   const scheme = normalizeGradeSchemeSettings(schemeInput);
   const display = normalizeResultCardDisplaySettings(displayInput);
-  const rawFields = enabledRawGradeFields(scheme).filter(
-    (field) => field !== 'completion_exam' || display.show_completion_exam,
-  );
+  const annualInputFields: RawGradeField[] = [];
+  if (display.show_first_term_inputs) {
+    if (scheme.first_term_input_mode === 'monthly') {
+      annualInputFields.push('first_month', 'second_month');
+    } else if (scheme.first_term_input_mode === 'direct') {
+      annualInputFields.push('first_term_grade');
+    }
+  }
+  if (display.show_mid_year_exam && scheme.mid_year_exam_enabled === 1) {
+    annualInputFields.push('mid_year_exam');
+  }
+  if (display.show_second_term_inputs) {
+    if (scheme.second_term_input_mode === 'monthly') {
+      annualInputFields.push('third_month', 'fourth_month');
+    } else if (scheme.second_term_input_mode === 'direct') {
+      annualInputFields.push('second_term_grade');
+    }
+  }
   const columns: ResultCardColumnDescriptor[] = [
     { key: 'subject_name', label: RESULT_CARD_DERIVED_COLUMN_LABELS.subject_name },
-    ...rawFields.map((key) => ({ key, label: RAW_GRADE_FIELD_LABELS[key] })),
+    ...annualInputFields.map((key) => ({ key, label: RAW_GRADE_FIELD_LABELS[key] })),
   ];
   if (display.show_annual_effort) {
     columns.push({ key: 'annual_effort', label: RESULT_CARD_DERIVED_COLUMN_LABELS.annual_effort });
+  }
+  if (display.show_final_exam && scheme.final_exam_enabled === 1) {
+    columns.push({ key: 'final_exam', label: RAW_GRADE_FIELD_LABELS.final_exam });
+  }
+  if (display.show_completion_exam && scheme.completion_exam_enabled === 1) {
+    columns.push({ key: 'completion_exam', label: RAW_GRADE_FIELD_LABELS.completion_exam });
   }
   if (display.show_final_grade) {
     columns.push({ key: 'final_grade', label: RESULT_CARD_DERIVED_COLUMN_LABELS.final_grade });

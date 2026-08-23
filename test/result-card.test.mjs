@@ -14,6 +14,7 @@ import {
   DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
   LEGACY_RESULT_CARD_COLUMNS,
   normalizeResultCardDisplaySettings,
+  RESULT_CARD_DISPLAY_SETTING_KEYS,
   snapshotResultCardColumns,
 } from '../src/lib/resultCardPresentation.ts';
 import { evaluateResultCard } from '../src/lib/resultCards.ts';
@@ -37,8 +38,8 @@ const directSettings = {
   second_term_input_mode: 'direct',
 };
 
-function subject(id, subject_name = `Subject ${id}`) {
-  return { id, subject_name };
+function subject(id, subject_name = `Subject ${id}`, counts_in_average = 1) {
+  return { id, subject_name, counts_in_average };
 }
 
 function monthlyGrade(subject_id, overrides = {}) {
@@ -253,6 +254,120 @@ test('evaluation preserves the supplied canonical subject order', () => {
   assert.deepEqual(result.grades.map((grade) => grade.subject_id), [2, 1]);
 });
 
+test('visible non-average subject remains on the card and in display counts', () => {
+  const result = evaluateResultCard(
+    [subject(1), subject(2, 'Activity', 0)],
+    [monthlyGrade(1), monthlyGrade(2, { result_status: 'مكمل' })],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.grades.map((grade) => grade.subject_id), [1, 2]);
+  assert.equal(result.summary.total_subjects, 2);
+  assert.equal(result.summary.completion_count, 1);
+});
+
+test('visible non-average subject does not alter annual-effort aggregates', () => {
+  const result = evaluateResultCard(
+    [subject(1), subject(2, 'Activity', 0)],
+    [monthlyGrade(1, { annual_effort: 90 }), monthlyGrade(2, { annual_effort: 10 })],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.annual_effort_average, 90);
+  assert.equal(result.summary.min_annual_effort, 90);
+});
+
+test('visible non-average subject does not alter overall average', () => {
+  const result = evaluateResultCard(
+    [subject(1), subject(2, 'Activity', 0)],
+    [
+      monthlyGrade(1, { effective_grade: 85 }),
+      monthlyGrade(2, {
+        first_month: null,
+        annual_effort: null,
+        final_grade: null,
+        effective_grade: null,
+        result_status: null,
+      }),
+    ],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.card_mode, 'partial');
+  assert.equal(result.summary.overall_average, 85);
+});
+
+test('visible non-average subject does not block general exemption minimum', () => {
+  const settings = {
+    ...monthlySettings,
+    general_exemption_average_grade: 85,
+    general_exemption_min_subject_grade: 80,
+  };
+  const result = evaluateResultCard(
+    [subject(1), subject(2, 'Activity', 0)],
+    [
+      monthlyGrade(1, { annual_effort: 90 }),
+      monthlyGrade(2, { annual_effort: 10 }),
+    ],
+    settings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.general_exemption_eligible, true);
+  assert.equal(result.summary.min_annual_effort, 90);
+});
+
+test('counted subject changes every academic aggregate', () => {
+  const settings = {
+    ...monthlySettings,
+    general_exemption_average_grade: 80,
+    general_exemption_min_subject_grade: 75,
+  };
+  const result = evaluateResultCard(
+    [subject(1), subject(2)],
+    [
+      monthlyGrade(1, { annual_effort: 90, effective_grade: 85 }),
+      monthlyGrade(2, { annual_effort: 70, effective_grade: 65 }),
+    ],
+    settings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.annual_effort_average, 80);
+  assert.equal(result.summary.min_annual_effort, 70);
+  assert.equal(result.summary.overall_average, 75);
+  assert.equal(result.summary.general_exemption_eligible, false);
+});
+
+test('zero counted subjects produce no academic aggregate or exemption result', () => {
+  const result = evaluateResultCard(
+    [subject(1, 'Activity', 0), subject(2, 'Conduct', 0)],
+    [monthlyGrade(1), monthlyGrade(2)],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.card_mode, 'complete');
+  assert.equal(result.summary.annual_effort_average, null);
+  assert.equal(result.summary.min_annual_effort, null);
+  assert.equal(result.summary.overall_average, null);
+  assert.equal(result.summary.general_exemption_eligible, null);
+});
+
+test('average participation does not change canonical subject ordering', () => {
+  const result = evaluateResultCard(
+    [subject(2, 'Visible first', 0), subject(1, 'Counted second', 1)],
+    [monthlyGrade(1), monthlyGrade(2)],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.grades.map((grade) => grade.subject_id), [2, 1]);
+});
+
 test('generation still requires an active academic year and at least one visible subject', () => {
   assert.deepEqual(evaluateResultCard([subject(1)], [monthlyGrade(1)], monthlySettings, null), {
     ok: false,
@@ -279,6 +394,82 @@ test('display options deterministically hide and show card columns', () => {
   assert.equal(normalized.show_phone, true);
 });
 
+test('raw academic columns are independently optional presentation settings', () => {
+  const columns = buildResultCardColumns(monthlySettings, {
+    show_first_term_inputs: false,
+    show_mid_year_exam: false,
+    show_second_term_inputs: false,
+    show_final_exam: true,
+    show_completion_exam: false,
+    show_annual_effort: true,
+    show_final_grade: false,
+    show_effective_grade: false,
+    show_subject_status: true,
+    show_exemption_detail: false,
+  }).map((column) => column.key);
+  assert.deepEqual(columns, [
+    'subject_name',
+    'annual_effort',
+    'final_exam',
+    'result_status',
+  ]);
+  assert.deepEqual(
+    evaluateResultCard([subject(1)], [monthlyGrade(1)], monthlySettings, academicYear).required_fields,
+    ['first_month', 'second_month', 'mid_year_exam', 'third_month', 'fourth_month', 'final_exam'],
+  );
+});
+
+test('term input presentation follows monthly, direct and disabled scheme modes', () => {
+  const shownDirect = buildResultCardColumns(directSettings, {
+    show_first_term_inputs: true,
+    show_mid_year_exam: false,
+    show_second_term_inputs: true,
+    show_final_exam: false,
+    show_completion_exam: false,
+    show_annual_effort: false,
+    show_final_grade: false,
+    show_effective_grade: false,
+    show_subject_status: false,
+    show_exemption_detail: false,
+  }).map((column) => column.key);
+  assert.deepEqual(shownDirect, ['subject_name', 'first_term_grade', 'second_term_grade']);
+
+  const hiddenDisabled = buildResultCardColumns({
+    ...directSettings,
+    first_term_input_mode: 'disabled',
+    second_term_input_mode: 'disabled',
+  }, {
+    show_first_term_inputs: true,
+    show_mid_year_exam: false,
+    show_second_term_inputs: true,
+    show_final_exam: false,
+    show_completion_exam: false,
+    show_annual_effort: false,
+    show_final_grade: false,
+    show_effective_grade: false,
+    show_subject_status: false,
+    show_exemption_detail: false,
+  }).map((column) => column.key);
+  assert.deepEqual(hiddenDisabled, ['subject_name']);
+});
+
+test('new raw-column settings default to visible and are exposed by Document Settings', async () => {
+  for (const key of [
+    'show_first_term_inputs',
+    'show_mid_year_exam',
+    'show_second_term_inputs',
+    'show_final_exam',
+  ]) {
+    assert.ok(RESULT_CARD_DISPLAY_SETTING_KEYS.includes(key));
+    assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS[key], true);
+  }
+  const documentTab = await readFile(new URL('../src/modules/settings/DocumentTab.tsx', import.meta.url), 'utf8');
+  assert.match(documentTab, /show_first_term_inputs/);
+  assert.match(documentTab, /show_mid_year_exam/);
+  assert.match(documentTab, /show_second_term_inputs/);
+  assert.match(documentTab, /show_final_exam/);
+});
+
 test('old snapshots keep the legacy safe column shape', () => {
   assert.deepEqual(snapshotResultCardColumns(undefined), [...LEGACY_RESULT_CARD_COLUMNS]);
   assert.deepEqual(snapshotResultCardColumns([{ key: 'unknown' }]), [...LEGACY_RESULT_CARD_COLUMNS]);
@@ -297,6 +488,7 @@ test('snapshot builder freezes order, branding, note, display settings and verif
   assert.match(builder, /result_card_display_settings: displaySettings/);
   assert.match(builder, /verification: identity\.token/);
   assert.match(builder, /card_number: identity\.cardNumber/);
+  assert.match(worker, /SELECT su\.id, su\.name AS subject_name, su\.counts_in_average/);
 });
 
 test('issued snapshots are immutable and saved with partial or complete metadata', async () => {
