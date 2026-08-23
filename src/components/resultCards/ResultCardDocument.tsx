@@ -104,7 +104,7 @@ export function ResultCardDocument({
     displaySettings.show_email_website && school.email ? school.email : null,
     displaySettings.show_email_website && school.website ? school.website : null,
   ].filter(Boolean);
-  const studentInfoItems: StudentInfoItem[] = [
+  const studentIdentityItems: StudentInfoItem[] = [
     { label: 'اسم الطالب', value: studentName, prominent: true },
   ];
   if (
@@ -113,21 +113,22 @@ export function ResultCardDocument({
     student.student_number !== undefined &&
     student.student_number !== ''
   ) {
-    studentInfoItems.push({ label: 'رقم الطالب', value: displayValue(student.student_number) });
-  }
-  if (displaySettings.show_exam_number && student.exam_number) {
-    studentInfoItems.push({ label: 'الرقم الامتحاني', value: displayValue(student.exam_number) });
-  }
-  if (className) studentInfoItems.push({ label: 'الصف', value: className });
-  if (sectionName) studentInfoItems.push({ label: 'الشعبة', value: sectionName });
-  if (displaySettings.show_gender && studentGender) {
-    studentInfoItems.push({ label: 'الجنس', value: studentGender });
-  }
-  if (displaySettings.show_exam_round && data?.exam_round) {
-    studentInfoItems.push({ label: 'الدور', value: data.exam_round });
+    studentIdentityItems.push({ label: 'رقم الطالب', value: displayValue(student.student_number) });
   }
   if (card.card_number) {
-    studentInfoItems.push({ label: 'رقم الكارت', value: displayValue(card.card_number) });
+    studentIdentityItems.push({ label: 'رقم الكارت', value: displayValue(card.card_number) });
+  }
+
+  const academicPlacementItems: StudentInfoItem[] = [];
+  if (className) academicPlacementItems.push({ label: 'الصف', value: className });
+  if (sectionName) academicPlacementItems.push({ label: 'الشعبة', value: sectionName });
+
+  const optionalStudentInfoItems: StudentInfoItem[] = [];
+  if (displaySettings.show_exam_number && student.exam_number) {
+    optionalStudentInfoItems.push({ label: 'الرقم الامتحاني', value: displayValue(student.exam_number) });
+  }
+  if (displaySettings.show_gender && studentGender) {
+    optionalStudentInfoItems.push({ label: 'الجنس', value: studentGender });
   }
 
   const summaryItems = [
@@ -169,9 +170,9 @@ export function ResultCardDocument({
       style={{ maxWidth: '210mm', minHeight: compact ? undefined : '277mm', margin: '0 auto' }}
     >
       <header className="result-card-header rounded-xl border-2 border-slate-700 px-4 py-3 sm:px-5">
-        <div className={`grid items-center gap-3 ${logoUrl ? 'grid-cols-[4.75rem_1fr_4.75rem]' : 'grid-cols-1'}`}>
+        <div className={`grid items-center gap-3 ${logoUrl ? 'grid-cols-[6rem_1fr_6rem]' : 'grid-cols-1'}`}>
           {logoUrl && (
-            <div className="flex h-[4.75rem] w-[4.75rem] items-center justify-center rounded-lg border border-slate-200 bg-white p-1">
+            <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5">
               <img
                 src={logoUrl}
                 alt="شعار المدرسة"
@@ -189,14 +190,29 @@ export function ResultCardDocument({
             <div className="mt-2 inline-flex items-center border-y-2 border-slate-700 px-6 py-0.5 text-base font-black tracking-wide">
               كارت النتيجة
             </div>
-            <p className="mt-2 text-xs font-semibold text-slate-700 sm:text-sm">
-              العام الدراسي: {displayValue(academicYear)}
-              {displaySettings.show_class_section_in_header && className
-                ? ` • ${className}${sectionName ? ` / ${sectionName}` : ''}`
-                : ''}
-            </p>
+            {!logoUrl && academicYear && (
+              <p
+                dir="ltr"
+                aria-label={`السنة الدراسية ${academicYear}`}
+                className="mt-2 whitespace-nowrap text-base font-black tracking-wide text-slate-800"
+              >
+                {String(academicYear)}
+              </p>
+            )}
           </div>
-          {logoUrl && <div aria-hidden="true" />}
+          {logoUrl && (
+            <div className="justify-self-center text-center">
+              {academicYear && (
+                <p
+                  dir="ltr"
+                  aria-label={`السنة الدراسية ${academicYear}`}
+                  className="whitespace-nowrap border-y border-slate-300 px-1 py-1 text-base font-black tracking-wide text-slate-800"
+                >
+                  {String(academicYear)}
+                </p>
+              )}
+            </div>
+          )}
         </div>
         {contactItems.length > 0 && (
           <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 border-t border-slate-200 pt-2 text-[10px] text-slate-500 sm:text-[11px]">
@@ -206,34 +222,51 @@ export function ResultCardDocument({
       </header>
 
       <section className="result-card-student-info rounded-lg border border-slate-300 bg-slate-50/70 px-3 py-2.5">
-        <div className="grid grid-cols-2 gap-x-2 gap-y-2 sm:grid-cols-4">
-          {studentInfoItems.map((item) => (
-            <div
-              key={item.label}
-              className={`min-w-0 border-r-2 border-slate-300 pr-2 ${item.prominent ? 'col-span-2' : ''}`}
-            >
-              <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]">{item.label}</div>
-              <div className={`break-words text-xs leading-snug text-slate-900 sm:text-sm ${item.prominent ? 'font-black' : 'font-bold'}`}>
-                {item.value}
+        <div className={`grid gap-3 ${academicPlacementItems.length > 0 ? 'sm:grid-cols-2' : ''}`}>
+          <div className="space-y-2 sm:pl-3">
+            {studentIdentityItems.map((item) => (
+              <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
+                <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]">{item.label}</div>
+                <div className={`break-words text-xs leading-snug text-slate-900 sm:text-sm ${item.prominent ? 'font-black' : 'font-bold'}`}>
+                  {item.value}
+                </div>
               </div>
+            ))}
+          </div>
+          {academicPlacementItems.length > 0 && (
+            <div className="space-y-2 border-t border-slate-300 pt-3 sm:border-r sm:border-t-0 sm:pr-4 sm:pt-0">
+              {academicPlacementItems.map((item) => (
+                <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
+                  <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]">{item.label}</div>
+                  <div className="break-words text-xs font-bold leading-snug text-slate-900 sm:text-sm">
+                    {item.value}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
+        {optionalStudentInfoItems.length > 0 && (
+          <div className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
+            {optionalStudentInfoItems.map((item) => (
+              <div key={item.label} className="min-w-0">
+                <span className="text-[9px] font-bold text-slate-500 sm:text-[10px]">{item.label}: </span>
+                <span className="text-xs font-bold text-slate-800 sm:text-sm">{item.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
-      {(card.status === 'preview' || isPartial || card.status === 'cancelled') && (
+      {(card.status === 'preview' || card.status === 'cancelled') && (
         <div role="note" className={`result-card-notice rounded-md border px-3 py-1.5 text-center text-xs font-bold sm:text-sm ${
           card.status === 'cancelled'
             ? 'border-red-400 bg-red-50 text-red-900'
-            : isPartial
-              ? 'border-amber-500 bg-amber-50 text-amber-950'
-              : 'border-slate-400 bg-slate-50 text-slate-800'
+            : 'border-slate-400 bg-slate-50 text-slate-800'
         }`}>
           {card.status === 'cancelled'
             ? 'كارت ملغى — غير صالح للاستخدام الرسمي'
-            : isPartial
-              ? 'كارت جزئي — بعض البيانات الأكاديمية غير مكتملة'
-              : 'معاينة مباشرة غير محفوظة'}
+            : 'معاينة مباشرة غير محفوظة'}
         </div>
       )}
 

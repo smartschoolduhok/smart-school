@@ -68,7 +68,7 @@ test('Result Card gender presentation normalizes known values and hides unsafe v
   );
   assert.match(component, /const studentGender = normalizeResultCardGender\(student\.gender\)/);
   assert.match(component, /displaySettings\.show_gender && studentGender/);
-  assert.match(component, /studentInfoItems\.push\(\{ label: 'الجنس', value: studentGender \}\)/);
+  assert.match(component, /optionalStudentInfoItems\.push\(\{ label: 'الجنس', value: studentGender \}\)/);
   assert.doesNotMatch(component, /label: 'الجنس', value: student\.gender/);
 });
 
@@ -816,10 +816,25 @@ test('Result Card presentation uses a compact optional-field layout and balanced
 
   assert.match(component, /const logoUrl = displaySettings\.show_school_logo/);
   assert.doesNotMatch(component, /absolute right-5 top-4/);
-  assert.match(component, /studentInfoItems: StudentInfoItem\[\]/);
+  assert.match(component, /grid-cols-\[6rem_1fr_6rem\]/);
+  assert.match(component, /studentIdentityItems: StudentInfoItem\[\]/);
+  assert.match(component, /academicPlacementItems: StudentInfoItem\[\]/);
+  assert.match(component, /optionalStudentInfoItems: StudentInfoItem\[\]/);
   assert.match(component, /student\.student_number !== null[\s\S]*?student\.student_number !== ''/);
-  assert.match(component, /className\) studentInfoItems\.push\(\{ label: 'الصف'/);
-  assert.match(component, /sectionName\) studentInfoItems\.push\(\{ label: 'الشعبة'/);
+  assert.match(component, /card\.card_number\)[\s\S]*?studentIdentityItems\.push\(\{ label: 'رقم الكارت'/);
+  assert.match(component, /className\) academicPlacementItems\.push\(\{ label: 'الصف'/);
+  assert.match(component, /sectionName\) academicPlacementItems\.push\(\{ label: 'الشعبة'/);
+  assert.equal((component.match(/label: 'الصف'/g) || []).length, 1);
+  assert.equal((component.match(/label: 'الشعبة'/g) || []).length, 1);
+  assert.doesNotMatch(component, /العام الدراسي:/);
+  assert.doesNotMatch(component, /show_class_section_in_header/);
+  assert.doesNotMatch(component, /show_exam_round/);
+  assert.doesNotMatch(component, /label: 'الدور'/);
+  assert.doesNotMatch(component, /كارت جزئي — بعض البيانات الأكاديمية غير مكتملة/);
+  assert.match(component, /const isPartial = data\?\.card_mode === 'partial'/);
+  assert.match(component, /const overallStatus = isPartial[\s\S]*?\? 'غير مكتمل'/);
+  assert.match(component, /aria-label=\{`السنة الدراسية \$\{academicYear\}`\}/);
+  assert.match(component, /dir="ltr"[\s\S]*?\{String\(academicYear\)\}/);
   assert.match(component, /result-card-table w-full table-fixed/);
   assert.match(component, /result-card-subject-column/);
   assert.match(component, /summary\.overall_average !== null[\s\S]*?summary\.overall_average !== undefined/);
