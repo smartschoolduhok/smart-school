@@ -12,10 +12,11 @@ interface Props {
 }
 
 const SCHOOL_TYPES = ['خاص', 'حكومي', 'دولي', 'مختلط'];
+const EMPTY_SCHOOL_PROFILE: Record<string, any> = {};
 
 export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, onError }: Props) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
-  const school = data?.school || {};
+  const school = data?.school || EMPTY_SCHOOL_PROFILE;
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [changed, setChanged] = useState(false);
@@ -55,7 +56,7 @@ export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, o
     if (error) {
       onError(error);
     } else {
-      onSuccess(resData?.data?.message || 'تم تحديث بيانات المدرسة بنجاح');
+      onSuccess(resData?.message || 'تم تحديث بيانات المدرسة بنجاح');
       setChanged(false);
     }
   };

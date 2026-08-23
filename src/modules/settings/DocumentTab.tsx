@@ -115,7 +115,7 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
     if (error) {
       onError(error);
     } else {
-      onSuccess(resData?.data?.message || 'تم تحديث إعدادات الوثائق بنجاح');
+      onSuccess(resData?.message || 'تم تحديث إعدادات الوثائق بنجاح');
       setChanged(false);
     }
   };

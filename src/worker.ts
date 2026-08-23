@@ -21,6 +21,8 @@ import {
   RESULT_CARD_PRINT_ROLES,
   RESULT_CARD_VIEW_ROLES,
   SCHOOL_MANAGEMENT_ROLES,
+  SETTINGS_MANAGEMENT_ROLES,
+  SETTINGS_VIEW_ROLES,
   USER_DIRECTORY_ROLES,
   hasRole,
 } from './lib/rbac'
@@ -1178,7 +1180,7 @@ app.get('/api/school-modules', requireSameSchoolOrAdmin(), async (c) => {
 // ===========================================
 // API ROUTES: Academic Years (with RBAC + school_id filtering)
 // ===========================================
-app.get('/api/academic-years', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/academic-years', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_VIEW_ROLES), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   if (resolvedSchoolId == null) {
@@ -1197,7 +1199,7 @@ app.get('/api/academic-years', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.post('/api/academic-years', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+app.post('/api/academic-years', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user = c.get('user') as UserContext
   try {
@@ -1226,7 +1228,7 @@ app.post('/api/academic-years', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_
   }
 })
 
-app.put('/api/academic-years/:id', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+app.put('/api/academic-years/:id', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user = c.get('user') as UserContext
   const id = Number(c.req.param('id'))
@@ -1259,7 +1261,7 @@ app.put('/api/academic-years/:id', requireSameSchoolOrAdmin(), requireRoles(SCHO
   }
 })
 
-app.put('/api/academic-years/:id/activate', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+app.put('/api/academic-years/:id/activate', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user = c.get('user') as UserContext
   const id = Number(c.req.param('id'))
@@ -2501,7 +2503,7 @@ function gradeCalculationInput(
 // Grade Settings Routes
 // ===========================================
 
-app.get('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   try {
     const scope = c.get('scope');
@@ -2527,7 +2529,7 @@ app.get('/api/grade-settings', requireSameSchoolOrAdmin(), async (c) => {
   }
 });
 
-app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -4622,10 +4624,6 @@ function canManageSalaries(roleKey: RoleKey): boolean {
   return hasRole(roleKey, EMPLOYEE_SALARY_ROLES);
 }
 
-function canManageSettings(roleKey: RoleKey): boolean {
-  return hasRole(roleKey, SCHOOL_MANAGEMENT_ROLES);
-}
-
 // GET /api/student-fees
 // ===========================================
 app.get('/api/student-fees', requireSameSchoolOrAdmin(), async (c) => {
@@ -6594,7 +6592,7 @@ function withResultCardDisplaySettings<T extends Record<string, any>>(row: T): T
 // GET /api/settings/school
 // Returns: school profile + document settings + system settings merged
 // ===========================================
-app.get('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/settings/school', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
   const targetSchoolId = c.get('resolvedSchoolId') as number;
@@ -6654,13 +6652,9 @@ app.get('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
 // PUT /api/settings/school
 // Updates: school profile fields only (safe fields)
 // ===========================================
-app.put('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/settings/school', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
-
-  if (!user || !canManageSettings(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
-  }
 
   try {
     const body = await c.req.json();
@@ -6697,7 +6691,7 @@ app.put('/api/settings/school', requireSameSchoolOrAdmin(), async (c) => {
 // GET /api/settings/document
 // Returns: document/print preferences only
 // ===========================================
-app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/settings/document', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   const targetSchoolId = c.get('resolvedSchoolId') as number;
 
@@ -6740,13 +6734,9 @@ app.get('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
 // PUT /api/settings/document
 // Updates: document/print preferences
 // ===========================================
-app.put('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/settings/document', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
-
-  if (!user || !canManageSettings(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
-  }
 
   try {
     const body = await c.req.json();
@@ -6807,7 +6797,7 @@ app.put('/api/settings/document', requireSameSchoolOrAdmin(), async (c) => {
 // GET /api/settings/system
 // Returns: localization preferences only
 // ===========================================
-app.get('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/settings/system', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   const targetSchoolId = c.get('resolvedSchoolId') as number;
 
@@ -6839,13 +6829,9 @@ app.get('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
 // PUT /api/settings/system
 // Updates: localization preferences
 // ===========================================
-app.put('/api/settings/system', requireSameSchoolOrAdmin(), async (c) => {
+app.put('/api/settings/system', requireSameSchoolOrAdmin(), requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
-
-  if (!user || !canManageSettings(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل إعدادات النظام' }, 403);
-  }
 
   try {
     const body = await c.req.json();
