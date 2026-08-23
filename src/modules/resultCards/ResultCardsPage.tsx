@@ -11,6 +11,7 @@ import {
   getStudents, getClasses, getSections
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { displayGradeStatus } from '../../lib/gradePresentation';
 import {
   hasRole,
   RESULT_CARD_MANAGEMENT_ROLES,
@@ -53,6 +54,7 @@ function resultStatusBadge(status: string | null) {
     status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' :
     status === 'راسب' ? 'bg-red-100 text-red-700' :
     status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
+    status === 'معفو' ? 'bg-indigo-100 text-indigo-700' :
     'bg-gray-100 text-gray-700';
   return <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cls}`}>{status}</span>;
 }
@@ -815,7 +817,7 @@ function CardPreview({ card, details, student }: { card: CardRecord | null; deta
                 <td className="border border-gray-200 px-3 py-2 text-center text-gray-700">{displayNum(s.annual_effort)}</td>
                 <td className="border border-gray-200 px-3 py-2 text-center text-gray-700">{displayNum(s.final_exam)}</td>
                 <td className="border border-gray-200 px-3 py-2 text-center font-semibold text-gray-900">{displayNum(s.effective_grade ?? s.grade_after_completion ?? s.final_grade)}</td>
-                <td className="border border-gray-200 px-3 py-2 text-center">{resultStatusBadge(s.result_status)}</td>
+                <td className="border border-gray-200 px-3 py-2 text-center">{resultStatusBadge(displayGradeStatus(s.result_status, s.exemption_status))}</td>
                 <td className="border border-gray-200 px-3 py-2 text-center">
                   {s.exemption_status ? <span className="text-blue-700 font-semibold text-xs">معفى</span> : <span className="text-gray-400">—</span>}
                 </td>

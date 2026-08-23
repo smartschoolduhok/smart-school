@@ -12,6 +12,7 @@ import {
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import type { GradeCalculationSettings } from '../../lib/gradeCalculations';
+import { displayGradeStatus } from '../../lib/gradePresentation';
 import { createPerKeyTaskQueue, mergeUpdatedRow } from '../../lib/perKeyTaskQueue';
 import {
   gradeInputColumns,
@@ -31,6 +32,17 @@ import {
 function displayNum(n: number | null | undefined): string {
   if (n === null || n === undefined) return '';
   return toArabicDigits(String(n));
+}
+
+function statusBadge(status: string | null) {
+  if (!status) return <span className="text-gray-400">—</span>;
+  const cls =
+    status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' :
+    status === 'راسب' ? 'bg-red-100 text-red-700' :
+    status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
+    status === 'معفو' ? 'bg-indigo-100 text-indigo-700' :
+    'bg-gray-100 text-gray-700';
+  return <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cls}`}>{status}</span>;
 }
 
 /* ─── Types ─── */
@@ -295,17 +307,6 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
     return map[field] || field;
   }
 
-  function statusBadge(status: string | null) {
-    if (!status) return <span className="text-gray-400">—</span>;
-    const cls =
-      status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' :
-      status === 'راسب' ? 'bg-red-100 text-red-700' :
-      status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
-      status === 'معفى' ? 'bg-blue-100 text-blue-700' :
-      'bg-gray-100 text-gray-700';
-    return <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cls}`}>{status}</span>;
-  }
-
   return (
     <div className="space-y-4">
       {message && (
@@ -418,7 +419,7 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
                     <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-amber-50/30">{displayNum(g.annual_effort)}</td>
                     <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-amber-50/30">{displayNum(g.final_grade)}</td>
                     <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-rose-50/30">{displayNum(g.effective_grade ?? g.final_grade)}</td>
-                    <td className="px-2 py-2 border-b border-gray-100 text-center">{statusBadge(g.result_status)}</td>
+                    <td className="px-2 py-2 border-b border-gray-100 text-center">{statusBadge(displayGradeStatus(g.result_status, g.exemption_status))}</td>
                     <td className="px-1 py-1 border-b border-gray-100">
                       <input
                         type="text"
@@ -713,14 +714,7 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
                       </td>
                       <td className="px-2 py-2 border-b border-gray-100 text-center text-gray-600 font-medium bg-gray-50/50">{displayNum(g.annual_effort)}</td>
                       <td className="px-2 py-2 border-b border-gray-100 text-center">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                          g.result_status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' :
-                          g.result_status === 'راسب' ? 'bg-red-100 text-red-700' :
-                          g.result_status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
-                          'bg-gray-100 text-gray-700'
-                        }`}>
-                          {g.result_status || '—'}
-                        </span>
+                        {statusBadge(displayGradeStatus(g.result_status, g.exemption_status))}
                       </td>
                     </tr>
                   ))}
@@ -1039,7 +1033,7 @@ function HistoryTab({ schoolId }: { schoolId: number | null }) {
               className={`text-right p-3 rounded-lg border transition-colors ${selectedGradeId === g.id ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'}`}
             >
               <p className="font-medium text-sm text-gray-900">{g.subject_name}</p>
-              <p className="text-xs text-gray-500 mt-1">السعي السنوي: {displayNum(g.annual_effort)} | الحالة: {g.result_status || '—'}</p>
+              <p className="text-xs text-gray-500 mt-1">السعي السنوي: {displayNum(g.annual_effort)} | الحالة: {displayGradeStatus(g.result_status, g.exemption_status) || '—'}</p>
             </button>
           ))}
         </div>

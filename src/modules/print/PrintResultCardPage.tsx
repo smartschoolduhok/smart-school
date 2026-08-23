@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { getResultCard, markResultCardPrinted } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { displayGradeStatus } from '../../lib/gradePresentation';
 import {
   formatExemptionStatus,
   formatUnixSecondsDate,
@@ -141,7 +142,7 @@ export default function PrintResultCardPage() {
     { key: 'annual_effort', header: 'السعي السنوي', align: 'center', render: (r) => toArabicDigits(String(r.annual_effort ?? '-')) },
     { key: 'final_exam', header: 'النهائي', align: 'center', render: (r) => toArabicDigits(String(r.final_exam ?? '-')) },
     { key: 'effective_grade', header: 'الدرجة الفعّالة', align: 'center', render: (r) => toArabicDigits(String(r.effective_grade ?? '-')) },
-    { key: 'result_status', header: 'الحالة', align: 'center' },
+    { key: 'result_status', header: 'الحالة', align: 'center', render: (r) => displayGradeStatus(r.result_status, r.exemption_status) ?? '-' },
     { key: 'exemption_status', header: 'إعفاء', align: 'center', render: (r) => formatExemptionStatus(r.exemption_status, 'individual') },
   ];
 

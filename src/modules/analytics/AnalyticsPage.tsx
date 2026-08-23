@@ -32,6 +32,7 @@ import {
   getStudents,
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { displayGradeStatus } from '../../lib/gradePresentation';
 
 // ---- Types ----
 type TabKey =
@@ -86,6 +87,8 @@ function statusBadge(status: string | null): string {
       return 'bg-amber-100 text-amber-700';
     case 'راسب':
       return 'bg-red-100 text-red-700';
+    case 'معفو':
+      return 'bg-indigo-100 text-indigo-700';
     default:
       return 'bg-gray-100 text-gray-700';
   }
@@ -99,6 +102,8 @@ function statusIcon(status: string | null): string {
       return '⚠️';
     case 'راسب':
       return '❌';
+    case 'معفو':
+      return '⭐';
     default:
       return '—';
   }
@@ -574,8 +579,8 @@ export default function AnalyticsPage() {
                             <td className="px-3 py-2 text-center font-bold">{toArabicDigits(sub.effective_grade ?? '—')}</td>
                             <td className="px-3 py-2 text-center">{toArabicDigits(sub.annual_effort ?? '—')}</td>
                             <td className="px-3 py-2 text-center">
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${statusBadge(sub.result_status)}`}>
-                                {sub.result_status || '—'} {statusIcon(sub.result_status)}
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${statusBadge(displayGradeStatus(sub.result_status, sub.exemption_status))}`}>
+                                {displayGradeStatus(sub.result_status, sub.exemption_status) || '—'} {statusIcon(displayGradeStatus(sub.result_status, sub.exemption_status))}
                               </span>
                             </td>
                             <td className="px-3 py-2 text-center">
