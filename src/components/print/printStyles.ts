@@ -21,6 +21,7 @@ export const PRINT_CSS = `
 
   .print-only { display: block !important; }
   .no-print { display: none !important; }
+  .print-controls { display: none !important; }
 
   .print-layout {
     width: 100% !important;
@@ -109,6 +110,64 @@ export const PRINT_CSS = `
     line-height: 1.8;
     text-align: justify;
     white-space: pre-wrap;
+  }
+
+  .print-a4.result-card-print-sheet {
+    width: 100% !important;
+    min-height: 267mm !important;
+    padding: 0 !important;
+  }
+
+  .result-card-print-sheet .result-card-document {
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 267mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .result-card-print-sheet .result-card-header,
+  .result-card-print-sheet .result-card-student-info,
+  .result-card-print-sheet .result-card-notice,
+  .result-card-print-sheet .result-card-summary,
+  .result-card-print-sheet .result-card-footer {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .result-card-print-sheet .result-card-table-wrap {
+    overflow: visible !important;
+  }
+
+  .result-card-print-sheet .result-card-table {
+    width: 100% !important;
+    table-layout: fixed;
+    font-size: 10.5px !important;
+    line-height: 1.4;
+  }
+
+  .result-card-print-sheet .result-card-table thead {
+    display: table-header-group;
+  }
+
+  .result-card-print-sheet .result-card-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .result-card-print-sheet .result-card-last-subject-row {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  .result-card-print-sheet .result-card-average-row {
+    break-before: avoid-page;
+    page-break-before: avoid;
+  }
+
+  .result-card-print-sheet .result-card-footer {
+    margin-top: auto !important;
   }
 }
 
@@ -208,6 +267,14 @@ export const PRINT_CSS = `
     line-height: 1.8;
     text-align: justify;
     white-space: pre-wrap;
+  }
+
+  .print-a4.result-card-print-sheet .result-card-document {
+    width: 100%;
+    max-width: none !important;
+    min-height: 267mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
 }
 `;

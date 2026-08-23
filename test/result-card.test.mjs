@@ -68,8 +68,8 @@ test('Result Card gender presentation normalizes known values and hides unsafe v
   );
   assert.match(component, /const studentGender = normalizeResultCardGender\(student\.gender\)/);
   assert.match(component, /displaySettings\.show_gender && studentGender/);
-  assert.match(component, /الجنس:<\/span> \{studentGender\}/);
-  assert.doesNotMatch(component, /الجنس:<\/span> \{student\.gender\}/);
+  assert.match(component, /studentInfoItems\.push\(\{ label: 'الجنس', value: studentGender \}\)/);
+  assert.doesNotMatch(component, /label: 'الجنس', value: student\.gender/);
 });
 
 function subject(id, subject_name = `Subject ${id}`, counts_in_average = 1) {
@@ -803,8 +803,52 @@ test('Result Card document renders one aligned print-safe average row from the s
   assert.match(component, /column\.key === 'subject_name'[\s\S]*?\? 'المعدل'/);
   assert.match(component, /isResultCardNumericColumnKey\(column\.key\)/);
   assert.match(component, /: '—'/);
-  assert.match(component, /border-t-2 border-slate-500 bg-slate-100 font-bold/);
+  assert.match(component, /result-card-last-subject-row/);
+  assert.match(component, /result-card-average-row border-t-2 border-slate-700 bg-slate-100 font-black/);
   assert.doesNotMatch(component, /calculateResultCardColumnAverages/);
+});
+
+test('Result Card presentation uses a compact optional-field layout and balanced official footer', async () => {
+  const component = await readFile(
+    new URL('../src/components/resultCards/ResultCardDocument.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(component, /const logoUrl = displaySettings\.show_school_logo/);
+  assert.doesNotMatch(component, /absolute right-5 top-4/);
+  assert.match(component, /studentInfoItems: StudentInfoItem\[\]/);
+  assert.match(component, /student\.student_number !== null[\s\S]*?student\.student_number !== ''/);
+  assert.match(component, /className\) studentInfoItems\.push\(\{ label: 'الصف'/);
+  assert.match(component, /sectionName\) studentInfoItems\.push\(\{ label: 'الشعبة'/);
+  assert.match(component, /result-card-table w-full table-fixed/);
+  assert.match(component, /result-card-subject-column/);
+  assert.match(component, /summary\.overall_average !== null[\s\S]*?summary\.overall_average !== undefined/);
+  assert.match(component, /generalExemption[\s\S]*?\? \{ label: 'الإعفاء العام'/);
+  assert.match(component, /note \? \([\s\S]*?result-card-note-body/);
+  assert.match(component, /grid grid-cols-3 items-end gap-3/);
+  assert.match(component, /<QRCodeSVG value=\{verificationUrl\} size=\{100\} level="M"/);
+  assert.match(component, /يُنشأ رمز QR عند إصدار الكارت/);
+});
+
+test('Result Card print route uses scoped A4-safe pagination styles', async () => {
+  const [printPage, printLayout, printStyles] = await Promise.all([
+    readFile(new URL('../src/modules/print/PrintResultCardPage.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/print/PrintLayout.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/print/printStyles.ts', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(printPage, /className="result-card-print-sheet"/);
+  assert.match(printLayout, /className="print-preview-bg"/);
+  assert.doesNotMatch(printLayout, /className="print-preview-bg no-print"/);
+  assert.match(printLayout, /className="print-controls flex/);
+  assert.match(printStyles, /\.print-controls \{ display: none !important; \}/);
+  assert.match(printStyles, /@page \{ size: A4; margin: 1\.5cm; \}/);
+  assert.match(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?min-height: 267mm !important;[\s\S]*?padding: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-table thead \{[\s\S]*?display: table-header-group;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-table tr \{[\s\S]*?break-inside: avoid;[\s\S]*?page-break-inside: avoid;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-last-subject-row \{[\s\S]*?break-after: avoid-page;[\s\S]*?page-break-after: avoid;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-average-row \{[\s\S]*?break-before: avoid-page;[\s\S]*?page-break-before: avoid;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-footer \{[\s\S]*?margin-top: auto !important;/);
 });
 
 test('Subjects settings clearly expose independent card visibility and average controls', async () => {

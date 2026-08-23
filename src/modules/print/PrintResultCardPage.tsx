@@ -107,6 +107,7 @@ export default function PrintResultCardPage() {
   return (
     <PrintLayout
       onPrint={handlePrint}
+      className="result-card-print-sheet"
       backButton={
         <button onClick={() => navigate(-1)} className="rounded-md bg-gray-100 px-3 py-2 text-sm hover:bg-gray-200">
           رجوع
