@@ -275,6 +275,17 @@ export function updateSubject(id: number | string, data: Record<string, any>) {
   return fetchApi<Record<string, any>>(`/api/subjects/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 }
 
+export function reorderSubjects(schoolId: number, classId: number, orderedSubjectIds: number[]) {
+  return fetchApi<Array<Record<string, any>>>('/api/subjects/reorder', {
+    method: 'PUT',
+    body: JSON.stringify({
+      school_id: schoolId,
+      class_id: classId,
+      ordered_subject_ids: orderedSubjectIds,
+    }),
+  });
+}
+
 export function archiveSubject(id: number | string, schoolId: number) {
   return fetchApi<Record<string, any>>(`/api/subjects/${id}/archive`, {
     method: 'PUT',

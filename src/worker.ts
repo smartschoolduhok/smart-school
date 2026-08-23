@@ -79,6 +79,11 @@ import {
 } from './lib/gradeImport'
 import { resolveRequiredWriteSchoolId } from './lib/tenantSchool'
 import {
+  buildAtomicSubjectOrderUpdateSql,
+  validateSubjectOrder,
+  type SubjectOrderRecord,
+} from './lib/subjectOrdering'
+import {
   buildGeneratedStudentNumber,
   findStudentDuplicate,
   normalizeStudentIdentity,
@@ -1780,22 +1785,131 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       return c.json({ error: placement.error }, placement.status)
     }
 
+    const numericOrderIndex = Number(order_index)
+    const explicitOrderIndex = order_index !== undefined && order_index !== null && order_index !== ''
+      && Number.isInteger(numericOrderIndex) && numericOrderIndex > 0
+      ? numericOrderIndex
+      : null
+
     const result = await db.prepare(`
       INSERT INTO subjects (
         school_id, class_id, section_id, name, subject_type,
         counts_in_average, appears_in_report_card,
         passing_grade, exemption_grade, order_index,
         status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        COALESCE(?, (
+          SELECT COALESCE(MAX(order_index), 0) + 1
+          FROM subjects
+          WHERE school_id = ? AND class_id = ? AND status = 'active'
+        )),
+        'active', unixepoch(), unixepoch()
+      )
     `).bind(
       school_id, class_id, section_id || null, name, subject_type || 'أساسية',
       counts_in_average !== undefined ? (counts_in_average ? 1 : 0) : 1,
       appears_in_report_card !== undefined ? (appears_in_report_card ? 1 : 0) : 1,
-      passing_grade || 50, exemption_grade || 25, order_index || 0
+      passing_grade || 50, exemption_grade || 25,
+      explicitOrderIndex, school_id, class_id,
     ).run()
     return c.json({ data: { id: result.meta.last_row_id, school_id, class_id, name, status: 'active' } }, 201)
   } catch (err: any) {
     return c.json({ error: 'فشل في إنشاء المادة', detail: err.message }, 500)
+  }
+})
+
+app.put('/api/subjects/reorder', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user: UserContext | null = c.get('user') || null
+  try {
+    const body = await c.req.json()
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+
+    const classId = Number(body.class_id)
+    if (!Number.isInteger(classId) || classId <= 0) {
+      return c.json({ error: 'يجب تحديد صف صالح لترتيب المواد' }, 400)
+    }
+
+    const classRecord = await db.prepare('SELECT id, school_id, status FROM classes WHERE id = ?')
+      .bind(classId)
+      .first<{ id: number; school_id: number; status: string }>()
+    if (!classRecord) return c.json({ error: 'الصف غير موجود' }, 404)
+    if (classRecord.school_id !== targetSchool.schoolId) {
+      return c.json({ error: 'غير مسموح: الصف ينتمي إلى مدرسة أخرى' }, 403)
+    }
+    if (classRecord.status !== 'active') {
+      return c.json({ error: 'لا يمكن ترتيب مواد صف غير فعال' }, 400)
+    }
+
+    const uniqueNumericIds = Array.isArray(body.ordered_subject_ids)
+      && body.ordered_subject_ids.every((id: unknown) => typeof id === 'number' && Number.isInteger(id) && id > 0)
+      && new Set(body.ordered_subject_ids).size === body.ordered_subject_ids.length
+      ? body.ordered_subject_ids as number[]
+      : []
+    const suppliedSubjects = uniqueNumericIds.length > 0
+      ? await db.prepare(`
+          SELECT id, school_id, class_id, status
+          FROM subjects
+          WHERE id IN (${uniqueNumericIds.map(() => '?').join(', ')})
+        `).bind(...uniqueNumericIds).all<SubjectOrderRecord>()
+      : { results: [] as SubjectOrderRecord[] }
+    const activeSubjects = await db.prepare(`
+      SELECT id
+      FROM subjects
+      WHERE school_id = ? AND class_id = ? AND status = 'active'
+      ORDER BY order_index, id
+    `).bind(targetSchool.schoolId, classId).all<{ id: number }>()
+
+    const validation = validateSubjectOrder(
+      body.ordered_subject_ids,
+      suppliedSubjects.results || [],
+      (activeSubjects.results || []).map((subject) => subject.id),
+      targetSchool.schoolId,
+      classId,
+    )
+    if (!validation.ok) {
+      const errors: Record<typeof validation.code, { status: 400 | 403 | 404; error: string }> = {
+        not_array: { status: 400, error: 'قائمة ترتيب المواد مطلوبة' },
+        invalid_id: { status: 400, error: 'قائمة المواد تحتوي على معرّف غير صالح' },
+        duplicate_id: { status: 400, error: 'لا يمكن تكرار المادة في الترتيب' },
+        subject_missing: { status: 404, error: 'إحدى المواد غير موجودة' },
+        cross_school: { status: 403, error: 'غير مسموح: إحدى المواد تنتمي إلى مدرسة أخرى' },
+        wrong_class: { status: 400, error: 'إحدى المواد لا تنتمي إلى الصف المحدد' },
+        inactive_subject: { status: 400, error: 'يمكن ترتيب المواد الفعالة فقط' },
+        partial_list: { status: 400, error: 'يجب إرسال جميع المواد الفعالة للصف دون حذف أو إضافة' },
+      }
+      const failure = errors[validation.code]
+      return c.json({ error: failure.error }, failure.status)
+    }
+
+    if (validation.orderedIds.length === 0) return c.json({ data: [] })
+
+    // The builder embeds only validated positive integer IDs. Its exact-set guards
+    // keep this one UPDATE all-or-nothing if the active set changes concurrently.
+    const updateResult = await db.prepare(
+      buildAtomicSubjectOrderUpdateSql(validation.orderedIds),
+    ).bind(
+      targetSchool.schoolId, classId,
+      targetSchool.schoolId, classId, validation.orderedIds.length,
+      targetSchool.schoolId, classId,
+    ).run()
+    if (Number(updateResult.meta.changes || 0) !== validation.orderedIds.length) {
+      return c.json({ error: 'تغيرت قائمة المواد أثناء الحفظ؛ راجع القائمة وحاول مجددًا' }, 409)
+    }
+
+    const reordered = await db.prepare(`
+      SELECT sb.*, c.name AS class_name, s.name AS section_name
+      FROM subjects sb
+      JOIN classes c ON sb.class_id = c.id AND c.school_id = sb.school_id
+      LEFT JOIN sections s ON sb.section_id = s.id AND s.school_id = sb.school_id
+      WHERE sb.school_id = ? AND sb.class_id = ? AND sb.status = 'active'
+      ORDER BY sb.order_index, sb.id
+    `).bind(targetSchool.schoolId, classId).all()
+    return c.json({ data: reordered.results || [] })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في حفظ ترتيب المواد', detail: err.message }, 500)
   }
 })
 
@@ -1813,7 +1927,12 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       passing_grade, exemption_grade, order_index, status
     } = body
 
-    const existing = await db.prepare(`SELECT school_id, class_id FROM subjects WHERE id = ?`).bind(id).first<{ school_id: number; class_id: number }>()
+    const existing = await db.prepare(`SELECT school_id, class_id, order_index, status FROM subjects WHERE id = ?`).bind(id).first<{
+      school_id: number
+      class_id: number
+      order_index: number
+      status: string
+    }>()
     if (!existing) return c.json({ error: 'المادة غير موجودة' }, 404)
     if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل مادة في مدرسة أخرى' }, 403)
@@ -1831,6 +1950,22 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       return c.json({ error: placement.error }, placement.status)
     }
 
+    const numericOrderIndex = Number(order_index)
+    const explicitOrderIndex = order_index !== undefined && order_index !== null && order_index !== ''
+      && Number.isInteger(numericOrderIndex) && numericOrderIndex > 0
+      ? numericOrderIndex
+      : null
+    let nextOrderIndex = explicitOrderIndex ?? existing.order_index
+    if (explicitOrderIndex == null && nextClassId !== existing.class_id) {
+      const appendedOrder = await db.prepare(`
+        SELECT COALESCE(MAX(order_index), 0) + 1 AS next_order_index
+        FROM subjects
+        WHERE school_id = ? AND class_id = ? AND status = 'active'
+      `).bind(targetSchool.schoolId, nextClassId).first<{ next_order_index: number }>()
+      nextOrderIndex = appendedOrder?.next_order_index ?? 1
+    }
+    const nextStatus = status || existing.status
+
     await db.prepare(`
       UPDATE subjects SET
         class_id = ?, section_id = ?, name = ?, subject_type = ?,
@@ -1842,9 +1977,9 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       nextClassId, nextSectionId, name, subject_type || 'أساسية',
       counts_in_average !== undefined ? (counts_in_average ? 1 : 0) : 1,
       appears_in_report_card !== undefined ? (appears_in_report_card ? 1 : 0) : 1,
-      passing_grade || 50, exemption_grade || 25, order_index || 0, status || 'active', id, targetSchool.schoolId
+      passing_grade || 50, exemption_grade || 25, nextOrderIndex, nextStatus, id, targetSchool.schoolId
     ).run()
-    return c.json({ data: { id, name, status: status || 'active' } })
+    return c.json({ data: { id, name, status: nextStatus, order_index: nextOrderIndex } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث المادة', detail: err.message }, 500)
   }
@@ -2005,7 +2140,7 @@ app.get('/api/students/:id/subjects', requireAuthEnforced(), async (c) => {
       LEFT JOIN classes c ON ss.class_id = c.id AND c.school_id = ss.school_id
       LEFT JOIN sections se ON ss.section_id = se.id AND se.school_id = ss.school_id
       WHERE ss.student_id = ? AND ss.school_id = ? AND ss.is_active = 1
-      ORDER BY su.order_index, su.name
+      ORDER BY su.order_index, su.id
     `).bind(id, student.school_id).all();
     return c.json({ data: results || [] });
   } catch (err: any) {
@@ -2522,7 +2657,7 @@ async function getActiveStudentSubjects(db: D1Database, studentId: number, schoo
     LEFT JOIN classes c ON s.class_id = c.id
     LEFT JOIN sections sec ON s.section_id = sec.id
     WHERE ss.student_id = ? AND ss.school_id = ? AND ss.is_active = 1 AND s.status = 'active'
-    ORDER BY s.name
+    ORDER BY s.order_index, s.id
   `).bind(studentId, schoolId).all<any>();
   return rows.results || [];
 }
@@ -2586,7 +2721,7 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), async (c) => {
       sql += ' AND g.is_active = 1';
     }
 
-    sql += ' ORDER BY st.full_name, s.name';
+    sql += ' ORDER BY st.full_name, st.id, s.order_index, s.id';
 
     const stmt = db.prepare(sql);
     const rows = await (params.length > 0 ? stmt.bind(...params).all<any>() : stmt.all<any>());
@@ -2620,7 +2755,7 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), async (c) => {
       JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.school_id = g.school_id
       JOIN subjects s ON ss.subject_id = s.id AND s.school_id = g.school_id
       WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1 AND ss.is_active = 1 AND s.status = 'active'
-      ORDER BY s.name
+      ORDER BY s.order_index, s.id
     `).bind(studentId, student.school_id).all<any>();
 
     return c.json({ data: { student_name: student.full_name, settings, grades: rows.results || [] } });
@@ -3357,7 +3492,7 @@ app.get('/api/analytics/exemption-blockers', requireAuthEnforced(), async (c) =>
       WHERE ${where}
       GROUP BY su.id, su.name
       HAVING blocker_count > 0
-      ORDER BY blocker_count DESC, su.name
+      ORDER BY blocker_count DESC, su.order_index, su.id
     `).bind(...params, genMin).all<any>();
 
     return c.json({ data: rows.results || [] });
@@ -3422,7 +3557,7 @@ app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), asy
       INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
       INNER JOIN subjects su ON ss.subject_id = su.id
       WHERE ss.student_id = ? AND g.is_active = 1
-      ORDER BY su.name
+      ORDER BY su.order_index, su.id
     `).bind(studentId).all<any>();
 
     const subjects = gradeRows.results || [];
@@ -3579,7 +3714,7 @@ async function loadResultCardEvaluation(
       ON ss.subject_id = su.id AND su.school_id = ss.school_id
     WHERE ss.student_id = ? AND ss.school_id = ?
       AND ss.is_active = 1 AND su.status = 'active'
-    ORDER BY su.name
+    ORDER BY su.order_index, su.id
   `).bind(studentId, schoolId).all<ResultCardSubject>();
 
   const gradeRows = await db.prepare(`
@@ -3609,7 +3744,7 @@ async function loadResultCardEvaluation(
       AND su.school_id = ss.school_id
       AND su.status = 'active'
     WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1
-    ORDER BY su.name
+    ORDER BY su.order_index, su.id
   `).bind(studentId, schoolId).all<ResultCardGrade>();
 
   const gradeSettings = await getGradeSettings(db, schoolId);
@@ -8409,7 +8544,7 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
         LEFT JOIN classes c ON st.class_id = c.id
         LEFT JOIN sections sec ON st.section_id = sec.id
         WHERE g.school_id = ? AND g.is_active = 1 AND st.status != 'archived'
-        ORDER BY st.id, s.name
+        ORDER BY st.id, s.order_index, s.id
       `).bind(schoolId).all<any>();
       rows = res.results || [];
     } else if (type === 'student-subjects') {
@@ -8422,7 +8557,7 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
         LEFT JOIN classes c ON st.class_id = c.id
         LEFT JOIN sections sec ON st.section_id = sec.id
         WHERE ss.school_id = ? AND st.status != 'archived'
-        ORDER BY st.id, s.name
+        ORDER BY st.id, s.order_index, s.id
       `).bind(schoolId).all<any>();
       rows = res.results || [];
     }
