@@ -6,6 +6,7 @@ import {
 } from '../../lib/gradePresentation';
 import { formatUnixSecondsDate } from '../../lib/resultCardPrint';
 import {
+  normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
   snapshotResultCardColumns,
   type ResultCardColumnKey,
@@ -80,6 +81,7 @@ export function ResultCardDocument({
   const sectionName = section.name || card.section_name_snapshot || null;
   const academicYear = data?.academic_year?.name || card.academic_year_snapshot || null;
   const studentName = student.name || card.student_name_snapshot || '—';
+  const studentGender = normalizeResultCardGender(student.gender);
   const note = typeof data?.decision_note === 'string' ? data.decision_note.trim() : '';
   const contactItems = [
     displaySettings.show_phone && school.phone ? `الهاتف: ${school.phone}` : null,
@@ -139,8 +141,8 @@ export function ResultCardDocument({
           {!displaySettings.show_class_section_in_header && sectionName && (
             <div><span className="font-bold">الشعبة:</span> {sectionName}</div>
           )}
-          {displaySettings.show_gender && student.gender && (
-            <div><span className="font-bold">الجنس:</span> {student.gender}</div>
+          {displaySettings.show_gender && studentGender && (
+            <div><span className="font-bold">الجنس:</span> {studentGender}</div>
           )}
           {displaySettings.show_exam_round && data?.exam_round && (
             <div><span className="font-bold">الدور:</span> {data.exam_round}</div>

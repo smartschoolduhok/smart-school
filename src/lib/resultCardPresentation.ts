@@ -115,6 +115,14 @@ export function parseResultCardDisplaySettings(value: unknown): ResultCardDispla
   }
 }
 
+export function normalizeResultCardGender(value: unknown): 'ذكر' | 'أنثى' | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'ذكر' || normalized === 'male' || normalized === 'm') return 'ذكر';
+  if (normalized === 'أنثى' || normalized === 'female' || normalized === 'f') return 'أنثى';
+  return null;
+}
+
 export type ResultCardColumnKey =
   | 'subject_name'
   | RawGradeField

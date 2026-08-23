@@ -13,6 +13,7 @@ import {
   buildResultCardColumns,
   DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
   LEGACY_RESULT_CARD_COLUMNS,
+  normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
   RESULT_CARD_DISPLAY_SETTING_KEYS,
   snapshotResultCardColumns,
@@ -37,6 +38,27 @@ const directSettings = {
   first_term_input_mode: 'direct',
   second_term_input_mode: 'direct',
 };
+
+test('Result Card gender presentation normalizes known values and hides unsafe values', async () => {
+  for (const value of ['ذكر', 'male', 'MALE', 'M', ' m ']) {
+    assert.equal(normalizeResultCardGender(value), 'ذكر');
+  }
+  for (const value of ['أنثى', 'female', 'FEMALE', 'F', ' f ']) {
+    assert.equal(normalizeResultCardGender(value), 'أنثى');
+  }
+  for (const value of [null, undefined, '', '  ', 'unknown', 'غير معروف', 'other', 1]) {
+    assert.equal(normalizeResultCardGender(value), null);
+  }
+
+  const component = await readFile(
+    new URL('../src/components/resultCards/ResultCardDocument.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(component, /const studentGender = normalizeResultCardGender\(student\.gender\)/);
+  assert.match(component, /displaySettings\.show_gender && studentGender/);
+  assert.match(component, /الجنس:<\/span> \{studentGender\}/);
+  assert.doesNotMatch(component, /الجنس:<\/span> \{student\.gender\}/);
+});
 
 function subject(id, subject_name = `Subject ${id}`, counts_in_average = 1) {
   return { id, subject_name, counts_in_average };
