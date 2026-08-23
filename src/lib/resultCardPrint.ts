@@ -1,11 +1,14 @@
+import { displayIndividualExemptionDetail } from './gradePresentation.ts';
+
 export type ExemptionStatus = 0 | 1;
 
 export function formatExemptionStatus(
   status: ExemptionStatus,
   kind: 'individual' | 'general',
 ): string {
+  if (kind === 'individual') return displayIndividualExemptionDetail(status);
   if (status !== 1) return 'غير معفى';
-  return kind === 'general' ? 'معفى عام' : 'معفى';
+  return 'معفى عام';
 }
 
 export function unixSecondsToDate(

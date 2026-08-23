@@ -11,7 +11,10 @@ import {
   getStudents, getClasses, getSections
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
-import { displayGradeStatus } from '../../lib/gradePresentation';
+import {
+  displayGradeStatus,
+  displayIndividualExemptionDetail,
+} from '../../lib/gradePresentation';
 import {
   hasRole,
   RESULT_CARD_MANAGEMENT_ROLES,
@@ -819,7 +822,9 @@ function CardPreview({ card, details, student }: { card: CardRecord | null; deta
                 <td className="border border-gray-200 px-3 py-2 text-center font-semibold text-gray-900">{displayNum(s.effective_grade ?? s.grade_after_completion ?? s.final_grade)}</td>
                 <td className="border border-gray-200 px-3 py-2 text-center">{resultStatusBadge(displayGradeStatus(s.result_status, s.exemption_status))}</td>
                 <td className="border border-gray-200 px-3 py-2 text-center">
-                  {s.exemption_status ? <span className="text-blue-700 font-semibold text-xs">معفى</span> : <span className="text-gray-400">—</span>}
+                  <span className={s.exemption_status === 1 ? 'text-blue-700 font-semibold text-xs' : 'text-gray-400'}>
+                    {displayIndividualExemptionDetail(s.exemption_status)}
+                  </span>
                 </td>
               </tr>
             ))}

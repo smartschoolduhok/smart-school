@@ -184,9 +184,9 @@ test('accepts complete grades for a non-exempt student', () => {
 });
 
 test('formats exemption flags from numeric result-card values', () => {
-  assert.equal(formatExemptionStatus(1, 'individual'), 'معفى');
+  assert.equal(formatExemptionStatus(1, 'individual'), 'فردي');
   assert.equal(formatExemptionStatus(1, 'general'), 'معفى عام');
-  assert.equal(formatExemptionStatus(0, 'individual'), 'غير معفى');
+  assert.equal(formatExemptionStatus(0, 'individual'), '—');
 });
 
 test('converts Unix seconds to JavaScript dates', () => {

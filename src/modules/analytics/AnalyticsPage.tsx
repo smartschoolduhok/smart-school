@@ -32,7 +32,10 @@ import {
   getStudents,
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
-import { displayGradeStatus } from '../../lib/gradePresentation';
+import {
+  displayGradeStatus,
+  displayIndividualExemptionDetail,
+} from '../../lib/gradePresentation';
 
 // ---- Types ----
 type TabKey =
@@ -584,11 +587,9 @@ export default function AnalyticsPage() {
                               </span>
                             </td>
                             <td className="px-3 py-2 text-center">
-                              {sub.exemption_status === 1 ? (
-                                <span className="text-blue-600 text-xs font-medium">معفى</span>
-                              ) : (
-                                <span className="text-gray-400 text-xs">—</span>
-                              )}
+                              <span className={sub.exemption_status === 1 ? 'text-blue-600 text-xs font-medium' : 'text-gray-400 text-xs'}>
+                                {displayIndividualExemptionDetail(sub.exemption_status)}
+                              </span>
                             </td>
                           </tr>
                         ))}

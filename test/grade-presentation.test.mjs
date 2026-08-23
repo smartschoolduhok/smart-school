@@ -3,7 +3,10 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { calculateGrades } from '../src/lib/gradeCalculations.ts';
-import { displayGradeStatus } from '../src/lib/gradePresentation.ts';
+import {
+  displayGradeStatus,
+  displayIndividualExemptionDetail,
+} from '../src/lib/gradePresentation.ts';
 import { evaluateResultCard } from '../src/lib/resultCards.ts';
 
 const thresholds = { max_grade: 100, passing_grade: 50, exemption_grade: 90 };
@@ -14,6 +17,13 @@ test('grade presentation maps only an individual exemption to معفو', () => {
   assert.equal(displayGradeStatus('مكمل', 0), 'مكمل');
   assert.equal(displayGradeStatus('راسب', 0), 'راسب');
   assert.equal(displayGradeStatus(null, 0), null);
+});
+
+test('individual exemption detail is فردي and non-exempt detail is an em dash', () => {
+  assert.equal(displayGradeStatus('ناجح', 1), 'معفو');
+  assert.equal(displayIndividualExemptionDetail(1), 'فردي');
+  assert.equal(displayIndividualExemptionDetail(0), '—');
+  assert.equal(displayIndividualExemptionDetail(null), '—');
 });
 
 test('individual exemption keeps internal passing semantics while presenting معفو', () => {
@@ -55,7 +65,10 @@ test('student, section and history grade statuses use the shared presentation he
 
 test('result-card subject preview derives status from snapshot result and exemption fields', async () => {
   const page = await readFile(new URL('../src/modules/resultCards/ResultCardsPage.tsx', import.meta.url), 'utf8');
+  const subjectTable = page.slice(page.indexOf('{/* Subjects Table */}'), page.indexOf('{/* Summary */}'));
   assert.match(page, /resultStatusBadge\(displayGradeStatus\(s\.result_status, s\.exemption_status\)\)/);
+  assert.match(subjectTable, /displayIndividualExemptionDetail\(s\.exemption_status\)/);
+  assert.doesNotMatch(subjectTable, /معفى/);
 });
 
 test('result-card print derives subject status while public verification exposes no subject rows', async () => {
@@ -65,6 +78,7 @@ test('result-card print derives subject status while public verification exposes
   ]);
 
   assert.match(printPage, /render: \(r\) => displayGradeStatus\(r\.result_status, r\.exemption_status\) \?\? '-'/);
+  assert.match(printPage, /render: \(r\) => displayIndividualExemptionDetail\(r\.exemption_status\)/);
   assert.doesNotMatch(verificationPage, /subjects\??:/);
   assert.doesNotMatch(verificationPage, /subject_name/);
 });
