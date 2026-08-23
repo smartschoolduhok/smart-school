@@ -63,6 +63,11 @@ import {
   validateGradeSchemeSettings,
 } from './lib/gradeScheme'
 import {
+  RAW_GRADE_MAX_CONFLICT_SQL,
+  shouldCheckRawGradeMaxConflict,
+  type RawGradeMaxConflict,
+} from './lib/gradeSettingsIntegrity'
+import {
   activateAcademicYearAtomically,
   createInactiveAcademicYear,
   isDuplicateAcademicYearError,
@@ -2539,6 +2544,8 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
     const effGenAvg = general_exemption_average_grade !== undefined && general_exemption_average_grade !== null ? Number(general_exemption_average_grade) : (existingRow?.general_exemption_average_grade ?? 85);
     const effGenMin = general_exemption_min_subject_grade !== undefined && general_exemption_min_subject_grade !== null ? Number(general_exemption_min_subject_grade) : (existingRow?.general_exemption_min_subject_grade ?? 75);
     const effectiveScheme = normalizeGradeSchemeSettings({ ...existingRow, ...body });
+    const effectiveSchemeError = validateGradeSchemeSettings(effectiveScheme);
+    if (effectiveSchemeError) return c.json({ error: effectiveSchemeError }, 400);
 
     if (!isFinite(effMax) || !isFinite(effPass) || !isFinite(effExempt) || !isFinite(effGenAvg) || !isFinite(effGenMin)) {
       return c.json({ error: 'قيم الدرجات يجب أن تكون أرقاماً صالحة' }, 400);
@@ -2560,6 +2567,25 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_M
     }
     if (effGenMin < effPass || effGenMin > effGenAvg) {
       return c.json({ error: 'أدنى درجة للإعفاء العام يجب أن تكون بين درجة النجاح ومتوسط الإعفاء العام' }, 400);
+    }
+
+    const currentMax = Number(existingRow?.max_grade ?? 100);
+    if (shouldCheckRawGradeMaxConflict(currentMax, effMax)) {
+      const rawMaxConflict = await db.prepare(RAW_GRADE_MAX_CONFLICT_SQL)
+        .bind(targetSchoolId, effMax)
+        .first<RawGradeMaxConflict>();
+      const conflictingGradeRows = Number(rawMaxConflict?.conflicting_grade_rows || 0);
+      if (conflictingGradeRows > 0) {
+        return c.json({
+          error: 'لا يمكن تخفيض الدرجة العظمى لأن هناك درجات محفوظة تتجاوز الحد الجديد',
+          meta: {
+            conflicting_grade_rows: conflictingGradeRows,
+            highest_raw_grade: rawMaxConflict?.highest_raw_grade == null
+              ? null
+              : Number(rawMaxConflict.highest_raw_grade),
+          },
+        }, 400);
+      }
     }
 
     let settingsStatement: D1PreparedStatement;

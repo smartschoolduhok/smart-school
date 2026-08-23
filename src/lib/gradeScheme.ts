@@ -47,6 +47,8 @@ export const RAW_GRADE_FIELD_LABELS: Record<RawGradeField, string> = {
 
 export type GradeSchemeSettingsInput = Partial<Record<keyof GradeSchemeSettings, unknown>> | null | undefined;
 
+export const ANNUAL_EFFORT_COMPONENT_REQUIRED_ERROR = 'يجب تفعيل مكوّن واحد على الأقل من مكونات السعي السنوي';
+
 function normalizeMode(value: unknown, fallback: GradeTermInputMode): GradeTermInputMode {
   return GRADE_TERM_INPUT_MODES.includes(value as GradeTermInputMode)
     ? value as GradeTermInputMode
@@ -81,6 +83,12 @@ export function validateGradeSchemeSettings(input: GradeSchemeSettingsInput): st
       return `${key} يجب أن يكون 0 أو 1`;
     }
   }
+  const settings = normalizeGradeSchemeSettings(input);
+  const hasAnnualEffortComponent =
+    settings.first_term_input_mode !== 'disabled' ||
+    settings.mid_year_exam_enabled === 1 ||
+    settings.second_term_input_mode !== 'disabled';
+  if (!hasAnnualEffortComponent) return ANNUAL_EFFORT_COMPONENT_REQUIRED_ERROR;
   return null;
 }
 

@@ -19,6 +19,7 @@ import {
   gradeSchemeSummary,
   normalizeGradeSchemeSettings,
   RAW_GRADE_FIELD_LABELS,
+  validateGradeSchemeSettings,
   type GradeEnabledFlag,
   type GradeTermInputMode,
   type RawGradeField,
@@ -807,6 +808,8 @@ function SettingsTab({ schoolId }: { schoolId: number | null }) {
     if (generalAvg > maxGrade) { setMessage({ text: 'متوسط الإعفاء العام يجب أن يكون ≤ الدرجة العظمى', type: 'error' }); return; }
     if (generalMin < passingGrade) { setMessage({ text: 'أدنى درجة للإعفاء العام يجب أن تكون ≥ درجة النجاح', type: 'error' }); return; }
     if (generalMin > generalAvg) { setMessage({ text: 'أدنى درجة للإعفاء العام يجب أن تكون ≤ متوسط الإعفاء العام', type: 'error' }); return; }
+    const schemeError = validateGradeSchemeSettings(form);
+    if (schemeError) { setMessage({ text: schemeError, type: 'error' }); return; }
 
     setSaving(true);
     const isCurrent = captureSchoolRequest();

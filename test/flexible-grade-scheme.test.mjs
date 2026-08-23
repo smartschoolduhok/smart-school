@@ -6,6 +6,7 @@ import test from 'node:test';
 import { calculateGrades } from '../src/lib/gradeCalculations.ts';
 import { RECALCULATE_SCHOOL_GRADES_SQL } from '../src/lib/gradeRecalculationSql.ts';
 import {
+  ANNUAL_EFFORT_COMPONENT_REQUIRED_ERROR,
   DEFAULT_GRADE_SCHEME_SETTINGS,
   disabledRawGradeFields,
   enabledRawGradeFields,
@@ -13,6 +14,10 @@ import {
   normalizeGradeSchemeSettings,
   validateGradeSchemeSettings,
 } from '../src/lib/gradeScheme.ts';
+import {
+  RAW_GRADE_MAX_CONFLICT_SQL,
+  shouldCheckRawGradeMaxConflict,
+} from '../src/lib/gradeSettingsIntegrity.ts';
 import { analyzeWorksheet, gradeMappingFromAnalysis } from '../src/lib/excelImport.ts';
 import { buildGradeImportPlan } from '../src/lib/gradeImport.ts';
 import { createPerKeyTaskQueue, mergeUpdatedRow } from '../src/lib/perKeyTaskQueue.ts';
@@ -126,6 +131,10 @@ function recalculateSchool(db, schoolId = 1) {
 
 function readGrade(db, id = 1) {
   return db.prepare('SELECT * FROM grades WHERE id = ?').get(id);
+}
+
+function readRawGradeMaxConflict(db, schoolId, proposedMax) {
+  return { ...db.prepare(RAW_GRADE_MAX_CONFLICT_SQL).get(schoolId, proposedMax) };
 }
 
 function assertRawGradeValuesUnchanged(before, after) {
@@ -522,6 +531,98 @@ test('scheme validation and descriptors expose only editable enabled raw fields'
   });
   assert.deepEqual(columns.map(column => column.key), ['first_term_grade', 'completion_exam']);
   assert.ok(columns.every(column => column.editable));
+});
+
+test('scheme validation rejects configurations without an annual-effort component', () => {
+  assert.equal(validateGradeSchemeSettings({
+    first_term_input_mode: 'disabled',
+    mid_year_exam_enabled: 0,
+    second_term_input_mode: 'disabled',
+  }), ANNUAL_EFFORT_COMPONENT_REQUIRED_ERROR);
+  assert.equal(validateGradeSchemeSettings(DEFAULT_GRADE_SCHEME_SETTINGS), null);
+});
+
+test('every legitimate single annual-effort component remains valid', () => {
+  for (const scheme of [
+    { first_term_input_mode: 'direct', mid_year_exam_enabled: 0, second_term_input_mode: 'disabled' },
+    { first_term_input_mode: 'monthly', mid_year_exam_enabled: 0, second_term_input_mode: 'disabled' },
+    { first_term_input_mode: 'disabled', mid_year_exam_enabled: 1, second_term_input_mode: 'disabled' },
+    { first_term_input_mode: 'disabled', mid_year_exam_enabled: 0, second_term_input_mode: 'direct' },
+  ]) {
+    assert.equal(validateGradeSchemeSettings(scheme), null, JSON.stringify(scheme));
+  }
+});
+
+test('raw max-grade conflict SQL rejects above-limit values and allows equality', () => {
+  const db = createRecalculationDatabase();
+  insertGrade(db, { first_term_grade: 95 });
+
+  assert.deepEqual(readRawGradeMaxConflict(db, 1, 50), {
+    conflicting_grade_rows: 1,
+    highest_raw_grade: 95,
+  });
+  assert.deepEqual(readRawGradeMaxConflict(db, 1, 95), {
+    conflicting_grade_rows: 0,
+    highest_raw_grade: null,
+  });
+  assert.equal(shouldCheckRawGradeMaxConflict(100, 50), true);
+  assert.equal(shouldCheckRawGradeMaxConflict(100, 100), false);
+  assert.equal(shouldCheckRawGradeMaxConflict(100, 150), false);
+});
+
+test('raw max-grade conflict SQL detects hidden term, monthly, final and completion values', () => {
+  const db = createRecalculationDatabase();
+  insertGrade(db, {
+    first_term_grade: 96,
+    second_month: 97,
+    third_month: 98,
+    final_exam: 99,
+    completion_exam: 100,
+    is_active: 0,
+  });
+
+  const conflict = readRawGradeMaxConflict(db, 1, 95);
+  assert.equal(conflict.conflicting_grade_rows, 1);
+  assert.equal(conflict.highest_raw_grade, 100);
+  for (const field of rawGradeColumns) assert.match(RAW_GRADE_MAX_CONFLICT_SQL, new RegExp(`\\b${field}\\b`));
+  assert.doesNotMatch(RAW_GRADE_MAX_CONFLICT_SQL, /is_active/);
+});
+
+test('raw max-grade conflict SQL is isolated to the target school', () => {
+  const db = createRecalculationDatabase();
+  insertGrade(db, { id: 1, school_id: 1, first_month: 50 });
+  insertGrade(db, { id: 2, school_id: 2, first_month: 95 });
+
+  assert.deepEqual(readRawGradeMaxConflict(db, 1, 50), {
+    conflicting_grade_rows: 0,
+    highest_raw_grade: null,
+  });
+  assert.deepEqual(readRawGradeMaxConflict(db, 2, 50), {
+    conflicting_grade_rows: 1,
+    highest_raw_grade: 95,
+  });
+});
+
+test('grade-settings integrity rejections occur before writes and recalculation', async () => {
+  const [worker, page] = await Promise.all([
+    readFile(new URL('../src/worker.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/modules/grades/GradesPage.tsx', import.meta.url), 'utf8'),
+  ]);
+  const routeStart = worker.indexOf("app.put('/api/grade-settings'");
+  const routeEnd = worker.indexOf('// Grade Query Helpers', routeStart);
+  const route = worker.slice(routeStart, routeEnd);
+  const effectiveValidationIndex = route.indexOf('validateGradeSchemeSettings(effectiveScheme)');
+  const conflictQueryIndex = route.indexOf('RAW_GRADE_MAX_CONFLICT_SQL');
+  const settingsStatementIndex = route.indexOf('let settingsStatement');
+  const batchIndex = route.indexOf('db.batch([settingsStatement, recalculationStatement])');
+
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  assert.ok(effectiveValidationIndex >= 0 && effectiveValidationIndex < settingsStatementIndex);
+  assert.ok(conflictQueryIndex >= 0 && conflictQueryIndex < settingsStatementIndex);
+  assert.ok(settingsStatementIndex < batchIndex);
+  assert.match(route, /\.bind\(targetSchoolId, effMax\)/);
+  assert.match(route, /لا يمكن تخفيض الدرجة العظمى[\s\S]*?\}, 400\);[\s\S]*?let settingsStatement/);
+  assert.match(page, /validateGradeSchemeSettings\(form\)/);
 });
 
 test('disabled raw grade writes are identified without clearing hidden values', () => {
