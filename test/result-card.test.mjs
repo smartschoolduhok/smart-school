@@ -24,6 +24,10 @@ import {
   calculateResultCardColumnAverages,
   evaluateResultCard,
 } from '../src/lib/resultCards.ts';
+import {
+  calculateSinglePagePrintScale,
+  PRINT_FIT_SAFETY_FACTOR,
+} from '../src/lib/printFit.ts';
 
 const academicYear = { id: 1, name: '2026-2027' };
 const monthlySettings = {
@@ -1027,25 +1031,90 @@ test('Result Card presentation uses a compact optional-field layout and balanced
   assert.match(component, /يُنشأ رمز QR عند إصدار الكارت/);
 });
 
-test('Result Card print route uses scoped A4-safe pagination styles', async () => {
-  const [printPage, printLayout, printStyles] = await Promise.all([
+test('single-page print fit keeps small content at natural size and never enlarges it', () => {
+  assert.equal(calculateSinglePagePrintScale({
+    availableWidth: 800,
+    availableHeight: 1000,
+    contentWidth: 700,
+    contentHeight: 900,
+  }), 1);
+  assert.equal(calculateSinglePagePrintScale({
+    availableWidth: 800,
+    availableHeight: 1000,
+    contentWidth: 400,
+    contentHeight: 500,
+  }), 1);
+});
+
+test('single-page print fit reduces slightly tall content with a rounding safety margin', () => {
+  const scale = calculateSinglePagePrintScale({
+    availableWidth: 800,
+    availableHeight: 1000,
+    contentWidth: 800,
+    contentHeight: 1010,
+  });
+  const rawHeightRatio = 1000 / 1010;
+  assert.ok(scale < 1);
+  assert.ok(scale < rawHeightRatio);
+  assert.ok(scale * 1010 <= 1000 * PRINT_FIT_SAFETY_FACTOR);
+});
+
+test('single-page print fit scales very tall content completely inside the available height', () => {
+  const scale = calculateSinglePagePrintScale({
+    availableWidth: 800,
+    availableHeight: 1000,
+    contentWidth: 800,
+    contentHeight: 3000,
+  });
+  assert.ok(scale > 0 && scale < 1);
+  assert.ok(scale * 3000 <= 1000 * PRINT_FIT_SAFETY_FACTOR);
+  assert.ok(scale * 800 <= 800);
+});
+
+test('single-page print fit includes width overflow in the limiting ratio', () => {
+  const scale = calculateSinglePagePrintScale({
+    availableWidth: 800,
+    availableHeight: 1000,
+    contentWidth: 1000,
+    contentHeight: 500,
+  });
+  assert.ok(scale < 0.8);
+  assert.ok(scale * 1000 <= 800 * PRINT_FIT_SAFETY_FACTOR);
+  assert.ok(scale * 500 <= 1000);
+});
+
+test('Result Card print route measures rendered content inside one explicit A4 content box', async () => {
+  const [printPage, printFit, printLayout, printStyles] = await Promise.all([
     readFile(new URL('../src/modules/print/PrintResultCardPage.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/print/ResultCardPrintFit.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/print/PrintLayout.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/print/printStyles.ts', import.meta.url), 'utf8'),
   ]);
 
   assert.match(printPage, /className="result-card-print-sheet"/);
+  assert.match(printPage, /<ResultCardPrintFit ref=\{printFitRef\}>/);
+  assert.match(printPage, /onBeforePrint:[\s\S]*?printFitRef\.current\?\.fit\(\)/);
+  assert.match(printFit, /content\.scrollWidth/);
+  assert.match(printFit, /content\.scrollHeight/);
+  assert.match(printFit, /window\.addEventListener\('beforeprint', handleBeforePrint\)/);
+  assert.match(printFit, /document\.fonts\?\.ready/);
+  assert.match(printFit, /querySelectorAll\('img'\)/);
+  assert.match(printFit, /new ResizeObserver/);
   assert.match(printLayout, /className="print-preview-bg"/);
   assert.doesNotMatch(printLayout, /className="print-preview-bg no-print"/);
   assert.match(printLayout, /className="print-controls flex/);
   assert.match(printStyles, /\.print-controls \{ display: none !important; \}/);
   assert.match(printStyles, /@page \{ size: A4; margin: 1\.5cm; \}/);
-  assert.match(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?min-height: 267mm !important;[\s\S]*?padding: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-print-viewport \{[\s\S]*?height: 267mm;[\s\S]*?overflow: hidden;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-print-fit \{[\s\S]*?position: absolute;[\s\S]*?transform: scale\(var\(--result-card-print-scale\)\);[\s\S]*?transform-origin: top right;/);
+  assert.match(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?width: 180mm !important;[\s\S]*?height: 267mm !important;[\s\S]*?max-height: 267mm !important;[\s\S]*?padding: 0 !important;/);
+  assert.doesNotMatch(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?width: 210mm !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-document \{[\s\S]*?min-height: 0 !important;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table thead \{[\s\S]*?display: table-header-group;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table tr \{[\s\S]*?break-inside: avoid;[\s\S]*?page-break-inside: avoid;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-last-subject-row \{[\s\S]*?break-after: avoid-page;[\s\S]*?page-break-after: avoid;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-average-row \{[\s\S]*?break-before: avoid-page;[\s\S]*?page-break-before: avoid;/);
-  assert.match(printStyles, /\.result-card-print-sheet \.result-card-footer \{[\s\S]*?margin-top: auto !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-footer \{[\s\S]*?margin-top: 0 !important;/);
 });
 
 test('Subjects settings clearly expose independent card visibility and average controls', async () => {

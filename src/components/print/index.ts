@@ -18,5 +18,7 @@ export type { PrintButtonProps } from './PrintButton';
 
 export { usePrintExport, default as usePrintExportDefault } from './usePrintExport';
 export type { PrintExportOptions } from './usePrintExport';
+export { ResultCardPrintFit } from './ResultCardPrintFit';
+export type { ResultCardPrintFitHandle } from './ResultCardPrintFit';
 
 export { ARABIC_FONT_STACK, PRINT_CSS, injectPrintStyles, removePrintStyles } from './printStyles';

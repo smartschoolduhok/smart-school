@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { PrintLayout, usePrintExport } from '../../components/print';
+import {
+  PrintLayout,
+  ResultCardPrintFit,
+  usePrintExport,
+  type ResultCardPrintFitHandle,
+} from '../../components/print';
 import {
   ResultCardDocument,
   type ResultCardDocumentRecord,
@@ -36,6 +41,7 @@ export default function PrintResultCardPage() {
   const [card, setCard] = useState<CardRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const printFitRef = useRef<ResultCardPrintFitHandle>(null);
   const requestedSchoolId = Number(searchParams.get('school_id'));
   const explicitSchoolId = Number.isInteger(requestedSchoolId) && requestedSchoolId > 0
     ? requestedSchoolId
@@ -48,6 +54,7 @@ export default function PrintResultCardPage() {
   const { handlePrint } = usePrintExport({
     documentTitle: card?.card_number ? `كارت نتيجة ${card.card_number}` : 'كارت نتيجة',
     onBeforePrint: async () => {
+      printFitRef.current?.fit();
       if (!card || !shouldRegisterResultCardPrint(
         card.status,
         hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES),
@@ -114,11 +121,13 @@ export default function PrintResultCardPage() {
         </button>
       }
     >
-      <ResultCardDocument
-        card={card}
-        data={card.card_data_parsed}
-        verificationUrl={verificationUrl}
-      />
+      <ResultCardPrintFit ref={printFitRef}>
+        <ResultCardDocument
+          card={card}
+          data={card.card_data_parsed}
+          verificationUrl={verificationUrl}
+        />
+      </ResultCardPrintFit>
     </PrintLayout>
   );
 }

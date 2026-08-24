@@ -7,10 +7,39 @@ export const ARABIC_FONT_STACK =
   '"Cairo", "Tajawal", "Arial", "Tahoma", sans-serif';
 
 export const PRINT_CSS = `
+.result-card-print-sheet .result-card-print-viewport {
+  --result-card-print-scale: 1;
+  position: relative;
+  width: 100%;
+  height: 267mm;
+  overflow: hidden;
+}
+
+.result-card-print-sheet .result-card-print-fit {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  width: 100%;
+  transform: scale(var(--result-card-print-scale));
+  transform-origin: top right;
+}
+
+.result-card-print-sheet .result-card-document {
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 2.5mm !important;
+  box-shadow: none !important;
+}
+
 @media print {
   @page { size: A4; margin: 1.5cm; }
 
   html, body {
+    margin: 0 !important;
+    padding: 0 !important;
     direction: rtl !important;
     font-family: ${ARABIC_FONT_STACK} !important;
     background: white !important;
@@ -113,18 +142,27 @@ export const PRINT_CSS = `
   }
 
   .print-a4.result-card-print-sheet {
-    width: 100% !important;
+    width: 180mm !important;
+    height: 267mm !important;
     min-height: 267mm !important;
+    max-height: 267mm !important;
     padding: 0 !important;
+    margin: 0 auto !important;
+    overflow: hidden !important;
+    break-inside: avoid-page;
+    page-break-inside: avoid;
   }
 
   .result-card-print-sheet .result-card-document {
-    width: 100% !important;
-    max-width: none !important;
-    min-height: 267mm !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    box-shadow: none !important;
+    font-size: 10px !important;
+  }
+
+  .result-card-print-sheet .result-card-header {
+    padding: 2mm 3mm !important;
+  }
+
+  .result-card-print-sheet .result-card-student-info {
+    padding: 1.5mm 2.5mm !important;
   }
 
   .result-card-print-sheet .result-card-header,
@@ -144,7 +182,15 @@ export const PRINT_CSS = `
     width: 100% !important;
     table-layout: fixed;
     font-size: 10.5px !important;
-    line-height: 1.4;
+    line-height: 1.25;
+  }
+
+  .result-card-print-sheet .result-card-table th {
+    padding: 1.5mm 0.8mm !important;
+  }
+
+  .result-card-print-sheet .result-card-table td {
+    padding: 1mm 0.8mm !important;
   }
 
   .result-card-print-sheet .result-card-table thead {
@@ -166,8 +212,30 @@ export const PRINT_CSS = `
     page-break-before: avoid;
   }
 
+  .result-card-print-sheet .result-card-summary {
+    gap: 2mm !important;
+  }
+
+  .result-card-print-sheet .result-card-summary > div {
+    padding: 2mm !important;
+  }
+
   .result-card-print-sheet .result-card-footer {
-    margin-top: auto !important;
+    margin-top: 0 !important;
+    padding-top: 2mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer .min-h-24 {
+    min-height: 20mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer .mt-12 {
+    margin-top: 8mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer-meta {
+    margin-top: 2mm !important;
+    padding-top: 1.5mm !important;
   }
 }
 
@@ -270,11 +338,7 @@ export const PRINT_CSS = `
   }
 
   .print-a4.result-card-print-sheet .result-card-document {
-    width: 100%;
-    max-width: none !important;
-    min-height: 267mm !important;
-    margin: 0 !important;
-    padding: 0 !important;
+    min-height: 0 !important;
   }
 }
 `;
