@@ -14,6 +14,16 @@ export const SCHOOL_MANAGEMENT_ROLES: readonly RoleKey[] = [
   'vice_principal',
 ];
 
+export const SETTINGS_MANAGEMENT_ROLES: readonly RoleKey[] = SCHOOL_MANAGEMENT_ROLES;
+
+export const SETTINGS_VIEW_ROLES: readonly RoleKey[] = [
+  ...SETTINGS_MANAGEMENT_ROLES,
+  'teacher',
+  'accountant',
+  'registrar',
+  'parent',
+];
+
 export const ACADEMIC_ACCESS_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,
   'teacher',
@@ -82,4 +92,11 @@ export function hasRole(
   allowedRoles: readonly RoleKey[],
 ): boolean {
   return roleKey != null && allowedRoles.includes(roleKey);
+}
+
+export function canEditSchoolSettings(
+  roleKey: RoleKey | null | undefined,
+  schoolId: number | null | undefined,
+): boolean {
+  return schoolId != null && hasRole(roleKey, SETTINGS_MANAGEMENT_ROLES);
 }

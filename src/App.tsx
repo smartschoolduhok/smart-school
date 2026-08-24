@@ -36,7 +36,7 @@ import {
   FINANCE_ACCESS_ROLES,
   IMPORT_EXPORT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
-  SCHOOL_MANAGEMENT_ROLES,
+  SETTINGS_VIEW_ROLES,
   SYSTEM_ADMIN_ROLES,
   hasRole,
 } from './lib/rbac';
@@ -113,10 +113,10 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   );
 }
 
-// School staff route wrapper (admin + school management)
-function SchoolStaffRoute({ children }: { children: React.ReactNode }) {
+// Settings viewers may inspect their school; mutation permissions are enforced separately.
+function SettingsRoute({ children }: { children: React.ReactNode }) {
   return (
-    <RoleGuard allowedRoles={SCHOOL_MANAGEMENT_ROLES}>
+    <RoleGuard allowedRoles={SETTINGS_VIEW_ROLES}>
       {children}
     </RoleGuard>
   );
@@ -179,7 +179,7 @@ export default function App() {
           <Route path="/import-export" element={<Layout><RoleGuard allowedRoles={IMPORT_EXPORT_ROLES}><ImportExportPage /></RoleGuard></Layout>} />
 
           {/* Settings - school staff */}
-          <Route path="/settings" element={<Layout><SchoolStaffRoute><SettingsPage /></SchoolStaffRoute></Layout>} />
+          <Route path="/settings" element={<Layout><SettingsRoute><SettingsPage /></SettingsRoute></Layout>} />
 
           {/* Public verification routes — no auth, no layout */}
           <Route path="/verify/result-card/:token" element={<ResultCardVerificationPage />} />

@@ -10,7 +10,7 @@ import {
   FINANCE_ACCESS_ROLES,
   IMPORT_EXPORT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
-  SCHOOL_MANAGEMENT_ROLES,
+  SETTINGS_VIEW_ROLES,
   SYSTEM_ADMIN_ROLES,
   hasRole,
 } from '../lib/rbac';
@@ -72,8 +72,8 @@ const activeModules: NavItem[] = [
   { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={20} />, active: true, allowedRoles: OFFICIAL_BOOK_ACCESS_ROLES },
   { label: 'السجلات المطبوعة', path: '/print-records', icon: <Printer size={20} />, active: true, allowedRoles: OFFICIAL_BOOK_ACCESS_ROLES },
 
-  // Settings - admin + school management
-  { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true, allowedRoles: SCHOOL_MANAGEMENT_ROLES },
+  // Settings - authenticated school roles may view; mutation remains management-only.
+  { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={20} />, active: true, allowedRoles: SETTINGS_VIEW_ROLES },
 ];
 
 const futureModules: NavItem[] = [

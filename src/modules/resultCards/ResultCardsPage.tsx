@@ -1,20 +1,16 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
-import { QRCodeSVG } from 'qrcode.react';
 import {
   getResultCards, getResultCard, generateStudentResultCard,
   generateSectionResultCards, markResultCardPrinted, cancelResultCard,
-  verifyResultCard,
+  previewStudentResultCard, verifyResultCard,
   getStudents, getClasses, getSections
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
-import {
-  displayGradeStatus,
-  displayIndividualExemptionDetail,
-} from '../../lib/gradePresentation';
+import { ResultCardDocument } from '../../components/resultCards/ResultCardDocument';
 import {
   hasRole,
   RESULT_CARD_MANAGEMENT_ROLES,
@@ -23,7 +19,7 @@ import {
 import type { RoleKey } from '../../types';
 import {
   FileText, Printer, Search, User, Users, CheckCircle, AlertCircle,
-  Loader2, QrCode, XCircle, Eye, Trash2, CheckSquare, Globe
+  Loader2, QrCode, XCircle, Eye, CheckSquare, Globe
 } from 'lucide-react';
 
 /* ─── Helpers ─── */
@@ -31,7 +27,6 @@ function displayNum(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
   return toArabicDigits(String(n));
 }
-
 function canGenerate(roleKey?: RoleKey): boolean {
   return hasRole(roleKey, RESULT_CARD_MANAGEMENT_ROLES);
 }
@@ -57,6 +52,7 @@ function resultStatusBadge(status: string | null) {
     status === 'ناجح' ? 'bg-emerald-100 text-emerald-700' :
     status === 'راسب' ? 'bg-red-100 text-red-700' :
     status === 'مكمل' ? 'bg-amber-100 text-amber-700' :
+    status === 'غير مكتمل' ? 'bg-slate-200 text-slate-700' :
     status === 'معفو' ? 'bg-indigo-100 text-indigo-700' :
     'bg-gray-100 text-gray-700';
   return <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cls}`}>{status}</span>;
@@ -66,7 +62,8 @@ function resultStatusBadge(status: string | null) {
 type TabKey = 'generate-student' | 'generate-section' | 'list' | 'verify';
 
 interface CardRecord {
-  id: number;
+  id: number | null;
+  school_id: number;
   card_number: string;
   student_name_snapshot: string;
   class_name_snapshot: string | null;
@@ -78,12 +75,22 @@ interface CardRecord {
   generated_at: number;
   printed_at: number | null;
   status: string;
-  verification_token: string;
+  verification_token: string | null;
+  card_data_parsed?: Record<string, any>;
 }
 
 interface StudentOption { id: number; full_name: string; student_number: string; }
 interface ClassOption { id: number; name: string; }
 interface SectionOption { id: number; name: string; class_id: number; }
+
+const RESULT_CARD_DECISION_PRESETS = [
+  'معفى عام',
+  'ناجح بقرار مجلس المدرسين',
+  'مكمل',
+  'مؤجل',
+];
+
+const RESULT_CARD_EXAM_ROUNDS = ['الدور الأول', 'الدور الثاني'];
 
 const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'generate-student', label: 'إنشاء كارت طالب', icon: <User size={18} /> },
@@ -151,9 +158,11 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
   const [card, setCard] = useState<CardRecord | null>(null);
   const [cardDetails, setCardDetails] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [decisionNote, setDecisionNote] = useState('');
+  const [examRound, setExamRound] = useState('الدور الأول');
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
-  const printRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setStudents([]);
@@ -161,7 +170,10 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
     setCard(null);
     setCardDetails(null);
     setLoading(false);
+    setPreviewing(false);
     setGenerating(false);
+    setDecisionNote('');
+    setExamRound('الدور الأول');
     setMessage(null);
     void loadStudents();
   }, [schoolId]);
@@ -179,7 +191,10 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
     if (!selectedStudentId) { setMessage({ text: 'يرجى اختيار طالب أولاً', type: 'error' }); return; }
     const isCurrent = captureSchoolRequest();
     setGenerating(true);
-    const res = await generateStudentResultCard(selectedStudentId, schoolId);
+    const res = await generateStudentResultCard(selectedStudentId, schoolId, {
+      decision_note: decisionNote,
+      exam_round: examRound,
+    });
     if (!isCurrent()) return;
     setGenerating(false);
     if (res.error) {
@@ -188,12 +203,36 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
       setMessage({ text: (res.data as any)?.message || 'تم إنشاء الكارت بنجاح', type: 'success' });
       setCard(res.data?.card || null);
       if (res.data?.card?.id) {
-        const d = await getResultCard(res.data.card.id);
+        const d = await getResultCard(res.data.card.id, schoolId);
         if (!isCurrent()) return;
         setCardDetails(d.data || null);
       }
     }
     setTimeout(() => setMessage(null), 5000);
+  }
+
+  async function handleLivePreview() {
+    if (schoolId == null) { setMessage({ text: 'يجب اختيار المدرسة المستهدفة أولاً', type: 'error' }); return; }
+    if (!selectedStudentId) { setMessage({ text: 'يرجى اختيار طالب أولاً', type: 'error' }); return; }
+    const isCurrent = captureSchoolRequest();
+    setPreviewing(true);
+    const res = await previewStudentResultCard(selectedStudentId, schoolId, {
+      decision_note: decisionNote,
+      exam_round: examRound,
+    });
+    if (!isCurrent()) return;
+    setPreviewing(false);
+    if (res.error) {
+      setMessage({ text: res.error, type: 'error' });
+      return;
+    }
+    const previewCard = res.data?.card as CardRecord | undefined;
+    setCard(previewCard || null);
+    setCardDetails(previewCard ? { card_data_parsed: previewCard.card_data_parsed } : null);
+    setMessage({
+      text: (res.data as any)?.message || 'تم إعداد المعاينة المباشرة دون حفظ',
+      type: 'success',
+    });
   }
 
   async function handleLoadPreview() {
@@ -206,7 +245,7 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
     const cards = (res.data || []) as CardRecord[];
     if (cards.length > 0) {
       setCard(cards[0]);
-      const d = await getResultCard(cards[0].id);
+      const d = await getResultCard(cards[0].id!, schoolId);
       if (!isCurrent()) return;
       setCardDetails(d.data || null);
     } else {
@@ -218,41 +257,6 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
     setLoading(false);
   }
 
-  function handlePrint() {
-    if (!printRef.current) return;
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
-    const html = `
-      <html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>كارت النتيجة</title>
-      <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Cairo', sans-serif; background: #fff; color: #111; }
-        .card { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 20mm; border: 2px solid #111; }
-        .header { text-align: center; border-bottom: 2px solid #111; padding-bottom: 12px; margin-bottom: 16px; }
-        .header h2 { font-size: 22px; font-weight: 700; }
-        .header p { font-size: 14px; color: #444; margin-top: 4px; }
-        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-bottom: 16px; font-size: 13px; }
-        .info-grid .row { display: flex; gap: 6px; }
-        .label { font-weight: 600; color: #333; }
-        .value { color: #111; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 12px; }
-        th, td { border: 1px solid #333; padding: 6px 8px; text-align: center; }
-        th { background: #f3f4f6; font-weight: 600; }
-        .summary { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 12px; }
-        .summary-box { border: 1px solid #333; padding: 10px 14px; font-size: 13px; }
-        svg { display: block; margin: 0 auto; }
-        .footer { margin-top: 24px; text-align: center; font-size: 11px; color: #555; border-top: 1px solid #ccc; padding-top: 10px; }
-        @media print { .card { border: none; } body { background: #fff; } }
-      </style></head><body>${printRef.current.innerHTML}</body></html>`;
-    printWindow.document.write(html);
-    printWindow.document.close();
-    printWindow.focus();
-    setTimeout(() => { printWindow.print(); }, 300);
-  }
-
-  const selectedStudent = students.find((s) => String(s.id) === selectedStudentId);
-
   return (
     <div className="space-y-4">
       {message && (
@@ -261,6 +265,42 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
           <span className="text-sm">{message.text}</span>
         </div>
       )}
+
+      <div className="grid gap-4 rounded-xl border border-gray-200 bg-white p-4 md:grid-cols-[180px_1fr]">
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">الدور</label>
+          <select
+            value={examRound}
+            onChange={(event) => { setExamRound(event.target.value); setCard(null); setCardDetails(null); }}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+          >
+            {RESULT_CARD_EXAM_ROUNDS.map((round) => <option key={round}>{round}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">ملاحظة / قرار رسمي اختياري</label>
+          <textarea
+            value={decisionNote}
+            onChange={(event) => { setDecisionNote(event.target.value); setCard(null); setCardDetails(null); }}
+            maxLength={1000}
+            rows={2}
+            placeholder="مثال: ناجح بقرار مجلس المدرسين"
+            className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm"
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            {RESULT_CARD_DECISION_PRESETS.map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => { setDecisionNote(preset); setCard(null); setCardDetails(null); }}
+                className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700 hover:bg-gray-200"
+              >
+                {preset}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
 
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex-1 min-w-[240px]">
@@ -290,14 +330,24 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
           عرض الكارت الحالي
         </button>
         {canGenerate(user?.role_key) && schoolId != null && (
-          <button
-            onClick={handleGenerate}
-            disabled={generating || !selectedStudentId}
-            className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors"
-          >
-            {generating ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
-            إنشاء / تجديد الكارت
-          </button>
+          <>
+            <button
+              onClick={handleLivePreview}
+              disabled={previewing || !selectedStudentId}
+              className="flex items-center gap-2 rounded-lg bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100 disabled:opacity-50"
+            >
+              {previewing ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />}
+              معاينة مباشرة
+            </button>
+            <button
+              onClick={handleGenerate}
+              disabled={generating || !selectedStudentId}
+              className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors"
+            >
+              {generating ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
+              إصدار وحفظ الكارت
+            </button>
+          </>
         )}
       </div>
 
@@ -306,29 +356,35 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-900">معاينة الكارت</h3>
-            <button onClick={handlePrint} className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 text-white rounded-lg text-sm hover:bg-gray-900 transition-colors print:hidden">
-              <Printer size={14} />
-              طباعة
-            </button>
-            <a
-              href={`/print/result-card/${card!.id}`}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition-colors print:hidden"
-            >
-              <Printer size={14} />
-              تصدير PDF
-            </a>
+            {card?.id && (
+              <a
+                href={`/print/result-card/${card.id}?school_id=${schoolId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition-colors print:hidden"
+              >
+                <Printer size={14} />
+                طباعة / تصدير PDF
+              </a>
+            )}
           </div>
-          <div ref={printRef} className="bg-white rounded-xl border border-gray-200 overflow-hidden print:border-black print:rounded-none">
-            <CardPreview card={card} details={cardDetails} student={selectedStudent} />
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden print:border-black print:rounded-none">
+            {card && (
+              <ResultCardDocument
+                card={card}
+                data={cardDetails?.card_data_parsed || card.card_data_parsed}
+                verificationUrl={card.verification_token
+                  ? `${window.location.origin}/verify/result-card/${card.verification_token}`
+                  : null}
+                compact
+              />
+            )}
           </div>
         </div>
       )}
     </div>
   );
 }
-
 /* ═══════════════════════════════════════
    Tab 2: Generate Section Cards
    ═══════════════════════════════════════ */
@@ -340,6 +396,8 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedSectionId, setSelectedSectionId] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [decisionNote, setDecisionNote] = useState('');
+  const [examRound, setExamRound] = useState('الدور الأول');
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [result, setResult] = useState<any>(null);
 
@@ -350,6 +408,8 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
     setSelectedSectionId('');
     setResult(null);
     setGenerating(false);
+    setDecisionNote('');
+    setExamRound('الدور الأول');
     setMessage(null);
     void loadClasses();
   }, [schoolId]);
@@ -382,7 +442,13 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
     const isCurrent = captureSchoolRequest();
     setGenerating(true);
     setResult(null);
-    const res = await generateSectionResultCards({ school_id: schoolId, class_id: Number(selectedClassId), section_id: Number(selectedSectionId) });
+    const res = await generateSectionResultCards({
+      school_id: schoolId,
+      class_id: Number(selectedClassId),
+      section_id: Number(selectedSectionId),
+      decision_note: decisionNote,
+      exam_round: examRound,
+    });
     if (!isCurrent()) return;
     setGenerating(false);
     if (res.error) {
@@ -409,6 +475,29 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
           <span>ليس لديك صلاحية إنشاء كارتات النتائج.</span>
         </div>
       )}
+
+      <div className="grid gap-4 rounded-xl border border-gray-200 bg-white p-4 md:grid-cols-[180px_1fr]">
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">الدور لكل الكارتات</label>
+          <select
+            value={examRound}
+            onChange={(event) => setExamRound(event.target.value)}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+          >
+            {RESULT_CARD_EXAM_ROUNDS.map((round) => <option key={round}>{round}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">قرار اختياري يطبق على جميع كارتات الشعبة</label>
+          <textarea
+            value={decisionNote}
+            onChange={(event) => setDecisionNote(event.target.value)}
+            maxLength={1000}
+            rows={2}
+            className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm"
+          />
+        </div>
+      </div>
 
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-48">
@@ -606,7 +695,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                     <td className="px-3 py-2 border-b border-gray-100 text-center">{resultStatusBadge(c.overall_result_status)}</td>
                     <td className="px-3 py-2 border-b border-gray-100 text-center">
                       {c.general_exemption_status ? (
-                        <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-100 text-blue-700">معفى</span>
+                        <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-100 text-blue-700">معفى عام</span>
                       ) : (
                         <span className="text-gray-400 text-xs">—</span>
                       )}
@@ -619,12 +708,12 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                         {c.status === 'active' && (
                           <>
                             {hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && (
-                              <button onClick={() => handleMarkPrinted(c.id)} title="تعليم كمطبوع" className="p-1.5 rounded-md hover:bg-blue-50 text-blue-600 transition-colors">
+                              <button onClick={() => handleMarkPrinted(c.id!)} title="تعليم كمطبوع" className="p-1.5 rounded-md hover:bg-blue-50 text-blue-600 transition-colors">
                                 <Printer size={14} />
                               </button>
                             )}
                             <a
-                              href={`/print/result-card/${c.id}`}
+                              href={`/print/result-card/${c.id}?school_id=${schoolId}`}
                               target="_blank"
                               rel="noreferrer"
                               title="طباعة / تصدير PDF"
@@ -633,7 +722,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                               <Printer size={14} />
                             </a>
                             {hasRole(user?.role_key, RESULT_CARD_MANAGEMENT_ROLES) && (
-                              <button onClick={() => handleCancel(c.id)} title="إلغاء" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
+                              <button onClick={() => handleCancel(c.id!)} title="إلغاء" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
                                 <XCircle size={14} />
                               </button>
                             )}
@@ -743,7 +832,9 @@ function VerifyTab() {
               <div><span className="text-gray-500">السنة الدراسية:</span> <span className="font-medium text-gray-900">{result.academic_year || '—'}</span></div>
               <div><span className="text-gray-500">تاريخ الإنشاء:</span> <span className="font-medium text-gray-900">{result.generated_at ? new Date(result.generated_at * 1000).toLocaleDateString('ar-SY') : '—'}</span></div>
               <div><span className="text-gray-500">النتيجة العامة:</span> {resultStatusBadge(result.overall_result_status)}</div>
-              <div><span className="text-gray-500">الإعفاء العام:</span> {result.general_exemption_status ? <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-100 text-blue-700">معفى</span> : <span className="text-gray-400">—</span>}</div>
+              <div><span className="text-gray-500">الإعفاء العام:</span> {result.general_exemption_status ? <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-100 text-blue-700">معفى عام</span> : <span className="text-gray-400">—</span>}</div>
+              {result.card_mode === 'partial' && <div><span className="text-gray-500">نوع الكارت:</span> <span className="font-semibold text-amber-700">جزئي</span></div>}
+              {result.decision_note && <div className="sm:col-span-2"><span className="text-gray-500">القرار:</span> <span className="font-medium text-gray-900">{result.decision_note}</span></div>}
             </div>
           </div>
         </div>
@@ -768,110 +859,6 @@ function VerifyTab() {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════
-   Card Preview (A4-like layout)
-   ═══════════════════════════════════════ */
-function CardPreview({ card, details, student }: { card: CardRecord | null; details: any; student?: StudentOption }) {
-  if (!card) return null;
-
-  const data = details?.card_data_parsed || {};
-  const subjects = (data.subjects || []) as any[];
-  const summary = data.summary || {};
-  const verificationUrl = card?.verification_token ? `/verify/result-card/${card.verification_token}` : '';
-
-  return (
-    <div className="p-8 space-y-6" style={{ maxWidth: '210mm', margin: '0 auto' }}>
-      {/* Header */}
-      <div className="text-center border-b-2 border-gray-900 pb-4">
-        <h2 className="text-2xl font-bold text-gray-900">{card.school_name_snapshot || 'المدرسة'}</h2>
-        <p className="text-sm text-gray-600 mt-1">كارت النتيجة الرسمي — {card.academic_year_snapshot || 'السنة الدراسية'}</p>
-        <p className="text-xs text-gray-500 mt-1 font-mono">{card.card_number}</p>
-      </div>
-
-      {/* Student Info */}
-      <div className="grid grid-cols-2 gap-4 text-sm">
-        <div className="flex gap-2"><span className="font-semibold text-gray-700">اسم الطالب:</span> <span className="text-gray-900">{card.student_name_snapshot}</span></div>
-        <div className="flex gap-2"><span className="font-semibold text-gray-700">رقم الطالب:</span> <span className="text-gray-900 font-mono">{student ? toArabicDigits(student.student_number) : (data.student?.student_number ? toArabicDigits(data.student.student_number) : '—')}</span></div>
-        <div className="flex gap-2"><span className="font-semibold text-gray-700">الصف:</span> <span className="text-gray-900">{card.class_name_snapshot || '—'}</span></div>
-        <div className="flex gap-2"><span className="font-semibold text-gray-700">الشعبة:</span> <span className="text-gray-900">{card.section_name_snapshot || '—'}</span></div>
-      </div>
-
-      {/* Subjects Table */}
-      {subjects.length > 0 && (
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="bg-gray-100 text-gray-700">
-              <th className="border border-gray-300 px-3 py-2 text-right font-semibold">المادة</th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold w-24">السعي السنوي</th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold w-24">النهائي</th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold w-24">الدرجة الفعّالة</th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold w-24">الحالة</th>
-              <th className="border border-gray-300 px-3 py-2 text-center font-semibold w-20">إعفاء</th>
-            </tr>
-          </thead>
-          <tbody>
-            {subjects.map((s: any, idx: number) => (
-              <tr key={idx} className="hover:bg-gray-50">
-                <td className="border border-gray-200 px-3 py-2 text-gray-900">{s.subject_name || s.name || '—'}</td>
-                <td className="border border-gray-200 px-3 py-2 text-center text-gray-700">{displayNum(s.annual_effort)}</td>
-                <td className="border border-gray-200 px-3 py-2 text-center text-gray-700">{displayNum(s.final_exam)}</td>
-                <td className="border border-gray-200 px-3 py-2 text-center font-semibold text-gray-900">{displayNum(s.effective_grade ?? s.grade_after_completion ?? s.final_grade)}</td>
-                <td className="border border-gray-200 px-3 py-2 text-center">{resultStatusBadge(displayGradeStatus(s.result_status, s.exemption_status))}</td>
-                <td className="border border-gray-200 px-3 py-2 text-center">
-                  <span className={s.exemption_status === 1 ? 'text-blue-700 font-semibold text-xs' : 'text-gray-400'}>
-                    {displayIndividualExemptionDetail(s.exemption_status)}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      {/* Summary */}
-      <div className="flex items-start justify-between gap-4 border-t border-gray-200 pt-4">
-        <div className="space-y-2 text-sm">
-          <div className="flex gap-2">
-            <span className="font-semibold text-gray-700">متوسط السعي السنوي:</span>
-            <span className="text-gray-900">{displayNum(summary.annual_effort_average)}</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="font-semibold text-gray-700">أدنى سعي سنوي:</span>
-            <span className="text-gray-900">{displayNum(summary.min_annual_effort)}</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="font-semibold text-gray-700">النتيجة العامة:</span>
-            {resultStatusBadge(card.overall_result_status)}
-          </div>
-          <div className="flex gap-2">
-            <span className="font-semibold text-gray-700">الإعفاء العام:</span>
-            {card.general_exemption_status ? <span className="px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-100 text-blue-700">معفى</span> : <span className="text-gray-400">—</span>}
-          </div>
-        </div>
-
-        {verificationUrl && (
-          <div className="shrink-0">
-            <QRCodeSVG
-              value={`${window.location.origin}${verificationUrl}`}
-              size={140}
-              level="M"
-              bgColor="#ffffff"
-              fgColor="#111827"
-            />
-            <span className="text-[10px] text-gray-400 break-all max-w-[150px] text-center block mt-1" dir="ltr">{verificationUrl}</span>
-          </div>
-        )}
-      </div>
-
-      {/* Footer */}
-      <div className="text-center text-xs text-gray-500 border-t border-gray-200 pt-3">
-        <p>تم إنشاء هذا الكارت إلكترونيًا بتاريخ {card.generated_at ? new Date(card.generated_at * 1000).toLocaleDateString('ar-SY') : '—'}</p>
-        <p className="mt-1">للتحقق من صحة الكارت، امسح رمز QR أو ادخل رمز التحقق على الموقع</p>
-      </div>
     </div>
   );
 }

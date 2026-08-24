@@ -10,7 +10,7 @@ import {
   updateAcademicYearDetails,
   validateAcademicYearInput,
 } from '../src/lib/academicYears.ts';
-import { hasRole, SCHOOL_MANAGEMENT_ROLES } from '../src/lib/rbac.ts';
+import { hasRole, SETTINGS_MANAGEMENT_ROLES } from '../src/lib/rbac.ts';
 import { resolveRequiredWriteSchoolId, resolveTenantSchoolId } from '../src/lib/tenantSchool.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -111,10 +111,10 @@ test('invalid or reversed date ranges are rejected', () => {
 
 test('academic-year management uses only school-management roles', () => {
   for (const role of ['system_admin', 'school_owner', 'principal', 'vice_principal']) {
-    assert.equal(hasRole(role, SCHOOL_MANAGEMENT_ROLES), true);
+    assert.equal(hasRole(role, SETTINGS_MANAGEMENT_ROLES), true);
   }
   for (const role of ['teacher', 'accountant', 'registrar', 'parent']) {
-    assert.equal(hasRole(role, SCHOOL_MANAGEMENT_ROLES), false);
+    assert.equal(hasRole(role, SETTINGS_MANAGEMENT_ROLES), false);
   }
 });
 
@@ -233,7 +233,7 @@ test('create, edit, and activate endpoints enforce school-management roles', () 
     "app.put('/api/academic-years/:id/activate'",
   ]) {
     const route = workerSource.slice(workerSource.indexOf(marker), workerSource.indexOf(marker) + 400);
-    assert.match(route, /requireRoles\(SCHOOL_MANAGEMENT_ROLES\)/, marker);
+    assert.match(route, /requireRoles\(SETTINGS_MANAGEMENT_ROLES\)/, marker);
   }
 });
 

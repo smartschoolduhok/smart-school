@@ -6,7 +6,7 @@ import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSel
 import {
   getSchoolSettings, getDocumentSettings, getSystemSettings
 } from '../../lib/api';
-import { SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import { canEditSchoolSettings } from '../../lib/rbac';
 import {
   Building2, GraduationCap, FileText, Globe, Shield, Database,
   Loader2, AlertCircle, Save, CheckCircle
@@ -45,7 +45,7 @@ export default function SettingsPage() {
   const [systemData, setSystemData] = useState<Record<string, any>>({});
   const [loadedSchoolId, setLoadedSchoolId] = useState<number | null>(null);
 
-  const canEdit = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
+  const canEdit = canEditSchoolSettings(user?.role_key, effectiveSchoolId);
   const selectedSchoolName = isAdmin
     ? schoolScope.schools.find(school => school.id === effectiveSchoolId)?.name || null
     : user?.school_name || null;
@@ -70,9 +70,10 @@ export default function SettingsPage() {
       if (docRes.error) throw new Error(docRes.error);
       if (sysRes.error) throw new Error(sysRes.error);
 
-      setSchoolData(schoolRes.data?.data || {});
-      setDocumentData(docRes.data?.data || {});
-      setSystemData(sysRes.data?.data || {});
+      // fetchApi already unwraps the API's outer { data } envelope.
+      setSchoolData(schoolRes.data || {});
+      setDocumentData(docRes.data || {});
+      setSystemData(sysRes.data || {});
       setLoadedSchoolId(effectiveSchoolId);
     } catch (err: any) {
       if (!isCurrent()) return;

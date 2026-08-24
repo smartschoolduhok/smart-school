@@ -170,10 +170,13 @@ test('current Result Card generation snapshots grades in canonical subject order
   const loader = worker.slice(loaderStart, loaderEnd);
   assert.equal((loader.match(/ORDER BY su\.order_index, su\.id/g) || []).length, 2);
 
-  const createStart = worker.indexOf('async function createResultCardForStudent');
-  const createEnd = worker.indexOf("app.get(\n  '/api/result-cards'", createStart);
+  const snapshotStart = worker.indexOf('async function buildResultCardSnapshot');
+  const snapshotEnd = worker.indexOf('async function createResultCardForStudent', snapshotStart);
+  const snapshot = worker.slice(snapshotStart, snapshotEnd);
+  const createStart = snapshotEnd;
+  const createEnd = worker.indexOf("// GET /api/result-cards", createStart);
   const create = worker.slice(createStart, createEnd);
-  assert.match(create, /subjects: evaluation\.grades/);
+  assert.match(snapshot, /subjects: evaluation\.grades/);
   assert.match(create, /JSON\.stringify\(cardData\)/);
 });
 

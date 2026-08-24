@@ -21,7 +21,7 @@ import {
 import { analyzeWorksheet, gradeMappingFromAnalysis } from '../src/lib/excelImport.ts';
 import { buildGradeImportPlan } from '../src/lib/gradeImport.ts';
 import { createPerKeyTaskQueue, mergeUpdatedRow } from '../src/lib/perKeyTaskQueue.ts';
-import { hasRole, SCHOOL_MANAGEMENT_ROLES } from '../src/lib/rbac.ts';
+import { hasRole, SETTINGS_MANAGEMENT_ROLES } from '../src/lib/rbac.ts';
 
 const thresholds = { max_grade: 100, passing_grade: 50, exemption_grade: 90 };
 
@@ -692,11 +692,11 @@ test('migration adds nullable direct inputs and constrained legacy-default setti
 
 test('backend routes keep school-management RBAC, tenancy and centralized disabled-field validation', async () => {
   for (const role of ['system_admin', 'school_owner', 'principal', 'vice_principal']) {
-    assert.equal(hasRole(role, SCHOOL_MANAGEMENT_ROLES), true, role);
+    assert.equal(hasRole(role, SETTINGS_MANAGEMENT_ROLES), true, role);
   }
-  for (const role of ['teacher', 'registrar', 'accountant']) assert.equal(hasRole(role, SCHOOL_MANAGEMENT_ROLES), false, role);
+  for (const role of ['teacher', 'registrar', 'accountant']) assert.equal(hasRole(role, SETTINGS_MANAGEMENT_ROLES), false, role);
   const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
-  assert.match(worker, /app\.put\('\/api\/grade-settings',[\s\S]*?requireRoles\(SCHOOL_MANAGEMENT_ROLES\)/);
+  assert.match(worker, /app\.put\('\/api\/grade-settings',[\s\S]*?requireRoles\(SETTINGS_MANAGEMENT_ROLES\)/);
   assert.match(worker, /resolveActiveWriteSchool\(db, user, school_id\)/);
   assert.match(worker, /db\.batch\(\[settingsStatement, recalculationStatement\]\)/);
   assert.match(worker, /meta: \{ recalculated_grades: recalculatedGrades \}/);

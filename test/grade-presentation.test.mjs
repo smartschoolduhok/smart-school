@@ -64,21 +64,22 @@ test('student, section and history grade statuses use the shared presentation he
 });
 
 test('result-card subject preview derives status from snapshot result and exemption fields', async () => {
-  const page = await readFile(new URL('../src/modules/resultCards/ResultCardsPage.tsx', import.meta.url), 'utf8');
-  const subjectTable = page.slice(page.indexOf('{/* Subjects Table */}'), page.indexOf('{/* Summary */}'));
-  assert.match(page, /resultStatusBadge\(displayGradeStatus\(s\.result_status, s\.exemption_status\)\)/);
-  assert.match(subjectTable, /displayIndividualExemptionDetail\(s\.exemption_status\)/);
-  assert.doesNotMatch(subjectTable, /معفى/);
+  const component = await readFile(new URL('../src/components/resultCards/ResultCardDocument.tsx', import.meta.url), 'utf8');
+  assert.match(component, /displayGradeStatus\(row\.result_status, row\.exemption_status\)/);
+  assert.match(component, /displayIndividualExemptionDetail\(row\.exemption_status\)/);
+  assert.doesNotMatch(component, />معفى</);
 });
 
 test('result-card print derives subject status while public verification exposes no subject rows', async () => {
-  const [printPage, verificationPage] = await Promise.all([
+  const [printPage, component, verificationPage] = await Promise.all([
     readFile(new URL('../src/modules/print/PrintResultCardPage.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/resultCards/ResultCardDocument.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/modules/verification/ResultCardVerificationPage.tsx', import.meta.url), 'utf8'),
   ]);
 
-  assert.match(printPage, /render: \(r\) => displayGradeStatus\(r\.result_status, r\.exemption_status\) \?\? '-'/);
-  assert.match(printPage, /render: \(r\) => displayIndividualExemptionDetail\(r\.exemption_status\)/);
+  assert.match(printPage, /<ResultCardDocument/);
+  assert.match(component, /displayGradeStatus\(row\.result_status, row\.exemption_status\)/);
+  assert.match(component, /displayIndividualExemptionDetail\(row\.exemption_status\)/);
   assert.doesNotMatch(verificationPage, /subjects\??:/);
   assert.doesNotMatch(verificationPage, /subject_name/);
 });
@@ -102,7 +103,7 @@ test('overall result-card status remains academic and is never converted to مع
     exemption_status: 1,
   };
   const evaluation = evaluateResultCard(
-    [{ id: 1, subject_name: 'الرياضيات' }],
+    [{ id: 1, subject_name: 'الرياضيات', counts_in_average: 1 }],
     [exemptGrade],
     {
       passing_grade: 50,
@@ -116,9 +117,9 @@ test('overall result-card status remains academic and is never converted to مع
   assert.equal(evaluation.ok, true);
   assert.equal(evaluation.ok && evaluation.summary.overall_result_status, 'ناجح');
 
-  const page = await readFile(new URL('../src/modules/resultCards/ResultCardsPage.tsx', import.meta.url), 'utf8');
-  assert.match(page, /resultStatusBadge\(card\.overall_result_status\)/);
-  assert.doesNotMatch(page, /displayGradeStatus\(card\.overall_result_status/);
+  const component = await readFile(new URL('../src/components/resultCards/ResultCardDocument.tsx', import.meta.url), 'utf8');
+  assert.match(component, /summary\.overall_result_status \|\| card\.overall_result_status/);
+  assert.doesNotMatch(component, /displayGradeStatus\([^\n]*overall_result_status/);
 });
 
 test('analytics presents exemptions separately without changing pass and exempt counters', async () => {

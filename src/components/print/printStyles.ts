@@ -7,10 +7,39 @@ export const ARABIC_FONT_STACK =
   '"Cairo", "Tajawal", "Arial", "Tahoma", sans-serif';
 
 export const PRINT_CSS = `
+.result-card-print-sheet .result-card-print-viewport {
+  --result-card-print-scale: 1;
+  position: relative;
+  width: 100%;
+  height: 267mm;
+  overflow: hidden;
+}
+
+.result-card-print-sheet .result-card-print-fit {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  width: 100%;
+  transform: scale(var(--result-card-print-scale));
+  transform-origin: top right;
+}
+
+.result-card-print-sheet .result-card-document {
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 2.5mm !important;
+  box-shadow: none !important;
+}
+
 @media print {
   @page { size: A4; margin: 1.5cm; }
 
   html, body {
+    margin: 0 !important;
+    padding: 0 !important;
     direction: rtl !important;
     font-family: ${ARABIC_FONT_STACK} !important;
     background: white !important;
@@ -21,6 +50,7 @@ export const PRINT_CSS = `
 
   .print-only { display: block !important; }
   .no-print { display: none !important; }
+  .print-controls { display: none !important; }
 
   .print-layout {
     width: 100% !important;
@@ -109,6 +139,103 @@ export const PRINT_CSS = `
     line-height: 1.8;
     text-align: justify;
     white-space: pre-wrap;
+  }
+
+  .print-a4.result-card-print-sheet {
+    width: 180mm !important;
+    height: 267mm !important;
+    min-height: 267mm !important;
+    max-height: 267mm !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    overflow: hidden !important;
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .result-card-print-sheet .result-card-document {
+    font-size: 10px !important;
+  }
+
+  .result-card-print-sheet .result-card-header {
+    padding: 2mm 3mm !important;
+  }
+
+  .result-card-print-sheet .result-card-student-info {
+    padding: 1.5mm 2.5mm !important;
+  }
+
+  .result-card-print-sheet .result-card-header,
+  .result-card-print-sheet .result-card-student-info,
+  .result-card-print-sheet .result-card-notice,
+  .result-card-print-sheet .result-card-summary,
+  .result-card-print-sheet .result-card-footer {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .result-card-print-sheet .result-card-table-wrap {
+    overflow: visible !important;
+  }
+
+  .result-card-print-sheet .result-card-table {
+    width: 100% !important;
+    table-layout: fixed;
+    font-size: 10.5px !important;
+    line-height: 1.25;
+  }
+
+  .result-card-print-sheet .result-card-table th {
+    padding: 1.5mm 0.8mm !important;
+  }
+
+  .result-card-print-sheet .result-card-table td {
+    padding: 1mm 0.8mm !important;
+  }
+
+  .result-card-print-sheet .result-card-table thead {
+    display: table-header-group;
+  }
+
+  .result-card-print-sheet .result-card-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .result-card-print-sheet .result-card-last-subject-row {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  .result-card-print-sheet .result-card-average-row {
+    break-before: avoid-page;
+    page-break-before: avoid;
+  }
+
+  .result-card-print-sheet .result-card-summary {
+    gap: 2mm !important;
+  }
+
+  .result-card-print-sheet .result-card-summary > div {
+    padding: 2mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer {
+    margin-top: 0 !important;
+    padding-top: 2mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer .min-h-24 {
+    min-height: 20mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer .mt-12 {
+    margin-top: 8mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer-meta {
+    margin-top: 2mm !important;
+    padding-top: 1.5mm !important;
   }
 }
 
@@ -208,6 +335,10 @@ export const PRINT_CSS = `
     line-height: 1.8;
     text-align: justify;
     white-space: pre-wrap;
+  }
+
+  .print-a4.result-card-print-sheet .result-card-document {
+    min-height: 0 !important;
   }
 }
 `;

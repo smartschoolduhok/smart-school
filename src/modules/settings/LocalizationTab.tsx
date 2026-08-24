@@ -65,7 +65,7 @@ export default function LocalizationTab({ data, canEdit, schoolId, onSuccess, on
     if (error) {
       onError(error);
     } else {
-      onSuccess(resData?.data?.message || 'تم تحديث إعدادات النظام بنجاح');
+      onSuccess(resData?.message || 'تم تحديث إعدادات النظام بنجاح');
       setChanged(false);
     }
   };

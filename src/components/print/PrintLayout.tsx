@@ -26,8 +26,8 @@ const PrintLayout: React.FC<PrintLayoutProps> = ({
   const sizeClass = size === 'A5' ? 'print-a5' : 'print-a4';
 
   return (
-    <div className="print-preview-bg no-print">
-      <div className="flex items-center justify-between max-w-4xl mx-auto mb-4">
+    <div className="print-preview-bg">
+      <div className="print-controls flex items-center justify-between max-w-4xl mx-auto mb-4">
         <div className="flex items-center gap-2">
           {backButton}
           <button
