@@ -21,8 +21,10 @@ export const RESULT_CARD_DISPLAY_SETTING_KEYS = [
   'show_subject_status',
   'show_exemption_detail',
   'show_first_term_inputs',
+  'show_first_term_average',
   'show_mid_year_exam',
   'show_second_term_inputs',
+  'show_second_term_average',
   'show_final_exam',
   'show_annual_effort',
   'show_final_grade',
@@ -54,8 +56,10 @@ export const DEFAULT_RESULT_CARD_DISPLAY_SETTINGS: ResultCardDisplaySettings = {
   show_subject_status: true,
   show_exemption_detail: false,
   show_first_term_inputs: true,
+  show_first_term_average: false,
   show_mid_year_exam: true,
   show_second_term_inputs: true,
+  show_second_term_average: false,
   show_final_exam: true,
   show_annual_effort: true,
   show_final_grade: false,
@@ -126,6 +130,8 @@ export function normalizeResultCardGender(value: unknown): 'ذكر' | 'أنثى'
 export type ResultCardColumnKey =
   | 'subject_name'
   | RawGradeField
+  | 'first_term_average'
+  | 'second_term_average'
   | 'annual_effort'
   | 'final_grade'
   | 'effective_grade'
@@ -141,10 +147,12 @@ export const RESULT_CARD_NUMERIC_COLUMN_KEYS = [
   'first_term_grade',
   'first_month',
   'second_month',
+  'first_term_average',
   'mid_year_exam',
   'second_term_grade',
   'third_month',
   'fourth_month',
+  'second_term_average',
   'annual_effort',
   'final_exam',
   'completion_exam',
@@ -167,6 +175,8 @@ export function isResultCardNumericColumnKey(
 
 const RESULT_CARD_DERIVED_COLUMN_LABELS: Record<Exclude<ResultCardColumnKey, RawGradeField>, string> = {
   subject_name: 'المادة',
+  first_term_average: 'سعي الفصل الأول',
+  second_term_average: 'سعي الفصل الثاني',
   annual_effort: 'السعي السنوي',
   final_grade: 'الدرجة النهائية',
   effective_grade: 'الدرجة الفعّالة',
@@ -189,28 +199,38 @@ export function buildResultCardColumns(
 ): ResultCardColumnDescriptor[] {
   const scheme = normalizeGradeSchemeSettings(schemeInput);
   const display = normalizeResultCardDisplaySettings(displayInput);
-  const annualInputFields: RawGradeField[] = [];
+  const columns: ResultCardColumnDescriptor[] = [
+    { key: 'subject_name', label: RESULT_CARD_DERIVED_COLUMN_LABELS.subject_name },
+  ];
   if (display.show_first_term_inputs) {
     if (scheme.first_term_input_mode === 'monthly') {
-      annualInputFields.push('first_month', 'second_month');
+      columns.push(
+        { key: 'first_month', label: RAW_GRADE_FIELD_LABELS.first_month },
+        { key: 'second_month', label: RAW_GRADE_FIELD_LABELS.second_month },
+      );
     } else if (scheme.first_term_input_mode === 'direct') {
-      annualInputFields.push('first_term_grade');
+      columns.push({ key: 'first_term_grade', label: RAW_GRADE_FIELD_LABELS.first_term_grade });
     }
   }
+  if (display.show_first_term_average && scheme.first_term_input_mode !== 'disabled') {
+    columns.push({ key: 'first_term_average', label: RESULT_CARD_DERIVED_COLUMN_LABELS.first_term_average });
+  }
   if (display.show_mid_year_exam && scheme.mid_year_exam_enabled === 1) {
-    annualInputFields.push('mid_year_exam');
+    columns.push({ key: 'mid_year_exam', label: RAW_GRADE_FIELD_LABELS.mid_year_exam });
   }
   if (display.show_second_term_inputs) {
     if (scheme.second_term_input_mode === 'monthly') {
-      annualInputFields.push('third_month', 'fourth_month');
+      columns.push(
+        { key: 'third_month', label: RAW_GRADE_FIELD_LABELS.third_month },
+        { key: 'fourth_month', label: RAW_GRADE_FIELD_LABELS.fourth_month },
+      );
     } else if (scheme.second_term_input_mode === 'direct') {
-      annualInputFields.push('second_term_grade');
+      columns.push({ key: 'second_term_grade', label: RAW_GRADE_FIELD_LABELS.second_term_grade });
     }
   }
-  const columns: ResultCardColumnDescriptor[] = [
-    { key: 'subject_name', label: RESULT_CARD_DERIVED_COLUMN_LABELS.subject_name },
-    ...annualInputFields.map((key) => ({ key, label: RAW_GRADE_FIELD_LABELS[key] })),
-  ];
+  if (display.show_second_term_average && scheme.second_term_input_mode !== 'disabled') {
+    columns.push({ key: 'second_term_average', label: RESULT_CARD_DERIVED_COLUMN_LABELS.second_term_average });
+  }
   if (display.show_annual_effort) {
     columns.push({ key: 'annual_effort', label: RESULT_CARD_DERIVED_COLUMN_LABELS.annual_effort });
   }
@@ -240,10 +260,12 @@ const RESULT_CARD_COLUMN_KEYS = new Set<ResultCardColumnKey>([
   'first_term_grade',
   'first_month',
   'second_month',
+  'first_term_average',
   'mid_year_exam',
   'second_term_grade',
   'third_month',
   'fourth_month',
+  'second_term_average',
   'final_exam',
   'completion_exam',
   'annual_effort',

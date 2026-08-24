@@ -83,10 +83,12 @@ function monthlyGrade(subject_id, overrides = {}) {
     first_term_grade: null,
     first_month: 90,
     second_month: 90,
+    first_term_average: 90,
     mid_year_exam: 90,
     second_term_grade: null,
     third_month: 90,
     fourth_month: 90,
+    second_term_average: 90,
     annual_effort: 90,
     final_exam: 80,
     final_grade: 85,
@@ -649,8 +651,10 @@ test('display options deterministically hide and show card columns', () => {
 
 test('clean Result Card defaults show academic inputs and hide optional technical details', () => {
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_inputs, true);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_average, false);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_mid_year_exam, true);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_second_term_inputs, true);
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_second_term_average, false);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_annual_effort, true);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_final_exam, true);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_subject_status, true);
@@ -748,7 +752,144 @@ test('term input presentation follows monthly, direct and disabled scheme modes'
   assert.deepEqual(hiddenDisabled, ['subject_name']);
 });
 
-test('new raw-column settings default to visible and are exposed by Document Settings', async () => {
+test('term effort columns are independently optional and follow the academic column order', () => {
+  const averagesOnly = buildResultCardColumns(monthlySettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    show_first_term_inputs: false,
+    show_first_term_average: true,
+    show_second_term_inputs: false,
+    show_second_term_average: true,
+  });
+  assert.deepEqual(
+    averagesOnly.map((column) => [column.key, column.label]),
+    [
+      ['subject_name', 'المادة'],
+      ['first_term_average', 'سعي الفصل الأول'],
+      ['mid_year_exam', 'امتحان نصف السنة'],
+      ['second_term_average', 'سعي الفصل الثاني'],
+      ['annual_effort', 'السعي السنوي'],
+      ['final_exam', 'امتحان نهاية السنة'],
+      ['result_status', 'الحالة'],
+    ],
+  );
+
+  assert.deepEqual(
+    buildResultCardColumns(monthlySettings, {
+      ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+      show_first_term_average: true,
+      show_second_term_average: true,
+    }).map((column) => column.key),
+    [
+      'subject_name',
+      'first_month',
+      'second_month',
+      'first_term_average',
+      'mid_year_exam',
+      'third_month',
+      'fourth_month',
+      'second_term_average',
+      'annual_effort',
+      'final_exam',
+      'result_status',
+    ],
+  );
+});
+
+test('direct term effort columns reuse stored calculated fields without exposing monthly inputs', () => {
+  assert.deepEqual(
+    buildResultCardColumns(directSettings, {
+      ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+      show_first_term_inputs: false,
+      show_first_term_average: true,
+      show_second_term_inputs: false,
+      show_second_term_average: true,
+    }).map((column) => column.key),
+    [
+      'subject_name',
+      'first_term_average',
+      'mid_year_exam',
+      'second_term_average',
+      'annual_effort',
+      'final_exam',
+      'result_status',
+    ],
+  );
+});
+
+test('disabled terms suppress their effort columns even when display flags are enabled', () => {
+  assert.deepEqual(
+    buildResultCardColumns({
+      ...directSettings,
+      first_term_input_mode: 'disabled',
+      second_term_input_mode: 'disabled',
+      mid_year_exam_enabled: 0,
+      final_exam_enabled: 0,
+    }, {
+      ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+      show_first_term_inputs: false,
+      show_first_term_average: true,
+      show_mid_year_exam: false,
+      show_second_term_inputs: false,
+      show_second_term_average: true,
+      show_annual_effort: false,
+      show_final_exam: false,
+      show_subject_status: false,
+    }).map((column) => column.key),
+    ['subject_name'],
+  );
+});
+
+test('term effort bottom averages honor participation, missing values and zero counted subjects', () => {
+  const display = {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    show_first_term_inputs: false,
+    show_first_term_average: true,
+    show_mid_year_exam: false,
+    show_second_term_inputs: false,
+    show_second_term_average: true,
+    show_annual_effort: false,
+    show_final_exam: false,
+    show_subject_status: false,
+  };
+  const complete = columnAveragesFor({
+    subjects: [subject(1), subject(2), subject(3, 'نشاط', 0)],
+    grades: [
+      monthlyGrade(1, { first_term_average: 80, second_term_average: 70 }),
+      monthlyGrade(2, { first_term_average: 91, second_term_average: 80 }),
+      monthlyGrade(3, { first_term_average: 1, second_term_average: 1 }),
+    ],
+    display,
+  });
+  assert.deepEqual(complete.averages, {
+    first_term_average: 86,
+    second_term_average: 75,
+  });
+
+  const missing = columnAveragesFor({
+    subjects: [subject(1), subject(2)],
+    grades: [
+      monthlyGrade(1, { first_term_average: 80, second_term_average: 70 }),
+      monthlyGrade(2, { first_term_average: null, second_term_average: 80 }),
+    ],
+    display,
+  });
+  assert.deepEqual(missing.averages, {
+    first_term_average: null,
+    second_term_average: 75,
+  });
+
+  const none = columnAveragesFor({
+    subjects: [subject(1, 'نشاط', 0)],
+    grades: [monthlyGrade(1)],
+    display,
+  });
+  assert.deepEqual(none.averages, {
+    first_term_average: null,
+    second_term_average: null,
+  });
+});
+
+test('raw and calculated term-column settings expose their independent defaults in Document Settings', async () => {
   for (const key of [
     'show_first_term_inputs',
     'show_mid_year_exam',
@@ -758,16 +899,51 @@ test('new raw-column settings default to visible and are exposed by Document Set
     assert.ok(RESULT_CARD_DISPLAY_SETTING_KEYS.includes(key));
     assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS[key], true);
   }
+  for (const key of ['show_first_term_average', 'show_second_term_average']) {
+    assert.ok(RESULT_CARD_DISPLAY_SETTING_KEYS.includes(key));
+    assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS[key], false);
+  }
   const documentTab = await readFile(new URL('../src/modules/settings/DocumentTab.tsx', import.meta.url), 'utf8');
   assert.match(documentTab, /show_first_term_inputs/);
   assert.match(documentTab, /show_mid_year_exam/);
   assert.match(documentTab, /show_second_term_inputs/);
   assert.match(documentTab, /show_final_exam/);
+  assert.match(documentTab, /show_first_term_average[^\n]*سعي الفصل الأول/);
+  assert.match(documentTab, /show_second_term_average[^\n]*سعي الفصل الثاني/);
 });
 
 test('old snapshots keep the legacy safe column shape', () => {
   assert.deepEqual(snapshotResultCardColumns(undefined), [...LEGACY_RESULT_CARD_COLUMNS]);
   assert.deepEqual(snapshotResultCardColumns([{ key: 'unknown' }]), [...LEGACY_RESULT_CARD_COLUMNS]);
+  assert.ok(!LEGACY_RESULT_CARD_COLUMNS.some((column) =>
+    column.key === 'first_term_average' || column.key === 'second_term_average'
+  ));
+});
+
+test('saved snapshots freeze term effort columns and averages for later reprints', () => {
+  const storedColumns = [
+    { key: 'subject_name', label: 'المادة' },
+    { key: 'first_term_average', label: 'سعي الفصل الأول' },
+    { key: 'second_term_average', label: 'سعي الفصل الثاني' },
+  ];
+  const storedAverages = {
+    first_term_average: 86,
+    second_term_average: 75,
+  };
+  const reprintColumns = snapshotResultCardColumns(storedColumns);
+  const reprintAverages = snapshotResultCardColumnAverages(storedAverages, reprintColumns);
+
+  storedColumns[1].label = 'changed';
+  storedAverages.first_term_average = 1;
+  assert.deepEqual(reprintColumns, [
+    { key: 'subject_name', label: 'المادة' },
+    { key: 'first_term_average', label: 'سعي الفصل الأول' },
+    { key: 'second_term_average', label: 'سعي الفصل الثاني' },
+  ]);
+  assert.deepEqual(reprintAverages, {
+    first_term_average: 86,
+    second_term_average: 75,
+  });
 });
 
 test('snapshot column averages are immutable and old snapshots remain safe', () => {
@@ -901,6 +1077,8 @@ test('snapshot builder freezes order, branding, note, display settings and verif
   assert.match(builder, /verification: identity\.token/);
   assert.match(builder, /card_number: identity\.cardNumber/);
   assert.match(worker, /SELECT su\.id, su\.name AS subject_name, su\.counts_in_average/);
+  assert.match(worker, /g\.first_term_average/);
+  assert.match(worker, /g\.second_term_average/);
 });
 
 test('issued snapshots are immutable and saved with partial or complete metadata', async () => {

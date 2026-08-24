@@ -28,10 +28,12 @@ export interface ResultCardGrade {
   first_term_grade: number | null;
   first_month: number | null;
   second_month: number | null;
+  first_term_average: number | null;
   mid_year_exam: number | null;
   second_term_grade: number | null;
   third_month: number | null;
   fourth_month: number | null;
+  second_term_average: number | null;
   annual_effort: number | null;
   final_exam: number | null;
   final_grade: number | null;
@@ -105,10 +107,12 @@ function blankGrade(subject: ResultCardSubject): ResultCardGrade {
     first_term_grade: null,
     first_month: null,
     second_month: null,
+    first_term_average: null,
     mid_year_exam: null,
     second_term_grade: null,
     third_month: null,
     fourth_month: null,
+    second_term_average: null,
     annual_effort: null,
     final_exam: null,
     final_grade: null,
