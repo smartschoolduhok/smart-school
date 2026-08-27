@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS student_enrollments (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   school_id           INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
-  student_id          INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  student_id          INTEGER NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
   academic_year_id    INTEGER NOT NULL REFERENCES academic_years(id) ON DELETE RESTRICT,
   class_id            INTEGER NOT NULL REFERENCES classes(id) ON DELETE RESTRICT,
   section_id          INTEGER REFERENCES sections(id) ON DELETE RESTRICT,
@@ -103,6 +103,13 @@ BEGIN
         AND school_id = NEW.school_id
         AND class_id = NEW.class_id
     );
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_student_enrollments_updated_at
+AFTER UPDATE ON student_enrollments
+FOR EACH ROW
+BEGIN
+  UPDATE student_enrollments SET updated_at = unixepoch() WHERE id = NEW.id;
 END;
 
 -- Deterministically preserve the current legacy placement for the one active

@@ -158,7 +158,7 @@ test('migration creates the exact enrollment foundation, lifecycle checks, index
       section_id: { table: 'sections', onDelete: 'RESTRICT' },
       class_id: { table: 'classes', onDelete: 'RESTRICT' },
       academic_year_id: { table: 'academic_years', onDelete: 'RESTRICT' },
-      student_id: { table: 'students', onDelete: 'CASCADE' },
+      student_id: { table: 'students', onDelete: 'RESTRICT' },
       school_id: { table: 'schools', onDelete: 'CASCADE' },
     },
   );
@@ -184,6 +184,7 @@ test('migration creates the exact enrollment foundation, lifecycle checks, index
   assert.deepEqual(triggers, new Set([
     'trg_student_enrollments_validate_insert',
     'trg_student_enrollments_validate_update',
+    'trg_student_enrollments_updated_at',
   ]));
   database.close();
 });
@@ -269,6 +270,43 @@ test('section_id may be null', () => {
     classId: ids.classA,
     sectionId: null,
   }));
+  database.close();
+});
+
+test('hard-deleting a student with enrollment history is restricted and preserves both rows', () => {
+  const { database, ids } = createLegacyFixture();
+  assert.throws(() => database.prepare(`
+    DELETE FROM students WHERE id = ?
+  `).run(ids.legacyStudent), /FOREIGN KEY constraint failed/);
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM students WHERE id = ?
+  `).get(ids.legacyStudent).count), 1);
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ?
+  `).get(ids.legacyStudent).count), 1);
+  database.close();
+});
+
+test('updated_at is refreshed by the database after an enrollment update', () => {
+  const { database, ids } = createLegacyFixture();
+  const enrollmentId = insertId(database, `
+    INSERT INTO student_enrollments (
+      school_id, student_id, academic_year_id, class_id, section_id, updated_at
+    ) VALUES (1, ?, ?, ?, NULL, 1)
+  `, ids.manualStudent, ids.yearA, ids.classA);
+  assert.equal(Number(database.prepare(`
+    SELECT updated_at FROM student_enrollments WHERE id = ?
+  `).get(enrollmentId).updated_at), 1);
+
+  const beforeUpdate = Math.floor(Date.now() / 1000);
+  database.prepare(`
+    UPDATE student_enrollments SET notes = 'reviewed' WHERE id = ?
+  `).run(enrollmentId);
+  const updatedAt = Number(database.prepare(`
+    SELECT updated_at FROM student_enrollments WHERE id = ?
+  `).get(enrollmentId).updated_at);
+  assert.ok(updatedAt >= beforeUpdate);
+  assert.ok(updatedAt > 1);
   database.close();
 });
 
