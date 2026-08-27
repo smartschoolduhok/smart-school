@@ -415,9 +415,10 @@ test('migration backfill does not modify legacy students, classes or sections', 
   database.close();
 });
 
-test('migration stays database-only and does not cut application modules over to enrollments', () => {
+test('application bridge stays scoped away from frontend, grades, subjects and Result Cards', () => {
+  assert.match(readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8'), /\.\/lib\/studentEnrollments/);
+  assert.match(readFileSync(join(rootDir, 'src', 'lib', 'studentEnrollments.ts'), 'utf8'), /student_enrollments/);
   for (const path of [
-    'src/worker.ts',
     'src/modules/students/StudentsPage.tsx',
     'src/modules/grades/GradesPage.tsx',
     'src/modules/studentSubjects/StudentSubjectsPage.tsx',

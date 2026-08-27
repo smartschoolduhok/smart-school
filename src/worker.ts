@@ -8,6 +8,7 @@ import { Hono } from 'hono'
 import { serveStatic } from 'hono/cloudflare-workers'
 import type { RoleKey } from './types'
 import {
+  ACADEMIC_ACCESS_ROLES,
   ACADEMIC_MANAGEMENT_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   EMPLOYEE_MANAGEMENT_ROLES,
@@ -109,6 +110,18 @@ import {
   studentIdentityKey,
   validateStudentImportPlacement,
 } from './lib/studentImport'
+import {
+  archiveStudentWithoutEnrollmentMutation,
+  buildStudentPlacementUpdatePlan,
+  createStudentWithEnrollmentBridge,
+  getStudentWithEffectivePlacement,
+  listStudentEnrollmentHistory,
+  listStudentsWithEffectivePlacement,
+  loadCurrentStudentEnrollmentContext,
+  updateStudentIdentityOnly,
+  updateStudentPlacementAtomically,
+  type StudentWriteValues,
+} from './lib/studentEnrollments'
 
 // ===========================================
 // Types & Extended Bindings
@@ -1566,23 +1579,12 @@ app.get('/api/students', requireSameSchoolOrAdmin(), async (c) => {
   const classId = c.req.query('class_id')
   const sectionId = c.req.query('section_id')
   try {
-    let query = `
-      SELECT st.*, c.name as class_name, s.name as section_name
-      FROM students st
-      LEFT JOIN classes c ON st.class_id = c.id AND c.school_id = st.school_id
-      LEFT JOIN sections s ON st.section_id = s.id AND s.school_id = st.school_id
-    `
-    const conditions: string[] = []
-    const binds: (string | number)[] = []
-    if (scope === 'single' && resolvedSchoolId != null) { conditions.push('st.school_id = ?'); binds.push(resolvedSchoolId) }
-    if (classId) { conditions.push('st.class_id = ?'); binds.push(classId) }
-    if (sectionId) { conditions.push('st.section_id = ?'); binds.push(sectionId) }
-    if (conditions.length > 0) {
-      query += ` WHERE ${conditions.join(' AND ')}`
-    }
-    query += ` ORDER BY st.class_id, st.section_id, st.full_name`
-    const { results } = await db.prepare(query).bind(...binds).all()
-    return c.json({ data: results || [] })
+    const students = await listStudentsWithEffectivePlacement(db, {
+      schoolId: scope === 'single' ? resolvedSchoolId : null,
+      classId,
+      sectionId,
+    })
+    return c.json({ data: students })
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب الطلاب', detail: err.message }, 500)
   }
@@ -1593,13 +1595,7 @@ app.get('/api/students/:id', requireAuthEnforced(), async (c) => {
   const id = c.req.param('id')
   const user: UserContext | null = c.get('user') || null
   try {
-    const student = await db.prepare(`
-      SELECT st.*, c.name as class_name, s.name as section_name
-      FROM students st
-      LEFT JOIN classes c ON st.class_id = c.id AND c.school_id = st.school_id
-      LEFT JOIN sections s ON st.section_id = s.id AND s.school_id = st.school_id
-      WHERE st.id = ?
-    `).bind(id).first()
+    const student = await getStudentWithEffectivePlacement(db, Number(id))
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404)
 
     if (user && user.role_key !== 'system_admin') {
@@ -1614,11 +1610,33 @@ app.get('/api/students/:id', requireAuthEnforced(), async (c) => {
   }
 })
 
+app.get('/api/students/:id/enrollments', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+  const db = c.env.DB
+  const id = Number(c.req.param('id'))
+  const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
+  if (resolvedSchoolId == null) {
+    return c.json({ error: 'يجب تحديد المدرسة المستهدفة لعرض سجل تسجيلات الطالب' }, 400)
+  }
+
+  try {
+    const student = await db.prepare('SELECT id, school_id FROM students WHERE id = ?')
+      .bind(id)
+      .first<{ id: number; school_id: number }>()
+    if (!student) return c.json({ error: 'الطالب غير موجود' }, 404)
+    if (student.school_id !== resolvedSchoolId) {
+      return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى سجل طالب في مدرسة أخرى' }, 403)
+    }
+
+    const history = await listStudentEnrollmentHistory(db, resolvedSchoolId, id)
+    return c.json({ data: history })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب سجل تسجيلات الطالب', detail: err.message }, 500)
+  }
+})
+
 app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
-  const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
-  const scope: 'all' | 'single' = c.get('scope')
   try {
     const body = await c.req.json()
     let {
@@ -1642,19 +1660,30 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       return c.json({ error: placement.error }, placement.status)
     }
 
-    const result = await db.prepare(`
-      INSERT INTO students (
-        school_id, student_number, full_name, father_name, mother_name,
-        gender, birth_date, phone, guardian_name, guardian_phone,
-        address, class_id, section_id, status, photo_url, notes,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, unixepoch(), unixepoch())
-    `).bind(
-      school_id, student_number, full_name, father_name || null, mother_name || null,
-      gender, birth_date || null, phone || null, guardian_name || null, guardian_phone || null,
-      address || null, class_id || null, section_id || null, photo_url || null, notes || null
-    ).run()
-    return c.json({ data: { id: result.meta.last_row_id, school_id, student_number, full_name, status: 'active' } }, 201)
+    if (!user) return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401)
+    const studentValues: StudentWriteValues = {
+      school_id,
+      student_number,
+      full_name,
+      father_name: father_name || null,
+      mother_name: mother_name || null,
+      gender,
+      birth_date: birth_date || null,
+      phone: phone || null,
+      guardian_name: guardian_name || null,
+      guardian_phone: guardian_phone || null,
+      address: address || null,
+      class_id,
+      section_id,
+      status: 'active',
+      photo_url: photo_url || null,
+      notes: notes || null,
+    }
+    const creation = await createStudentWithEnrollmentBridge(db, studentValues, user.id)
+    if (!creation.ok) {
+      return c.json({ error: 'لا توجد سنة دراسية فعالة لإنشاء تسجيل الطالب' }, 400)
+    }
+    return c.json({ data: creation.student }, 201)
   } catch (err: any) {
     return c.json({ error: 'فشل في إنشاء الطالب', detail: err.message }, 500)
   }
@@ -1689,33 +1718,79 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     const guardian_name = body.guardian_name !== undefined ? body.guardian_name : existing.guardian_name
     const guardian_phone = body.guardian_phone !== undefined ? body.guardian_phone : existing.guardian_phone
     const address = body.address !== undefined ? body.address : existing.address
-    const class_id = body.class_id !== undefined
-      ? (body.class_id == null || body.class_id === '' ? null : Number(body.class_id))
-      : existing.class_id
-    const section_id = body.section_id !== undefined
-      ? (body.section_id == null || body.section_id === '' ? null : Number(body.section_id))
-      : existing.section_id
     const photo_url = body.photo_url !== undefined ? body.photo_url : existing.photo_url
     const notes = body.notes !== undefined ? body.notes : existing.notes
     const status = body.status ?? existing.status
 
-    const placement = await validateStudentPlacement(db, targetSchool.schoolId, class_id, section_id)
-    if (!placement.ok) {
-      return c.json({ error: placement.error }, placement.status)
+    const hasClassId = Object.prototype.hasOwnProperty.call(body, 'class_id')
+    const hasSectionId = Object.prototype.hasOwnProperty.call(body, 'section_id')
+    const requestedClassId = hasClassId
+      ? (body.class_id == null || body.class_id === '' ? null : Number(body.class_id))
+      : null
+    const requestedSectionId = hasSectionId
+      ? (body.section_id == null || body.section_id === '' ? null : Number(body.section_id))
+      : null
+    const enrollmentContext = await loadCurrentStudentEnrollmentContext(
+      db,
+      targetSchool.schoolId,
+      Number(id),
+    )
+    const placementPlan = buildStudentPlacementUpdatePlan(
+      { class_id: existing.class_id, section_id: existing.section_id },
+      enrollmentContext,
+      {
+        hasClassId,
+        hasSectionId,
+        class_id: requestedClassId,
+        section_id: requestedSectionId,
+      },
+    )
+    if (placementPlan.kind === 'reject') {
+      return c.json({
+        error: placementPlan.code === 'active_year_required'
+          ? 'لا توجد سنة دراسية فعالة لتحديث موقع الطالب'
+          : placementPlan.code === 'class_required'
+            ? 'لا يمكن تحديد الشعبة دون تحديد الصف'
+            : 'لا يمكن إزالة تسجيل الطالب من نموذج الطالب؛ استخدم إجراءات دورة التسجيل المخصصة',
+      }, 400)
     }
 
-    await db.prepare(`
-      UPDATE students SET
-        student_number = ?, full_name = ?, father_name = ?, mother_name = ?,
-        gender = ?, birth_date = ?, phone = ?, guardian_name = ?, guardian_phone = ?,
-        address = ?, class_id = ?, section_id = ?, photo_url = ?, notes = ?, status = ?,
-        updated_at = unixepoch()
-      WHERE id = ? AND school_id = ?
-    `).bind(
-      student_number, full_name, father_name, mother_name,
-      gender, birth_date, phone, guardian_name, guardian_phone,
-      address, class_id, section_id, photo_url, notes, status, id, targetSchool.schoolId
-    ).run()
+    if (placementPlan.kind === 'write') {
+      const placement = await validateStudentPlacement(
+        db,
+        targetSchool.schoolId,
+        placementPlan.class_id,
+        placementPlan.section_id,
+      )
+      if (!placement.ok) {
+        return c.json({ error: placement.error }, placement.status)
+      }
+    }
+
+    if (!user) return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401)
+    const studentValues: StudentWriteValues = {
+      school_id: targetSchool.schoolId,
+      student_number,
+      full_name,
+      father_name,
+      mother_name,
+      gender,
+      birth_date,
+      phone,
+      guardian_name,
+      guardian_phone,
+      address,
+      class_id: existing.class_id,
+      section_id: existing.section_id,
+      photo_url,
+      notes,
+      status,
+    }
+    if (placementPlan.kind === 'write') {
+      await updateStudentPlacementAtomically(db, Number(id), studentValues, placementPlan, user.id)
+    } else {
+      await updateStudentIdentityOnly(db, Number(id), studentValues)
+    }
     return c.json({ data: { id, student_number, full_name, status } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث بيانات الطالب', detail: err.message }, 500)
@@ -1736,7 +1811,7 @@ app.put('/api/students/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
       return c.json({ error: 'غير مسموح: لا يمكنك أرشفة طالب في مدرسة أخرى' }, 403)
     }
 
-    await db.prepare(`UPDATE students SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run()
+    await archiveStudentWithoutEnrollmentMutation(db, Number(id), targetSchool.schoolId)
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الطالب', detail: err.message }, 500)
