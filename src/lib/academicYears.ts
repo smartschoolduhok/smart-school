@@ -125,6 +125,38 @@ export async function activateAcademicYearAtomically(
       SET is_active = 1
       WHERE id = ? AND school_id = ?
     `).bind(yearId, schoolId),
+    db.prepare(`
+      WITH target_placements AS (
+        SELECT student_id, class_id, section_id
+        FROM student_enrollments
+        WHERE school_id = ? AND academic_year_id = ?
+      )
+      UPDATE students AS student
+      SET class_id = (
+            SELECT target.class_id
+            FROM target_placements AS target
+            WHERE target.student_id = student.id
+          ),
+          section_id = (
+            SELECT target.section_id
+            FROM target_placements AS target
+            WHERE target.student_id = student.id
+          ),
+          updated_at = unixepoch()
+      WHERE student.school_id = ?
+        AND (
+          student.class_id IS NOT (
+            SELECT target.class_id
+            FROM target_placements AS target
+            WHERE target.student_id = student.id
+          )
+          OR student.section_id IS NOT (
+            SELECT target.section_id
+            FROM target_placements AS target
+            WHERE target.student_id = student.id
+          )
+        )
+    `).bind(schoolId, yearId, schoolId),
   ]);
 
   const activated = await db.prepare(`
