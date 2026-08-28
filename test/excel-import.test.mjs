@@ -362,13 +362,16 @@ test('placement validation rejects archived records and a section from the wrong
   assert.equal(mismatch.status, 400);
 });
 
-test('student preview performs no database write and confirm keeps tenant-scoped writes', async () => {
+test('student preview is read-only and confirm uses the enrollment bridge', async () => {
   const source = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
   const preview = source.slice(source.indexOf("app.post('/api/import-export/:type/preview'"), source.indexOf("app.post('/api/import-export/:type/confirm'"));
   assert.doesNotMatch(preview, /\b(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+)?(?:students|import_jobs)\b/i);
+  assert.match(preview, /listStudentsWithEffectivePlacement/);
   const confirm = source.slice(source.indexOf("app.post('/api/import-export/:type/confirm'"), source.indexOf("app.get('/api/import-export/:type/export'"));
-  assert.match(confirm, /UPDATE students[\s\S]*WHERE id = \? AND school_id = \?/);
-  assert.match(confirm, /INSERT INTO students \(school_id,/);
+  const studentConfirm = confirm.slice(confirm.indexOf("if (type === 'students')"), confirm.indexOf("} else if (type === 'classes-sections')"));
+  assert.match(studentConfirm, /persistStudentImportWithEnrollmentBridge/);
+  assert.match(studentConfirm, /syncStudentImportState/);
+  assert.doesNotMatch(studentConfirm, /(?:INSERT INTO|UPDATE) students/i);
 });
 
 test('system administrators must explicitly choose an import target school', async () => {

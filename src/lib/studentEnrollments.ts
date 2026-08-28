@@ -135,6 +135,20 @@ export type StudentCreationResult =
   | { ok: true; student: PersistedStudentSummary }
   | { ok: false; code: 'active_year_required' };
 
+export interface StudentImportBridgeInput {
+  existingStudent: Pick<EffectiveStudentRecord, 'id' | 'class_id' | 'section_id'> | null;
+  student: StudentWriteValues;
+  placement: StudentPlacementUpdateInput;
+  userId: number;
+}
+
+export type StudentImportBridgeResult =
+  | { ok: true; action: 'created' | 'updated'; student: EffectiveStudentRecord }
+  | {
+      ok: false;
+      code: 'active_year_required' | 'cannot_clear_enrollment' | 'class_required';
+    };
+
 const EFFECTIVE_CLASS_ID_SQL = `
   CASE WHEN active_year.id IS NULL THEN student.class_id ELSE current_enrollment.class_id END
 `;
@@ -523,6 +537,52 @@ export async function updateStudentPlacementAtomically(
     studentUpdateStatement(db, studentId, synchronizedStudent, true),
     enrollmentStatement,
   ]);
+}
+
+export async function persistStudentImportWithEnrollmentBridge(
+  db: StudentEnrollmentDatabase,
+  input: StudentImportBridgeInput,
+): Promise<StudentImportBridgeResult> {
+  if (!input.existingStudent) {
+    const creation = await createStudentWithEnrollmentBridge(db, input.student, input.userId);
+    if (!creation.ok) return creation;
+    const created = await getStudentWithEffectivePlacement(db, creation.student.id);
+    if (!created) throw new Error('Imported student creation did not persist');
+    return { ok: true, action: 'created', student: created };
+  }
+
+  const enrollmentContext = await loadCurrentStudentEnrollmentContext(
+    db,
+    input.student.school_id,
+    input.existingStudent.id,
+  );
+  const placementPlan = buildStudentPlacementUpdatePlan(
+    {
+      class_id: input.existingStudent.class_id,
+      section_id: input.existingStudent.section_id,
+    },
+    enrollmentContext,
+    input.placement,
+  );
+  if (placementPlan.kind === 'reject') {
+    return { ok: false, code: placementPlan.code };
+  }
+
+  if (placementPlan.kind === 'write') {
+    await updateStudentPlacementAtomically(
+      db,
+      input.existingStudent.id,
+      input.student,
+      placementPlan,
+      input.userId,
+    );
+  } else {
+    await updateStudentIdentityOnly(db, input.existingStudent.id, input.student);
+  }
+
+  const updated = await getStudentWithEffectivePlacement(db, input.existingStudent.id);
+  if (!updated) throw new Error('Imported student update did not persist');
+  return { ok: true, action: 'updated', student: updated };
 }
 
 export async function archiveStudentWithoutEnrollmentMutation(

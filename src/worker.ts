@@ -106,6 +106,7 @@ import {
   buildGeneratedStudentNumber,
   findStudentDuplicate,
   normalizeStudentIdentity,
+  syncStudentImportState,
   studentDuplicateAction,
   studentIdentityKey,
   validateStudentImportPlacement,
@@ -118,6 +119,8 @@ import {
   listStudentEnrollmentHistory,
   listStudentsWithEffectivePlacement,
   loadCurrentStudentEnrollmentContext,
+  persistStudentImportWithEnrollmentBridge,
+  resolveActiveAcademicYear,
   updateStudentIdentityOnly,
   updateStudentPlacementAtomically,
   type StudentWriteValues,
@@ -8098,7 +8101,15 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
     const duplicates: any[] = [];
     const existingClasses = await db.prepare(`SELECT id, name FROM classes WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
     const existingSections = await db.prepare(`SELECT id, name, class_id FROM sections WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
-    const existingStudents = await db.prepare(`SELECT id, student_number, full_name, class_id, section_id FROM students WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
+    const existingStudents = type === 'students'
+      ? {
+          results: (await listStudentsWithEffectivePlacement(db, { schoolId: school_id }))
+            .filter(student => student.status !== 'archived'),
+        }
+      : await db.prepare(`SELECT id, student_number, full_name, class_id, section_id FROM students WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
+    const activeStudentImportYear = type === 'students'
+      ? await resolveActiveAcademicYear(db, school_id)
+      : null;
     const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
     const existingEmployees = await db.prepare(`SELECT id, full_name, email, phone FROM employees WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
 
@@ -8164,6 +8175,16 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         const excelSectionName = normalizeText(mapped.section_name || mapped['الشعبة'] || mapped['القسم'] || mapped['section'] || mapped['group']);
         const notes = normalizeText(mapped.notes || mapped['ملاحظات'] || mapped['notes']);
         const status = isValidStatus(mapped.status || mapped['الحالة'] || mapped['status']) || 'active';
+        const importedFields = new Set<string>(Object.keys(mapping || {}).filter(field => mapping[field]));
+        if (classAssignmentMode === 'override') importedFields.add('class_name');
+        if (sectionAssignmentMode === 'override') importedFields.add('section_name');
+        const importsClassPlacement = classAssignmentMode === 'override'
+          || importedFields.has('class_id')
+          || importedFields.has('class_name');
+        const importsSectionPlacement = sectionAssignmentMode === 'override'
+          || importedFields.has('section_id')
+          || importedFields.has('section_name');
+        const importsPlacement = importsClassPlacement || importsSectionPlacement;
 
         if (!fullName) { rowError(i, 'full_name', 'اسم الطالب مطلوب'); hasFatal = true; }
         if (rawGender && !gender) { rowError(i, 'gender', 'قيمة الجنس غير صالحة'); hasFatal = true; }
@@ -8210,6 +8231,15 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
           }
         }
 
+        const placementWouldChange = duplicate.kind === 'match'
+          && (Number(classId) !== duplicate.student.class_id || sectionId !== duplicate.student.section_id);
+        const needsActiveYear = duplicate.kind === 'none'
+          || (duplicate.kind === 'match' && mode === 'update_existing' && importsPlacement && placementWouldChange);
+        if (!hasFatal && !activeStudentImportYear && needsActiveYear) {
+          rowError(i, 'academic_year', 'لا توجد سنة دراسية فعالة لإنشاء أو تحديث تسجيل الطالب');
+          hasFatal = true;
+        }
+
         const identity = fullName ? studentIdentityKey(fullName, classId || null, sectionId) : '';
         const duplicateInsideFile = studentNumber
           ? seenStudentNumbers.has(studentNumber)
@@ -8234,7 +8264,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
           full_name: fullName, father_name: fatherName, mother_name: motherName, gender, birth_date: birthDate,
           phone, guardian_name: guardianName, guardian_phone: guardianPhone, address, class_id: classId,
           section_id: sectionId, class_name: className, section_name: sectionName, notes, status,
-          imported_fields: Object.keys(mapping || {}).filter(field => mapping[field]),
+          imported_fields: [...importedFields],
         };
       } else if (type === 'classes-sections') {
         const className = normalizeText(mapped.class_name || mapped['اسم الصف'] || mapped['الصف'] || mapped['class'] || mapped['name']);
@@ -8518,7 +8548,12 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
 
     const existingClasses = await db.prepare(`SELECT id, name FROM classes WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
     const existingSections = await db.prepare(`SELECT id, name, class_id FROM sections WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
-    const existingStudents = await db.prepare(`SELECT id, student_number, full_name, father_name, mother_name, gender, birth_date, phone, guardian_name, guardian_phone, address, class_id, section_id, status, notes FROM students WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
+    const existingStudents = type === 'students'
+      ? {
+          results: (await listStudentsWithEffectivePlacement(db, { schoolId: school_id }))
+            .filter(student => student.status !== 'archived'),
+        }
+      : await db.prepare(`SELECT id, student_number, full_name, father_name, mother_name, gender, birth_date, phone, guardian_name, guardian_phone, address, class_id, section_id, status, notes FROM students WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
     const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
     const existingEmployees = await db.prepare(`SELECT id, full_name, email, phone FROM employees WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
 
@@ -8564,6 +8599,14 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           const rawGender = normalizeText(d.gender);
           const gender = rawGender === 'unknown' ? 'unknown' : (isValidGender(rawGender) || (!rawGender ? 'unknown' : null));
           if (!gender) { rowError(i, 'gender', 'قيمة الجنس غير صالحة'); continue; }
+
+          const importedFields = new Set<string>(Array.isArray(d.imported_fields) ? d.imported_fields : Object.keys(d));
+          const importsClassPlacement = classAssignmentMode === 'override'
+            || importedFields.has('class_id')
+            || importedFields.has('class_name');
+          const importsSectionPlacement = sectionAssignmentMode === 'override'
+            || importedFields.has('section_id')
+            || importedFields.has('section_name');
 
           const classId = classAssignmentMode === 'override'
             ? Number(selected_class_id)
@@ -8613,39 +8656,52 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             const duplicateAction = studentDuplicateAction(mode, true);
             if (duplicateAction === 'skip') { skipped++; continue; }
             if (duplicateAction === 'error') { rowError(i, duplicate.kind === 'match' ? duplicate.matchedBy : 'student', 'الطالب موجود مسبقاً'); continue; }
-            const importedFields = new Set<string>(Array.isArray(d.imported_fields) ? d.imported_fields : Object.keys(d));
-            const keepOrImport = (field: string, fallback: any) => importedFields.has(field) ? (d[field] || null) : fallback;
-            await db.prepare(`
-              UPDATE students SET full_name = ?, father_name = ?, mother_name = ?, gender = ?, birth_date = ?, phone = ?, guardian_name = ?, guardian_phone = ?, address = ?, class_id = ?, section_id = ?, notes = ?, status = ?, updated_at = unixepoch()
-              WHERE id = ? AND school_id = ?
-            `).bind(
-              fullName,
-              keepOrImport('father_name', existing.father_name),
-              keepOrImport('mother_name', existing.mother_name),
-              importedFields.has('gender') ? gender : existing.gender,
-              keepOrImport('birth_date', existing.birth_date),
-              keepOrImport('phone', existing.phone),
-              keepOrImport('guardian_name', existing.guardian_name),
-              keepOrImport('guardian_phone', existing.guardian_phone),
-              keepOrImport('address', existing.address),
-              classId,
-              sectionId,
-              keepOrImport('notes', existing.notes),
-              importedFields.has('status') ? (isValidStatus(d.status) || existing.status || 'active') : (existing.status || 'active'),
-              existing.id,
-              school_id,
-            ).run();
-            updated++;
+          }
+
+          const keepOrImport = (field: string, fallback: any) => importedFields.has(field) ? (d[field] || null) : fallback;
+          const studentValues: StudentWriteValues = {
+            school_id,
+            student_number: existing?.student_number || studentNumber,
+            full_name: fullName,
+            father_name: existing ? keepOrImport('father_name', existing.father_name) : (d.father_name || null),
+            mother_name: existing ? keepOrImport('mother_name', existing.mother_name) : (d.mother_name || null),
+            gender: existing && !importedFields.has('gender') ? existing.gender : gender,
+            birth_date: existing ? keepOrImport('birth_date', existing.birth_date) : (d.birth_date || null),
+            phone: existing ? keepOrImport('phone', existing.phone) : (d.phone || null),
+            guardian_name: existing ? keepOrImport('guardian_name', existing.guardian_name) : (d.guardian_name || null),
+            guardian_phone: existing ? keepOrImport('guardian_phone', existing.guardian_phone) : (d.guardian_phone || null),
+            address: existing ? keepOrImport('address', existing.address) : (d.address || null),
+            class_id: Number(classId),
+            section_id: sectionId,
+            status: existing && !importedFields.has('status')
+              ? (existing.status || 'active')
+              : (isValidStatus(d.status) || 'active'),
+            photo_url: existing?.photo_url || null,
+            notes: existing ? keepOrImport('notes', existing.notes) : (d.notes || null),
+          };
+          const persistence = await persistStudentImportWithEnrollmentBridge(db, {
+            existingStudent: existing,
+            student: studentValues,
+            placement: {
+              hasClassId: Boolean(existing) && importsClassPlacement,
+              hasSectionId: Boolean(existing) && (importsSectionPlacement || importsClassPlacement),
+              class_id: Number(classId),
+              section_id: sectionId,
+            },
+            userId: user.id,
+          });
+          if (!persistence.ok) {
+            const message = persistence.code === 'active_year_required'
+              ? 'لا توجد سنة دراسية فعالة لإنشاء أو تحديث تسجيل الطالب'
+              : persistence.code === 'cannot_clear_enrollment'
+                ? 'لا يمكن إزالة تسجيل الطالب من خلال استيراد Excel'
+                : 'لا يمكن تحديد الشعبة دون تحديد الصف';
+            rowError(i, 'class_section', message);
             continue;
           }
-          const insertResult = await db.prepare(`
-            INSERT INTO students (school_id, student_number, full_name, father_name, mother_name, gender, birth_date, phone, guardian_name, guardian_phone, address, class_id, section_id, status, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-          `).bind(school_id, studentNumber, fullName, d.father_name || null, d.mother_name || null, gender, d.birth_date || null, d.phone || null, d.guardian_name || null, d.guardian_phone || null, d.address || null, classId, sectionId, isValidStatus(d.status) || 'active', d.notes || null).run();
-          const insertedStudent = { id: Number(insertResult.meta.last_row_id), student_number: studentNumber, full_name: fullName, class_id: Number(classId), section_id: sectionId };
-          (existingStudents.results || []).push(insertedStudent);
-          studentMap.set(studentNumber, insertedStudent);
-          imported++;
+          syncStudentImportState(existingStudents.results || [], studentMap, persistence.student);
+          if (persistence.action === 'created') imported++;
+          else updated++;
         } else if (type === 'classes-sections') {
           const className = normalizeText(d.class_name || d.name);
           const stage = normalizeText(d.stage);
