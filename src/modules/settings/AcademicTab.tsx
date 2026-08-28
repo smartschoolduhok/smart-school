@@ -8,6 +8,7 @@ import {
   updateAcademicYear,
 } from '../../lib/api';
 import type { AcademicYearRecord } from '../../lib/academicYears';
+import { confirmAcademicYearRollover } from './academicYearActivation';
 
 interface Props {
   schoolName: string | null;
@@ -89,7 +90,11 @@ export default function AcademicTab({ schoolName, canEdit, schoolId, onSuccess, 
 
   const saveForm = async (activateAfterCreate: boolean) => {
     if (!canEdit || saving) return;
-    if (!editingYear && activateAfterCreate && activeYear && !window.confirm('سيتم إيقاف السنة الدراسية الحالية وتفعيل السنة المحددة.')) return;
+    if (
+      !editingYear
+      && activateAfterCreate
+      && !confirmAcademicYearRollover(message => window.confirm(message))
+    ) return;
     const wasEditing = editingYear != null;
     const isCurrent = captureSchoolRequest();
     setSaving(true);
@@ -109,7 +114,7 @@ export default function AcademicTab({ schoolName, canEdit, schoolId, onSuccess, 
 
   const handleActivate = async (year: AcademicYearRecord) => {
     if (!canEdit || year.is_active === 1 || activatingId != null) return;
-    if (activeYear && !window.confirm('سيتم إيقاف السنة الدراسية الحالية وتفعيل السنة المحددة.')) return;
+    if (!confirmAcademicYearRollover(message => window.confirm(message))) return;
     const isCurrent = captureSchoolRequest();
     setActivatingId(year.id);
     const response = await activateAcademicYear(year.id, schoolId);
