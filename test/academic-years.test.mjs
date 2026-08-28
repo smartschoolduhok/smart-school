@@ -10,6 +10,10 @@ import {
   updateAcademicYearDetails,
   validateAcademicYearInput,
 } from '../src/lib/academicYears.ts';
+import {
+  ACADEMIC_YEAR_ROLLOVER_WARNING,
+  confirmAcademicYearRollover,
+} from '../src/modules/settings/academicYearActivation.ts';
 import { hasRole, SETTINGS_MANAGEMENT_ROLES } from '../src/lib/rbac.ts';
 import { resolveRequiredWriteSchoolId, resolveTenantSchoolId } from '../src/lib/tenantSchool.ts';
 
@@ -607,7 +611,7 @@ test('Academic Settings uses real API data, exposes management actions, and has 
   assert.match(academicTabSource, /getAcademicYears\(schoolId\)/);
   assert.match(academicTabSource, /لا توجد سنة دراسية فعالة/);
   assert.match(academicTabSource, /إضافة سنة دراسية/);
-  assert.match(academicTabSource, /سيتم إيقاف السنة الدراسية الحالية وتفعيل السنة المحددة/);
+  assert.match(academicTabSource, /confirmAcademicYearRollover/);
   assert.doesNotMatch(academicTabSource, /2025-2026/);
   assert.doesNotMatch(workerSource, /app\.delete\('\/api\/academic-years/);
 });
@@ -619,4 +623,62 @@ test('Academic Settings receives the current tenant school name explicitly', () 
   assert.match(settingsPageSource, /schoolScope\.schools\.find\(school => school\.id === effectiveSchoolId\)\?\.name/);
   assert.match(settingsPageSource, /: user\?\.school_name \|\| null/);
   assert.match(settingsPageSource, /<AcademicTab[\s\S]*?schoolName=\{selectedSchoolName\}/);
+});
+
+test('academic-year activation uses the explicit enrollment and placement impact warning', () => {
+  assert.equal(ACADEMIC_YEAR_ROLLOVER_WARNING, [
+    'سيتم تفعيل هذه السنة الدراسية وجعل تسجيلاتها هي المصدر الحالي لمواقع الطلاب.',
+    'أي طالب لا يملك تسجيلًا في هذه السنة سيظهر بلا صف أو شعبة.',
+    'تأكد من إكمال تسجيل/ترفيع الطلاب قبل المتابعة إذا لم يكن هذا مقصودًا.',
+    'هل تريد المتابعة؟',
+  ].join('\n'));
+  assert.doesNotMatch(academicTabSource, /سيتم إيقاف السنة الدراسية الحالية وتفعيل السنة المحددة/);
+});
+
+test('rollover confirmation cancellation prevents the action and confirmation allows it', () => {
+  const shownMessages = [];
+  let activationCalls = 0;
+  const attemptActivation = decision => {
+    if (!confirmAcademicYearRollover(message => {
+      shownMessages.push(message);
+      return decision;
+    })) return;
+    activationCalls += 1;
+  };
+
+  attemptActivation(false);
+  assert.equal(activationCalls, 0);
+  attemptActivation(true);
+  assert.equal(activationCalls, 1);
+  assert.deepEqual(shownMessages, [
+    ACADEMIC_YEAR_ROLLOVER_WARNING,
+    ACADEMIC_YEAR_ROLLOVER_WARNING,
+  ]);
+});
+
+test('inactive-year activation confirms before calling the existing activation API flow', () => {
+  const handler = academicTabSource.slice(
+    academicTabSource.indexOf('const handleActivate'),
+    academicTabSource.indexOf('return ('),
+  );
+  const confirmationIndex = handler.indexOf('confirmAcademicYearRollover');
+  const requestIndex = handler.indexOf('activateAcademicYear(year.id, schoolId)');
+
+  assert.match(handler, /if \(!confirmAcademicYearRollover\([\s\S]*?\)\) return;/);
+  assert.ok(confirmationIndex >= 0 && confirmationIndex < requestIndex);
+  assert.doesNotMatch(handler, /activeYear\s*&&\s*!confirmAcademicYearRollover/);
+});
+
+test('create-and-activate always confirms while create-only bypasses the rollover warning', () => {
+  const saveHandler = academicTabSource.slice(
+    academicTabSource.indexOf('const saveForm'),
+    academicTabSource.indexOf('const handleActivate'),
+  );
+  const confirmationIndex = saveHandler.indexOf('confirmAcademicYearRollover');
+  const requestIndex = saveHandler.indexOf('createAcademicYear');
+
+  assert.match(saveHandler, /!editingYear[\s\S]*?&& activateAfterCreate[\s\S]*?&& !confirmAcademicYearRollover/);
+  assert.ok(confirmationIndex >= 0 && confirmationIndex < requestIndex);
+  assert.doesNotMatch(saveHandler, /activeYear[\s\S]*?confirmAcademicYearRollover/);
+  assert.match(saveHandler, /createAcademicYear\(\{ school_id: schoolId, \.\.\.form, activate: activateAfterCreate \}\)/);
 });
