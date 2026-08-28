@@ -6,6 +6,10 @@ import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSel
 import { getStudents, getClasses, getSections, createStudent, updateStudent, archiveStudent } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import {
+  FINALIZED_STUDENT_PLACEMENT_MESSAGE,
+  isStudentPlacementFinalized,
+} from '../../lib/studentPlacementUx';
 import { Search, Plus, Filter, Archive, Edit2, X, Check, User, Users } from 'lucide-react';
 
 interface StudentRecord {
@@ -30,6 +34,8 @@ interface StudentRecord {
   updated_at: string;
   class_name?: string;
   section_name?: string;
+  current_enrollment_status?: string | null;
+  current_promotion_status?: string | null;
 }
 
 interface ClassRecord {
@@ -84,6 +90,7 @@ export default function StudentsPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
+  const [placementFinalized, setPlacementFinalized] = useState(false);
 
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
   const canManageSelectedSchool = canManage && schoolId != null;
@@ -101,6 +108,7 @@ export default function StudentsPage() {
     setSaving(false);
     setError('');
     setFormError('');
+    setPlacementFinalized(false);
     void loadData();
   }, [schoolId]);
 
@@ -154,6 +162,7 @@ export default function StudentsPage() {
     setFormError('');
     setModalMode('create');
     setEditingId(null);
+    setPlacementFinalized(false);
     setModalOpen(true);
   }
 
@@ -177,6 +186,10 @@ export default function StudentsPage() {
     setFormError('');
     setModalMode('edit');
     setEditingId(s.id);
+    setPlacementFinalized(isStudentPlacementFinalized(
+      s.current_enrollment_status,
+      s.current_promotion_status,
+    ));
     setModalOpen(true);
   }
 
@@ -456,9 +469,6 @@ export default function StudentsPage() {
               </button>
             </div>
             <div className="p-6 space-y-4">
-              {formError && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{formError}</div>
-              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">رقم الطالب <span className="text-red-500">*</span></label>
@@ -544,12 +554,18 @@ export default function StudentsPage() {
                     className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
+                {modalMode === 'edit' && placementFinalized && (
+                  <div className="sm:col-span-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-800">
+                    {FINALIZED_STUDENT_PLACEMENT_MESSAGE}
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">الصف</label>
                   <select
                     value={form.class_id}
                     onChange={(e) => setForm({ ...form, class_id: e.target.value, section_id: '' })}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={placementFinalized}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
                   >
                     <option value="">— اختر الصف —</option>
                     {classes.map((c) => (
@@ -562,7 +578,8 @@ export default function StudentsPage() {
                   <select
                     value={form.section_id}
                     onChange={(e) => setForm({ ...form, section_id: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={placementFinalized}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
                   >
                     <option value="">— اختر الشعبة —</option>
                     {sectionsForClass.map((sec) => (
@@ -581,18 +598,29 @@ export default function StudentsPage() {
                 </div>
               </div>
             </div>
-            <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-100">
-              <button onClick={() => setModalOpen(false)} className="px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
-                إلغاء
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-lg text-sm font-medium transition-colors"
-              >
-                {saving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Check size={18} />}
-                <span>{modalMode === 'create' ? 'إضافة' : 'حفظ التغييرات'}</span>
-              </button>
+            <div className="sticky bottom-0 border-t border-gray-100 bg-white">
+              {formError && (
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  className="mx-6 mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+                >
+                  {formError}
+                </div>
+              )}
+              <div className="flex items-center justify-end gap-3 p-6">
+                <button onClick={() => setModalOpen(false)} className="px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
+                  إلغاء
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  {saving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Check size={18} />}
+                  <span>{modalMode === 'create' ? 'إضافة' : 'حفظ التغييرات'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

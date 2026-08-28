@@ -2,12 +2,16 @@ export interface StudentEnrollmentPreparedStatement {
   bind(...values: unknown[]): StudentEnrollmentPreparedStatement;
   first<T = unknown>(): Promise<T | null>;
   all<T = unknown>(): Promise<{ results?: T[] }>;
-  run(): Promise<unknown>;
+  run(): Promise<StudentEnrollmentMutationResult>;
+}
+
+export interface StudentEnrollmentMutationResult {
+  meta?: { changes?: number };
 }
 
 export interface StudentEnrollmentDatabase {
   prepare(query: string): StudentEnrollmentPreparedStatement;
-  batch(statements: StudentEnrollmentPreparedStatement[]): Promise<unknown[]>;
+  batch(statements: StudentEnrollmentPreparedStatement[]): Promise<StudentEnrollmentMutationResult[]>;
 }
 
 export interface ActiveAcademicYear {
@@ -122,7 +126,10 @@ export interface StudentPlacementUpdateInput {
 
 export type StudentPlacementUpdatePlan =
   | { kind: 'identity_only'; effectivePlacement: EffectiveStudentPlacement }
-  | { kind: 'reject'; code: 'active_year_required' | 'cannot_clear_enrollment' | 'class_required' }
+  | {
+      kind: 'reject';
+      code: 'active_year_required' | 'cannot_clear_enrollment' | 'class_required' | 'finalized_enrollment';
+    }
   | {
       kind: 'write';
       activeAcademicYear: ActiveAcademicYear;
@@ -146,8 +153,17 @@ export type StudentImportBridgeResult =
   | { ok: true; action: 'created' | 'updated'; student: EffectiveStudentRecord }
   | {
       ok: false;
-      code: 'active_year_required' | 'cannot_clear_enrollment' | 'class_required';
+      code: 'active_year_required' | 'cannot_clear_enrollment' | 'class_required' | 'finalized_enrollment';
     };
+
+export const FINALIZED_ENROLLMENT_PLACEMENT_ERROR = 'لا يمكن تعديل صف أو شعبة تسجيل دراسي تم إقفاله/ترفيعه';
+
+export class FinalizedEnrollmentPlacementError extends Error {
+  constructor() {
+    super(FINALIZED_ENROLLMENT_PLACEMENT_ERROR);
+    this.name = 'FinalizedEnrollmentPlacementError';
+  }
+}
 
 const EFFECTIVE_CLASS_ID_SQL = `
   CASE WHEN active_year.id IS NULL THEN student.class_id ELSE current_enrollment.class_id END
@@ -238,6 +254,7 @@ function studentUpdateStatement(
   studentId: number,
   student: StudentWriteValues,
   includePlacement: boolean,
+  requiredMutableEnrollment: CurrentStudentEnrollment | null = null,
 ): StudentEnrollmentPreparedStatement {
   const placementSql = includePlacement ? 'class_id = ?, section_id = ?,' : '';
   const values: unknown[] = [
@@ -260,6 +277,26 @@ function studentUpdateStatement(
     studentId,
     student.school_id,
   );
+  if (requiredMutableEnrollment) {
+    values.push(
+      requiredMutableEnrollment.id,
+      student.school_id,
+      studentId,
+      requiredMutableEnrollment.academic_year_id,
+    );
+  }
+
+  const mutableEnrollmentGuard = requiredMutableEnrollment
+    ? `AND EXISTS (
+        SELECT 1 FROM student_enrollments AS mutable_enrollment
+        WHERE mutable_enrollment.id = ?
+          AND mutable_enrollment.school_id = ?
+          AND mutable_enrollment.student_id = ?
+          AND mutable_enrollment.academic_year_id = ?
+          AND mutable_enrollment.status = 'active'
+          AND mutable_enrollment.promotion_status = 'pending'
+      )`
+    : '';
 
   return db.prepare(`
     UPDATE students SET
@@ -268,6 +305,7 @@ function studentUpdateStatement(
       address = ?, ${placementSql} photo_url = ?, notes = ?, status = ?,
       updated_at = unixepoch()
     WHERE id = ? AND school_id = ?
+      ${mutableEnrollmentGuard}
   `).bind(...values);
 }
 
@@ -341,6 +379,12 @@ export function buildStudentPlacementUpdatePlan(
 
   if (!placementChanged) return { kind: 'identity_only', effectivePlacement };
   if (!context.activeAcademicYear) return { kind: 'reject', code: 'active_year_required' };
+  if (
+    context.enrollment
+    && (context.enrollment.status !== 'active' || context.enrollment.promotion_status !== 'pending')
+  ) {
+    return { kind: 'reject', code: 'finalized_enrollment' };
+  }
   if (context.enrollment && requestedClassId == null) {
     return { kind: 'reject', code: 'cannot_clear_enrollment' };
   }
@@ -507,6 +551,7 @@ export async function updateStudentPlacementAtomically(
         UPDATE student_enrollments
         SET class_id = ?, section_id = ?, updated_by_user_id = ?
         WHERE id = ? AND school_id = ? AND student_id = ? AND academic_year_id = ?
+          AND status = 'active' AND promotion_status = 'pending'
       `).bind(
         plan.class_id,
         plan.section_id,
@@ -533,10 +578,49 @@ export async function updateStudentPlacementAtomically(
         student.school_id,
       );
 
-  await db.batch([
-    studentUpdateStatement(db, studentId, synchronizedStudent, true),
-    enrollmentStatement,
-  ]);
+  const results = plan.enrollment
+    ? await db.batch([
+        enrollmentStatement,
+        studentUpdateStatement(db, studentId, synchronizedStudent, true, plan.enrollment),
+      ])
+    : await db.batch([
+        studentUpdateStatement(db, studentId, synchronizedStudent, true),
+        enrollmentStatement,
+      ]);
+
+  if (plan.enrollment && results[0]?.meta?.changes === 0) {
+    const context = await loadCurrentStudentEnrollmentContext(db, student.school_id, studentId);
+    if (
+      context.enrollment
+      && (context.enrollment.status !== 'active' || context.enrollment.promotion_status !== 'pending')
+    ) {
+      throw new FinalizedEnrollmentPlacementError();
+    }
+    throw new Error('Atomic student enrollment placement update did not persist');
+  }
+
+  const persistedStudent = await db.prepare(
+    'SELECT class_id, section_id FROM students WHERE id = ? AND school_id = ?',
+  ).bind(studentId, student.school_id).first<StudentLegacyPlacement>();
+  const persistedContext = await loadCurrentStudentEnrollmentContext(db, student.school_id, studentId);
+  if (
+    !persistedStudent
+    || persistedStudent.class_id !== plan.class_id
+    || persistedStudent.section_id !== plan.section_id
+    || persistedContext.enrollment?.class_id !== plan.class_id
+    || persistedContext.enrollment?.section_id !== plan.section_id
+  ) {
+    if (
+      persistedContext.enrollment
+      && (
+        persistedContext.enrollment.status !== 'active'
+        || persistedContext.enrollment.promotion_status !== 'pending'
+      )
+    ) {
+      throw new FinalizedEnrollmentPlacementError();
+    }
+    throw new Error('Atomic student placement synchronization did not persist');
+  }
 }
 
 export async function persistStudentImportWithEnrollmentBridge(

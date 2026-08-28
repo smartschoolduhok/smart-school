@@ -115,6 +115,8 @@ import {
   archiveStudentWithoutEnrollmentMutation,
   buildStudentPlacementUpdatePlan,
   createStudentWithEnrollmentBridge,
+  FINALIZED_ENROLLMENT_PLACEMENT_ERROR,
+  FinalizedEnrollmentPlacementError,
   getStudentWithEffectivePlacement,
   listStudentEnrollmentHistory,
   listStudentsWithEffectivePlacement,
@@ -125,6 +127,7 @@ import {
   updateStudentPlacementAtomically,
   type StudentWriteValues,
 } from './lib/studentEnrollments'
+import { executeStudentPromotion } from './lib/studentPromotion'
 
 // ===========================================
 // Types & Extended Bindings
@@ -1637,6 +1640,24 @@ app.get('/api/students/:id/enrollments', requireSameSchoolOrAdmin(), requireRole
   }
 })
 
+app.post('/api/student-enrollments/promotion', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات الانتقال السنوي غير صالحة' }, 400)
+
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+
+    const result = await executeStudentPromotion(db, targetSchool.schoolId, user.id, body)
+    if (!result.ok) return c.json({ error: result.error }, result.status)
+    return c.json({ data: result.data })
+  } catch {
+    return c.json({ error: 'فشل في تطبيق الانتقال السنوي للطالب' }, 500)
+  }
+})
+
 app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
@@ -1752,10 +1773,12 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       return c.json({
         error: placementPlan.code === 'active_year_required'
           ? 'لا توجد سنة دراسية فعالة لتحديث موقع الطالب'
+          : placementPlan.code === 'finalized_enrollment'
+            ? FINALIZED_ENROLLMENT_PLACEMENT_ERROR
           : placementPlan.code === 'class_required'
             ? 'لا يمكن تحديد الشعبة دون تحديد الصف'
             : 'لا يمكن إزالة تسجيل الطالب من نموذج الطالب؛ استخدم إجراءات دورة التسجيل المخصصة',
-      }, 400)
+      }, placementPlan.code === 'finalized_enrollment' ? 409 : 400)
     }
 
     if (placementPlan.kind === 'write') {
@@ -1796,6 +1819,9 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     }
     return c.json({ data: { id, student_number, full_name, status } })
   } catch (err: any) {
+    if (err instanceof FinalizedEnrollmentPlacementError) {
+      return c.json({ error: FINALIZED_ENROLLMENT_PLACEMENT_ERROR }, 409)
+    }
     return c.json({ error: 'فشل في تحديث بيانات الطالب', detail: err.message }, 500)
   }
 })
@@ -8695,6 +8721,8 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
               ? 'لا توجد سنة دراسية فعالة لإنشاء أو تحديث تسجيل الطالب'
               : persistence.code === 'cannot_clear_enrollment'
                 ? 'لا يمكن إزالة تسجيل الطالب من خلال استيراد Excel'
+                : persistence.code === 'finalized_enrollment'
+                  ? FINALIZED_ENROLLMENT_PLACEMENT_ERROR
                 : 'لا يمكن تحديد الشعبة دون تحديد الصف';
             rowError(i, 'class_section', message);
             continue;
