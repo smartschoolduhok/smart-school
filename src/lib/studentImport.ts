@@ -92,6 +92,23 @@ export type StudentDuplicateMatch<T extends ExistingStudentIdentity> =
 
 export type StudentImportDuplicateMode = 'skip_existing' | 'update_existing' | 'error_on_existing';
 
+export function syncStudentImportState<T extends ExistingStudentIdentity>(
+  students: T[],
+  studentMap: Map<string, T>,
+  persistedStudent: T,
+): void {
+  const existingIndex = students.findIndex(student => student.id === persistedStudent.id);
+  if (existingIndex >= 0) students[existingIndex] = persistedStudent;
+  else students.push(persistedStudent);
+
+  for (const [studentNumber, student] of studentMap) {
+    if (student.id === persistedStudent.id && studentNumber !== persistedStudent.student_number) {
+      studentMap.delete(studentNumber);
+    }
+  }
+  studentMap.set(persistedStudent.student_number, persistedStudent);
+}
+
 export function studentDuplicateAction(
   mode: StudentImportDuplicateMode,
   hasDuplicate: boolean,
