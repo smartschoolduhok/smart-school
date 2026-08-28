@@ -59,6 +59,7 @@ class LocalD1Adapter {
     this.batchCalls = 0;
     this.failAtBatchStatement = null;
     this.beforeRun = null;
+    this.beforeBatch = null;
   }
 
   prepare(sql) {
@@ -67,6 +68,11 @@ class LocalD1Adapter {
 
   batch(statements) {
     this.batchCalls += 1;
+    if (this.beforeBatch) {
+      const beforeBatch = this.beforeBatch;
+      this.beforeBatch = null;
+      beforeBatch(statements);
+    }
     this.database.exec('BEGIN IMMEDIATE');
     try {
       const results = statements.map((statement, index) => {
@@ -228,6 +234,20 @@ function createPromotionSource(fixture, overrides = {}) {
   return { studentId, sourceEnrollmentId };
 }
 
+function commitCompetingTransition(fixture, sourceEnrollmentId, studentId, options) {
+  fixture.database.prepare(`
+    UPDATE student_enrollments
+    SET status = 'completed', promotion_status = ?, completed_at = 777,
+        updated_by_user_id = ?
+    WHERE id = ?
+  `).run(options.action, fixture.ids.userA, sourceEnrollmentId);
+  return insertEnrollment(fixture.database, fixture.ids, studentId, {
+    academic_year_id: options.targetAcademicYearId,
+    class_id: options.targetClassId,
+    section_id: options.targetSectionId,
+  });
+}
+
 function promotionRequest(ids, sourceEnrollmentId, overrides = {}) {
   return {
     source_enrollment_id: sourceEnrollmentId,
@@ -290,6 +310,7 @@ test('promoted finalizes source and creates an explicit active pending target en
   assert.equal(Number(target.created_by_user_id), fixture.ids.userA);
   assert.equal(Number(target.updated_by_user_id), fixture.ids.userA);
   assert.deepEqual(row(fixture.database, 'SELECT class_id, section_id FROM students WHERE id = ?', studentId), beforeLegacy);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0').count), 0);
   fixture.database.close();
 });
 
@@ -585,6 +606,162 @@ test('an existing conflicting target enrollment returns 409 and is not overwritt
   fixture.database.close();
 });
 
+test('same-action stale race cannot create a second enrollment in a different target year', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  fixture.adapter.beforeBatch = () => {
+    commitCompetingTransition(fixture, sourceEnrollmentId, studentId, {
+      action: 'promoted',
+      targetAcademicYearId: fixture.ids.futureA,
+      targetClassId: fixture.ids.classA2,
+      targetSectionId: fixture.ids.sectionA2,
+    });
+  };
+
+  await expectFailure(executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, promotionRequest(
+    fixture.ids,
+    sourceEnrollmentId,
+    {
+      target_academic_year_id: fixture.ids.laterA,
+      target_class_id: fixture.ids.classA2,
+      target_section_id: fixture.ids.sectionA2,
+    },
+  )), 409, 'target_enrollment_conflict');
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.futureA).count), 1);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.laterA).count), 0);
+  assert.equal(Number(row(fixture.database, 'SELECT completed_at FROM student_enrollments WHERE id = ?', sourceEnrollmentId).completed_at), 777);
+  fixture.database.close();
+});
+
+test('same-action stale race cannot create a second year with a different target placement', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  fixture.adapter.beforeBatch = () => {
+    commitCompetingTransition(fixture, sourceEnrollmentId, studentId, {
+      action: 'promoted',
+      targetAcademicYearId: fixture.ids.futureA,
+      targetClassId: fixture.ids.classA2,
+      targetSectionId: fixture.ids.sectionA2,
+    });
+  };
+
+  await expectFailure(executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, promotionRequest(
+    fixture.ids,
+    sourceEnrollmentId,
+    {
+      target_academic_year_id: fixture.ids.laterA,
+      target_class_id: fixture.ids.classA3,
+      target_section_id: fixture.ids.sectionA3,
+    },
+  )), 409, 'target_enrollment_conflict');
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.laterA).count), 0);
+  const winningTarget = row(fixture.database, 'SELECT class_id, section_id FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.futureA);
+  assert.equal(Number(winningTarget.class_id), fixture.ids.classA2);
+  assert.equal(Number(winningTarget.section_id), fixture.ids.sectionA2);
+  fixture.database.close();
+});
+
+test('repeated stale race cannot create a second enrollment in another target year', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  fixture.adapter.beforeBatch = () => {
+    commitCompetingTransition(fixture, sourceEnrollmentId, studentId, {
+      action: 'repeated',
+      targetAcademicYearId: fixture.ids.futureA,
+      targetClassId: fixture.ids.classA1,
+      targetSectionId: fixture.ids.sectionA1,
+    });
+  };
+
+  await expectFailure(executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, promotionRequest(
+    fixture.ids,
+    sourceEnrollmentId,
+    {
+      action: 'repeated',
+      target_academic_year_id: fixture.ids.laterA,
+      target_class_id: fixture.ids.classA1,
+      target_section_id: fixture.ids.sectionA1,
+    },
+  )), 409, 'target_enrollment_conflict');
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.futureA).count), 1);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.laterA).count), 0);
+  fixture.database.close();
+});
+
+test('same-target stale race resolves as an exact idempotent retry', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  let winningTargetId = null;
+  fixture.adapter.beforeBatch = () => {
+    winningTargetId = commitCompetingTransition(fixture, sourceEnrollmentId, studentId, {
+      action: 'promoted',
+      targetAcademicYearId: fixture.ids.futureA,
+      targetClassId: fixture.ids.classA2,
+      targetSectionId: fixture.ids.sectionA2,
+    });
+  };
+
+  const result = await executeStudentPromotion(
+    fixture.adapter,
+    1,
+    fixture.ids.userA,
+    promotionRequest(fixture.ids, sourceEnrollmentId),
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.data.already_applied, true);
+  assert.equal(result.data.target_enrollment_id, winningTargetId);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.futureA).count), 1);
+  assert.equal(Number(row(fixture.database, 'SELECT completed_at FROM student_enrollments WHERE id = ?', sourceEnrollmentId).completed_at), 777);
+  fixture.database.close();
+});
+
+test('fresh transition rejects any pre-existing enrollment in a different later year', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  insertEnrollment(fixture.database, fixture.ids, studentId, {
+    academic_year_id: fixture.ids.laterA,
+    class_id: fixture.ids.classA3,
+    section_id: fixture.ids.sectionA3,
+  });
+
+  await expectFailure(
+    executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, promotionRequest(fixture.ids, sourceEnrollmentId)),
+    409,
+    'target_enrollment_conflict',
+  );
+  const source = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', sourceEnrollmentId);
+  assert.equal(source.status, 'active');
+  assert.equal(source.promotion_status, 'pending');
+  assert.equal(source.completed_at, null);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.futureA).count), 0);
+  fixture.database.close();
+});
+
+test('later enrollment appearing between preflight and batch prevents claim and target creation', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  fixture.adapter.beforeBatch = () => {
+    insertEnrollment(fixture.database, fixture.ids, studentId, {
+      academic_year_id: fixture.ids.laterA,
+      class_id: fixture.ids.classA3,
+      section_id: fixture.ids.sectionA3,
+    });
+  };
+
+  await expectFailure(
+    executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, promotionRequest(fixture.ids, sourceEnrollmentId)),
+    409,
+    'target_enrollment_conflict',
+  );
+  const source = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', sourceEnrollmentId);
+  assert.equal(source.status, 'active');
+  assert.equal(source.promotion_status, 'pending');
+  assert.equal(source.completed_at, null);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.futureA).count), 0);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0').count), 0);
+  fixture.database.close();
+});
+
 for (const action of ['promoted', 'repeated']) {
   test(`exact ${action} retry is idempotent and does not rewrite source completion time`, async () => {
     const fixture = createFixture();
@@ -679,6 +856,7 @@ test('target insert failure rolls back source finalization atomically', async ()
   assert.equal(source.promotion_status, 'pending');
   assert.equal(source.completed_at, null);
   assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE academic_year_id = ?', fixture.ids.futureA).count), 0);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0').count), 0);
   fixture.database.close();
 });
 

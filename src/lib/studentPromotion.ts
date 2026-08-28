@@ -121,6 +121,17 @@ function toPositiveInteger(value: unknown): number | null {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
+function createTransitionClaimSentinel(): number {
+  const words = new Uint32Array(2);
+  crypto.getRandomValues(words);
+  const positiveSafeInteger = ((words[0] & 0x000fffff) * 0x100000000) + words[1] + 1;
+  return -positiveSafeInteger;
+}
+
+function hasNormalCompletionTimestamp(source: SourceEnrollmentRecord): boolean {
+  return Number.isInteger(source.completed_at) && Number(source.completed_at) > 0;
+}
+
 function hasOwn(input: StudentPromotionRequest, key: keyof StudentPromotionRequest): boolean {
   return Object.prototype.hasOwnProperty.call(input, key);
 }
@@ -249,6 +260,7 @@ function exactTargetMatches(
 ): target is TargetEnrollmentRecord {
   return source.status === 'completed'
     && source.promotion_status === request.action
+    && hasNormalCompletionTimestamp(source)
     && target != null
     && target.academic_year_id === request.targetAcademicYearId
     && target.class_id === request.targetClassId
@@ -289,6 +301,7 @@ function buildTransitionBatch(
   source: SourceEnrollmentRecord,
   request: ValidatedPromotionRequest,
   userId: number,
+  claimSentinel: number,
 ): StudentPromotionPreparedStatement[] {
   const targetAcademicYearId = request.targetAcademicYearId as number;
   const targetClassId = request.targetClassId as number;
@@ -298,7 +311,7 @@ function buildTransitionBatch(
     UPDATE student_enrollments AS source
     SET status = 'completed',
         promotion_status = ?,
-        completed_at = unixepoch(),
+        completed_at = ?,
         updated_by_user_id = ?
     WHERE source.id = ?
       AND source.school_id = ?
@@ -336,8 +349,22 @@ function buildTransitionBatch(
             AND target_section.class_id = ?
         )
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM student_enrollments AS later_enrollment
+        INNER JOIN academic_years AS later_year
+          ON later_year.id = later_enrollment.academic_year_id
+         AND later_year.school_id = later_enrollment.school_id
+        INNER JOIN academic_years AS source_year
+          ON source_year.id = source.academic_year_id
+         AND source_year.school_id = source.school_id
+        WHERE later_enrollment.school_id = source.school_id
+          AND later_enrollment.student_id = source.student_id
+          AND later_year.starts_at > source_year.starts_at
+      )
   `).bind(
     request.action,
+    claimSentinel,
     userId,
     source.id,
     source.school_id,
@@ -386,7 +413,7 @@ function buildTransitionBatch(
       AND source.academic_year_id = ?
       AND source.status = 'completed'
       AND source.promotion_status = ?
-      AND source.completed_at IS NOT NULL
+      AND source.completed_at = ?
       AND (
         ? IS NULL
         OR EXISTS (
@@ -408,12 +435,30 @@ function buildTransitionBatch(
     source.school_id,
     source.academic_year_id,
     request.action,
+    claimSentinel,
     targetSectionId,
     targetSectionId,
     targetClassId,
   );
 
-  return [finalizeSource, createTarget];
+  const normalizeSource = db.prepare(`
+    UPDATE student_enrollments
+    SET completed_at = unixepoch()
+    WHERE id = ?
+      AND school_id = ?
+      AND academic_year_id = ?
+      AND status = 'completed'
+      AND promotion_status = ?
+      AND completed_at = ?
+  `).bind(
+    source.id,
+    source.school_id,
+    source.academic_year_id,
+    request.action,
+    claimSentinel,
+  );
+
+  return [finalizeSource, createTarget, normalizeSource];
 }
 
 export async function executeStudentPromotion(
@@ -573,9 +618,14 @@ export async function executeStudentPromotion(
   if (existingTarget) {
     return failure(409, 'target_enrollment_conflict', 'يوجد تسجيل للطالب في السنة المستهدفة ببيانات مختلفة');
   }
+  if (await hasLaterEnrollment(db, source)) {
+    return failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق للطالب يتعارض مع الانتقال المطلوب');
+  }
 
+  const claimSentinel = createTransitionClaimSentinel();
+  let batchResults: StudentPromotionMutationResult[];
   try {
-    await db.batch(buildTransitionBatch(db, source, request, userId));
+    batchResults = await db.batch(buildTransitionBatch(db, source, request, userId, claimSentinel));
   } catch (error) {
     const concurrentSource = await loadSourceEnrollment(db, source.id);
     const concurrentTarget = await loadTargetEnrollment(
@@ -584,11 +634,15 @@ export async function executeStudentPromotion(
       source.student_id,
       targetAcademicYearId,
     );
+    const concurrentLaterEnrollment = concurrentSource
+      ? await hasLaterEnrollment(db, concurrentSource)
+      : false;
     if (concurrentSource && exactTargetMatches(concurrentSource, concurrentTarget, request)) {
       return successData(concurrentSource, request.action, concurrentTarget, true);
     }
     if (
       concurrentTarget
+      || concurrentLaterEnrollment
       || (concurrentSource && (
         concurrentSource.status !== 'active'
         || concurrentSource.promotion_status !== 'pending'
@@ -606,7 +660,21 @@ export async function executeStudentPromotion(
     source.student_id,
     targetAcademicYearId,
   );
-  if (!finalizedSource || !exactTargetMatches(finalizedSource, createdTarget, request)) {
+  if (
+    !finalizedSource
+    || finalizedSource.completed_at === claimSentinel
+    || !exactTargetMatches(finalizedSource, createdTarget, request)
+  ) {
+    return failure(409, 'target_enrollment_conflict', 'لم تُمتلك عملية الانتقال أو تغير تسجيل الطالب بالتزامن');
+  }
+
+  const claimChanges = batchResults[0]?.meta?.changes;
+  const insertChanges = batchResults[1]?.meta?.changes;
+  const normalizeChanges = batchResults[2]?.meta?.changes;
+  if (claimChanges === 0) {
+    return successData(finalizedSource, request.action, createdTarget, true);
+  }
+  if (insertChanges === 0 || normalizeChanges === 0) {
     return failure(409, 'lifecycle_conflict', 'لم تكتمل عملية الانتقال السنوي بالحالة المتوقعة');
   }
   return successData(finalizedSource, request.action, createdTarget, false);
