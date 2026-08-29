@@ -7,6 +7,7 @@ import SchoolsPage from './modules/schools/SchoolsPage';
 import UsersPage from './modules/users/UsersPage';
 import RolesPage from './modules/roles/RolesPage';
 import StudentsPage from './modules/students/StudentsPage';
+import StudentProfilePage from './modules/students/StudentProfilePage';
 import ClassesPage from './modules/classes/ClassesPage';
 import SubjectsPage from './modules/subjects/SubjectsPage';
 import StudentSubjectsPage from './modules/studentSubjects/StudentSubjectsPage';
@@ -155,6 +156,7 @@ export default function App() {
 
           {/* Academic routes */}
           <Route path="/students" element={<Layout><AcademicRoute><StudentsPage /></AcademicRoute></Layout>} />
+          <Route path="/students/:id" element={<Layout><AcademicRoute><StudentProfilePage /></AcademicRoute></Layout>} />
           <Route path="/classes" element={<Layout><AcademicRoute><ClassesPage /></AcademicRoute></Layout>} />
           <Route path="/subjects" element={<Layout><AcademicRoute><SubjectsPage /></AcademicRoute></Layout>} />
           <Route path="/student-subjects" element={<Layout><AcademicRoute><StudentSubjectsPage /></AcademicRoute></Layout>} />

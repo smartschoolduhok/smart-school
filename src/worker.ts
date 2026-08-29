@@ -1596,7 +1596,7 @@ app.get('/api/students', requireSameSchoolOrAdmin(), async (c) => {
   }
 })
 
-app.get('/api/students/:id', requireAuthEnforced(), async (c) => {
+app.get('/api/students/:id', requireAuthEnforced(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
   const db = c.env.DB
   const id = c.req.param('id')
   const user: UserContext | null = c.get('user') || null

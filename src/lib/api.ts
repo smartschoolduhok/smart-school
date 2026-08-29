@@ -5,6 +5,7 @@
 // ===========================================
 
 import type { AcademicYearRecord } from './academicYears';
+import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from './studentEnrollments';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -237,7 +238,12 @@ export function getStudents(schoolId?: number | null, classId?: number | null, s
 }
 
 export function getStudent(id: number | string) {
-  return fetchApi<Record<string, any>>(`/api/students/${id}`);
+  return fetchApi<EffectiveStudentRecord>(`/api/students/${id}`);
+}
+
+export function getStudentEnrollments(studentId: number | string, schoolId: number) {
+  const params = new URLSearchParams({ school_id: String(schoolId) });
+  return fetchApi<StudentEnrollmentHistoryRecord[]>(`/api/students/${studentId}/enrollments?${params.toString()}`);
 }
 
 export function createStudent(data: Record<string, any>) {

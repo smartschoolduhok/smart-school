@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
@@ -10,7 +11,7 @@ import {
   FINALIZED_STUDENT_PLACEMENT_MESSAGE,
   isStudentPlacementFinalized,
 } from '../../lib/studentPlacementUx';
-import { Search, Plus, Filter, Archive, Edit2, X, Check, User, Users } from 'lucide-react';
+import { Search, Plus, Filter, Archive, Edit2, Eye, X, Check, User, Users } from 'lucide-react';
 
 interface StudentRecord {
   id: number;
@@ -419,8 +420,14 @@ export default function StudentsPage() {
                 {filteredStudents.map((s, idx) => (
                   <tr key={s.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3 text-sm text-gray-500">{toArabicDigits(idx + 1)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{toArabicDigits(s.student_number)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{s.full_name}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                      <bdi dir="ltr">{s.student_number}</bdi>
+                    </td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                      <Link to={`/students/${s.id}`} className="text-blue-700 hover:text-blue-900 hover:underline">
+                        {s.full_name}
+                      </Link>
+                    </td>
                     <td className="px-4 py-3 text-sm text-gray-600">{s.gender === 'male' ? 'ذكر' : 'أنثى'}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{s.class_name || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{s.section_name || '—'}</td>
@@ -436,6 +443,14 @@ export default function StudentsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
+                        <Link
+                          to={`/students/${s.id}`}
+                          className="p-1.5 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                          title="عرض الملف"
+                          aria-label={`عرض ملف ${s.full_name}`}
+                        >
+                          <Eye size={16} />
+                        </Link>
                         {canManageSelectedSchool && (
                           <>
                             <button onClick={() => openEdit(s)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="تعديل">
