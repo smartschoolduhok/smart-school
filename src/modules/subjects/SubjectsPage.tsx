@@ -7,6 +7,7 @@ import { getSubjects, getClasses, getSections, createSubject, updateSubject, arc
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import { mergeReturnedSubjectOrder, moveOrderedItem } from '../../lib/subjectOrdering';
+import { religiousTrackLabel, type ReligiousTrack } from '../../lib/religiousSubjects';
 import { Search, Plus, Filter, Archive, Edit2, X, Check, BookOpen, ListOrdered, Tag, Users, GripVertical, ArrowUp, ArrowDown } from 'lucide-react';
 
 interface SubjectRecord {
@@ -16,6 +17,7 @@ interface SubjectRecord {
   section_id: number | null;
   name: string;
   subject_type: 'أساسية' | 'اختيارية';
+  religious_track: ReligiousTrack | null;
   counts_in_average: boolean;
   appears_in_report_card: boolean;
   passing_grade: number;
@@ -46,6 +48,7 @@ const emptyForm = {
   section_id: '' as string | number,
   name: '',
   subject_type: 'أساسية' as 'أساسية' | 'اختيارية',
+  religious_track: '' as '' | ReligiousTrack,
   counts_in_average: true,
   appears_in_report_card: true,
   passing_grade: 50,
@@ -69,6 +72,7 @@ export default function SubjectsPage() {
   const [search, setSearch] = useState('');
   const [filterClass, setFilterClass] = useState<string>('');
   const [filterType, setFilterType] = useState<string>('');
+  const [filterReligion, setFilterReligion] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<string>('active');
   const [showFilters, setShowFilters] = useState(false);
 
@@ -132,6 +136,8 @@ export default function SubjectsPage() {
     if (filterStatus) list = list.filter((s) => s.status === filterStatus);
     if (filterClass) list = list.filter((s) => String(s.class_id) === filterClass);
     if (filterType) list = list.filter((s) => s.subject_type === filterType);
+    if (filterReligion === 'ordinary') list = list.filter((s) => s.religious_track == null);
+    if (filterReligion === 'religious') list = list.filter((s) => s.religious_track != null);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((s) => s.name.toLowerCase().includes(q) || (s.class_name && s.class_name.toLowerCase().includes(q)));
@@ -143,7 +149,7 @@ export default function SubjectsPage() {
       || (a.order_index - b.order_index)
       || (a.id - b.id)
     );
-  }, [subjects, classes, search, filterClass, filterType, filterStatus]);
+  }, [subjects, classes, search, filterClass, filterType, filterReligion, filterStatus]);
 
   function openCreate() {
     if (schoolId == null) return;
@@ -161,6 +167,7 @@ export default function SubjectsPage() {
       section_id: s.section_id || '',
       name: s.name,
       subject_type: s.subject_type,
+      religious_track: s.religious_track || '',
       counts_in_average: !!s.counts_in_average,
       appears_in_report_card: !!s.appears_in_report_card,
       passing_grade: s.passing_grade,
@@ -184,6 +191,7 @@ export default function SubjectsPage() {
       section_id: form.section_id ? Number(form.section_id) : null,
       name: form.name.trim(),
       subject_type: form.subject_type,
+      religious_track: form.religious_track || null,
       counts_in_average: form.counts_in_average,
       appears_in_report_card: form.appears_in_report_card,
       passing_grade: Number(form.passing_grade) || 50,
@@ -324,7 +332,7 @@ export default function SubjectsPage() {
           </button>
         </div>
         {showFilters && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 pt-3 border-t border-gray-100">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-3 pt-3 border-t border-gray-100">
             <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="active">نشطة</option>
               <option value="inactive">غير نشطة</option>
@@ -339,6 +347,11 @@ export default function SubjectsPage() {
               <option value="">كل الأنواع</option>
               <option value="أساسية">أساسية</option>
               <option value="اختيارية">اختيارية</option>
+            </select>
+            <select value={filterReligion} onChange={(e) => setFilterReligion(e.target.value)} className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">كل المواد</option>
+              <option value="ordinary">مواد عادية</option>
+              <option value="religious">مواد دينية</option>
             </select>
           </div>
         )}
@@ -415,7 +428,16 @@ export default function SubjectsPage() {
                 {filteredSubjects.map((s, idx) => (
                   <tr key={s.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3 text-sm text-gray-500">{toArabicDigits(idx + 1)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{s.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span>{s.name}</span>
+                        {s.religious_track && (
+                          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700">
+                            {religiousTrackLabel(s.religious_track)}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-sm text-gray-600">
                       <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${s.subject_type === 'أساسية' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>{s.subject_type}</span>
                     </td>
@@ -556,6 +578,15 @@ export default function SubjectsPage() {
                   <select value={form.subject_type} onChange={(e) => setForm({ ...form, subject_type: e.target.value as 'أساسية' | 'اختيارية' })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                     <option value="أساسية">أساسية</option>
                     <option value="اختيارية">اختيارية</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">نوع مادة الديانة</label>
+                  <select value={form.religious_track} onChange={(e) => setForm({ ...form, religious_track: e.target.value as '' | ReligiousTrack })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">ليست مادة ديانة</option>
+                    <option value="islamic">إسلامية</option>
+                    <option value="christian">مسيحية</option>
+                    <option value="other">أخرى</option>
                   </select>
                 </div>
                 <div>

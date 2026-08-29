@@ -27,6 +27,7 @@
     "test:result-cards": "node --experimental-strip-types --test test/result-card.test.mjs",
     "test:settings": "node --experimental-strip-types --test test/settings-permissions.test.mjs",
     "test:subject-order": "node --experimental-strip-types --test test/subject-order.test.mjs",
+    "test:religious-subjects": "node --experimental-strip-types --test test/religious-subjects.test.mjs",
     "test:excel-import": "node --experimental-strip-types --test test/excel-import.test.mjs test/grade-excel-import.test.mjs"
   },
   "dependencies": {

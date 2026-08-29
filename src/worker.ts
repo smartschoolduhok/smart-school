@@ -133,6 +133,18 @@ import {
   normalizeExcelStudentReligion,
   validateStudentReligion,
 } from './lib/studentReligion'
+import {
+  RELIGIOUS_SUBJECT_BULK_ERROR,
+  RELIGIOUS_SUBJECT_CONFLICT_ERROR,
+  RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
+  RELIGIOUS_TRACK_HEADER_ALIASES,
+  countSubjectReligiousConversionConflicts,
+  findActiveReligiousAssignment,
+  hasRecordedReligiousSubjectGrades,
+  normalizeExcelReligiousTrack,
+  validateReligiousTrack,
+  type ReligiousTrack,
+} from './lib/religiousSubjects'
 
 // ===========================================
 // Types & Extended Bindings
@@ -1904,7 +1916,7 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
   try {
     const body = await c.req.json()
     let {
-      school_id, class_id, section_id, name, subject_type,
+      school_id, class_id, section_id, name, subject_type, religious_track,
       counts_in_average, appears_in_report_card,
       passing_grade, exemption_grade, order_index
     } = body
@@ -1915,6 +1927,10 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
 
     if (!school_id || !class_id || !name) {
       return c.json({ error: 'المدرسة والصف واسم المادة مطلوبة' }, 400)
+    }
+    const religiousTrackValidation = validateReligiousTrack(religious_track)
+    if (!religiousTrackValidation.ok) {
+      return c.json({ error: 'نوع مادة الديانة غير صالح' }, 400)
     }
 
     class_id = Number(class_id)
@@ -1932,12 +1948,12 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
 
     const result = await db.prepare(`
       INSERT INTO subjects (
-        school_id, class_id, section_id, name, subject_type,
+        school_id, class_id, section_id, name, subject_type, religious_track,
         counts_in_average, appears_in_report_card,
         passing_grade, exemption_grade, order_index,
         status, created_at, updated_at
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         COALESCE(?, (
           SELECT COALESCE(MAX(order_index), 0) + 1
           FROM subjects
@@ -1946,13 +1962,13 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
         'active', unixepoch(), unixepoch()
       )
     `).bind(
-      school_id, class_id, section_id || null, name, subject_type || 'أساسية',
+      school_id, class_id, section_id || null, name, subject_type || 'أساسية', religiousTrackValidation.value,
       counts_in_average !== undefined ? (counts_in_average ? 1 : 0) : 1,
       appears_in_report_card !== undefined ? (appears_in_report_card ? 1 : 0) : 1,
       passing_grade || 50, exemption_grade || 25,
       explicitOrderIndex, school_id, class_id,
     ).run()
-    return c.json({ data: { id: result.meta.last_row_id, school_id, class_id, name, status: 'active' } }, 201)
+    return c.json({ data: { id: result.meta.last_row_id, school_id, class_id, name, religious_track: religiousTrackValidation.value, status: 'active' } }, 201)
   } catch (err: any) {
     return c.json({ error: 'فشل في إنشاء المادة', detail: err.message }, 500)
   }
@@ -2061,20 +2077,42 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
     const {
-      class_id, section_id, name, subject_type,
+      class_id, section_id, name, subject_type, religious_track,
       counts_in_average, appears_in_report_card,
       passing_grade, exemption_grade, order_index, status
     } = body
 
-    const existing = await db.prepare(`SELECT school_id, class_id, order_index, status FROM subjects WHERE id = ?`).bind(id).first<{
+    const existing = await db.prepare(`SELECT school_id, class_id, order_index, status, religious_track FROM subjects WHERE id = ?`).bind(id).first<{
       school_id: number
       class_id: number
       order_index: number
       status: string
+      religious_track: ReligiousTrack | null
     }>()
     if (!existing) return c.json({ error: 'المادة غير موجودة' }, 404)
     if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل مادة في مدرسة أخرى' }, 403)
+    }
+
+    const hasReligiousTrack = Object.prototype.hasOwnProperty.call(body, 'religious_track')
+    const religiousTrackValidation = hasReligiousTrack
+      ? validateReligiousTrack(religious_track)
+      : { ok: true as const, value: existing.religious_track }
+    if (!religiousTrackValidation.ok) {
+      return c.json({ error: 'نوع مادة الديانة غير صالح' }, 400)
+    }
+    if (religiousTrackValidation.value != null && religiousTrackValidation.value !== existing.religious_track) {
+      const conflictingStudentsCount = await countSubjectReligiousConversionConflicts(
+        db,
+        targetSchool.schoolId,
+        Number(id),
+      )
+      if (conflictingStudentsCount > 0) {
+        return c.json({
+          error: 'لا يمكن تحويل المادة إلى مادة ديانة لأن بعض الطلاب لديهم مادة ديانة فعالة أخرى',
+          meta: { conflicting_students_count: conflictingStudentsCount },
+        }, 409)
+      }
     }
 
     const nextClassId = Number(class_id)
@@ -2107,18 +2145,18 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
 
     await db.prepare(`
       UPDATE subjects SET
-        class_id = ?, section_id = ?, name = ?, subject_type = ?,
+        class_id = ?, section_id = ?, name = ?, subject_type = ?, religious_track = ?,
         counts_in_average = ?, appears_in_report_card = ?,
         passing_grade = ?, exemption_grade = ?, order_index = ?, status = ?,
         updated_at = unixepoch()
       WHERE id = ? AND school_id = ?
     `).bind(
-      nextClassId, nextSectionId, name, subject_type || 'أساسية',
+      nextClassId, nextSectionId, name, subject_type || 'أساسية', religiousTrackValidation.value,
       counts_in_average !== undefined ? (counts_in_average ? 1 : 0) : 1,
       appears_in_report_card !== undefined ? (appears_in_report_card ? 1 : 0) : 1,
       passing_grade || 50, exemption_grade || 25, nextOrderIndex, nextStatus, id, targetSchool.schoolId
     ).run()
-    return c.json({ data: { id, name, status: nextStatus, order_index: nextOrderIndex } })
+    return c.json({ data: { id, name, religious_track: religiousTrackValidation.value, status: nextStatus, order_index: nextOrderIndex } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث المادة', detail: err.message }, 500)
   }
@@ -2167,9 +2205,10 @@ async function verifyStudentSubjectSchool(
   return { ok: true, school_id: st.school_id };
 }
 
-// Helper: get current class_id/section_id from student record for assignment
+// Helper: get the effective active-year class/section for academic assignment.
 async function getStudentClassSection(db: D1Database, student_id: number) {
-  return db.prepare('SELECT class_id, section_id FROM students WHERE id = ?').bind(student_id).first<{ class_id: number | null; section_id: number | null }>();
+  const student = await getStudentWithEffectivePlacement(db, student_id);
+  return student ? { class_id: student.class_id, section_id: student.section_id } : null;
 }
 
 type StudentSubjectAssignmentValidation =
@@ -2182,13 +2221,7 @@ async function validateStudentSubjectAssignment(
   studentId: number,
   subjectId: number,
 ): Promise<StudentSubjectAssignmentValidation> {
-  const student = await db.prepare(
-    'SELECT school_id, class_id, section_id FROM students WHERE id = ?',
-  ).bind(studentId).first<{
-    school_id: number;
-    class_id: number | null;
-    section_id: number | null;
-  }>();
+  const student = await getStudentWithEffectivePlacement(db, studentId);
   if (!student) return { ok: false, status: 404, error: 'الطالب غير موجود' };
 
   const subject = await db.prepare(
@@ -2234,7 +2267,7 @@ app.get('/api/student-subjects', requireSameSchoolOrAdmin(), async (c) => {
     let query = `
       SELECT ss.*,
         st.full_name as student_name, st.student_number,
-        su.name as subject_name, su.subject_type, su.counts_in_average, su.appears_in_report_card,
+        su.name as subject_name, su.subject_type, su.religious_track, su.counts_in_average, su.appears_in_report_card,
         c.name as class_name, se.name as section_name,
         u.full_name as assigned_by_name
       FROM student_subjects ss
@@ -2273,7 +2306,7 @@ app.get('/api/students/:id/subjects', requireAuthEnforced(), async (c) => {
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى بيانات هذا الطالب' }, 403);
     }
     const { results } = await db.prepare(`
-      SELECT ss.*, su.name as subject_name, su.subject_type, su.counts_in_average, su.appears_in_report_card, c.name as class_name, se.name as section_name
+      SELECT ss.*, su.name as subject_name, su.subject_type, su.religious_track, su.counts_in_average, su.appears_in_report_card, c.name as class_name, se.name as section_name
       FROM student_subjects ss
       JOIN subjects su ON ss.subject_id = su.id AND su.school_id = ss.school_id
       LEFT JOIN classes c ON ss.class_id = c.id AND c.school_id = ss.school_id
@@ -2284,6 +2317,177 @@ app.get('/api/students/:id/subjects', requireAuthEnforced(), async (c) => {
     return c.json({ data: results || [] });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب مواد الطالب', detail: err.message }, 500);
+  }
+});
+
+// GET /api/students/:id/religious-subject - explicit academic religious-subject state.
+app.get('/api/students/:id/religious-subject', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+  const db = c.env.DB;
+  const studentId = Number(c.req.param('id'));
+  const schoolId: number | null = c.get('resolvedSchoolId');
+  const scope: 'all' | 'single' = c.get('scope');
+  try {
+    if (!Number.isInteger(studentId) || studentId <= 0) return c.json({ error: 'معرّف الطالب غير صالح' }, 400);
+    if (scope !== 'single' || schoolId == null) return c.json({ error: 'يجب تحديد المدرسة المستهدفة' }, 400);
+
+    const student = await getStudentWithEffectivePlacement(db, studentId);
+    if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
+    if (student.school_id !== schoolId) return c.json({ error: 'غير مسموح: الطالب ينتمي إلى مدرسة أخرى' }, 403);
+
+    const currentAssignment = await findActiveReligiousAssignment(db, schoolId, studentId);
+    const placementAvailable = student.class_id != null;
+    const candidates = placementAvailable
+      ? await db.prepare(`
+          SELECT id AS subject_id, name AS subject_name, religious_track, class_id, section_id
+          FROM subjects
+          WHERE school_id = ?
+            AND status = 'active'
+            AND religious_track IS NOT NULL
+            AND class_id = ?
+            AND (section_id IS NULL OR section_id = ?)
+          ORDER BY order_index, id
+        `).bind(schoolId, student.class_id, student.section_id).all<{
+          subject_id: number;
+          subject_name: string;
+          religious_track: ReligiousTrack;
+          class_id: number;
+          section_id: number | null;
+        }>()
+      : { results: [] };
+
+    return c.json({
+      data: {
+        current_assignment: currentAssignment,
+        candidates: candidates.results || [],
+        meta: {
+          placement_available: placementAvailable,
+          class_id: student.class_id,
+          section_id: student.section_id,
+          message: placementAvailable ? null : 'لا يملك الطالب موقعًا دراسيًا حاليًا لاختيار مادة ديانة مناسبة.',
+        },
+      },
+    });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب مادة الديانة الدراسية', detail: err.message }, 500);
+  }
+});
+
+type ReligiousSubjectSelection = {
+  id: number;
+  school_id: number;
+  name: string;
+  class_id: number;
+  section_id: number | null;
+  status: string;
+  religious_track: ReligiousTrack | null;
+};
+
+// PUT /api/students/:id/religious-subject - atomically set, switch, or remove the explicit assignment.
+app.put('/api/students/:id/religious-subject', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  const studentId = Number(c.req.param('id'));
+  try {
+    if (!Number.isInteger(studentId) || studentId <= 0) return c.json({ error: 'معرّف الطالب غير صالح' }, 400);
+    const body = await c.req.json();
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
+
+    const student = await getStudentWithEffectivePlacement(db, studentId);
+    if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
+    if (student.school_id !== targetSchool.schoolId) {
+      return c.json({ error: 'غير مسموح: الطالب ينتمي إلى مدرسة أخرى' }, 403);
+    }
+
+    const requestedSubjectId = body.subject_id == null || body.subject_id === '' ? null : Number(body.subject_id);
+    if (requestedSubjectId != null && (!Number.isInteger(requestedSubjectId) || requestedSubjectId <= 0)) {
+      return c.json({ error: 'معرّف المادة غير صالح' }, 400);
+    }
+
+    let requestedSubject: ReligiousSubjectSelection | null = null;
+    if (requestedSubjectId != null) {
+      requestedSubject = await db.prepare(`
+        SELECT id, school_id, name, class_id, section_id, status, religious_track
+        FROM subjects WHERE id = ?
+      `).bind(requestedSubjectId).first<ReligiousSubjectSelection>();
+      if (!requestedSubject) return c.json({ error: 'المادة غير موجودة' }, 404);
+      if (requestedSubject.school_id !== targetSchool.schoolId) {
+        return c.json({ error: 'غير مسموح: المادة تنتمي إلى مدرسة أخرى' }, 403);
+      }
+      if (requestedSubject.status !== 'active') return c.json({ error: 'يجب اختيار مادة فعالة' }, 400);
+      if (requestedSubject.religious_track == null) return c.json({ error: 'المادة المحددة ليست مادة ديانة' }, 400);
+      if (student.class_id == null) return c.json({ error: 'لا يملك الطالب صفًا حاليًا صالحًا لتعيين مادة ديانة' }, 400);
+      if (requestedSubject.class_id !== student.class_id) return c.json({ error: 'مادة الديانة لا تتبع صف الطالب الحالي' }, 400);
+      if (requestedSubject.section_id != null && requestedSubject.section_id !== student.section_id) {
+        return c.json({ error: 'مادة الديانة لا تتبع شعبة الطالب الحالية' }, 400);
+      }
+    }
+
+    const currentAssignment = await findActiveReligiousAssignment(db, targetSchool.schoolId, studentId);
+    if (currentAssignment?.subject_id === requestedSubjectId || (!currentAssignment && requestedSubjectId == null)) {
+      return c.json({ data: { current_assignment: currentAssignment, already_applied: true } });
+    }
+
+    if (currentAssignment) {
+      const recordedGradeData = await hasRecordedReligiousSubjectGrades(db, targetSchool.schoolId, currentAssignment.assignment_id);
+      if (recordedGradeData && body.confirm_existing_grades !== true) {
+        return c.json({
+          error: 'توجد درجات محفوظة لمادة الديانة الحالية وتحتاج إلى تأكيد قبل تغييرها.',
+          code: RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
+          meta: {
+            current_assignment_id: currentAssignment.assignment_id,
+            current_subject_id: currentAssignment.subject_id,
+            current_subject_name: currentAssignment.subject_name,
+            recorded_grade_data: true,
+          },
+        }, 409);
+      }
+    }
+
+    if (requestedSubject) {
+      const conflictingAssignment = await findActiveReligiousAssignment(db, targetSchool.schoolId, studentId, {
+        excludeAssignmentId: currentAssignment?.assignment_id,
+        excludeSubjectId: requestedSubject.id,
+      });
+      if (conflictingAssignment) {
+        return c.json({ error: RELIGIOUS_SUBJECT_CONFLICT_ERROR, meta: { conflicting_assignment_id: conflictingAssignment.assignment_id } }, 409);
+      }
+    }
+
+    const statements: D1PreparedStatement[] = [];
+    if (currentAssignment) {
+      statements.push(db.prepare(`
+        UPDATE student_subjects
+        SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch()
+        WHERE id = ? AND school_id = ? AND student_id = ? AND is_active = 1
+      `).bind(currentAssignment.assignment_id, targetSchool.schoolId, studentId));
+    }
+    if (requestedSubject) {
+      statements.push(db.prepare(`
+        INSERT INTO student_subjects (
+          school_id, student_id, subject_id, class_id, section_id, is_active,
+          assigned_by_user_id, assigned_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, unixepoch(), unixepoch(), unixepoch())
+      `).bind(
+        targetSchool.schoolId,
+        studentId,
+        requestedSubject.id,
+        student.class_id,
+        student.section_id,
+        user!.id,
+      ));
+    }
+    const results = statements.length > 0 ? await db.batch(statements) : [];
+    const insertedResult = requestedSubject ? results[results.length - 1] : null;
+    const nextAssignment = requestedSubject ? {
+      assignment_id: Number(insertedResult?.meta?.last_row_id),
+      subject_id: requestedSubject.id,
+      subject_name: requestedSubject.name,
+      religious_track: requestedSubject.religious_track,
+    } : null;
+    return c.json({ data: { current_assignment: nextAssignment, already_applied: false } });
+  } catch (err: any) {
+    return c.json({ error: 'فشل في تحديث مادة الديانة الدراسية', detail: err.message }, 500);
   }
 });
 
@@ -2312,8 +2516,11 @@ app.post('/api/student-subjects/assign-class', requireSameSchoolOrAdmin(), requi
 
     // Validate all subjects belong to this school and class
     const subjectChecks = await db.prepare(`
-      SELECT id, class_id, section_id FROM subjects WHERE id IN (${subject_ids.map(() => '?').join(',')}) AND school_id = ?
-    `).bind(...subject_ids, school_id).all<{ id: number; class_id: number | null; section_id: number | null }>();
+      SELECT id, class_id, section_id, religious_track FROM subjects WHERE id IN (${subject_ids.map(() => '?').join(',')}) AND school_id = ?
+    `).bind(...subject_ids, school_id).all<{ id: number; class_id: number | null; section_id: number | null; religious_track: ReligiousTrack | null }>();
+    if ((subjectChecks.results || []).some((subject) => subject.religious_track != null)) {
+      return c.json({ error: RELIGIOUS_SUBJECT_BULK_ERROR }, 400);
+    }
     const validSubjectIds = new Set((subjectChecks.results || []).map((s) => s.id));
     const mismatchedSubjects = (subjectChecks.results || []).filter((s) => s.class_id != null && String(s.class_id) !== String(class_id));
     if (mismatchedSubjects.length > 0) {
@@ -2363,8 +2570,11 @@ app.post('/api/student-subjects/assign-section', requireSameSchoolOrAdmin(), req
 
     // Validate all subjects belong to this school, class, and section
     const subjectChecks = await db.prepare(`
-      SELECT id, class_id, section_id FROM subjects WHERE id IN (${subject_ids.map(() => '?').join(',')}) AND school_id = ?
-    `).bind(...subject_ids, sec.school_id).all<{ id: number; class_id: number | null; section_id: number | null }>();
+      SELECT id, class_id, section_id, religious_track FROM subjects WHERE id IN (${subject_ids.map(() => '?').join(',')}) AND school_id = ?
+    `).bind(...subject_ids, sec.school_id).all<{ id: number; class_id: number | null; section_id: number | null; religious_track: ReligiousTrack | null }>();
+    if ((subjectChecks.results || []).some((subject) => subject.religious_track != null)) {
+      return c.json({ error: RELIGIOUS_SUBJECT_BULK_ERROR }, 400);
+    }
     const validSubjectIds = new Set((subjectChecks.results || []).map((s) => s.id));
     const mismatchedSubjects = (subjectChecks.results || []).filter((s) =>
       (s.class_id != null && String(s.class_id) !== String(sec.class_id)) ||
@@ -2405,6 +2615,38 @@ app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), re
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     if (!Array.isArray(student_ids) || student_ids.length === 0) return c.json({ error: 'يجب اختيار طالب واحد على الأقل' }, 400);
     if (!Array.isArray(subject_ids) || subject_ids.length === 0) return c.json({ error: 'يجب اختيار مادة واحدة على الأقل' }, 400);
+
+    const requestedSubjects = await db.prepare(`
+      SELECT id, religious_track
+      FROM subjects
+      WHERE school_id = ? AND id IN (${subject_ids.map(() => '?').join(',')})
+    `).bind(targetSchool.schoolId, ...subject_ids).all<{ id: number; religious_track: ReligiousTrack | null }>();
+    const requestedReligiousSubjects = (requestedSubjects.results || []).filter((subject) => subject.religious_track != null);
+    if (requestedReligiousSubjects.length > 1) {
+      return c.json({ error: 'لا يمكن أن يحتوي طلب واحد على أكثر من مادة ديانة واحدة' }, 400);
+    }
+    const requestedReligiousSubject = requestedReligiousSubjects[0] || null;
+    if (requestedReligiousSubject) {
+      for (const rawStudentId of student_ids) {
+        const studentId = Number(rawStudentId);
+        const assignmentValidation = await validateStudentSubjectAssignment(
+          db,
+          targetSchool.schoolId,
+          studentId,
+          requestedReligiousSubject.id,
+        );
+        if (!assignmentValidation.ok) return c.json({ error: assignmentValidation.error }, assignmentValidation.status);
+        const conflict = await findActiveReligiousAssignment(db, targetSchool.schoolId, studentId, {
+          excludeSubjectId: requestedReligiousSubject.id,
+        });
+        if (conflict) {
+          return c.json({
+            error: RELIGIOUS_SUBJECT_CONFLICT_ERROR,
+            meta: { student_id: studentId, conflicting_assignment_id: conflict.assignment_id },
+          }, 409);
+        }
+      }
+    }
 
     const inserted: number[] = [];
     const skipped: number[] = [];
@@ -2459,7 +2701,7 @@ app.post('/api/student-subjects/assign-one', requireSameSchoolOrAdmin(), require
 
     // Validate class/section match for the subject
     const st = await getStudentClassSection(db, Number(student_id));
-    const su = await db.prepare('SELECT class_id, section_id FROM subjects WHERE id = ?').bind(Number(subject_id)).first<{ class_id: number | null; section_id: number | null }>();
+    const su = await db.prepare('SELECT class_id, section_id, religious_track FROM subjects WHERE id = ?').bind(Number(subject_id)).first<{ class_id: number | null; section_id: number | null; religious_track: ReligiousTrack | null }>();
     if (su && su.class_id != null && String(su.class_id) !== String(st?.class_id)) {
       return c.json({ error: 'المادة مخصصة لصف مختلف عن صف الطالب' }, 400);
     }
@@ -2469,6 +2711,12 @@ app.post('/api/student-subjects/assign-one', requireSameSchoolOrAdmin(), require
 
     const existing = await db.prepare('SELECT id FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ? AND is_active = 1').bind(school_id, student_id, subject_id).first();
     if (existing) return c.json({ error: 'هذه المادة مضافة مسبقًا لهذا الطالب' }, 409);
+    if (su?.religious_track != null) {
+      const conflict = await findActiveReligiousAssignment(db, school_id, Number(student_id), { excludeSubjectId: Number(subject_id) });
+      if (conflict) {
+        return c.json({ error: RELIGIOUS_SUBJECT_CONFLICT_ERROR, meta: { conflicting_assignment_id: conflict.assignment_id } }, 409);
+      }
+    }
 
     const result = await db.prepare(`
       INSERT INTO student_subjects (school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, created_at, updated_at)
@@ -2489,7 +2737,13 @@ app.put('/api/student-subjects/:id/reactivate', requireSameSchoolOrAdmin(), requ
     const body = await c.req.json().catch(() => ({}));
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const row = await db.prepare('SELECT school_id, student_id, subject_id, is_active FROM student_subjects WHERE id = ?').bind(id).first<{ school_id: number; student_id: number; subject_id: number; is_active: number }>();
+    const row = await db.prepare(`
+      SELECT assignment.school_id, assignment.student_id, assignment.subject_id, assignment.is_active,
+             subject.religious_track
+      FROM student_subjects assignment
+      JOIN subjects subject ON subject.id = assignment.subject_id AND subject.school_id = assignment.school_id
+      WHERE assignment.id = ?
+    `).bind(id).first<{ school_id: number; student_id: number; subject_id: number; is_active: number; religious_track: ReligiousTrack | null }>();
     if (!row) return c.json({ error: 'التعيين غير موجود' }, 404);
     if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل تعيين في مدرسة أخرى' }, 403);
@@ -2500,6 +2754,15 @@ app.put('/api/student-subjects/:id/reactivate', requireSameSchoolOrAdmin(), requ
     const existingActive = await db.prepare('SELECT id FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ? AND is_active = 1').bind(row.school_id, row.student_id, row.subject_id).first();
     if (existingActive) {
       return c.json({ error: 'لا يمكن إعادة التفعيل: يوجد تعيين نشط آخر للطالب في نفس المادة' }, 409);
+    }
+    if (row.religious_track != null) {
+      const conflict = await findActiveReligiousAssignment(db, row.school_id, row.student_id, {
+        excludeAssignmentId: id,
+        excludeSubjectId: row.subject_id,
+      });
+      if (conflict) {
+        return c.json({ error: RELIGIOUS_SUBJECT_CONFLICT_ERROR, meta: { conflicting_assignment_id: conflict.assignment_id } }, 409);
+      }
     }
 
     await db.prepare(`UPDATE student_subjects SET is_active = 1, removed_at = NULL, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
@@ -8144,7 +8407,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
     const duplicates: any[] = [];
     const existingClasses = await db.prepare(`SELECT id, name FROM classes WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
     const existingSections = await db.prepare(`SELECT id, name, class_id FROM sections WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
-    const existingStudents = type === 'students'
+    const existingStudents = type === 'students' || type === 'student-subjects'
       ? {
           results: (await listStudentsWithEffectivePlacement(db, { schoolId: school_id }))
             .filter(student => student.status !== 'archived'),
@@ -8153,7 +8416,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
     const activeStudentImportYear = type === 'students'
       ? await resolveActiveAcademicYear(db, school_id)
       : null;
-    const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
+    const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id, s.religious_track FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
     const existingEmployees = await db.prepare(`SELECT id, full_name, email, phone FROM employees WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
 
     const classMap = new Map((existingClasses.results || []).map((c: any) => [c.name, c.id]));
@@ -8177,6 +8440,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
 
     const seenStudentNumbers = new Set<string>();
     const seenStudentIdentities = new Set<string>();
+    const plannedReligiousStudentSubjects = new Map<number, number>();
     let skippedRows = 0;
 
     for (let i = 0; i < rows.length; i++) {
@@ -8333,10 +8597,26 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
 
         record.data = { class_name: className, stage, order_index: orderIndex, section_name: sectionName, capacity, status };
       } else if (type === 'subjects') {
+        const importedFields = new Set<string>(
+          mapping && typeof mapping === 'object'
+            ? Object.keys(mapping).filter(field => mapping[field])
+            : Object.keys(mapped),
+        );
+        if (!mapping && RELIGIOUS_TRACK_HEADER_ALIASES.some((alias) => Object.prototype.hasOwnProperty.call(mapped, alias))) {
+          importedFields.add('religious_track');
+        }
         const subjectName = normalizeText(mapped.subject_name || mapped['المادة'] || mapped['اسم المادة'] || mapped['subject'] || mapped['name']);
         const className = normalizeText(mapped.class_name || mapped['الصف'] || mapped['class'] || mapped['grade']);
         const sectionName = normalizeText(mapped.section_name || mapped['الشعبة'] || mapped['section']);
         const subjectType = isValidSubjectType(mapped.subject_type || mapped['نوع المادة'] || mapped['type']);
+        const rawReligiousTrack = mapped.religious_track
+          ?? mapped['نوع مادة الديانة']
+          ?? mapped['مسار الديانة']
+          ?? mapped['religious track']
+          ?? mapped['religious education track'];
+        const religiousTrackValidation = importedFields.has('religious_track')
+          ? normalizeExcelReligiousTrack(rawReligiousTrack)
+          : { ok: true as const, value: null };
         const countsInAverage = normalizeBoolean(mapped.counts_in_average || mapped['تحسب في المعدل'] || mapped['counts']);
         const appearsInReportCard = normalizeBoolean(mapped.appears_in_report_card || mapped['تظهر في كشف العلامات'] || mapped['appears']);
         const passingGrade = normalizeNumber(mapped.passing_grade || mapped['درجة النجاح'] || mapped['passing']);
@@ -8346,6 +8626,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
 
         if (!subjectName) { rowError(i, 'subject_name', 'اسم المادة مطلوب'); hasFatal = true; }
         if (!className) { rowError(i, 'class_name', 'الصف مطلوب'); hasFatal = true; }
+        if (!religiousTrackValidation.ok) { rowError(i, 'religious_track', 'نوع مادة الديانة غير معروف'); hasFatal = true; }
         const classId = className ? classMap.get(className) : null;
         if (className && !classId) { rowError(i, 'class_name', `الصف "${className}" غير موجود`); hasFatal = true; }
         const sectionKey = classId && sectionName ? `${classId}:${sectionName}` : null;
@@ -8362,7 +8643,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
           }
         }
 
-        record.data = { subject_name: subjectName, class_id: classId, class_name: className, section_id: sectionId, section_name: sectionName, subject_type: subjectType, counts_in_average: countsInAverage, appears_in_report_card: appearsInReportCard, passing_grade: passingGrade, exemption_grade: exemptionGrade, order_index: orderIndex, status };
+        record.data = { subject_name: subjectName, class_id: classId, class_name: className, section_id: sectionId, section_name: sectionName, subject_type: subjectType, religious_track: religiousTrackValidation.value, counts_in_average: countsInAverage, appears_in_report_card: appearsInReportCard, passing_grade: passingGrade, exemption_grade: exemptionGrade, order_index: orderIndex, status, imported_fields: [...importedFields] };
       } else if (type === 'employees') {
         const fullName = normalizeText(mapped.full_name || mapped['الاسم'] || mapped['اسم الموظف'] || mapped['name']);
         const gender = isValidGender(mapped.gender || mapped['الجنس']);
@@ -8442,6 +8723,22 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         }
         if (!subject && !hasFatal) { rowError(i, 'subject', 'المادة غير موجودة'); hasFatal = true; }
         else if (subject && subject._ambiguous) { rowError(i, 'subject', 'يوجد أكثر من مادة مطابقة، يرجى اختيار المادة يدوياً'); hasFatal = true; subject = null; }
+
+        if (student && subject && subject.religious_track != null && isActive && !hasFatal) {
+          const plannedSubjectId = plannedReligiousStudentSubjects.get(Number(student.id));
+          if (plannedSubjectId != null && plannedSubjectId !== Number(subject.id)) {
+            rowError(i, 'subject', 'يحاول الملف تعيين أكثر من مادة ديانة فعالة للطالب نفسه');
+            hasFatal = true;
+          }
+          const conflict = await findActiveReligiousAssignment(db, school_id, Number(student.id), {
+            excludeSubjectId: Number(subject.id),
+          });
+          if (conflict) {
+            rowError(i, 'subject', RELIGIOUS_SUBJECT_CONFLICT_ERROR);
+            hasFatal = true;
+          }
+          if (!hasFatal) plannedReligiousStudentSubjects.set(Number(student.id), Number(subject.id));
+        }
 
         // Check for existing assignment
         let existingAssignment = null;
@@ -8593,6 +8890,29 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
 
     const fileName = file_name || 'import.xlsx';
 
+    if (type === 'student-subjects') {
+      const plannedReligiousSubjects = new Map<number, number>();
+      for (const row of rows) {
+        const studentId = Number(row?.student_id);
+        const subjectId = Number(row?.subject_id);
+        if (!Number.isInteger(studentId) || !Number.isInteger(subjectId) || row?.is_active === false) continue;
+        const subject = await db.prepare(`
+          SELECT school_id, religious_track FROM subjects WHERE id = ?
+        `).bind(subjectId).first<{ school_id: number; religious_track: ReligiousTrack | null }>();
+        if (!subject || subject.religious_track == null) continue;
+        if (subject.school_id !== school_id) return c.json({ error: 'غير مسموح: المادة تنتمي إلى مدرسة أخرى' }, 403);
+        const assignmentValidation = await validateStudentSubjectAssignment(db, school_id, studentId, subjectId);
+        if (!assignmentValidation.ok) return c.json({ error: assignmentValidation.error }, assignmentValidation.status);
+        const plannedSubjectId = plannedReligiousSubjects.get(studentId);
+        if (plannedSubjectId != null && plannedSubjectId !== subjectId) {
+          return c.json({ error: 'تعذر التأكيد: يحتوي الملف أكثر من مادة ديانة فعالة للطالب نفسه' }, 409);
+        }
+        const conflict = await findActiveReligiousAssignment(db, school_id, studentId, { excludeSubjectId: subjectId });
+        if (conflict) return c.json({ error: RELIGIOUS_SUBJECT_CONFLICT_ERROR, meta: { student_id: studentId } }, 409);
+        plannedReligiousSubjects.set(studentId, subjectId);
+      }
+    }
+
     // Insert import job record
     const jobResult = await db.prepare(`
       INSERT INTO import_jobs (school_id, import_type, file_name, mode, status, total_rows, created_by_user_id, created_at)
@@ -8602,13 +8922,13 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
 
     const existingClasses = await db.prepare(`SELECT id, name FROM classes WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
     const existingSections = await db.prepare(`SELECT id, name, class_id FROM sections WHERE school_id = ? AND status = 'active'`).bind(school_id).all<any>();
-    const existingStudents = type === 'students'
+    const existingStudents = type === 'students' || type === 'student-subjects'
       ? {
           results: (await listStudentsWithEffectivePlacement(db, { schoolId: school_id }))
             .filter(student => student.status !== 'archived'),
         }
       : await db.prepare(`SELECT id, student_number, full_name, father_name, mother_name, gender, birth_date, phone, guardian_name, guardian_phone, address, class_id, section_id, status, notes FROM students WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
-    const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
+    const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id, s.religious_track FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
     const existingEmployees = await db.prepare(`SELECT id, full_name, email, phone FROM employees WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
 
     const classMap = new Map((existingClasses.results || []).map((c: any) => [c.name, c.id]));
@@ -8807,14 +9127,29 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           if (!placement.ok) {
             rowError(i, 'class_section', placement.error); continue;
           }
-          const existingSubj = await db.prepare(`SELECT id FROM subjects WHERE school_id = ? AND class_id = ? AND (section_id IS ?) AND name = ? AND status != 'archived'`).bind(school_id, classId, sectionId || null, subjectName).first<any>();
+          const importedFields = new Set<string>(Array.isArray(d.imported_fields) ? d.imported_fields : Object.keys(d));
+          const religiousTrackValidation = importedFields.has('religious_track')
+            ? validateReligiousTrack(d.religious_track)
+            : { ok: true as const, value: null };
+          if (!religiousTrackValidation.ok) { rowError(i, 'religious_track', 'نوع مادة الديانة غير صالح'); continue; }
+          const existingSubj = await db.prepare(`SELECT id, religious_track FROM subjects WHERE school_id = ? AND class_id = ? AND (section_id IS ?) AND name = ? AND status != 'archived'`).bind(school_id, classId, sectionId || null, subjectName).first<any>();
           if (existingSubj) {
             if (mode === 'skip_existing') { skipped++; continue; }
             if (mode === 'error_on_existing') { rowError(i, 'subject_name', 'المادة موجودة مسبقاً'); continue; }
+            const nextReligiousTrack = importedFields.has('religious_track')
+              ? religiousTrackValidation.value
+              : existingSubj.religious_track;
+            if (nextReligiousTrack != null && nextReligiousTrack !== existingSubj.religious_track) {
+              const conflicts = await countSubjectReligiousConversionConflicts(db, school_id, existingSubj.id);
+              if (conflicts > 0) {
+                rowError(i, 'religious_track', `يتعارض نوع مادة الديانة مع تعيينات ${conflicts} طالب/طلاب`);
+                continue;
+              }
+            }
             await db.prepare(`
-              UPDATE subjects SET subject_type = ?, counts_in_average = ?, appears_in_report_card = ?, passing_grade = ?, exemption_grade = ?, order_index = ?, status = ?, updated_at = unixepoch()
+              UPDATE subjects SET subject_type = ?, religious_track = ?, counts_in_average = ?, appears_in_report_card = ?, passing_grade = ?, exemption_grade = ?, order_index = ?, status = ?, updated_at = unixepoch()
               WHERE id = ? AND school_id = ?
-            `).bind(d.subject_type || 'core', d.counts_in_average ?? 1, d.appears_in_report_card ?? 1, d.passing_grade || null, d.exemption_grade || null, d.order_index || 0, d.status || 'active', existingSubj.id, school_id).run();
+            `).bind(d.subject_type || 'core', nextReligiousTrack, d.counts_in_average ?? 1, d.appears_in_report_card ?? 1, d.passing_grade || null, d.exemption_grade || null, d.order_index || 0, d.status || 'active', existingSubj.id, school_id).run();
             updated++;
           } else {
             const subjType = isValidSubjectType(d.subject_type) || 'core';
@@ -8825,9 +9160,9 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             const orderIdx = normalizeNumber(d.order_index) ?? 0;
             const subjStatus = isValidStatus(d.status) || 'active';
             await db.prepare(`
-              INSERT INTO subjects (school_id, class_id, section_id, name, subject_type, counts_in_average, appears_in_report_card, passing_grade, exemption_grade, order_index, status, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-            `).bind(school_id, classId, sectionId || null, subjectName, subjType, countsAvg, appearsRC, passGrade, exemptGrade, orderIdx, subjStatus).run();
+              INSERT INTO subjects (school_id, class_id, section_id, name, subject_type, religious_track, counts_in_average, appears_in_report_card, passing_grade, exemption_grade, order_index, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+            `).bind(school_id, classId, sectionId || null, subjectName, subjType, religiousTrackValidation.value, countsAvg, appearsRC, passGrade, exemptGrade, orderIdx, subjStatus).run();
             imported++;
           }
         } else if (type === 'employees') {
@@ -8876,6 +9211,14 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           );
           if (!assignmentValidation.ok) {
             rowError(i, 'assignment', assignmentValidation.error); continue;
+          }
+
+          const subject = await db.prepare(`SELECT religious_track FROM subjects WHERE id = ? AND school_id = ?`)
+            .bind(subjectId, school_id)
+            .first<{ religious_track: ReligiousTrack | null }>();
+          if (d.is_active !== false && subject?.religious_track != null) {
+            const conflict = await findActiveReligiousAssignment(db, school_id, Number(studentId), { excludeSubjectId: Number(subjectId) });
+            if (conflict) { rowError(i, 'assignment', RELIGIOUS_SUBJECT_CONFLICT_ERROR); continue; }
           }
 
           const existingAssignment = await db.prepare(`SELECT id, is_active FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, studentId, subjectId).first<any>();
@@ -8974,7 +9317,7 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
       rows = res.results || [];
     } else if (type === 'subjects') {
       const res = await db.prepare(`
-        SELECT s.name as subject_name, c.name as class_name, sec.name as section_name, s.subject_type, s.counts_in_average, s.appears_in_report_card, s.passing_grade, s.exemption_grade, s.order_index, s.status
+        SELECT s.name as subject_name, c.name as class_name, sec.name as section_name, s.subject_type, s.religious_track, s.counts_in_average, s.appears_in_report_card, s.passing_grade, s.exemption_grade, s.order_index, s.status
         FROM subjects s
         JOIN classes c ON s.class_id = c.id
         LEFT JOIN sections sec ON s.section_id = sec.id

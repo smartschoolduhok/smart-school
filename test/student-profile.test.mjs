@@ -105,7 +105,7 @@ test('student religion uses the approved Arabic profile presentation and safe em
   assert.equal(studentReligionLabel(null), null);
   assert.equal(studentReligionLabel('unknown'), null);
   assert.equal(safeStudentProfileValue(studentReligionLabel(null)), EMPTY_STUDENT_PROFILE_VALUE);
-  assert.match(profileSource, /label="الديانة" value=\{safeStudentProfileValue\(studentReligionLabel\(student\.religion\)\)\}/);
+  assert.match(profileSource, /label="الديانة الشخصية" value=\{safeStudentProfileValue\(studentReligionLabel\(student\.religion\)\)\}/);
 });
 
 test('Student create and edit forms expose only the approved optional religion values', () => {

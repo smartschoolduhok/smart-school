@@ -31,6 +31,10 @@ import {
   STUDENT_RELIGION_HEADER_ALIASES,
   studentReligionLabel,
 } from '../../lib/studentReligion';
+import {
+  RELIGIOUS_TRACK_HEADER_ALIASES,
+  religiousTrackLabel,
+} from '../../lib/religiousSubjects';
 import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, XCircle, FileText, History, ChevronRight, ArrowLeft, ArrowRight, Loader2, BookOpen, Layers, GraduationCap, Users } from 'lucide-react';
 
 // ===========================================
@@ -153,6 +157,7 @@ const SYSTEM_FIELDS: Record<ImportType, { key: string; label: string; required?:
     { key: 'class_name', label: 'الصف', required: true },
     { key: 'section_name', label: 'الشعبة' },
     { key: 'subject_type', label: 'نوع المادة' },
+    { key: 'religious_track', label: 'نوع مادة الديانة' },
     { key: 'counts_in_average', label: 'تحسب في المعدل' },
     { key: 'appears_in_report_card', label: 'تظهر في كشف العلامات' },
     { key: 'passing_grade', label: 'درجة النجاح' },
@@ -223,6 +228,7 @@ const AUTO_MAP_RULES: Record<string, string[]> = {
   capacity: ['السعة', 'capacity', 'max', 'limit'],
   subject_name: ['المادة', 'اسم المادة', 'subject', 'subject_name', 'name'],
   subject_type: ['نوع المادة', 'subject_type', 'type'],
+  religious_track: [...RELIGIOUS_TRACK_HEADER_ALIASES],
   counts_in_average: ['تحسب في المعدل', 'counts_in_average', 'counts'],
   appears_in_report_card: ['تظهر في كشف العلامات', 'appears_in_report_card', 'appears'],
   passing_grade: ['درجة النجاح', 'passing_grade', 'passing', 'pass'],
@@ -918,7 +924,9 @@ export default function ImportExportPage() {
         const dataRows = res.data.rows.map((r: any) => keys.map(k => (
           type === 'students' && k === 'religion'
             ? (studentReligionLabel(r[k]) || '')
-            : (r[k] ?? '')
+            : type === 'subjects' && k === 'religious_track'
+              ? (r[k] == null ? '' : religiousTrackLabel(r[k]))
+              : (r[k] ?? '')
         )));
         const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
         const wb = XLSX.utils.book_new();
