@@ -3903,7 +3903,7 @@ app.get('/api/analytics/exemption-blockers', requireAuthEnforced(), async (c) =>
       GROUP BY su.id, su.name
       HAVING blocker_count > 0
       ORDER BY blocker_count DESC, su.order_index, su.id
-    `).bind(...params, genMin).all<any>();
+    `).bind(genMin, ...params).all<any>();
 
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
@@ -4298,6 +4298,17 @@ async function buildResultCardSnapshot(
   options: ResultCardIssueOptions,
   identity: { cardNumber: string | null; token: string | null },
 ): Promise<ResultCardSnapshotBuild> {
+  // With an active academic year, effective placement intentionally resolves to
+  // null when the student has no enrollment. Never issue an official card from
+  // legacy placement (or from an empty placement) in that state.
+  if (student.class_id == null) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'invalid_student_placement',
+      error: 'لا يوجد تسجيل دراسي فعال للطالب في السنة الدراسية الحالية',
+    };
+  }
   const placement = await validateStudentPlacement(
     db,
     student.school_id,

@@ -781,6 +781,12 @@ test('generation still requires an active academic year and at least one applica
     ok: false,
     code: 'no_active_subjects',
   });
+  assert.deepEqual(evaluateResultCard([
+    subject(1, 'Hidden counted', 1, 0),
+  ], [monthlyGrade(1)], monthlySettings, academicYear), {
+    ok: false,
+    code: 'no_active_subjects',
+  });
 });
 
 test('display options deterministically hide and show card columns', () => {
@@ -1308,6 +1314,14 @@ test('new Result Cards use effective enrollment placement without changing issue
   assert.doesNotMatch(studentLoader, /FROM students/);
   assert.match(studentLoader, /student\.class_id/);
   assert.match(studentLoader, /student\.section_id/);
+
+  const snapshotBuilder = worker.slice(
+    worker.indexOf('async function buildResultCardSnapshot'),
+    worker.indexOf('async function createResultCardForStudent'),
+  );
+  assert.match(snapshotBuilder, /if \(student\.class_id == null\)/);
+  assert.match(snapshotBuilder, /لا يوجد تسجيل دراسي فعال للطالب في السنة الدراسية الحالية/);
+  assert.match(snapshotBuilder, /code: 'invalid_student_placement'/);
 
   const sectionGenerator = worker.slice(
     worker.indexOf("'/api/result-cards/generate-section'"),

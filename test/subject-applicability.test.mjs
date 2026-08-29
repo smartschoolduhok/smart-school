@@ -47,17 +47,20 @@ function analyticsFixture() {
       (11, 1, 'العادية غير الفعالة assignment', NULL, 'active'),
       (12, 1, 'المادة المؤرشفة', NULL, 'archived'),
       (13, 1, 'المسيحية غير المسندة', 'christian', 'active'),
-      (14, 2, 'مادة مدرسة أخرى', NULL, 'active');
+      (14, 2, 'مادة مدرسة أخرى', NULL, 'active'),
+      (15, 1, 'درجة غير فعالة', NULL, 'active');
     INSERT INTO student_subjects VALUES
       (100, 1, 1, 10, 20, 30, 1),
       (101, 1, 1, 11, 20, 30, 0),
       (102, 1, 1, 12, 20, 30, 1),
-      (103, 2, 1, 14, 20, 30, 1);
+      (103, 2, 1, 14, 20, 30, 1),
+      (104, 1, 1, 15, 20, 30, 1);
     INSERT INTO grades VALUES
       (1000, 1, 100, 90, 1),
       (1001, 1, 101, 80, 1),
       (1002, 1, 102, 70, 1),
-      (1003, 2, 103, 60, 1);
+      (1003, 2, 103, 60, 1),
+      (1004, 1, 104, 95, 0);
   `);
   return database;
 }
@@ -83,6 +86,7 @@ test('analytics includes only active same-school assignments to active subjects'
   assert.ok(!rows.some((row) => row.subject_id === 12), 'inactive subject excluded');
   assert.ok(!rows.some((row) => row.subject_id === 13), 'unassigned religious subject excluded');
   assert.ok(!rows.some((row) => row.subject_id === 14), 'cross-school assignment/grade excluded');
+  assert.ok(!rows.some((row) => row.subject_id === 15), 'inactive grade excluded');
 });
 
 test('analytics attribution follows assignment placement and personal religion has no effect', () => {
@@ -120,6 +124,11 @@ test('worker keeps applicability in assignments for Result Cards, analytics and 
   assert.match(analytics, /ANALYTICS_APPLICABLE_GRADE_JOINS/);
   assert.match(analytics, /conditions\.push\('ss\.class_id = \?'\)/);
   assert.match(analytics, /conditions\.push\('ss\.section_id = \?'\)/);
+  const exemptionBlockers = analytics.slice(
+    analytics.indexOf('// GET /api/analytics/exemption-blockers'),
+    analytics.indexOf('// GET /api/analytics/student-summary'),
+  );
+  assert.match(exemptionBlockers, /\.bind\(genMin, \.\.\.params\)/);
   assert.doesNotMatch(analytics, /students\.religion|st\.religion|religious_track/);
 
   const initializer = worker.slice(

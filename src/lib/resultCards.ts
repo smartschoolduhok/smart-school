@@ -249,6 +249,12 @@ export function evaluateResultCard(
   const { displaySubjects, countedSubjects } = partitionResultCardSubjects(
     applicableSubjects,
   );
+  // Preserve the pre-applicability behavior: an official card requires at
+  // least one visible subject row. Hidden counted subjects may affect an
+  // otherwise visible card, but must never produce an empty "successful" card.
+  if (displaySubjects.length === 0) {
+    return { ok: false, code: 'no_active_subjects' };
+  }
   const countedSubjectIds = new Set(countedSubjects.map((subject) => subject.id));
   const orderedGrades = applicableSubjects.map(
     (subject) => gradesBySubject.get(subject.id) ?? blankGrade(subject),
