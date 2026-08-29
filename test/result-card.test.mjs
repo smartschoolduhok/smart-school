@@ -76,8 +76,8 @@ test('Result Card gender presentation normalizes known values and hides unsafe v
   assert.doesNotMatch(component, /label: 'الجنس', value: student\.gender/);
 });
 
-function subject(id, subject_name = `Subject ${id}`, counts_in_average = 1) {
-  return { id, subject_name, counts_in_average };
+function subject(id, subject_name = `Subject ${id}`, counts_in_average = 1, appears_in_report_card = 1) {
+  return { id, subject_name, counts_in_average, appears_in_report_card };
 }
 
 function monthlyGrade(subject_id, overrides = {}) {
@@ -131,7 +131,7 @@ function columnAveragesFor({
     columns,
     averages: calculateResultCardColumnAverages(
       subjects,
-      evaluation.grades,
+      evaluation.counted_grades,
       settings,
       columns,
       evaluation.summary.general_exemption_eligible,
@@ -430,6 +430,151 @@ test('average participation does not change canonical subject ordering', () => {
   assert.deepEqual(result.grades.map((grade) => grade.subject_id), [2, 1]);
 });
 
+test('explicit assignments alone determine religious Result Card applicability', () => {
+  const islamic = subject(10, 'التربية الإسلامية');
+  const christian = subject(11, 'التربية المسيحية');
+  const ordinary = subject(12, 'الرياضيات');
+  const cases = [
+    { religion: 'muslim', applicable: [ordinary, islamic], expected: [12, 10] },
+    { religion: 'christian', applicable: [ordinary, christian], expected: [12, 11] },
+    { religion: 'muslim', applicable: [ordinary], expected: [12] },
+    { religion: null, applicable: [ordinary, islamic], expected: [12, 10] },
+    { religion: 'muslim', applicable: [ordinary, christian], expected: [12, 11] },
+  ];
+
+  for (const scenario of cases) {
+    const result = evaluateResultCard(
+      scenario.applicable,
+      scenario.applicable.map((item) => monthlyGrade(item.id)),
+      monthlySettings,
+      academicYear,
+    );
+    assert.equal(result.ok, true, String(scenario.religion));
+    assert.deepEqual(result.grades.map((grade) => grade.subject_id), scenario.expected);
+    assert.equal(result.card_mode, 'complete');
+    assert.equal(result.incomplete_subjects.length, 0);
+  }
+});
+
+test('two class religious subjects do not make the unassigned track applicable or incomplete', () => {
+  const assignedIslamic = subject(20, 'الإسلامية');
+  const result = evaluateResultCard(
+    [subject(22, 'الرياضيات'), assignedIslamic],
+    [monthlyGrade(22), monthlyGrade(20)],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.grades.map((grade) => grade.subject_id), [22, 20]);
+  assert.ok(!result.grades.some((grade) => grade.subject_name === 'المسيحية'));
+  assert.equal(result.card_mode, 'complete');
+});
+
+test('display and counted flags are independent for rows, status and aggregates', () => {
+  const result = evaluateResultCard(
+    [
+      subject(1, 'Visible counted', 1, 1),
+      subject(2, 'Visible not counted', 0, 1),
+      subject(3, 'Hidden counted', 1, 0),
+      subject(4, 'Hidden not counted', 0, 0),
+    ],
+    [
+      monthlyGrade(1, { annual_effort: 90, effective_grade: 90 }),
+      monthlyGrade(2, { annual_effort: 10, effective_grade: 10, result_status: 'مكمل' }),
+      monthlyGrade(3, { annual_effort: 70, effective_grade: 70, result_status: 'راسب' }),
+      monthlyGrade(4, { annual_effort: 1, effective_grade: 1, result_status: 'راسب' }),
+    ],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.grades.map((grade) => grade.subject_id), [1, 2]);
+  assert.deepEqual(result.counted_grades.map((grade) => grade.subject_id), [1, 3]);
+  assert.equal(result.summary.total_subjects, 2);
+  assert.equal(result.summary.completion_count, 1);
+  assert.equal(result.summary.fail_count, 0);
+  assert.equal(result.summary.overall_result_status, 'مكمل');
+  assert.equal(result.summary.annual_effort_average, 80);
+  assert.equal(result.summary.min_annual_effort, 70);
+  assert.equal(result.summary.overall_average, 80);
+});
+
+test('missing hidden counted subject nulls aggregates without making the card partial', () => {
+  const result = evaluateResultCard(
+    [subject(1), subject(2, 'Hidden counted', 1, 0)],
+    [monthlyGrade(1)],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.grades.map((grade) => grade.subject_id), [1]);
+  assert.equal(result.card_mode, 'complete');
+  assert.equal(result.incomplete_subjects.length, 0);
+  assert.equal(result.summary.annual_effort_average, null);
+  assert.equal(result.summary.overall_average, null);
+  assert.equal(result.summary.general_exemption_eligible, null);
+});
+
+test('missing visible subject still makes the card partial even when it is non-counted', () => {
+  const result = evaluateResultCard(
+    [subject(1), subject(2, 'Visible missing activity', 0, 1)],
+    [monthlyGrade(1)],
+    monthlySettings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.card_mode, 'partial');
+  assert.equal(result.incomplete_subjects[0].subject_id, 2);
+  assert.equal(result.summary.overall_average, 85);
+});
+
+test('hidden counted subject participates in general exemption while hidden non-counted does not', () => {
+  const settings = {
+    ...monthlySettings,
+    general_exemption_average_grade: 85,
+    general_exemption_min_subject_grade: 75,
+  };
+  const blocked = evaluateResultCard(
+    [subject(1), subject(2, 'Hidden counted', 1, 0), subject(3, 'Hidden ignored', 0, 0)],
+    [
+      monthlyGrade(1, { annual_effort: 95 }),
+      monthlyGrade(2, { annual_effort: 70 }),
+      monthlyGrade(3, { annual_effort: 1 }),
+    ],
+    settings,
+    academicYear,
+  );
+  assert.equal(blocked.ok, true);
+  assert.equal(blocked.summary.annual_effort_average, 83);
+  assert.equal(blocked.summary.min_annual_effort, 70);
+  assert.equal(blocked.summary.general_exemption_eligible, false);
+});
+
+test('column averages include hidden counted values, reject missing counted values and exclude visible non-counted', () => {
+  const subjects = [
+    subject(1, 'Visible counted', 1, 1),
+    subject(2, 'Hidden counted', 1, 0),
+    subject(3, 'Visible ignored', 0, 1),
+  ];
+  const grades = [
+    directGrade(1, { first_term_grade: 80 }),
+    directGrade(2, { first_term_grade: 100 }),
+    directGrade(3, { first_term_grade: 10 }),
+  ];
+  const complete = columnAveragesFor({ subjects, grades, settings: directSettings });
+  assert.equal(complete.averages.first_term_grade, 90);
+  assert.deepEqual(complete.evaluation.grades.map((grade) => grade.subject_id), [1, 3]);
+
+  const missing = columnAveragesFor({
+    subjects,
+    grades: grades.map((grade) => grade.subject_id === 2
+      ? { ...grade, first_term_grade: null }
+      : grade),
+    settings: directSettings,
+  });
+  assert.equal(missing.averages.first_term_grade, null);
+});
+
 test('non-average subjects are excluded from every direct-term card column average', () => {
   const counted = directGrade(1, {
     first_term_grade: 80,
@@ -619,7 +764,7 @@ test('calculating column averages does not mutate Result Card evaluation or calc
   const before = structuredClone(evaluation);
   calculateResultCardColumnAverages(
     subjects,
-    evaluation.grades,
+    evaluation.counted_grades,
     monthlySettings,
     buildResultCardColumns(monthlySettings, DEFAULT_RESULT_CARD_DISPLAY_SETTINGS),
     evaluation.summary.general_exemption_eligible,
@@ -627,7 +772,7 @@ test('calculating column averages does not mutate Result Card evaluation or calc
   assert.deepEqual(evaluation, before);
 });
 
-test('generation still requires an active academic year and at least one visible subject', () => {
+test('generation still requires an active academic year and at least one applicable subject', () => {
   assert.deepEqual(evaluateResultCard([subject(1)], [monthlyGrade(1)], monthlySettings, null), {
     ok: false,
     code: 'no_active_academic_year',
@@ -1134,20 +1279,49 @@ test('snapshot builder freezes order, branding, note, display settings and verif
   const start = worker.indexOf('async function buildResultCardSnapshot');
   const end = worker.indexOf('async function createResultCardForStudent', start);
   const builder = worker.slice(start, end);
-  assert.match(builder, /schema_version: 3/);
+  assert.match(builder, /schema_version: 4/);
   assert.match(builder, /const visibleColumns = buildResultCardColumns\(settings, displaySettings\)/);
   assert.match(builder, /const columnAverages = calculateResultCardColumnAverages\(/);
   assert.match(builder, /visible_columns: visibleColumns/);
   assert.match(builder, /column_averages: columnAverages/);
   assert.match(builder, /subjects: evaluation\.grades/);
+  assert.match(builder, /display_subject_ids: evaluation\.grades\.map/);
+  assert.match(builder, /counted_subject_ids: evaluation\.counted_grades\.map/);
   assert.match(builder, /decision_note: options\.decisionNote/);
   assert.match(builder, /phone: student\.school_phone/);
   assert.match(builder, /result_card_display_settings: displaySettings/);
   assert.match(builder, /verification: identity\.token/);
   assert.match(builder, /card_number: identity\.cardNumber/);
-  assert.match(worker, /SELECT su\.id, su\.name AS subject_name, su\.counts_in_average/);
+  assert.match(worker, /SELECT su\.id, su\.name AS subject_name, su\.appears_in_report_card,/);
+  assert.doesNotMatch(worker.slice(worker.indexOf('async function loadResultCardEvaluation'), worker.indexOf('function resultCardEvaluationFailure')), /su\.appears_in_report_card = 1/);
   assert.match(worker, /g\.first_term_average/);
   assert.match(worker, /g\.second_term_average/);
+});
+
+test('new Result Cards use effective enrollment placement without changing issued snapshots', async () => {
+  const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
+  const studentLoader = worker.slice(
+    worker.indexOf('async function loadResultCardStudent'),
+    worker.indexOf('async function loadResultCardEvaluation'),
+  );
+  assert.match(studentLoader, /getStudentWithEffectivePlacement\(db, studentId\)/);
+  assert.doesNotMatch(studentLoader, /FROM students/);
+  assert.match(studentLoader, /student\.class_id/);
+  assert.match(studentLoader, /student\.section_id/);
+
+  const sectionGenerator = worker.slice(
+    worker.indexOf("'/api/result-cards/generate-section'"),
+    worker.indexOf('// PUT /api/result-cards/:id/mark-printed', worker.indexOf("'/api/result-cards/generate-section'")),
+  );
+  assert.match(sectionGenerator, /listStudentsWithEffectivePlacement\(db, \{/);
+  assert.doesNotMatch(sectionGenerator, /FROM students[\s\S]*class_id = \?[\s\S]*section_id = \?/);
+
+  const issuedReader = worker.slice(
+    worker.indexOf("'/api/result-cards/:id'"),
+    worker.indexOf("'/api/result-cards/preview-student/:student_id'"),
+  );
+  assert.match(issuedReader, /JSON\.parse\(row\.card_data_json\)/);
+  assert.doesNotMatch(issuedReader, /loadResultCardEvaluation|buildResultCardSnapshot/);
 });
 
 test('issued snapshots are immutable and saved with partial or complete metadata', async () => {

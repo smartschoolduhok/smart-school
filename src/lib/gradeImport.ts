@@ -4,6 +4,7 @@ import { isExcelErrorValue, normalizeHeader, normalizeSectionName, normalizeSubj
 import { CALCULATED_GRADE_FIELDS, RAW_GRADE_FIELDS, type RawGradeField } from './excel/types.ts';
 import { isCalculatedGradeHeader } from './excel/gradeSemantics.ts';
 import { normalizeStudentIdentity } from './studentImport.ts';
+import type { ReligiousTrack } from './religiousSubjects.ts';
 
 export type GradeImportMode = 'update_existing' | 'skip_existing' | 'error_on_existing';
 export type GradeAssignmentMode = 'strict_existing_assignments' | 'auto_assign_missing_subjects';
@@ -73,6 +74,7 @@ export interface GradeImportSubject {
   class_id: number | null;
   section_id: number | null;
   status?: string;
+  religious_track: ReligiousTrack | null;
 }
 
 export interface GradeImportAssignment {
@@ -539,6 +541,7 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
   const matchedStudentIds = new Set<number>();
   const seenRecords = new Map<string, PlannedGradeImportRecord>();
   const notApplicableByIdentity = new Map<string, PlannedNotApplicableGradeRecord>();
+  const plannedReligiousSubjectByStudent = new Map<number, number>();
   const gradeByAssignment = new Map(context.grades.filter(grade => grade.school_id === context.schoolId).map(grade => [grade.student_subject_id, grade]));
   const enabledGradeFields = new Set(enabledRawGradeFields(context.settings));
   const assignmentsByIdentity = new Map<string, GradeImportAssignment[]>();
@@ -802,6 +805,39 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
         assignmentAction = assignment ? 'reactivate' : 'create';
       }
 
+      if (subject.religious_track != null && assignmentAction !== 'none') {
+        const hasCompetingActiveReligiousAssignment = context.assignments.some((candidate) => {
+          if (
+            candidate.school_id !== context.schoolId ||
+            candidate.student_id !== student.id ||
+            candidate.is_active !== 1 ||
+            candidate.subject_id === subject.id
+          ) {
+            return false;
+          }
+          return context.subjects.some(
+            (candidateSubject) =>
+              candidateSubject.id === candidate.subject_id &&
+              candidateSubject.religious_track != null,
+          );
+        });
+        if (hasCompetingActiveReligiousAssignment) {
+          errors.push(issue(sheet, rowNumber, 'religious_assignment', 'لدى الطالب مادة ديانة فعالة أخرى؛ لا يمكن لاستيراد الدرجات استبدالها تلقائيًا'));
+          summary.error_rows += 1;
+          return;
+        }
+
+        const plannedReligiousSubjectId = plannedReligiousSubjectByStudent.get(student.id);
+        if (
+          plannedReligiousSubjectId != null &&
+          plannedReligiousSubjectId !== subject.id
+        ) {
+          errors.push(issue(sheet, rowNumber, 'religious_assignment', 'يحتوي الاستيراد على أكثر من مادة ديانة للطالب نفسه؛ لا يمكن اعتماد الخطة قبل مراجعتها'));
+          summary.error_rows += 1;
+          return;
+        }
+      }
+
       const existingValues: Partial<Record<RawGradeField | 'notes', number | string | null>> = {};
       const values = {} as RawGradeValues & { notes: string | null };
       for (const field of RAW_GRADE_FIELDS) {
@@ -865,6 +901,9 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
         return;
       }
       seenRecords.set(duplicateKey, planned);
+      if (subject.religious_track != null && assignmentAction !== 'none') {
+        plannedReligiousSubjectByStudent.set(student.id, subject.id);
+      }
       records.push(planned);
       summary.valid_rows += 1;
       if (planned.action === 'create') summary.new_rows += 1;
