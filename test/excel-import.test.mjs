@@ -20,6 +20,11 @@ import {
   studentDuplicateAction,
   validateStudentImportPlacement,
 } from '../src/lib/studentImport.ts';
+import {
+  STUDENT_RELIGION_HEADER_ALIASES,
+  normalizeExcelStudentReligion,
+  studentReligionLabel,
+} from '../src/lib/studentReligion.ts';
 
 const arabicHeaders = ['رقم الطالب', 'اسم الطالب', 'الصف', 'الشعبة'];
 
@@ -332,6 +337,44 @@ test('duplicate modes remain explicit and safe', () => {
   assert.equal(studentDuplicateAction('update_existing', true), 'update');
   assert.equal(studentDuplicateAction('error_on_existing', true), 'error');
   assert.equal(studentDuplicateAction('update_existing', false), 'insert');
+});
+
+test('student religion headers use conservative Arabic and English aliases', async () => {
+  assert.deepEqual([...STUDENT_RELIGION_HEADER_ALIASES], ['الديانة', 'الدين', 'religion', 'faith']);
+  const source = await readFile(new URL('../src/modules/importExport/ImportExportPage.tsx', import.meta.url), 'utf8');
+  assert.match(source, /\{ key: 'religion', label: 'الديانة' \}/);
+  assert.match(source, /religion: \[\.\.\.STUDENT_RELIGION_HEADER_ALIASES\]/);
+});
+
+test('student religion Excel values normalize deterministically and round-trip in Arabic', () => {
+  assert.deepEqual(normalizeExcelStudentReligion('مسلم'), { ok: true, value: 'muslim' });
+  assert.deepEqual(normalizeExcelStudentReligion('Muslim'), { ok: true, value: 'muslim' });
+  assert.deepEqual(normalizeExcelStudentReligion('مسيحي'), { ok: true, value: 'christian' });
+  assert.deepEqual(normalizeExcelStudentReligion('CHRISTIAN'), { ok: true, value: 'christian' });
+  assert.deepEqual(normalizeExcelStudentReligion('أخرى'), { ok: true, value: 'other' });
+  assert.deepEqual(normalizeExcelStudentReligion('اخرى'), { ok: true, value: 'other' });
+  assert.deepEqual(normalizeExcelStudentReligion('other'), { ok: true, value: 'other' });
+  assert.deepEqual(normalizeExcelStudentReligion('  '), { ok: true, value: null });
+  assert.equal(studentReligionLabel('muslim'), 'مسلم');
+  assert.equal(studentReligionLabel('christian'), 'مسيحي');
+  assert.equal(studentReligionLabel('other'), 'أخرى');
+});
+
+test('unknown student religion is fatal in preview and confirm revalidates before writes', async () => {
+  assert.deepEqual(normalizeExcelStudentReligion('غير معروف'), { ok: false, value: null });
+  const source = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
+  const preview = source.slice(source.indexOf("app.post('/api/import-export/:type/preview'"), source.indexOf("app.post('/api/import-export/:type/confirm'"));
+  const confirm = source.slice(source.indexOf("app.post('/api/import-export/:type/confirm'"), source.indexOf("app.get('/api/import-export/:type/export'"));
+  assert.match(preview, /normalizeExcelStudentReligion/);
+  assert.match(preview, /rowError\(i, 'religion', 'قيمة الديانة غير صالحة'\); hasFatal = true/);
+  assert.match(confirm, /validateStudentReligion\(d\.religion\)/);
+  assert.ok(confirm.indexOf('validateStudentReligion(d.religion)') < confirm.indexOf('persistStudentImportWithEnrollmentBridge'));
+});
+
+test('update_existing preserves stored religion when the Excel field is not mapped', async () => {
+  const source = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
+  const confirm = source.slice(source.indexOf("app.post('/api/import-export/:type/confirm'"), source.indexOf("app.get('/api/import-export/:type/export'"));
+  assert.match(confirm, /religion: existing && !importedFields\.has\('religion'\) \? existing\.religion : religionValidation\.value/);
 });
 
 test('placement validation rejects cross-school class and section records', () => {

@@ -128,6 +128,11 @@ import {
   type StudentWriteValues,
 } from './lib/studentEnrollments'
 import { executeStudentPromotion } from './lib/studentPromotion'
+import {
+  STUDENT_RELIGION_HEADER_ALIASES,
+  normalizeExcelStudentReligion,
+  validateStudentReligion,
+} from './lib/studentReligion'
 
 // ===========================================
 // Types & Extended Bindings
@@ -1665,7 +1670,7 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
     const body = await c.req.json()
     let {
       school_id, student_number, full_name, father_name, mother_name,
-      gender, birth_date, phone, guardian_name, guardian_phone,
+      gender, religion, birth_date, phone, guardian_name, guardian_phone,
       address, class_id, section_id, photo_url, notes
     } = body
 
@@ -1675,6 +1680,10 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
 
     if (!school_id || !student_number || !full_name || !gender) {
       return c.json({ error: 'المدرسة ورقم الطالب والاسم والجنس مطلوبة' }, 400)
+    }
+    const religionValidation = validateStudentReligion(religion)
+    if (!religionValidation.ok) {
+      return c.json({ error: 'قيمة الديانة غير صالحة' }, 400)
     }
 
     class_id = class_id == null || class_id === '' ? null : Number(class_id)
@@ -1692,6 +1701,7 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       father_name: father_name || null,
       mother_name: mother_name || null,
       gender,
+      religion: religionValidation.value,
       birth_date: birth_date || null,
       phone: phone || null,
       guardian_name: guardian_name || null,
@@ -1724,7 +1734,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
 
     const existing = await db.prepare(`SELECT * FROM students WHERE id = ?`).bind(id).first<{
       school_id: number; student_number: string; full_name: string; father_name: string | null; mother_name: string | null;
-      gender: string; birth_date: string | null; phone: string | null; guardian_name: string | null; guardian_phone: string | null;
+      gender: string; religion: StudentWriteValues['religion']; birth_date: string | null; phone: string | null; guardian_name: string | null; guardian_phone: string | null;
       address: string | null; class_id: number | null; section_id: number | null; photo_url: string | null; notes: string | null; status: string;
     }>()
     if (!existing) return c.json({ error: 'الطالب غير موجود' }, 404)
@@ -1737,6 +1747,12 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     const father_name = body.father_name !== undefined ? body.father_name : existing.father_name
     const mother_name = body.mother_name !== undefined ? body.mother_name : existing.mother_name
     const gender = body.gender ?? existing.gender
+    let religion = existing.religion
+    if (Object.prototype.hasOwnProperty.call(body, 'religion')) {
+      const religionValidation = validateStudentReligion(body.religion)
+      if (!religionValidation.ok) return c.json({ error: 'قيمة الديانة غير صالحة' }, 400)
+      religion = religionValidation.value
+    }
     const birth_date = body.birth_date !== undefined ? body.birth_date : existing.birth_date
     const phone = body.phone !== undefined ? body.phone : existing.phone
     const guardian_name = body.guardian_name !== undefined ? body.guardian_name : existing.guardian_name
@@ -1801,6 +1817,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       father_name,
       mother_name,
       gender,
+      religion,
       birth_date,
       phone,
       guardian_name,
@@ -1817,7 +1834,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     } else {
       await updateStudentIdentityOnly(db, Number(id), studentValues)
     }
-    return c.json({ data: { id, student_number, full_name, status } })
+    return c.json({ data: { id, student_number, full_name, religion, status } })
   } catch (err: any) {
     if (err instanceof FinalizedEnrollmentPlacementError) {
       return c.json({ error: FINALIZED_ENROLLMENT_PLACEMENT_ERROR }, 409)
@@ -8186,12 +8203,23 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
       let hasFatal = false;
 
       if (type === 'students') {
+        const importedFields = new Set<string>(
+          mapping && typeof mapping === 'object'
+            ? Object.keys(mapping).filter(field => mapping[field])
+            : Object.keys(mapped),
+        );
+        if (!mapping && STUDENT_RELIGION_HEADER_ALIASES.some(alias => (
+          Object.prototype.hasOwnProperty.call(mapped, alias)
+        ))) importedFields.add('religion');
         const studentNumber = normalizeText(mapped.student_number || mapped['رقم الطالب'] || mapped['الرقم'] || mapped['القيد'] || mapped['student no'] || mapped['student id']);
         const fullName = normalizeText(mapped.full_name || mapped['اسم الطالب'] || mapped['اسم الطالبة'] || mapped['الاسم'] || mapped['student name'] || mapped['name']);
         const fatherName = normalizeText(mapped.father_name || mapped['اسم الأب'] || mapped['father']);
         const motherName = normalizeText(mapped.mother_name || mapped['اسم الأم'] || mapped['mother']);
         const rawGender = normalizeText(mapped.gender || mapped['الجنس'] || mapped['النوع']);
         const gender = rawGender ? isValidGender(rawGender) : 'unknown';
+        const religionValidation = importedFields.has('religion')
+          ? normalizeExcelStudentReligion(mapped.religion ?? mapped['الديانة'] ?? mapped['الدين'] ?? mapped['faith'])
+          : { ok: true as const, value: null };
         const birthDate = normalizeDate(mapped.birth_date || mapped['تاريخ الميلاد'] || mapped['birthdate']);
         const phone = normalizeText(mapped.phone || mapped['الهاتف'] || mapped['رقم الهاتف'] || mapped['mobile']);
         const guardianName = normalizeText(mapped.guardian_name || mapped['ولي الأمر'] || mapped['guardian']);
@@ -8201,7 +8229,6 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         const excelSectionName = normalizeText(mapped.section_name || mapped['الشعبة'] || mapped['القسم'] || mapped['section'] || mapped['group']);
         const notes = normalizeText(mapped.notes || mapped['ملاحظات'] || mapped['notes']);
         const status = isValidStatus(mapped.status || mapped['الحالة'] || mapped['status']) || 'active';
-        const importedFields = new Set<string>(Object.keys(mapping || {}).filter(field => mapping[field]));
         if (classAssignmentMode === 'override') importedFields.add('class_name');
         if (sectionAssignmentMode === 'override') importedFields.add('section_name');
         const importsClassPlacement = classAssignmentMode === 'override'
@@ -8214,6 +8241,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
 
         if (!fullName) { rowError(i, 'full_name', 'اسم الطالب مطلوب'); hasFatal = true; }
         if (rawGender && !gender) { rowError(i, 'gender', 'قيمة الجنس غير صالحة'); hasFatal = true; }
+        if (!religionValidation.ok) { rowError(i, 'religion', 'قيمة الديانة غير صالحة'); hasFatal = true; }
         if (!rawGender) rowWarn(i, 'gender', 'لم يُحدد الجنس؛ سيُحفظ بالقيمة الداخلية unknown');
 
         const className = classAssignmentMode === 'override'
@@ -8288,7 +8316,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         record.data = {
           excel_row_number: excelRowNumber(i), student_number: finalStudentNumber, student_number_generated: !studentNumber,
           full_name: fullName, father_name: fatherName, mother_name: motherName, gender, birth_date: birthDate,
-          phone, guardian_name: guardianName, guardian_phone: guardianPhone, address, class_id: classId,
+          religion: religionValidation.value, phone, guardian_name: guardianName, guardian_phone: guardianPhone, address, class_id: classId,
           section_id: sectionId, class_name: className, section_name: sectionName, notes, status,
           imported_fields: [...importedFields],
         };
@@ -8627,6 +8655,10 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           if (!gender) { rowError(i, 'gender', 'قيمة الجنس غير صالحة'); continue; }
 
           const importedFields = new Set<string>(Array.isArray(d.imported_fields) ? d.imported_fields : Object.keys(d));
+          const religionValidation = importedFields.has('religion')
+            ? validateStudentReligion(d.religion)
+            : { ok: true as const, value: null };
+          if (!religionValidation.ok) { rowError(i, 'religion', 'قيمة الديانة غير صالحة'); continue; }
           const importsClassPlacement = classAssignmentMode === 'override'
             || importedFields.has('class_id')
             || importedFields.has('class_name');
@@ -8692,6 +8724,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             father_name: existing ? keepOrImport('father_name', existing.father_name) : (d.father_name || null),
             mother_name: existing ? keepOrImport('mother_name', existing.mother_name) : (d.mother_name || null),
             gender: existing && !importedFields.has('gender') ? existing.gender : gender,
+            religion: existing && !importedFields.has('religion') ? existing.religion : religionValidation.value,
             birth_date: existing ? keepOrImport('birth_date', existing.birth_date) : (d.birth_date || null),
             phone: existing ? keepOrImport('phone', existing.phone) : (d.phone || null),
             guardian_name: existing ? keepOrImport('guardian_name', existing.guardian_name) : (d.guardian_name || null),
@@ -8922,7 +8955,7 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
     let rows: any[] = [];
     if (type === 'students') {
       const res = await db.prepare(`
-        SELECT s.student_number, s.full_name, s.father_name, s.mother_name, s.gender, s.birth_date, s.phone, s.guardian_name, s.guardian_phone, s.address, s.notes, s.status, c.name as class_name, sec.name as section_name
+        SELECT s.student_number, s.full_name, s.father_name, s.mother_name, s.gender, s.religion, s.birth_date, s.phone, s.guardian_name, s.guardian_phone, s.address, s.notes, s.status, c.name as class_name, sec.name as section_name
         FROM students s
         LEFT JOIN classes c ON s.class_id = c.id
         LEFT JOIN sections sec ON s.section_id = sec.id

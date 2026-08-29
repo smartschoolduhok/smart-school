@@ -20,6 +20,7 @@ import {
   findStudentDuplicate,
   syncStudentImportState,
 } from '../src/lib/studentImport.ts';
+import { validateStudentReligion } from '../src/lib/studentReligion.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -27,6 +28,7 @@ const initialSchema = readFileSync(join(rootDir, 'migrations', '0001_initial_sch
 const academicSchema = readFileSync(join(rootDir, 'migrations', '0002_phase2_academic_tables.sql'), 'utf8');
 const academicYearIntegrity = readFileSync(join(rootDir, 'migrations', '0017_academic_year_integrity.sql'), 'utf8');
 const enrollmentMigration = readFileSync(join(rootDir, 'migrations', '0020_student_enrollments.sql'), 'utf8');
+const religionMigration = readFileSync(join(rootDir, 'migrations', '0021_student_religion.sql'), 'utf8');
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 
 class LocalPreparedStatement {
@@ -99,6 +101,7 @@ function createFixture() {
   database.exec(academicSchema);
   database.exec(academicYearIntegrity);
   database.exec(enrollmentMigration);
+  database.exec(religionMigration);
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'private', 'Duhok', 'active'),
@@ -205,6 +208,7 @@ function studentValues(ids, overrides = {}) {
     father_name: overrides.father_name ?? null,
     mother_name: overrides.mother_name ?? null,
     gender: overrides.gender ?? 'male',
+    religion: Object.hasOwn(overrides, 'religion') ? overrides.religion : null,
     birth_date: overrides.birth_date ?? null,
     phone: overrides.phone ?? null,
     guardian_name: overrides.guardian_name ?? null,
@@ -221,7 +225,7 @@ function studentValues(ids, overrides = {}) {
 function valuesFromStudent(database, studentId, overrides = {}) {
   const student = database.prepare(`
     SELECT school_id, student_number, full_name, father_name, mother_name, gender,
-           birth_date, phone, guardian_name, guardian_phone, address, class_id,
+           religion, birth_date, phone, guardian_name, guardian_phone, address, class_id,
            section_id, status, photo_url, notes
     FROM students WHERE id = ?
   `).get(studentId);
@@ -389,6 +393,104 @@ test('identity-only student update leaves enrollment byte-for-byte unchanged', a
   assert.equal(database.prepare('SELECT full_name FROM students WHERE id = ?').get(studentId).full_name, 'Updated Identity');
   assert.deepEqual(database.prepare('SELECT * FROM student_enrollments WHERE id = ?').get(enrollmentId), before);
   database.close();
+});
+
+test('student religion migration keeps existing records null and restricts stored values', () => {
+  const database = new DatabaseSync(':memory:');
+  database.exec('PRAGMA foreign_keys = ON');
+  database.exec(initialSchema);
+  database.exec(academicSchema);
+  database.exec("INSERT INTO schools (id, name, school_type, city, status) VALUES (1, 'School A', 'private', 'Duhok', 'active')");
+  const studentId = insertId(database, `
+    INSERT INTO students (school_id, student_number, full_name, gender, status)
+    VALUES (1, 'REL-LEGACY', 'Legacy Religion Student', 'male', 'active')
+  `);
+  database.exec(religionMigration);
+
+  assert.equal(database.prepare('SELECT religion FROM students WHERE id = ?').get(studentId).religion, null);
+  assert.throws(
+    () => database.prepare("UPDATE students SET religion = 'unsupported' WHERE id = ?").run(studentId),
+    /CHECK constraint failed/,
+  );
+  assert.equal(database.prepare('SELECT religion FROM students WHERE id = ?').get(studentId).religion, null);
+  database.close();
+});
+
+test('student creation persists each supported personal religion value', async () => {
+  const { database, adapter, ids } = createFixture();
+  for (const religion of ['muslim', 'christian', 'other']) {
+    const creation = await createStudentWithEnrollmentBridge(adapter, studentValues(ids, {
+      student_number: `REL-${religion}`,
+      religion,
+      class_id: null,
+      section_id: null,
+    }), ids.userA);
+    assert.equal(creation.ok, true);
+    assert.equal(creation.student.religion, religion);
+    assert.equal(database.prepare('SELECT religion FROM students WHERE id = ?').get(creation.student.id).religion, religion);
+  }
+  database.close();
+});
+
+test('religion identity updates and clearing do not mutate enrollment placement', async () => {
+  const { database, adapter, ids } = createFixture();
+  const studentId = insertStudent(database, ids);
+  const enrollmentId = insertEnrollment(database, ids, studentId);
+  const beforeEnrollment = database.prepare('SELECT * FROM student_enrollments WHERE id = ?').get(enrollmentId);
+
+  await updateStudentIdentityOnly(adapter, studentId, valuesFromStudent(database, studentId, { religion: 'christian' }));
+  assert.equal(database.prepare('SELECT religion FROM students WHERE id = ?').get(studentId).religion, 'christian');
+  assert.deepEqual(database.prepare('SELECT * FROM student_enrollments WHERE id = ?').get(enrollmentId), beforeEnrollment);
+
+  await updateStudentIdentityOnly(adapter, studentId, valuesFromStudent(database, studentId, { religion: null }));
+  assert.equal(database.prepare('SELECT religion FROM students WHERE id = ?').get(studentId).religion, null);
+  assert.deepEqual(database.prepare('SELECT * FROM student_enrollments WHERE id = ?').get(enrollmentId), beforeEnrollment);
+  database.close();
+});
+
+test('finalized enrollment still permits a religion-only identity update', async () => {
+  const { database, adapter, ids } = createFixture();
+  const studentId = insertStudent(database, ids);
+  const enrollmentId = insertEnrollment(database, ids, studentId, {
+    status: 'completed',
+    promotion_status: 'promoted',
+  });
+  database.prepare('UPDATE student_enrollments SET completed_at = 123456 WHERE id = ?').run(enrollmentId);
+  const beforeEnrollment = database.prepare('SELECT * FROM student_enrollments WHERE id = ?').get(enrollmentId);
+  const context = await loadCurrentStudentEnrollmentContext(adapter, 1, studentId);
+  const plan = buildStudentPlacementUpdatePlan(
+    { class_id: ids.classA, section_id: ids.sectionA },
+    context,
+    { hasClassId: false, hasSectionId: false, class_id: null, section_id: null },
+  );
+  assert.equal(plan.kind, 'identity_only');
+
+  await updateStudentIdentityOnly(adapter, studentId, valuesFromStudent(database, studentId, { religion: 'muslim' }));
+  assert.equal(database.prepare('SELECT religion FROM students WHERE id = ?').get(studentId).religion, 'muslim');
+  assert.deepEqual(database.prepare('SELECT * FROM student_enrollments WHERE id = ?').get(enrollmentId), beforeEnrollment);
+  database.close();
+});
+
+test('Student API validates religion and keeps it outside placement and subject semantics', () => {
+  const createRoute = workerSource.slice(
+    workerSource.indexOf("app.post('/api/students'"),
+    workerSource.indexOf("app.put('/api/students/:id'"),
+  );
+  const updateRoute = workerSource.slice(
+    workerSource.indexOf("app.put('/api/students/:id'"),
+    workerSource.indexOf("app.put('/api/students/:id/archive'"),
+  );
+  assert.match(createRoute, /validateStudentReligion\(religion\)/);
+  assert.match(updateRoute, /validateStudentReligion\(body\.religion\)/);
+  assert.match(createRoute, /قيمة الديانة غير صالحة/);
+  assert.match(updateRoute, /قيمة الديانة غير صالحة/);
+  assert.doesNotMatch(`${createRoute}\n${updateRoute}`, /student_subjects|subject_id|academic_year_id/);
+  assert.deepEqual(validateStudentReligion(null), { ok: true, value: null });
+  for (const religion of ['muslim', 'christian', 'other']) {
+    assert.deepEqual(validateStudentReligion(religion), { ok: true, value: religion });
+  }
+  assert.deepEqual(validateStudentReligion('none'), { ok: false, value: null });
+  assert.deepEqual(validateStudentReligion('free text'), { ok: false, value: null });
 });
 
 test('placement update synchronizes current enrollment and legacy mirror atomically', async () => {

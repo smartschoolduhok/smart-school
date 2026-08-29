@@ -1,3 +1,5 @@
+import type { StudentReligion } from './studentReligion.ts';
+
 export interface StudentEnrollmentPreparedStatement {
   bind(...values: unknown[]): StudentEnrollmentPreparedStatement;
   first<T = unknown>(): Promise<T | null>;
@@ -59,6 +61,7 @@ export interface EffectiveStudentRecord extends EffectiveStudentPlacement {
   father_name: string | null;
   mother_name: string | null;
   gender: string;
+  religion: StudentReligion | null;
   birth_date: string | null;
   phone: string | null;
   guardian_name: string | null;
@@ -99,6 +102,7 @@ export interface StudentWriteValues extends StudentLegacyPlacement {
   father_name: string | null;
   mother_name: string | null;
   gender: string;
+  religion: StudentReligion | null;
   birth_date: string | null;
   phone: string | null;
   guardian_name: string | null;
@@ -114,6 +118,7 @@ export interface PersistedStudentSummary extends StudentLegacyPlacement {
   school_id: number;
   student_number: string;
   full_name: string;
+  religion: StudentReligion | null;
   status: string;
 }
 
@@ -181,6 +186,7 @@ const EFFECTIVE_STUDENT_SELECT = `
     student.father_name,
     student.mother_name,
     student.gender,
+    student.religion,
     student.birth_date,
     student.phone,
     student.guardian_name,
@@ -224,11 +230,11 @@ function studentInsertStatement(
   return db.prepare(`
     INSERT INTO students (
       school_id, student_number, full_name, father_name, mother_name,
-      gender, birth_date, phone, guardian_name, guardian_phone,
+      gender, religion, birth_date, phone, guardian_name, guardian_phone,
       address, class_id, section_id, status, photo_url, notes,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-    ${returning ? 'RETURNING id, school_id, student_number, full_name, class_id, section_id, status' : ''}
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+    ${returning ? 'RETURNING id, school_id, student_number, full_name, religion, class_id, section_id, status' : ''}
   `).bind(
     student.school_id,
     student.student_number,
@@ -236,6 +242,7 @@ function studentInsertStatement(
     student.father_name,
     student.mother_name,
     student.gender,
+    student.religion,
     student.birth_date,
     student.phone,
     student.guardian_name,
@@ -263,6 +270,7 @@ function studentUpdateStatement(
     student.father_name,
     student.mother_name,
     student.gender,
+    student.religion,
     student.birth_date,
     student.phone,
     student.guardian_name,
@@ -301,7 +309,7 @@ function studentUpdateStatement(
   return db.prepare(`
     UPDATE students SET
       student_number = ?, full_name = ?, father_name = ?, mother_name = ?,
-      gender = ?, birth_date = ?, phone = ?, guardian_name = ?, guardian_phone = ?,
+      gender = ?, religion = ?, birth_date = ?, phone = ?, guardian_name = ?, guardian_phone = ?,
       address = ?, ${placementSql} photo_url = ?, notes = ?, status = ?,
       updated_at = unixepoch()
     WHERE id = ? AND school_id = ?
@@ -518,7 +526,7 @@ export async function createStudentWithEnrollmentBridge(
   ]);
 
   const created = await db.prepare(`
-    SELECT id, school_id, student_number, full_name, class_id, section_id, status
+    SELECT id, school_id, student_number, full_name, religion, class_id, section_id, status
     FROM students
     WHERE school_id = ? AND student_number = ?
   `).bind(student.school_id, student.student_number).first<PersistedStudentSummary>();

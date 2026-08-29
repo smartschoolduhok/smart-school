@@ -19,6 +19,7 @@ import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { getStudent, getStudentEnrollments } from '../../lib/api';
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from '../../lib/studentEnrollments';
+import { studentReligionLabel } from '../../lib/studentReligion';
 import {
   EMPTY_STUDENT_PROFILE_VALUE,
   NO_CURRENT_ENROLLMENT_MESSAGE,
@@ -262,6 +263,7 @@ export default function StudentProfilePage() {
                 <InformationItem label="اسم الأب" value={safeStudentProfileValue(student.father_name)} />
                 <InformationItem label="اسم الأم" value={safeStudentProfileValue(student.mother_name)} />
                 <InformationItem label="الجنس" value={genderLabel(student.gender)} />
+                <InformationItem label="الديانة" value={safeStudentProfileValue(studentReligionLabel(student.religion))} />
                 <InformationItem label="تاريخ الميلاد" value={formatStudentProfileDate(student.birth_date)} />
                 <InformationItem label="رقم الهاتف" value={safeStudentProfileValue(student.phone)} icon={<Phone size={15} />} />
                 <InformationItem label="حالة الطالب" value={studentStatusLabel(student.status)} />
