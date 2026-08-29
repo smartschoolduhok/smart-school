@@ -21,6 +21,7 @@
     "test:academic-years": "node --experimental-strip-types --test test/academic-years.test.mjs",
     "test:student-enrollments": "node --experimental-strip-types --test test/student-enrollments.test.mjs test/student-enrollment-bridge.test.mjs test/student-placement-ux.test.mjs",
     "test:student-promotion": "node --experimental-strip-types --test test/student-promotion.test.mjs",
+    "test:student-profile": "node --experimental-strip-types --test test/student-profile.test.mjs",
     "test:flexible-grades": "node --experimental-strip-types --test test/flexible-grade-scheme.test.mjs",
     "test:grade-presentation": "node --experimental-strip-types --test test/grade-presentation.test.mjs",
     "test:result-cards": "node --experimental-strip-types --test test/result-card.test.mjs",
