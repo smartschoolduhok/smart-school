@@ -6,6 +6,7 @@
 
 import type { AcademicYearRecord } from './academicYears';
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from './studentEnrollments';
+import type { StudentReligiousSubjectState } from './religiousSubjects';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -25,7 +26,7 @@ function showError(message: string) {
   alert(message);
 }
 
-async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string }> {
+async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string; code?: string; status?: number }> {
   try {
     const token = getToken();
     const headers: Record<string, string> = {
@@ -55,7 +56,7 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      return { error: body.error || `خطأ ${res.status}` };
+      return { error: body.error || `خطأ ${res.status}`, code: body.code, meta: body.meta, status: res.status };
     }
 
     const body = await res.json();
@@ -316,6 +317,30 @@ export function getStudentSubjects(schoolId?: number | null, studentId?: number 
 
 export function getStudentActiveSubjects(studentId: number | string) {
   return fetchApi<Array<Record<string, any>>>(`/api/students/${studentId}/subjects`);
+}
+
+export function getStudentReligiousSubject(studentId: number | string, schoolId: number) {
+  const params = new URLSearchParams({ school_id: String(schoolId) });
+  return fetchApi<StudentReligiousSubjectState>(`/api/students/${studentId}/religious-subject?${params.toString()}`);
+}
+
+export function setStudentReligiousSubject(
+  studentId: number | string,
+  schoolId: number,
+  subjectId: number | null,
+  confirmExistingGrades = false,
+) {
+  return fetchApi<{ current_assignment: StudentReligiousSubjectState['current_assignment']; already_applied: boolean }>(
+    `/api/students/${studentId}/religious-subject`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        school_id: schoolId,
+        subject_id: subjectId,
+        confirm_existing_grades: confirmExistingGrades,
+      }),
+    },
+  );
 }
 
 export function assignSubjectsToClass(classId: number | string, subjectIds: number[], schoolId: number) {

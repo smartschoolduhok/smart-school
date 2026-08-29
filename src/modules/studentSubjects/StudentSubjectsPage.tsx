@@ -11,11 +11,18 @@ import {
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
+  RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
+  religiousTrackLabel,
+  type ReligiousTrack,
+} from '../../lib/religiousSubjects';
+import {
   Search, Filter, Plus, X, Check, BookMarked, GraduationCap, Users, User,
   Layers, BookOpen, ToggleLeft, ToggleRight, AlertCircle, Loader2, ChevronDown, ChevronUp
 } from 'lucide-react';
 
 type Mode = 'list' | 'class' | 'section' | 'students' | 'one';
+
+const RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE = 'توجد درجات محفوظة لمادة الديانة هذه. لتغييرها أو إزالتها مع الحفاظ على السجل، استخدم «مادة الديانة الدراسية» من ملف الطالب.';
 
 interface AssignmentRecord {
   id: number;
@@ -32,6 +39,7 @@ interface AssignmentRecord {
   student_number?: string;
   subject_name?: string;
   subject_type?: string;
+  religious_track?: ReligiousTrack | null;
   counts_in_average?: number;
   appears_in_report_card?: number;
   class_name?: string;
@@ -42,7 +50,7 @@ interface AssignmentRecord {
 interface ClassRec { id: number; name: string; school_id: number; stage: string; status: string; }
 interface SectionRec { id: number; name: string; class_id: number; school_id: number; }
 interface StudentRec { id: number; full_name: string; student_number: string; class_id: number | null; section_id: number | null; }
-interface SubjectRec { id: number; name: string; subject_type: string; class_id: number; section_id: number | null; }
+interface SubjectRec { id: number; name: string; subject_type: string; religious_track: ReligiousTrack | null; class_id: number; section_id: number | null; }
 
 export default function StudentSubjectsPage() {
   const { user } = useAuth();
@@ -157,9 +165,12 @@ export default function StudentSubjectsPage() {
   }, [filterClass, sections]);
 
   const subjectsForClass = useMemo(() => {
-    if (!assignClass) return subjects;
-    return subjects.filter((s) => String(s.class_id) === assignClass && (!assignSection || (s.section_id ? String(s.section_id) === assignSection : true)));
-  }, [assignClass, assignSection, subjects]);
+    let list = assignClass
+      ? subjects.filter((s) => String(s.class_id) === assignClass && (!assignSection || (s.section_id ? String(s.section_id) === assignSection : true)))
+      : subjects;
+    if (mode === 'class' || mode === 'section') list = list.filter((subject) => subject.religious_track == null);
+    return list;
+  }, [assignClass, assignSection, mode, subjects]);
 
   const studentsForClassSection = useMemo(() => {
     let list = students.filter((st) => (st as any).status !== 'archived');
@@ -229,7 +240,7 @@ export default function StudentSubjectsPage() {
     const isCurrentRequest = captureSchoolRequest();
     const res = await deactivateStudentSubject(id, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) alert(res.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE ? RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE : res.error);
     else loadData();
   }
 
@@ -249,7 +260,7 @@ export default function StudentSubjectsPage() {
     const isCurrentRequest = captureSchoolRequest();
     const res = await bulkDeactivateStudentSubject(selectedIds, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) alert(res.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE ? RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE : res.error);
     else { setSelectedIds([]); setConfirmBulkOpen(false); loadData(); }
   }
 
@@ -529,6 +540,7 @@ export default function StudentSubjectsPage() {
                       <label key={su.id} className="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" checked={assignSubjectIds.includes(su.id)} onChange={() => toggleSubjectId(su.id)} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                         <span className="text-sm text-gray-800">{su.name}</span>
+                        {su.religious_track && <span className="text-xs text-amber-700">{religiousTrackLabel(su.religious_track)}</span>}
                       </label>
                     ))}
                     {subjectsForClass.length === 0 && <p className="text-sm text-gray-500">لا توجد مواد</p>}
@@ -550,7 +562,7 @@ export default function StudentSubjectsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">المادة <span className="text-red-500">*</span></label>
                   <select value={assignSubject} onChange={(e) => setAssignSubject(e.target.value)} className="w-full sm:w-1/2 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                     <option value="">اختر المادة</option>
-                    {subjects.map((su) => <option key={su.id} value={String(su.id)}>{su.name}</option>)}
+                    {subjects.map((su) => <option key={su.id} value={String(su.id)}>{su.name}{su.religious_track ? ` — ${religiousTrackLabel(su.religious_track)}` : ''}</option>)}
                   </select>
                 </div>
               </>

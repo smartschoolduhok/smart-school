@@ -15,9 +15,16 @@ import {
   Users,
 } from 'lucide-react';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
+import { useAuth } from '../../hooks/useAuth';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
-import { getStudent, getStudentEnrollments } from '../../lib/api';
+import { getStudent, getStudentEnrollments, getStudentReligiousSubject, setStudentReligiousSubject } from '../../lib/api';
+import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import {
+  RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
+  religiousTrackLabel,
+  type StudentReligiousSubjectState,
+} from '../../lib/religiousSubjects';
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from '../../lib/studentEnrollments';
 import { studentReligionLabel } from '../../lib/studentReligion';
 import {
@@ -53,6 +60,7 @@ function studentStatusClasses(status: string): string {
 }
 
 export default function StudentProfilePage() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
   const parsedStudentId = id && /^\d+$/.test(id) && Number(id) > 0 ? Number(id) : null;
@@ -62,6 +70,7 @@ export default function StudentProfilePage() {
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
+  const canManageReligiousSubject = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES) && schoolId != null;
 
   const [student, setStudent] = useState<EffectiveStudentRecord | null>(null);
   const [history, setHistory] = useState<StudentEnrollmentHistoryRecord[]>([]);
@@ -69,6 +78,13 @@ export default function StudentProfilePage() {
   const [error, setError] = useState('');
   const [notFound, setNotFound] = useState(false);
   const [photoFailed, setPhotoFailed] = useState(false);
+  const [religiousSubject, setReligiousSubject] = useState<StudentReligiousSubjectState | null>(null);
+  const [religiousSubjectError, setReligiousSubjectError] = useState('');
+  const [religiousModalOpen, setReligiousModalOpen] = useState(false);
+  const [selectedReligiousSubjectId, setSelectedReligiousSubjectId] = useState('');
+  const [religiousSaving, setReligiousSaving] = useState(false);
+  const [religiousSaveError, setReligiousSaveError] = useState('');
+  const [gradeConfirmationPending, setGradeConfirmationPending] = useState(false);
 
   useEffect(() => {
     setStudent(null);
@@ -76,6 +92,13 @@ export default function StudentProfilePage() {
     setError('');
     setNotFound(false);
     setPhotoFailed(false);
+    setReligiousSubject(null);
+    setReligiousSubjectError('');
+    setReligiousModalOpen(false);
+    setSelectedReligiousSubjectId('');
+    setReligiousSaving(false);
+    setReligiousSaveError('');
+    setGradeConfirmationPending(false);
 
     if (schoolId == null) {
       setLoading(false);
@@ -96,9 +119,10 @@ export default function StudentProfilePage() {
     setError('');
     setNotFound(false);
 
-    const [studentResponse, historyResponse] = await Promise.all([
+    const [studentResponse, historyResponse, religiousSubjectResponse] = await Promise.all([
       getStudent(requestedStudentId),
       getStudentEnrollments(requestedStudentId, requestedSchoolId),
+      getStudentReligiousSubject(requestedStudentId, requestedSchoolId),
     ]);
 
     if (!isCurrentRequest() || requestedStudentIdRef.current !== requestedStudentId) return;
@@ -129,7 +153,45 @@ export default function StudentProfilePage() {
 
     setStudent(studentResponse.data);
     setHistory(historyResponse.data || []);
+    if (religiousSubjectResponse.data) setReligiousSubject(religiousSubjectResponse.data);
+    else setReligiousSubjectError(religiousSubjectResponse.error || 'تعذر تحميل مادة الديانة الدراسية');
     setLoading(false);
+  }
+
+  function openReligiousSubjectModal() {
+    setSelectedReligiousSubjectId(religiousSubject?.current_assignment?.subject_id
+      ? String(religiousSubject.current_assignment.subject_id)
+      : '');
+    setReligiousSaveError('');
+    setGradeConfirmationPending(false);
+    setReligiousModalOpen(true);
+  }
+
+  async function saveReligiousSubject(confirmExistingGrades = false) {
+    if (schoolId == null || parsedStudentId == null) return;
+    const isCurrentRequest = captureSchoolRequest();
+    setReligiousSaving(true);
+    setReligiousSaveError('');
+    const response = await setStudentReligiousSubject(
+      parsedStudentId,
+      schoolId,
+      selectedReligiousSubjectId ? Number(selectedReligiousSubjectId) : null,
+      confirmExistingGrades,
+    );
+    if (!isCurrentRequest() || requestedStudentIdRef.current !== parsedStudentId) return;
+    if (response.error) {
+      if (response.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE) {
+        setGradeConfirmationPending(true);
+      } else {
+        setReligiousSaveError(response.error);
+      }
+      setReligiousSaving(false);
+      return;
+    }
+    setReligiousModalOpen(false);
+    setGradeConfirmationPending(false);
+    setReligiousSaving(false);
+    await loadProfile(parsedStudentId, schoolId);
   }
 
   const noCurrentEnrollment = student ? hasActiveYearWithoutEnrollment(student) : false;
@@ -251,6 +313,33 @@ export default function StudentProfilePage() {
             )}
           </section>
 
+          <section className="rounded-xl border border-amber-200 bg-white p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="rounded-lg bg-amber-50 p-2 text-amber-700"><BookOpen size={21} /></div>
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">مادة الديانة الدراسية</h2>
+                  <p className="mt-1 text-xs text-gray-500">تعيين أكاديمي مستقل عن الديانة الشخصية للطالب.</p>
+                </div>
+              </div>
+              {canManageReligiousSubject && (
+                <button type="button" onClick={openReligiousSubjectModal} className="rounded-lg border border-amber-200 px-3 py-2 text-sm font-medium text-amber-800 hover:bg-amber-50">
+                  تغيير مادة الديانة
+                </button>
+              )}
+            </div>
+            {religiousSubjectError ? (
+              <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{religiousSubjectError}</p>
+            ) : religiousSubject?.current_assignment ? (
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <InformationItem label="المادة الحالية" value={religiousSubject.current_assignment.subject_name} />
+                <InformationItem label="نوع مادة الديانة" value={religiousTrackLabel(religiousSubject.current_assignment.religious_track)} />
+              </div>
+            ) : (
+              <p className="mt-4 rounded-lg bg-gray-50 p-3 text-sm font-medium text-gray-700">لا يدرس مادة ديانة</p>
+            )}
+          </section>
+
           <div className="grid gap-6 lg:grid-cols-3">
             <section className="rounded-xl border border-gray-200 bg-white p-6 lg:col-span-2">
               <div className="mb-4 flex items-center gap-2">
@@ -263,7 +352,7 @@ export default function StudentProfilePage() {
                 <InformationItem label="اسم الأب" value={safeStudentProfileValue(student.father_name)} />
                 <InformationItem label="اسم الأم" value={safeStudentProfileValue(student.mother_name)} />
                 <InformationItem label="الجنس" value={genderLabel(student.gender)} />
-                <InformationItem label="الديانة" value={safeStudentProfileValue(studentReligionLabel(student.religion))} />
+                <InformationItem label="الديانة الشخصية" value={safeStudentProfileValue(studentReligionLabel(student.religion))} />
                 <InformationItem label="تاريخ الميلاد" value={formatStudentProfileDate(student.birth_date)} />
                 <InformationItem label="رقم الهاتف" value={safeStudentProfileValue(student.phone)} icon={<Phone size={15} />} />
                 <InformationItem label="حالة الطالب" value={studentStatusLabel(student.status)} />
@@ -362,6 +451,49 @@ export default function StudentProfilePage() {
               </div>
             )}
           </section>
+
+          {religiousModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="religious-subject-dialog-title">
+              <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b border-gray-100 p-5">
+                  <div>
+                    <h2 id="religious-subject-dialog-title" className="text-lg font-bold text-gray-900">تغيير مادة الديانة الدراسية</h2>
+                    <p className="mt-1 text-xs text-gray-500">هذا الاختيار لا يغيّر الديانة الشخصية للطالب.</p>
+                  </div>
+                  <button type="button" onClick={() => setReligiousModalOpen(false)} disabled={religiousSaving} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100" aria-label="إغلاق"><span aria-hidden="true">×</span></button>
+                </div>
+                <div className="space-y-4 p-5">
+                  {religiousSubject?.meta.message && <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{religiousSubject.meta.message}</div>}
+                  {religiousSaveError && <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{religiousSaveError}</div>}
+                  {gradeConfirmationPending && (
+                    <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+                      توجد درجات محفوظة للمادة الحالية. ستبقى محفوظة في السجل ولن تُحذف، لكن المادة الحالية ستصبح غير فعالة. هل تريد المتابعة؟
+                    </div>
+                  )}
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">المادة</label>
+                    <select value={selectedReligiousSubjectId} onChange={(event) => { setSelectedReligiousSubjectId(event.target.value); setGradeConfirmationPending(false); }} disabled={religiousSaving || gradeConfirmationPending} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:bg-gray-100">
+                      <option value="">لا يدرس مادة ديانة</option>
+                      {religiousSubject?.current_assignment
+                        && !religiousSubject.candidates.some(candidate => candidate.subject_id === religiousSubject.current_assignment?.subject_id)
+                        && <option value={religiousSubject.current_assignment.subject_id}>{religiousSubject.current_assignment.subject_name} — المادة الحالية</option>}
+                      {religiousSubject?.candidates.map(candidate => (
+                        <option key={candidate.subject_id} value={candidate.subject_id}>{candidate.subject_name} — {religiousTrackLabel(candidate.religious_track)}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-3 border-t border-gray-100 p-5">
+                  <button type="button" onClick={() => setReligiousModalOpen(false)} disabled={religiousSaving} className="rounded-lg px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">إلغاء</button>
+                  {gradeConfirmationPending ? (
+                    <button type="button" onClick={() => void saveReligiousSubject(true)} disabled={religiousSaving} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50">تأكيد التغيير مع حفظ الدرجات</button>
+                  ) : (
+                    <button type="button" onClick={() => void saveReligiousSubject(false)} disabled={religiousSaving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">حفظ</button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </>
       ) : (
         <div className="rounded-xl border border-gray-200 bg-white p-10 text-center text-gray-500">
