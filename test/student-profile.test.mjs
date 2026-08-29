@@ -15,6 +15,7 @@ import {
   promotionStatusLabel,
   safeStudentProfileValue,
 } from '../src/lib/studentProfilePresentation.ts';
+import { studentReligionLabel } from '../src/lib/studentReligion.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -95,6 +96,27 @@ test('missing optional profile data and invalid dates render safely', () => {
   assert.equal(genderLabel(null), EMPTY_STUDENT_PROFILE_VALUE);
   assert.equal(formatStudentProfileUnixSeconds(null), EMPTY_STUDENT_PROFILE_VALUE);
   assert.equal(formatStudentProfileUnixSeconds('invalid'), EMPTY_STUDENT_PROFILE_VALUE);
+});
+
+test('student religion uses the approved Arabic profile presentation and safe empty state', () => {
+  assert.equal(studentReligionLabel('muslim'), 'مسلم');
+  assert.equal(studentReligionLabel('christian'), 'مسيحي');
+  assert.equal(studentReligionLabel('other'), 'أخرى');
+  assert.equal(studentReligionLabel(null), null);
+  assert.equal(studentReligionLabel('unknown'), null);
+  assert.equal(safeStudentProfileValue(studentReligionLabel(null)), EMPTY_STUDENT_PROFILE_VALUE);
+  assert.match(profileSource, /label="الديانة" value=\{safeStudentProfileValue\(studentReligionLabel\(student\.religion\)\)\}/);
+});
+
+test('Student create and edit forms expose only the approved optional religion values', () => {
+  assert.match(studentsSource, /value=\{form\.religion\}/);
+  assert.match(studentsSource, /religion: s\.religion \|\| ''/);
+  assert.match(studentsSource, /religion: form\.religion \|\| null/);
+  assert.match(studentsSource, /<option value="">غير محدد<\/option>/);
+  assert.match(studentsSource, /<option value="muslim">مسلم<\/option>/);
+  assert.match(studentsSource, /<option value="christian">مسيحي<\/option>/);
+  assert.match(studentsSource, /<option value="other">أخرى<\/option>/);
+  assert.doesNotMatch(studentsSource, /without_religion|value="none"/);
 });
 
 test('school switching clears profile data and stale responses are rejected', () => {

@@ -27,6 +27,10 @@ import {
   type GradeSpecialValueAction,
   type GradeZeroValueInterpretation,
 } from '../../lib/gradeImport';
+import {
+  STUDENT_RELIGION_HEADER_ALIASES,
+  studentReligionLabel,
+} from '../../lib/studentReligion';
 import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, XCircle, FileText, History, ChevronRight, ArrowLeft, ArrowRight, Loader2, BookOpen, Layers, GraduationCap, Users } from 'lucide-react';
 
 // ===========================================
@@ -125,6 +129,7 @@ const SYSTEM_FIELDS: Record<ImportType, { key: string; label: string; required?:
     { key: 'father_name', label: 'اسم الأب' },
     { key: 'mother_name', label: 'اسم الأم' },
     { key: 'gender', label: 'الجنس' },
+    { key: 'religion', label: 'الديانة' },
     { key: 'birth_date', label: 'تاريخ الميلاد' },
     { key: 'phone', label: 'الهاتف' },
     { key: 'guardian_name', label: 'ولي الأمر' },
@@ -203,6 +208,7 @@ const AUTO_MAP_RULES: Record<string, string[]> = {
   father_name: ['اسم الأب', 'father_name', 'father'],
   mother_name: ['اسم الأم', 'mother_name', 'mother'],
   gender: ['الجنس', 'النوع', 'gender', 'sex'],
+  religion: [...STUDENT_RELIGION_HEADER_ALIASES],
   birth_date: ['تاريخ الميلاد', 'birth_date', 'birthdate', 'dob', 'تاريخ الميلاد'],
   phone: ['الهاتف', 'رقم الهاتف', 'phone', 'mobile', 'tel'],
   guardian_name: ['ولي الأمر', 'guardian_name', 'guardian'],
@@ -909,7 +915,11 @@ export default function ImportExportPage() {
         if (!isCurrent()) return;
         const headers = SYSTEM_FIELDS[type].map(f => f.label);
         const keys = SYSTEM_FIELDS[type].map(f => f.key);
-        const dataRows = res.data.rows.map((r: any) => keys.map(k => r[k] ?? ''));
+        const dataRows = res.data.rows.map((r: any) => keys.map(k => (
+          type === 'students' && k === 'religion'
+            ? (studentReligionLabel(r[k]) || '')
+            : (r[k] ?? '')
+        )));
         const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
         const wb = XLSX.utils.book_new();
         const sheetLabel = type === 'classes-sections' ? 'الصفوف والشعب' : type === 'students' ? 'الطلاب' : type === 'subjects' ? 'المواد' : type === 'grades' ? 'الدرجات' : type === 'student-subjects' ? 'تسجيل الطلاب' : 'الموظفون';

@@ -7,6 +7,7 @@ import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSel
 import { getStudents, getClasses, getSections, createStudent, updateStudent, archiveStudent } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import type { StudentReligion } from '../../lib/studentReligion';
 import {
   FINALIZED_STUDENT_PLACEMENT_MESSAGE,
   isStudentPlacementFinalized,
@@ -21,6 +22,7 @@ interface StudentRecord {
   father_name: string | null;
   mother_name: string | null;
   gender: 'male' | 'female';
+  religion: StudentReligion | null;
   birth_date: string | null;
   phone: string | null;
   guardian_name: string | null;
@@ -56,6 +58,7 @@ const emptyForm = {
   father_name: '',
   mother_name: '',
   gender: 'male' as 'male' | 'female',
+  religion: '' as '' | StudentReligion,
   birth_date: '',
   phone: '',
   guardian_name: '',
@@ -175,6 +178,7 @@ export default function StudentsPage() {
       father_name: s.father_name || '',
       mother_name: s.mother_name || '',
       gender: s.gender,
+      religion: s.religion || '',
       birth_date: s.birth_date || '',
       phone: s.phone || '',
       guardian_name: s.guardian_name || '',
@@ -210,6 +214,7 @@ export default function StudentsPage() {
       father_name: form.father_name.trim() || null,
       mother_name: form.mother_name.trim() || null,
       gender: form.gender,
+      religion: form.religion || null,
       birth_date: form.birth_date || null,
       phone: form.phone.trim() || null,
       guardian_name: form.guardian_name.trim() || null,
@@ -526,6 +531,19 @@ export default function StudentsPage() {
                   >
                     <option value="male">ذكر</option>
                     <option value="female">أنثى</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">الديانة</label>
+                  <select
+                    value={form.religion}
+                    onChange={(e) => setForm({ ...form, religion: e.target.value as '' | StudentReligion })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">غير محدد</option>
+                    <option value="muslim">مسلم</option>
+                    <option value="christian">مسيحي</option>
+                    <option value="other">أخرى</option>
                   </select>
                 </div>
                 <div>
