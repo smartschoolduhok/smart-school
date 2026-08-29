@@ -67,6 +67,24 @@ export function hasActiveYearWithoutEnrollment(student: {
   return student.current_academic_year_id != null && student.current_enrollment_id == null;
 }
 
+export type EnrollmentYearBadge = 'السنة الحالية' | 'السنة القادمة' | null;
+
+export function enrollmentYearBadge(
+  enrollment: { academic_year_id: number; starts_at: string | null | undefined },
+  currentAcademicYearId: number | null | undefined,
+  currentAcademicYearStartsAt: string | null | undefined,
+): EnrollmentYearBadge {
+  if (currentAcademicYearId != null && enrollment.academic_year_id === currentAcademicYearId) {
+    return 'السنة الحالية';
+  }
+
+  if (!enrollment.starts_at || !currentAcademicYearStartsAt) return null;
+  const enrollmentStart = Date.parse(`${enrollment.starts_at}T00:00:00Z`);
+  const currentStart = Date.parse(`${currentAcademicYearStartsAt}T00:00:00Z`);
+  if (!Number.isFinite(enrollmentStart) || !Number.isFinite(currentStart)) return null;
+  return enrollmentStart > currentStart ? 'السنة القادمة' : null;
+}
+
 export function formatStudentProfileDate(value: unknown): string {
   const safeValue = safeStudentProfileValue(value);
   if (safeValue === EMPTY_STUDENT_PROFILE_VALUE) return safeValue;

@@ -420,7 +420,9 @@ export default function StudentsPage() {
                 {filteredStudents.map((s, idx) => (
                   <tr key={s.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3 text-sm text-gray-500">{toArabicDigits(idx + 1)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{toArabicDigits(s.student_number)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                      <bdi dir="ltr">{s.student_number}</bdi>
+                    </td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
                       <Link to={`/students/${s.id}`} className="text-blue-700 hover:text-blue-900 hover:underline">
                         {s.full_name}

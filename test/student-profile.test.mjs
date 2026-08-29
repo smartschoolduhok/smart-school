@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   EMPTY_STUDENT_PROFILE_VALUE,
   NO_CURRENT_ENROLLMENT_MESSAGE,
+  enrollmentYearBadge,
   enrollmentStatusLabel,
   formatStudentProfileUnixSeconds,
   genderLabel,
@@ -132,4 +133,52 @@ test('individual Student backend read is tenant-isolated and limited to academic
   assert.match(studentRoute, /requireAuthEnforced\(\), requireRoles\(ACADEMIC_ACCESS_ROLES\)/);
   assert.match(studentRoute, /student\.school_id !== user\.school_id/);
   assert.match(studentRoute, /غير مسموح: لا يمكنك الوصول إلى بيانات هذا الطالب/);
+});
+
+test('alphanumeric student numbers are displayed LTR and preserve the stored value', () => {
+  assert.ok((profileSource.match(/<bdi dir="ltr">\{student\.student_number\}<\/bdi>/g) || []).length >= 2);
+  assert.match(studentsSource, /<bdi dir="ltr">\{s\.student_number\}<\/bdi>/);
+});
+
+test('student numbers are never passed through Arabic digit transformation', () => {
+  assert.doesNotMatch(profileSource, /toArabicDigits\(student\.student_number\)/);
+  assert.doesNotMatch(studentsSource, /toArabicDigits\(s\.student_number\)/);
+});
+
+test('the active academic year history row is labeled as current', () => {
+  assert.equal(enrollmentYearBadge(
+    { academic_year_id: 20, starts_at: '2026-09-01' },
+    20,
+    '2026-09-01',
+  ), 'السنة الحالية');
+});
+
+test('a later academic year history row is labeled as upcoming', () => {
+  assert.equal(enrollmentYearBadge(
+    { academic_year_id: 2, starts_at: '2027-09-01' },
+    20,
+    '2026-09-01',
+  ), 'السنة القادمة');
+});
+
+test('upcoming-year detection uses starts_at chronology rather than numeric IDs', () => {
+  assert.equal(enrollmentYearBadge(
+    { academic_year_id: 1, starts_at: '2027-09-01' },
+    500,
+    '2026-09-01',
+  ), 'السنة القادمة');
+  assert.equal(enrollmentYearBadge(
+    { academic_year_id: 999, starts_at: '2025-09-01' },
+    500,
+    '2026-09-01',
+  ), null);
+  assert.doesNotMatch(source('src/lib/studentProfilePresentation.ts'), /academic_year_id\s*[<>]/);
+});
+
+test('student identity badge explicitly identifies Student status', () => {
+  assert.match(profileSource, /حالة الطالب: \{studentStatusLabel\(student\.status\)\}/);
+});
+
+test('profile refinements do not introduce enrollment lifecycle mutations', () => {
+  assert.doesNotMatch(profileSource, /updateStudent|student-enrollments\/promotion|promotion_status\s*=/);
 });

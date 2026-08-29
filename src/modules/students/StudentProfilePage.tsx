@@ -18,11 +18,11 @@ import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSel
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { getStudent, getStudentEnrollments } from '../../lib/api';
-import { toArabicDigits } from '../../lib/arabicDigits';
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from '../../lib/studentEnrollments';
 import {
   EMPTY_STUDENT_PROFILE_VALUE,
   NO_CURRENT_ENROLLMENT_MESSAGE,
+  enrollmentYearBadge,
   enrollmentStatusLabel,
   formatStudentProfileDate,
   formatStudentProfileUnixSeconds,
@@ -132,6 +132,9 @@ export default function StudentProfilePage() {
   }
 
   const noCurrentEnrollment = student ? hasActiveYearWithoutEnrollment(student) : false;
+  const currentAcademicYearStartsAt = student?.current_academic_year_id == null
+    ? null
+    : history.find((enrollment) => enrollment.academic_year_id === student.current_academic_year_id)?.starts_at ?? null;
 
   return (
     <div className="space-y-6" dir="rtl">
@@ -196,12 +199,12 @@ export default function StudentProfilePage() {
                 <div className="flex flex-wrap items-center gap-3">
                   <h2 className="text-2xl font-bold text-gray-900">{student.full_name}</h2>
                   <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${studentStatusClasses(student.status)}`}>
-                    {studentStatusLabel(student.status)}
+                    حالة الطالب: {studentStatusLabel(student.status)}
                   </span>
                 </div>
                 <p className="mt-1 flex items-center gap-2 text-sm text-gray-500">
                   <Hash size={15} />
-                  {toArabicDigits(student.student_number)}
+                  <bdi dir="ltr">{student.student_number}</bdi>
                 </p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <InformationItem label="السنة الدراسية الحالية" value={safeStudentProfileValue(student.current_academic_year_name)} />
@@ -255,7 +258,7 @@ export default function StudentProfilePage() {
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <InformationItem label="الاسم الكامل" value={safeStudentProfileValue(student.full_name)} />
-                <InformationItem label="رقم الطالب" value={toArabicDigits(student.student_number)} />
+                <InformationItem label="رقم الطالب" value={<bdi dir="ltr">{student.student_number}</bdi>} />
                 <InformationItem label="اسم الأب" value={safeStudentProfileValue(student.father_name)} />
                 <InformationItem label="اسم الأم" value={safeStudentProfileValue(student.mother_name)} />
                 <InformationItem label="الجنس" value={genderLabel(student.gender)} />
@@ -296,11 +299,28 @@ export default function StudentProfilePage() {
               </div>
             ) : (
               <div className="divide-y divide-gray-100">
-                {history.map((enrollment) => (
-                  <article key={enrollment.id} className="p-5">
+                {history.map((enrollment) => {
+                  const yearBadge = enrollmentYearBadge(
+                    enrollment,
+                    student.current_academic_year_id,
+                    currentAcademicYearStartsAt,
+                  );
+                  return (
+                    <article key={enrollment.id} className="p-5">
                     <div className="grid gap-4 md:grid-cols-[1.1fr_1fr_1fr]">
                       <div>
-                        <p className="text-base font-bold text-gray-900">{safeStudentProfileValue(enrollment.academic_year_name)}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-base font-bold text-gray-900">{safeStudentProfileValue(enrollment.academic_year_name)}</p>
+                          {yearBadge && (
+                            <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                              yearBadge === 'السنة الحالية'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-purple-100 text-purple-700'
+                            }`}>
+                              {yearBadge}
+                            </span>
+                          )}
+                        </div>
                         <p className="mt-1 text-sm text-gray-500">
                           {safeStudentProfileValue(enrollment.class_name)}
                           <span className="mx-1">/</span>
@@ -334,8 +354,9 @@ export default function StudentProfilePage() {
                         {enrollment.notes}
                       </div>
                     )}
-                  </article>
-                ))}
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>
