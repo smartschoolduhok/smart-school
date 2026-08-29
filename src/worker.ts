@@ -139,9 +139,11 @@ import {
   RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
   RELIGIOUS_TRACK_HEADER_ALIASES,
   countSubjectReligiousConversionConflicts,
+  deactivateStudentSubjectAssignments,
   findActiveReligiousAssignment,
   hasRecordedReligiousSubjectGrades,
   normalizeExcelReligiousTrack,
+  preflightImportedReligiousAssignments,
   validateReligiousTrack,
   type ReligiousTrack,
 } from './lib/religiousSubjects'
@@ -2781,12 +2783,10 @@ app.put('/api/student-subjects/:id/deactivate', requireSameSchoolOrAdmin(), requ
     const body = await c.req.json().catch(() => ({}));
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const row = await db.prepare('SELECT school_id FROM student_subjects WHERE id = ?').bind(id).first<{ school_id: number }>();
-    if (!row) return c.json({ error: 'التعيين غير موجود' }, 404);
-    if (row.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح: لا يمكنك تعديل تعيين في مدرسة أخرى' }, 403);
+    const result = await deactivateStudentSubjectAssignments(db, targetSchool.schoolId, [id]);
+    if (!result.ok) {
+      return c.json({ error: result.error, code: result.code, meta: result.meta }, result.status);
     }
-    await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, is_active: 0 } });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء التعيين', detail: err.message }, 500);
@@ -2801,19 +2801,13 @@ app.post('/api/student-subjects/bulk-deactivate', requireSameSchoolOrAdmin(), re
     const body = await c.req.json();
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const ids: number[] = body.ids || [];
+    const ids: unknown[] = body.ids || [];
     if (!Array.isArray(ids) || ids.length === 0) return c.json({ error: 'يجب اختيار تعيين واحد على الأقل' }, 400);
-    let affected = 0;
-    for (const id of ids) {
-      const row = await db.prepare('SELECT school_id FROM student_subjects WHERE id = ?').bind(id).first<{ school_id: number }>();
-      if (!row) continue;
-      if (row.school_id !== targetSchool.schoolId) {
-        return c.json({ error: 'غير مسموح: أحد التعيينات لا ينتمي إلى المدرسة المستهدفة' }, 403);
-      }
-      await db.prepare(`UPDATE student_subjects SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
-      affected++;
+    const result = await deactivateStudentSubjectAssignments(db, targetSchool.schoolId, ids);
+    if (!result.ok) {
+      return c.json({ error: result.error, code: result.code, meta: result.meta }, result.status);
     }
-    return c.json({ data: { affected } });
+    return c.json({ data: { affected: result.affected } });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء التعيينات', detail: err.message }, 500);
   }
@@ -8891,25 +8885,15 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
     const fileName = file_name || 'import.xlsx';
 
     if (type === 'student-subjects') {
-      const plannedReligiousSubjects = new Map<number, number>();
-      for (const row of rows) {
-        const studentId = Number(row?.student_id);
-        const subjectId = Number(row?.subject_id);
-        if (!Number.isInteger(studentId) || !Number.isInteger(subjectId) || row?.is_active === false) continue;
-        const subject = await db.prepare(`
-          SELECT school_id, religious_track FROM subjects WHERE id = ?
-        `).bind(subjectId).first<{ school_id: number; religious_track: ReligiousTrack | null }>();
-        if (!subject || subject.religious_track == null) continue;
-        if (subject.school_id !== school_id) return c.json({ error: 'غير مسموح: المادة تنتمي إلى مدرسة أخرى' }, 403);
+      const religiousPreflight = await preflightImportedReligiousAssignments(db, school_id, rows);
+      if (!religiousPreflight.ok) {
+        return c.json({ error: religiousPreflight.error, meta: religiousPreflight.meta }, religiousPreflight.status);
+      }
+      for (const row of religiousPreflight.religious_rows) {
+        const studentId = row.student_id;
+        const subjectId = row.subject_id;
         const assignmentValidation = await validateStudentSubjectAssignment(db, school_id, studentId, subjectId);
         if (!assignmentValidation.ok) return c.json({ error: assignmentValidation.error }, assignmentValidation.status);
-        const plannedSubjectId = plannedReligiousSubjects.get(studentId);
-        if (plannedSubjectId != null && plannedSubjectId !== subjectId) {
-          return c.json({ error: 'تعذر التأكيد: يحتوي الملف أكثر من مادة ديانة فعالة للطالب نفسه' }, 409);
-        }
-        const conflict = await findActiveReligiousAssignment(db, school_id, studentId, { excludeSubjectId: subjectId });
-        if (conflict) return c.json({ error: RELIGIOUS_SUBJECT_CONFLICT_ERROR, meta: { student_id: studentId } }, 409);
-        plannedReligiousSubjects.set(studentId, subjectId);
       }
     }
 

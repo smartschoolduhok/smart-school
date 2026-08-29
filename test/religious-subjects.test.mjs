@@ -9,11 +9,15 @@ import {
   RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
   RELIGIOUS_TRACK_HEADER_ALIASES,
   countSubjectReligiousConversionConflicts,
+  deactivateStudentSubjectAssignments,
   findActiveReligiousAssignment,
   hasRecordedReligiousSubjectGrades,
+  importedStudentSubjectWillBeActive,
   isReligiousTrack,
   normalizeExcelReligiousTrack,
+  preflightImportedReligiousAssignments,
   religiousTrackLabel,
+  unwrapStudentSubjectImportRow,
   validateReligiousTrack,
 } from '../src/lib/religiousSubjects.ts';
 
@@ -48,6 +52,11 @@ class LocalStatement {
   async first() {
     return this.database.prepare(this.sql).get(...this.values) || null;
   }
+
+  async run() {
+    const result = this.database.prepare(this.sql).run(...this.values);
+    return { meta: { changes: Number(result.changes), last_row_id: Number(result.lastInsertRowid) } };
+  }
 }
 
 class LocalDatabase {
@@ -57,6 +66,19 @@ class LocalDatabase {
 
   prepare(sql) {
     return new LocalStatement(this.database, sql);
+  }
+
+  async batch(statements) {
+    this.database.exec('BEGIN');
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      this.database.exec('COMMIT');
+      return results;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
   }
 }
 
@@ -245,6 +267,139 @@ test('blank grade row needs no confirmation but raw grades, notes, and grade log
   database.close();
 });
 
+test('Excel confirm preflight unwraps real nested preview rows and rejects two religious subjects before persistence', async () => {
+  const { database, db } = createFixture();
+  const rows = [
+    { row_index: 2, data: { student_id: 1, subject_id: 3, is_active: true } },
+    { row_index: 3, data: { student_id: 1, subject_id: 4, is_active: 1 } },
+  ];
+  assert.deepEqual(unwrapStudentSubjectImportRow(rows[0]), rows[0].data);
+  const result = await preflightImportedReligiousAssignments(db, 1, rows);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM student_subjects').get().count, 0);
+  database.close();
+});
+
+test('Excel confirm preflight permits one religious plus ordinary and keeps same-subject duplicates for existing semantics', async () => {
+  const { database, db } = createFixture();
+  const mixed = await preflightImportedReligiousAssignments(db, 1, [
+    { row_index: 2, data: { student_id: 1, subject_id: 3, is_active: 'true' } },
+    { row_index: 3, data: { student_id: 1, subject_id: 1, is_active: '1' } },
+  ]);
+  assert.equal(mixed.ok, true);
+  assert.deepEqual(mixed.religious_rows, [{ student_id: 1, subject_id: 3 }]);
+
+  const duplicate = await preflightImportedReligiousAssignments(db, 1, [
+    { row_index: 2, data: { student_id: 1, subject_id: 3, is_active: true } },
+    { row_index: 3, data: { student_id: 1, subject_id: 3, is_active: true } },
+  ]);
+  assert.equal(duplicate.ok, true);
+  assert.equal(duplicate.religious_rows.length, 2);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM student_subjects').get().count, 0);
+  database.close();
+});
+
+test('Excel confirm preflight supports direct rows and normalizes boolean, numeric, and string inactive values', async () => {
+  const { database, db } = createFixture();
+  for (const value of [false, 0, '0', 'false', 'no', 'لا', 'غير مفعل']) {
+    assert.equal(importedStudentSubjectWillBeActive(value), false);
+  }
+  for (const value of [true, 1, '1', 'true', 'yes', null, undefined, 'unknown']) {
+    assert.equal(importedStudentSubjectWillBeActive(value), true);
+  }
+  const directConflict = await preflightImportedReligiousAssignments(db, 1, [
+    { student_id: 1, subject_id: 3, is_active: 'yes' },
+    { student_id: 1, subject_id: 4, is_active: true },
+  ]);
+  assert.equal(directConflict.ok, false);
+  assert.equal(directConflict.status, 409);
+  database.close();
+});
+
+test('generic deactivate keeps ordinary grade behavior and permits religious assignments without meaningful grades', async () => {
+  const { database, db } = createFixture();
+  const ordinaryAssignment = assign(database, 1, 1);
+  const ordinaryGrade = insertId(database, 'INSERT INTO grades (school_id, student_subject_id, first_month) VALUES (1, ?, 88)', ordinaryAssignment);
+  const ordinaryResult = await deactivateStudentSubjectAssignments(db, 1, [ordinaryAssignment]);
+  assert.deepEqual(ordinaryResult, { ok: true, affected: 1 });
+  assert.equal(database.prepare('SELECT is_active FROM student_subjects WHERE id = ?').get(ordinaryAssignment).is_active, 0);
+  assert.equal(database.prepare('SELECT first_month FROM grades WHERE id = ?').get(ordinaryGrade).first_month, 88);
+
+  const religiousWithoutGrade = assign(database, 2, 4);
+  const noGradeResult = await deactivateStudentSubjectAssignments(db, 1, [religiousWithoutGrade]);
+  assert.deepEqual(noGradeResult, { ok: true, affected: 1 });
+
+  const religiousWithBlankGrade = assign(database, 1, 3);
+  const blankGrade = insertId(database, 'INSERT INTO grades (school_id, student_subject_id) VALUES (1, ?)', religiousWithBlankGrade);
+  const blankResult = await deactivateStudentSubjectAssignments(db, 1, [religiousWithBlankGrade]);
+  assert.deepEqual(blankResult, { ok: true, affected: 1 });
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM grades WHERE id = ?').get(blankGrade).count, 1);
+  database.close();
+});
+
+test('religious assignment with a raw grade is guarded and leaves assignment and grade untouched', async () => {
+  const { database, db } = createFixture();
+  const assignmentId = assign(database, 1, 3);
+  const gradeId = insertId(database, 'INSERT INTO grades (school_id, student_subject_id, first_month) VALUES (1, ?, 91)', assignmentId);
+  const result = await deactivateStudentSubjectAssignments(db, 1, [assignmentId]);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(result.code, RELIGIOUS_SUBJECT_HAS_GRADES_CODE);
+  assert.equal(database.prepare('SELECT is_active FROM student_subjects WHERE id = ?').get(assignmentId).is_active, 1);
+  assert.equal(database.prepare('SELECT first_month FROM grades WHERE id = ?').get(gradeId).first_month, 91);
+  database.close();
+});
+
+test('religious assignment with academic notes is guarded and preserves the grade row', async () => {
+  const { database, db } = createFixture();
+  const assignmentId = assign(database, 1, 3);
+  const gradeId = insertId(database, "INSERT INTO grades (school_id, student_subject_id, notes) VALUES (1, ?, 'Keep this note')", assignmentId);
+  const result = await deactivateStudentSubjectAssignments(db, 1, [assignmentId]);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, RELIGIOUS_SUBJECT_HAS_GRADES_CODE);
+  assert.equal(database.prepare('SELECT is_active FROM student_subjects WHERE id = ?').get(assignmentId).is_active, 1);
+  assert.equal(database.prepare('SELECT notes FROM grades WHERE id = ?').get(gradeId).notes, 'Keep this note');
+  database.close();
+});
+
+test('religious assignment with a grade change log is guarded and preserves both grade and log', async () => {
+  const { database, db } = createFixture();
+  const assignmentId = assign(database, 1, 3);
+  const gradeId = insertId(database, 'INSERT INTO grades (school_id, student_subject_id) VALUES (1, ?)', assignmentId);
+  const logId = insertId(database, "INSERT INTO grade_change_logs (school_id, grade_id, field_name, new_value) VALUES (1, ?, 'first_month', '75')", gradeId);
+  const result = await deactivateStudentSubjectAssignments(db, 1, [assignmentId]);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, RELIGIOUS_SUBJECT_HAS_GRADES_CODE);
+  assert.equal(database.prepare('SELECT is_active FROM student_subjects WHERE id = ?').get(assignmentId).is_active, 1);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM grades WHERE id = ?').get(gradeId).count, 1);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM grade_change_logs WHERE id = ?').get(logId).count, 1);
+  database.close();
+});
+
+test('bulk deactivate preflights every assignment and writes nothing when one religious grade conflict exists', async () => {
+  const { database, db } = createFixture();
+  const ordinaryAssignment = assign(database, 1, 1);
+  const religiousAssignment = assign(database, 1, 3);
+  insertId(database, 'INSERT INTO grades (school_id, student_subject_id, first_month) VALUES (1, ?, 77)', religiousAssignment);
+  const result = await deactivateStudentSubjectAssignments(db, 1, [ordinaryAssignment, religiousAssignment]);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(database.prepare('SELECT is_active FROM student_subjects WHERE id = ?').get(ordinaryAssignment).is_active, 1);
+  assert.equal(database.prepare('SELECT is_active FROM student_subjects WHERE id = ?').get(religiousAssignment).is_active, 1);
+  database.close();
+});
+
+test('safe bulk deactivate succeeds in one batch after all assignments pass preflight', async () => {
+  const { database, db } = createFixture();
+  const ordinaryAssignment = assign(database, 1, 1);
+  const religiousAssignment = assign(database, 1, 3);
+  const result = await deactivateStudentSubjectAssignments(db, 1, [ordinaryAssignment, religiousAssignment]);
+  assert.deepEqual(result, { ok: true, affected: 2 });
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM student_subjects WHERE id IN (?, ?) AND is_active = 1').get(ordinaryAssignment, religiousAssignment).count, 0);
+  database.close();
+});
+
 test('subject APIs validate religious_track and preflight conversion conflicts', () => {
   const createRoute = routeBlock("app.post('/api/subjects'", "app.put('/api/subjects/reorder'");
   const updateRoute = routeBlock("app.put('/api/subjects/:id'", "app.put('/api/subjects/:id/archive'");
@@ -321,6 +476,18 @@ test('dedicated PUT is idempotent and grade confirmation preserves rows and logs
   assert.doesNotMatch(route, /DELETE FROM grades|DELETE FROM grade_change_logs|INSERT INTO grades/);
 });
 
+test('generic single and bulk deactivate routes delegate to the guarded all-before-write workflow', () => {
+  const single = routeBlock("app.put('/api/student-subjects/:id/deactivate'", "app.post('/api/student-subjects/bulk-deactivate'");
+  const bulk = routeBlock("app.post('/api/student-subjects/bulk-deactivate'", '// Phase 4: Grades & Academic Calculations');
+  for (const route of [single, bulk]) {
+    assert.match(route, /deactivateStudentSubjectAssignments/);
+    assert.match(route, /code: result\.code/);
+    assert.doesNotMatch(route, /UPDATE student_subjects/);
+  }
+  assert.match(studentSubjectsPage, /RELIGIOUS_SUBJECT_HAS_GRADES_CODE/);
+  assert.match(studentSubjectsPage, /استخدم «مادة الديانة الدراسية» من ملف الطالب/);
+});
+
 test('personal student religion never drives or changes academic religious assignment', () => {
   const routes = routeBlock("app.get('/api/students/:id/religious-subject'", "app.post('/api/student-subjects/assign-class'");
   assert.doesNotMatch(routes, /student\.religion|religion === ['"]muslim|religion === ['"]christian/);
@@ -360,9 +527,9 @@ test('Smart Excel student-subject preview and confirm reject religious conflicts
   const confirm = routeBlock("app.post('/api/import-export/:type/confirm'", "app.get('/api/import-export/:type/export'");
   assert.match(preview, /plannedReligiousStudentSubjects/);
   assert.match(preview, /findActiveReligiousAssignment/);
-  assert.match(confirm, /plannedReligiousSubjects/);
-  assert.match(confirm, /findActiveReligiousAssignment/);
-  assert.ok(confirm.indexOf('plannedReligiousSubjects') < confirm.indexOf('INSERT INTO student_subjects'));
+  assert.match(confirm, /preflightImportedReligiousAssignments/);
+  assert.match(confirm, /religiousPreflight\.religious_rows/);
+  assert.ok(confirm.indexOf('preflightImportedReligiousAssignments') < confirm.indexOf('INSERT INTO student_subjects'));
   assert.doesNotMatch(confirm, /religious[\s\S]*UPDATE student_subjects SET is_active = 0/);
 });
 

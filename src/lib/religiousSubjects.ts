@@ -26,6 +26,7 @@ export interface ReligiousSubjectPreparedStatement {
 
 export interface ReligiousSubjectDatabase {
   prepare(query: string): ReligiousSubjectPreparedStatement;
+  batch(statements: ReligiousSubjectPreparedStatement[]): Promise<Array<{ meta?: { changes?: number } }>>;
 }
 
 export interface ActiveReligiousAssignment {
@@ -53,6 +54,28 @@ export interface StudentReligiousSubjectState {
     message: string | null;
   };
 }
+
+export interface ImportedReligiousAssignmentRow {
+  student_id: number;
+  subject_id: number;
+}
+
+export type ReligiousImportPreflightResult =
+  | { ok: true; religious_rows: ImportedReligiousAssignmentRow[] }
+  | { ok: false; status: 403 | 409; error: string; meta?: Record<string, unknown> };
+
+export interface StudentSubjectDeactivationRecord {
+  assignment_id: number;
+  school_id: number;
+  student_id: number;
+  subject_id: number;
+  is_active: number;
+  religious_track: ReligiousTrack | null;
+}
+
+export type StudentSubjectDeactivationResult =
+  | { ok: true; affected: number }
+  | { ok: false; status: 400 | 403 | 404 | 409; error: string; code?: string; meta?: Record<string, unknown> };
 
 export function validateReligiousTrack(value: unknown): ReligiousTrackValidation {
   if (value == null || value === '') return { ok: true, value: null };
@@ -84,6 +107,21 @@ export function religiousTrackLabel(value: unknown): string {
 
 export function isReligiousTrack(value: unknown): value is ReligiousTrack {
   return RELIGIOUS_TRACK_VALUES.includes(value as ReligiousTrack);
+}
+
+export function importedStudentSubjectWillBeActive(value: unknown): boolean {
+  if (value == null || value === '') return true;
+  const normalized = String(value).trim().toLowerCase();
+  return !['0', 'no', 'false', 'لا', 'غير مفعل'].includes(normalized);
+}
+
+export function unwrapStudentSubjectImportRow(row: unknown): Record<string, unknown> {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return {};
+  const wrapper = row as Record<string, unknown>;
+  const nested = wrapper.data;
+  return nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : wrapper;
 }
 
 export async function findActiveReligiousAssignment(
@@ -118,6 +156,58 @@ export async function findActiveReligiousAssignment(
     ORDER BY assignment.id DESC
     LIMIT 1
   `).bind(...binds).first<ActiveReligiousAssignment>();
+}
+
+export async function preflightImportedReligiousAssignments(
+  db: ReligiousSubjectDatabase,
+  schoolId: number,
+  rows: unknown[],
+): Promise<ReligiousImportPreflightResult> {
+  const plannedReligiousSubjects = new Map<number, number>();
+  const religiousRows: ImportedReligiousAssignmentRow[] = [];
+
+  for (const row of rows) {
+    const data = unwrapStudentSubjectImportRow(row);
+    const studentId = Number(data.student_id);
+    const subjectId = Number(data.subject_id);
+    if (!Number.isInteger(studentId) || studentId <= 0 || !Number.isInteger(subjectId) || subjectId <= 0) continue;
+    if (!importedStudentSubjectWillBeActive(data.is_active)) continue;
+
+    const subject = await db.prepare(`
+      SELECT school_id, religious_track
+      FROM subjects
+      WHERE id = ?
+    `).bind(subjectId).first<{ school_id: number; religious_track: ReligiousTrack | null }>();
+    if (!subject || subject.religious_track == null) continue;
+    if (subject.school_id !== schoolId) {
+      return { ok: false, status: 403, error: 'غير مسموح: المادة تنتمي إلى مدرسة أخرى' };
+    }
+
+    const plannedSubjectId = plannedReligiousSubjects.get(studentId);
+    if (plannedSubjectId != null && plannedSubjectId !== subjectId) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'تعذر التأكيد: يحتوي الملف أكثر من مادة ديانة فعالة للطالب نفسه',
+        meta: { student_id: studentId, subject_ids: [plannedSubjectId, subjectId] },
+      };
+    }
+
+    const conflict = await findActiveReligiousAssignment(db, schoolId, studentId, { excludeSubjectId: subjectId });
+    if (conflict) {
+      return {
+        ok: false,
+        status: 409,
+        error: RELIGIOUS_SUBJECT_CONFLICT_ERROR,
+        meta: { student_id: studentId, conflicting_assignment_id: conflict.assignment_id },
+      };
+    }
+
+    plannedReligiousSubjects.set(studentId, subjectId);
+    religiousRows.push({ student_id: studentId, subject_id: subjectId });
+  }
+
+  return { ok: true, religious_rows: religiousRows };
 }
 
 export async function countSubjectReligiousConversionConflicts(
@@ -165,4 +255,76 @@ export async function hasRecordedReligiousSubjectGrades(
     ) AS recorded_grade_data
   `).bind(schoolId, assignmentId).first<{ recorded_grade_data: number }>();
   return Number(row?.recorded_grade_data || 0) === 1;
+}
+
+export async function deactivateStudentSubjectAssignments(
+  db: ReligiousSubjectDatabase,
+  schoolId: number,
+  assignmentIds: unknown[],
+): Promise<StudentSubjectDeactivationResult> {
+  const normalizedIds = [...new Set(assignmentIds.map(Number))];
+  if (normalizedIds.length === 0 || normalizedIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+    return { ok: false, status: 400, error: 'معرّفات التعيينات غير صالحة' };
+  }
+
+  const assignments: StudentSubjectDeactivationRecord[] = [];
+  for (const assignmentId of normalizedIds) {
+    const assignment = await db.prepare(`
+      SELECT assignment.id AS assignment_id, assignment.school_id, assignment.student_id,
+             assignment.subject_id, assignment.is_active, subject.religious_track
+      FROM student_subjects assignment
+      JOIN subjects subject
+        ON subject.id = assignment.subject_id
+       AND subject.school_id = assignment.school_id
+      WHERE assignment.id = ?
+    `).bind(assignmentId).first<StudentSubjectDeactivationRecord>();
+    if (!assignment) {
+      return { ok: false, status: 404, error: 'أحد التعيينات غير موجود', meta: { assignment_id: assignmentId } };
+    }
+    if (assignment.school_id !== schoolId) {
+      return {
+        ok: false,
+        status: 403,
+        error: 'غير مسموح: أحد التعيينات لا ينتمي إلى المدرسة المستهدفة',
+        meta: { assignment_id: assignmentId },
+      };
+    }
+    assignments.push(assignment);
+  }
+
+  const conflicts: StudentSubjectDeactivationRecord[] = [];
+  for (const assignment of assignments) {
+    if (assignment.is_active !== 1 || assignment.religious_track == null) continue;
+    if (await hasRecordedReligiousSubjectGrades(db, schoolId, assignment.assignment_id)) conflicts.push(assignment);
+  }
+  if (conflicts.length > 0) {
+    const first = conflicts[0];
+    return {
+      ok: false,
+      status: 409,
+      error: 'توجد درجات محفوظة لمادة الديانة. استخدم إجراء «مادة الديانة الدراسية» من ملف الطالب لتغييرها أو إزالتها مع الحفاظ على السجل.',
+      code: RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
+      meta: {
+        assignment_id: first.assignment_id,
+        student_id: first.student_id,
+        subject_id: first.subject_id,
+        recorded_grade_data: true,
+        conflicting_assignments: conflicts.map((assignment) => ({
+          assignment_id: assignment.assignment_id,
+          student_id: assignment.student_id,
+          subject_id: assignment.subject_id,
+        })),
+      },
+    };
+  }
+
+  const activeAssignments = assignments.filter((assignment) => assignment.is_active === 1);
+  if (activeAssignments.length > 0) {
+    await db.batch(activeAssignments.map((assignment) => db.prepare(`
+      UPDATE student_subjects
+      SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch()
+      WHERE id = ? AND school_id = ? AND is_active = 1
+    `).bind(assignment.assignment_id, schoolId)));
+  }
+  return { ok: true, affected: activeAssignments.length };
 }

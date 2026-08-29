@@ -10,13 +10,19 @@ import {
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
-import { religiousTrackLabel, type ReligiousTrack } from '../../lib/religiousSubjects';
+import {
+  RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
+  religiousTrackLabel,
+  type ReligiousTrack,
+} from '../../lib/religiousSubjects';
 import {
   Search, Filter, Plus, X, Check, BookMarked, GraduationCap, Users, User,
   Layers, BookOpen, ToggleLeft, ToggleRight, AlertCircle, Loader2, ChevronDown, ChevronUp
 } from 'lucide-react';
 
 type Mode = 'list' | 'class' | 'section' | 'students' | 'one';
+
+const RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE = 'توجد درجات محفوظة لمادة الديانة هذه. لتغييرها أو إزالتها مع الحفاظ على السجل، استخدم «مادة الديانة الدراسية» من ملف الطالب.';
 
 interface AssignmentRecord {
   id: number;
@@ -234,7 +240,7 @@ export default function StudentSubjectsPage() {
     const isCurrentRequest = captureSchoolRequest();
     const res = await deactivateStudentSubject(id, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) alert(res.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE ? RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE : res.error);
     else loadData();
   }
 
@@ -254,7 +260,7 @@ export default function StudentSubjectsPage() {
     const isCurrentRequest = captureSchoolRequest();
     const res = await bulkDeactivateStudentSubject(selectedIds, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) alert(res.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE ? RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE : res.error);
     else { setSelectedIds([]); setConfirmBulkOpen(false); loadData(); }
   }
 
