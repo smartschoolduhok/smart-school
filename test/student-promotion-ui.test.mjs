@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   buildStudentPromotionRequest,
   isPromotionPreviewCurrent,
+  isTargetSectionSelectionReady,
   promotionSelectionFingerprint,
 } from '../src/lib/studentPromotionUi.ts';
 
@@ -71,24 +72,59 @@ test('promotion and repetition payloads require explicit year and class and pres
   });
 });
 
+test('target section readiness fails closed on loading errors and requires a section when active options exist', () => {
+  const base = {
+    action: 'promoted',
+    targetClassId: 4,
+    targetSectionId: null,
+    sectionsLoading: false,
+    sectionsError: '',
+    activeSectionCount: 1,
+  };
+  assert.equal(isTargetSectionSelectionReady(base), false);
+  assert.equal(isTargetSectionSelectionReady({ ...base, targetSectionId: 6 }), true);
+  assert.equal(isTargetSectionSelectionReady({ ...base, sectionsLoading: true }), false);
+  assert.equal(isTargetSectionSelectionReady({ ...base, sectionsError: 'تعذر تحميل الشعب' }), false);
+});
+
+test('a successful empty active-section response permits preview without a target section', () => {
+  assert.equal(isTargetSectionSelectionReady({
+    action: 'repeated',
+    targetClassId: 4,
+    targetSectionId: null,
+    sectionsLoading: false,
+    sectionsError: '',
+    activeSectionCount: 0,
+  }), true);
+});
+
 test('promotion page uses explicit tenant selection, clears school-dependent state, and guards stale responses', () => {
   assert.match(pageSource, /<SystemAdminSchoolSelector \{\.\.\.schoolScope\} \/>/);
   assert.match(pageSource, /if \(schoolId == null\)[\s\S]*لا يمكن معاينة أو تنفيذ الترفيع/);
   assert.match(pageSource, /useSchoolRequestGuard\(schoolId\)/);
   assert.match(pageSource, /if \(!isCurrentRequest\(\)\) return/);
   assert.match(pageSource, /sectionRequestIdRef\.current/);
+  assert.match(pageSource, /requestId !== sectionRequestIdRef\.current/);
+  assert.match(pageSource, /setSectionsError\(`تعذر تحميل شعب الصف المستهدف: \$\{response\.error\}`\)/);
+  assert.match(pageSource, /sectionsError !== ''/);
   assert.match(pageSource, /setStudentId\(null\)[\s\S]*setAction\(null\)[\s\S]*setTargetAcademicYearId\(null\)[\s\S]*setTargetClassId\(null\)[\s\S]*setTargetSectionId\(null\)/);
   assert.match(pageSource, /setPreview\(null\)[\s\S]*setPreviewFingerprint\(null\)/);
   assert.doesNotMatch(pageSource, /school_id\s*[:=]\s*1|schoolId\s*\?\?\s*1|schoolId\s*\|\|\s*1/);
 });
 
 test('execute stays disabled until a current preview and selection changes invalidate it', () => {
-  assert.match(pageSource, /const previewCurrent = preview != null && isPromotionPreviewCurrent/);
+  assert.match(pageSource, /const previewCurrent = preview != null[\s\S]*&& sectionSelectionReady[\s\S]*&& isPromotionPreviewCurrent/);
   assert.match(pageSource, /disabled=\{!previewCurrent \|\| executing\}/);
   assert.match(pageSource, /useEffect\(\(\) => \{[\s\S]*setPreview\(null\)[\s\S]*setConfirmOpen\(false\)[\s\S]*\}, \[selectionFingerprint\]\)/);
   assert.match(pageSource, /currentFingerprintRef\.current !== requestedFingerprint/);
   assert.match(pageSource, /previewStudentPromotion\(payload\)/);
   assert.match(pageSource, /promoteStudent\(payload\)/);
+});
+
+test('confirmation text distinguishes preserved historical placement from finalized source lifecycle', () => {
+  assert.match(pageSource, /لن يُحذف تسجيل السنة الحالية ولن يتغير صفه أو شعبته التاريخية/);
+  assert.match(pageSource, /سيُقفل تسجيل المصدر وفق القرار، ويُنشأ تسجيل السنة المستهدفة عند الحاجة/);
+  assert.doesNotMatch(pageSource, /لن يُعدّل التسجيل التاريخي/);
 });
 
 test('route, sidebar, and Student Profile entry point use academic management RBAC', () => {

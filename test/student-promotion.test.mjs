@@ -146,6 +146,14 @@ function createFixture() {
     INSERT INTO classes (school_id, name, stage, status)
     VALUES (1, 'Class A3', 'primary', 'active')
   `);
+  const classAWithoutSections = insertId(database, `
+    INSERT INTO classes (school_id, name, stage, status)
+    VALUES (1, 'Class A Without Sections', 'primary', 'active')
+  `);
+  const classAInactive = insertId(database, `
+    INSERT INTO classes (school_id, name, stage, status)
+    VALUES (1, 'Class A Inactive', 'primary', 'archived')
+  `);
   const classB1 = insertId(database, `
     INSERT INTO classes (school_id, name, stage, status)
     VALUES (2, 'Class B1', 'primary', 'active')
@@ -157,6 +165,10 @@ function createFixture() {
   const sectionA2 = insertId(database, `
     INSERT INTO sections (school_id, class_id, name, status)
     VALUES (1, ?, 'Section A2', 'active')
+  `, classA2);
+  const sectionA2Inactive = insertId(database, `
+    INSERT INTO sections (school_id, class_id, name, status)
+    VALUES (1, ?, 'Section A2 Inactive', 'archived')
   `, classA2);
   const sectionA3 = insertId(database, `
     INSERT INTO sections (school_id, class_id, name, status)
@@ -184,9 +196,12 @@ function createFixture() {
       classA1,
       classA2,
       classA3,
+      classAWithoutSections,
+      classAInactive,
       classB1,
       sectionA1,
       sectionA2,
+      sectionA2Inactive,
       sectionA3,
       sectionB1,
       userA,
@@ -420,14 +435,14 @@ test('repeated requires and stores the explicitly supplied target placement with
   const result = await executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, promotionRequest(
     fixture.ids,
     sourceEnrollmentId,
-    { action: 'repeated', target_class_id: fixture.ids.classA3, target_section_id: null },
+    { action: 'repeated', target_class_id: fixture.ids.classAWithoutSections, target_section_id: null },
   ));
   assert.equal(result.ok, true);
   const source = row(fixture.database, 'SELECT status, promotion_status FROM student_enrollments WHERE id = ?', sourceEnrollmentId);
   const target = row(fixture.database, 'SELECT class_id, section_id, status, promotion_status FROM student_enrollments WHERE id = ?', result.data.target_enrollment_id);
   assert.equal(source.status, 'completed');
   assert.equal(source.promotion_status, 'repeated');
-  assert.equal(Number(target.class_id), fixture.ids.classA3);
+  assert.equal(Number(target.class_id), fixture.ids.classAWithoutSections);
   assert.equal(target.section_id, null);
   assert.equal(target.status, 'active');
   assert.equal(target.promotion_status, 'pending');
@@ -632,6 +647,76 @@ test('missing target class returns 404', async () => {
   fixture.database.close();
 });
 
+test('active target sections require an explicit section in preview and execute with zero writes', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  const request = promotionRequest(fixture.ids, sourceEnrollmentId, {
+    target_class_id: fixture.ids.classA2,
+    target_section_id: null,
+  });
+
+  await expectFailure(
+    previewStudentPromotion(fixture.adapter, 1, request),
+    400,
+    'target_section_required',
+  );
+  await expectFailure(
+    executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, request),
+    400,
+    'target_section_required',
+  );
+
+  const source = row(
+    fixture.database,
+    'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?',
+    sourceEnrollmentId,
+  );
+  assert.equal(source.status, 'active');
+  assert.equal(source.promotion_status, 'pending');
+  assert.equal(source.completed_at, null);
+  assert.equal(Number(row(
+    fixture.database,
+    'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ?',
+    studentId,
+  ).count), 1);
+  assert.equal(fixture.adapter.batchCalls, 0);
+  fixture.database.close();
+});
+
+test('an active target class with no active sections accepts a null section in preview', async () => {
+  const fixture = createFixture();
+  const { sourceEnrollmentId } = createPromotionSource(fixture);
+  const result = await previewStudentPromotion(fixture.adapter, 1, promotionRequest(
+    fixture.ids,
+    sourceEnrollmentId,
+    {
+      target_class_id: fixture.ids.classAWithoutSections,
+      target_section_id: null,
+    },
+  ));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data.valid, true);
+  assert.equal(result.data.target.class_id, fixture.ids.classAWithoutSections);
+  assert.equal(result.data.target.section_id, null);
+  assert.equal(fixture.adapter.batchCalls, 0);
+  fixture.database.close();
+});
+
+test('inactive target class is rejected by the shared promotion inspection', async () => {
+  const fixture = createFixture();
+  const { sourceEnrollmentId } = createPromotionSource(fixture);
+  await expectFailure(previewStudentPromotion(fixture.adapter, 1, promotionRequest(
+    fixture.ids,
+    sourceEnrollmentId,
+    {
+      target_class_id: fixture.ids.classAInactive,
+      target_section_id: null,
+    },
+  )), 409, 'target_class_inactive');
+  fixture.database.close();
+});
+
 test('target section must belong to the same school', async () => {
   const fixture = createFixture();
   const { sourceEnrollmentId } = createPromotionSource(fixture);
@@ -651,6 +736,99 @@ test('target section must belong to the explicitly selected target class', async
     sourceEnrollmentId,
     { target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA3 },
   )), 400, 'target_section_mismatch');
+  fixture.database.close();
+});
+
+test('inactive target section is rejected by the shared promotion inspection', async () => {
+  const fixture = createFixture();
+  const { sourceEnrollmentId } = createPromotionSource(fixture);
+  await expectFailure(executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, promotionRequest(
+    fixture.ids,
+    sourceEnrollmentId,
+    {
+      target_class_id: fixture.ids.classA2,
+      target_section_id: fixture.ids.sectionA2Inactive,
+    },
+  )), 409, 'target_section_inactive');
+  assert.equal(fixture.adapter.batchCalls, 0);
+  fixture.database.close();
+});
+
+test('target class becoming inactive after inspection prevents every promotion write', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  fixture.adapter.beforeBatch = () => {
+    fixture.database.prepare("UPDATE classes SET status = 'archived' WHERE id = ?")
+      .run(fixture.ids.classA2);
+  };
+
+  await expectFailure(
+    executeStudentPromotion(
+      fixture.adapter,
+      1,
+      fixture.ids.userA,
+      promotionRequest(fixture.ids, sourceEnrollmentId),
+    ),
+    409,
+    'target_enrollment_conflict',
+  );
+  const source = row(
+    fixture.database,
+    'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?',
+    sourceEnrollmentId,
+  );
+  assert.equal(source.status, 'active');
+  assert.equal(source.promotion_status, 'pending');
+  assert.equal(source.completed_at, null);
+  assert.equal(Number(row(
+    fixture.database,
+    'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?',
+    studentId,
+    fixture.ids.futureA,
+  ).count), 0);
+  assert.equal(Number(row(
+    fixture.database,
+    'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0',
+  ).count), 0);
+  fixture.database.close();
+});
+
+test('target section becoming inactive after inspection prevents every promotion write', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  fixture.adapter.beforeBatch = () => {
+    fixture.database.prepare("UPDATE sections SET status = 'archived' WHERE id = ?")
+      .run(fixture.ids.sectionA2);
+  };
+
+  await expectFailure(
+    executeStudentPromotion(
+      fixture.adapter,
+      1,
+      fixture.ids.userA,
+      promotionRequest(fixture.ids, sourceEnrollmentId),
+    ),
+    409,
+    'target_enrollment_conflict',
+  );
+  const source = row(
+    fixture.database,
+    'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?',
+    sourceEnrollmentId,
+  );
+  assert.equal(source.status, 'active');
+  assert.equal(source.promotion_status, 'pending');
+  assert.equal(source.completed_at, null);
+  assert.equal(Number(row(
+    fixture.database,
+    'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?',
+    studentId,
+    fixture.ids.futureA,
+  ).count), 0);
+  assert.equal(Number(row(
+    fixture.database,
+    'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0',
+  ).count), 0);
   fixture.database.close();
 });
 

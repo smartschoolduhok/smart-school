@@ -60,3 +60,23 @@ export function buildStudentPromotionRequest(
     target_section_id: selection.targetSectionId,
   };
 }
+
+export function isTargetSectionSelectionReady(input: {
+  action: StudentPromotionAction | null;
+  targetClassId: number | null;
+  targetSectionId: number | null;
+  sectionsLoading: boolean;
+  sectionsError: string;
+  activeSectionCount: number;
+}): boolean {
+  if (input.action === 'graduated') return true;
+  if (
+    input.action == null
+    || input.targetClassId == null
+    || input.sectionsLoading
+    || input.sectionsError !== ''
+  ) {
+    return false;
+  }
+  return input.activeSectionCount === 0 || input.targetSectionId != null;
+}

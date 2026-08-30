@@ -67,6 +67,7 @@ interface SchoolEntityRecord {
   id: number;
   school_id: number;
   name: string;
+  status: string;
 }
 
 interface SectionRecord extends SchoolEntityRecord {
@@ -156,7 +157,10 @@ export type StudentPromotionResult =
         | 'target_year_active'
         | 'target_year_not_later'
         | 'target_class_not_found'
+        | 'target_class_inactive'
         | 'target_section_not_found'
+        | 'target_section_required'
+        | 'target_section_inactive'
         | 'target_section_mismatch'
         | 'target_enrollment_conflict';
       error: string;
@@ -478,17 +482,29 @@ async function inspectStudentPromotion(
     return failure(400, 'target_year_not_later', 'يجب أن تبدأ السنة الدراسية المستهدفة بعد سنة المصدر');
   }
 
-  const targetClass = await db.prepare('SELECT id, school_id, name FROM classes WHERE id = ?')
+  const targetClass = await db.prepare('SELECT id, school_id, name, status FROM classes WHERE id = ?')
     .bind(targetClassId)
     .first<SchoolEntityRecord>();
   if (!targetClass) return failure(404, 'target_class_not_found', 'الصف المستهدف غير موجود');
   if (targetClass.school_id !== schoolId) {
     return failure(403, 'wrong_school', 'غير مسموح: الصف المستهدف لا ينتمي إلى المدرسة');
   }
+  if (targetClass.status !== 'active') {
+    return failure(409, 'target_class_inactive', 'الصف المستهدف غير نشط ولا يمكن استخدامه في الترفيع');
+  }
+
+  const activeSectionCount = await db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM sections
+    WHERE school_id = ? AND class_id = ? AND status = 'active'
+  `).bind(schoolId, targetClassId).first<{ count: number }>();
+  if (Number(activeSectionCount?.count ?? 0) > 0 && request.targetSectionId == null) {
+    return failure(400, 'target_section_required', 'يجب تحديد شعبة مستهدفة لأن الصف المختار يحتوي على شعب نشطة');
+  }
 
   let targetSection: SectionRecord | null = null;
   if (request.targetSectionId != null) {
-    targetSection = await db.prepare('SELECT id, school_id, class_id, name FROM sections WHERE id = ?')
+    targetSection = await db.prepare('SELECT id, school_id, class_id, name, status FROM sections WHERE id = ?')
       .bind(request.targetSectionId)
       .first<SectionRecord>();
     if (!targetSection) return failure(404, 'target_section_not_found', 'الشعبة المستهدفة غير موجودة');
@@ -497,6 +513,9 @@ async function inspectStudentPromotion(
     }
     if (targetSection.class_id !== targetClassId) {
       return failure(400, 'target_section_mismatch', 'الشعبة المستهدفة لا تتبع الصف المستهدف');
+    }
+    if (targetSection.status !== 'active') {
+      return failure(409, 'target_section_inactive', 'الشعبة المستهدفة غير نشطة ولا يمكن استخدامها في الترفيع');
     }
   }
 
@@ -669,15 +688,26 @@ function buildTransitionBatch(
       )
       AND EXISTS (
         SELECT 1 FROM classes AS target_class
-        WHERE target_class.id = ? AND target_class.school_id = source.school_id
+        WHERE target_class.id = ?
+          AND target_class.school_id = source.school_id
+          AND target_class.status = 'active'
       )
       AND (
-        ? IS NULL
+        (
+          ? IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM sections AS active_target_section
+            WHERE active_target_section.school_id = source.school_id
+              AND active_target_section.class_id = ?
+              AND active_target_section.status = 'active'
+          )
+        )
         OR EXISTS (
           SELECT 1 FROM sections AS target_section
           WHERE target_section.id = ?
             AND target_section.school_id = source.school_id
             AND target_section.class_id = ?
+            AND target_section.status = 'active'
         )
       )
       AND NOT EXISTS (
@@ -703,6 +733,7 @@ function buildTransitionBatch(
     targetAcademicYearId,
     targetClassId,
     targetSectionId,
+    targetClassId,
     targetSectionId,
     targetClassId,
   );
@@ -739,6 +770,7 @@ function buildTransitionBatch(
     INNER JOIN classes AS target_class
       ON target_class.id = ?
      AND target_class.school_id = source.school_id
+     AND target_class.status = 'active'
     WHERE source.id = ?
       AND source.school_id = ?
       AND source.academic_year_id = ?
@@ -746,12 +778,21 @@ function buildTransitionBatch(
       AND source.promotion_status = ?
       AND source.completed_at = ?
       AND (
-        ? IS NULL
+        (
+          ? IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM sections AS active_target_section
+            WHERE active_target_section.school_id = source.school_id
+              AND active_target_section.class_id = ?
+              AND active_target_section.status = 'active'
+          )
+        )
         OR EXISTS (
           SELECT 1 FROM sections AS target_section
           WHERE target_section.id = ?
             AND target_section.school_id = source.school_id
             AND target_section.class_id = ?
+            AND target_section.status = 'active'
         )
       )
   `).bind(
@@ -768,6 +809,7 @@ function buildTransitionBatch(
     request.action,
     claimSentinel,
     targetSectionId,
+    targetClassId,
     targetSectionId,
     targetClassId,
   );

@@ -25,6 +25,7 @@ import type { StudentPromotionAction, StudentPromotionData, StudentPromotionPrev
 import {
   buildStudentPromotionRequest,
   isPromotionPreviewCurrent,
+  isTargetSectionSelectionReady,
   promotionSelectionFingerprint,
   type StudentPromotionSelection,
 } from '../../lib/studentPromotionUi';
@@ -69,6 +70,7 @@ export default function StudentPromotionPage() {
   const [students, setStudents] = useState<EffectiveStudentRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [sectionsLoading, setSectionsLoading] = useState(false);
+  const [sectionsError, setSectionsError] = useState('');
   const [loadError, setLoadError] = useState('');
 
   const [sourceAcademicYearId, setSourceAcademicYearId] = useState<number | null>(null);
@@ -92,6 +94,7 @@ export default function StudentPromotionPage() {
     setAcademicYears([]);
     setClasses([]);
     setSections([]);
+    setSectionsError('');
     setStudents([]);
     setSourceAcademicYearId(null);
     setStudentId(null);
@@ -154,6 +157,7 @@ export default function StudentPromotionPage() {
     sectionRequestIdRef.current += 1;
     const requestId = sectionRequestIdRef.current;
     setSections([]);
+    setSectionsError('');
     setTargetSectionId(null);
     if (schoolId == null || targetClassId == null) {
       setSectionsLoading(false);
@@ -161,10 +165,11 @@ export default function StudentPromotionPage() {
     }
 
     setSectionsLoading(true);
+    setSectionsError('');
     void getSections(schoolId, targetClassId).then((response) => {
       if (requestId !== sectionRequestIdRef.current) return;
       if (response.error) {
-        setPreviewError(response.error);
+        setSectionsError(`تعذر تحميل شعب الصف المستهدف: ${response.error}`);
         setSectionsLoading(false);
         return;
       }
@@ -173,6 +178,7 @@ export default function StudentPromotionPage() {
         && Number(section.class_id) === targetClassId
         && section.status === 'active'
       )));
+      setSectionsError('');
       setSectionsLoading(false);
     });
   }, [schoolId, targetClassId]);
@@ -213,16 +219,21 @@ export default function StudentPromotionPage() {
     setConfirmOpen(false);
   }, [selectionFingerprint]);
 
-  const requiresSection = action !== 'graduated'
-    && targetClassId != null
-    && !sectionsLoading
-    && sections.length > 0;
+  const sectionSelectionReady = isTargetSectionSelectionReady({
+    action,
+    targetClassId,
+    targetSectionId,
+    sectionsLoading,
+    sectionsError,
+    activeSectionCount: sections.length,
+  });
   const request = buildStudentPromotionRequest(selection);
-  const previewCurrent = preview != null && isPromotionPreviewCurrent(previewFingerprint, selection);
+  const previewCurrent = preview != null
+    && sectionSelectionReady
+    && isPromotionPreviewCurrent(previewFingerprint, selection);
   const canPreview = request != null
     && selectedStudent?.current_academic_year_id === sourceAcademicYearId
-    && !sectionsLoading
-    && (!requiresSection || targetSectionId != null);
+    && sectionSelectionReady;
 
   function changeAction(nextAction: StudentPromotionAction | null) {
     setAction(nextAction);
@@ -379,10 +390,11 @@ export default function StudentPromotionPage() {
                   </div>
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">الشعبة المستهدفة</label>
-                    <select value={targetSectionId ?? ''} onChange={(event) => setTargetSectionId(event.target.value ? Number(event.target.value) : null)} disabled={targetClassId == null || sectionsLoading || sections.length === 0} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm disabled:bg-gray-100">
-                      <option value="">{sectionsLoading ? 'جاري تحميل الشعب...' : sections.length > 0 ? 'اختر الشعبة صراحةً' : 'لا توجد شعب لهذا الصف'}</option>
+                    <select value={targetSectionId ?? ''} onChange={(event) => setTargetSectionId(event.target.value ? Number(event.target.value) : null)} disabled={targetClassId == null || sectionsLoading || sectionsError !== '' || sections.length === 0} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm disabled:bg-gray-100">
+                      <option value="">{sectionsLoading ? 'جاري تحميل الشعب...' : sectionsError ? 'تعذر تحميل الشعب' : sections.length > 0 ? 'اختر الشعبة صراحةً' : 'لا توجد شعب فعالة لهذا الصف'}</option>
                       {sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}
                     </select>
+                    {sectionsError && <p className="mt-2 text-sm font-medium text-red-700">{sectionsError}</p>}
                   </div>
                 </div>
               )}
@@ -445,7 +457,7 @@ export default function StudentPromotionPage() {
               <div className="rounded-lg bg-red-50 p-2 text-red-600"><AlertTriangle size={22} /></div>
               <div>
                 <h2 id="promotion-confirm-title" className="text-lg font-bold text-gray-900">تأكيد قرار {actionLabel(preview.action)}</h2>
-                <p className="mt-1 text-sm text-gray-600">سيعيد الخادم التحقق من أحدث حالة قبل أي كتابة. لن يُعدّل التسجيل التاريخي أو موقع الطالب المؤقت.</p>
+                <p className="mt-1 text-sm text-gray-600">لن يُحذف تسجيل السنة الحالية ولن يتغير صفه أو شعبته التاريخية. سيُقفل تسجيل المصدر وفق القرار، ويُنشأ تسجيل السنة المستهدفة عند الحاجة.</p>
               </div>
             </div>
             <div className="space-y-2 p-5 text-sm text-gray-700">
