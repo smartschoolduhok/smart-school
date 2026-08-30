@@ -19,7 +19,14 @@ export type ResultCardMode = 'partial' | 'complete';
 export interface ResultCardSubject {
   id: number;
   subject_name: string;
+  appears_in_report_card: number;
   counts_in_average: number;
+}
+
+export interface ResultCardSubjectPartitions {
+  applicableSubjects: ResultCardSubject[];
+  displaySubjects: ResultCardSubject[];
+  countedSubjects: ResultCardSubject[];
 }
 
 export interface ResultCardGrade {
@@ -68,6 +75,7 @@ export type ResultCardEvaluation =
       ok: true;
       academicYear: ResultCardAcademicYear;
       grades: ResultCardGrade[];
+      counted_grades: ResultCardGrade[];
       card_mode: ResultCardMode;
       required_fields: RawGradeField[];
       incomplete_subjects: ResultCardIncompleteSubject[];
@@ -127,6 +135,25 @@ function blankGrade(subject: ResultCardSubject): ResultCardGrade {
 function roundedAverage(values: number[]): number | null {
   if (values.length === 0) return null;
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+/**
+ * The caller supplies the canonical applicable set (active assignments joined
+ * to active, same-school subjects). Display and aggregate flags are intentionally
+ * independent and are partitioned once here for every Result Card calculation.
+ */
+export function partitionResultCardSubjects(
+  applicableSubjects: ResultCardSubject[],
+): ResultCardSubjectPartitions {
+  return {
+    applicableSubjects,
+    displaySubjects: applicableSubjects.filter(
+      (subject) => subject.appears_in_report_card === 1,
+    ),
+    countedSubjects: applicableSubjects.filter(
+      (subject) => subject.counts_in_average === 1,
+    ),
+  };
 }
 
 function expectsResultCardColumn(
@@ -197,7 +224,7 @@ export function calculateResultCardColumnAverages(
 }
 
 export function evaluateResultCard(
-  activeSubjects: ResultCardSubject[],
+  applicableSubjects: ResultCardSubject[],
   grades: ResultCardGrade[],
   settingsInput: ResultCardSettings,
   academicYear: ResultCardAcademicYear | null,
@@ -206,7 +233,7 @@ export function evaluateResultCard(
     return { ok: false, code: 'no_active_academic_year' };
   }
 
-  if (activeSubjects.length === 0) {
+  if (applicableSubjects.length === 0) {
     return { ok: false, code: 'no_active_subjects' };
   }
 
@@ -219,12 +246,17 @@ export function evaluateResultCard(
     (field) => field !== 'final_exam',
   );
   const gradesBySubject = new Map(grades.map((grade) => [grade.subject_id, grade]));
-  const countedSubjectIds = new Set(
-    activeSubjects
-      .filter((subject) => subject.counts_in_average === 1)
-      .map((subject) => subject.id),
+  const { displaySubjects, countedSubjects } = partitionResultCardSubjects(
+    applicableSubjects,
   );
-  const orderedGrades = activeSubjects.map(
+  // Preserve the pre-applicability behavior: an official card requires at
+  // least one visible subject row. Hidden counted subjects may affect an
+  // otherwise visible card, but must never produce an empty "successful" card.
+  if (displaySubjects.length === 0) {
+    return { ok: false, code: 'no_active_subjects' };
+  }
+  const countedSubjectIds = new Set(countedSubjects.map((subject) => subject.id));
+  const orderedGrades = applicableSubjects.map(
     (subject) => gradesBySubject.get(subject.id) ?? blankGrade(subject),
   );
   const countedGrades = orderedGrades.filter((grade) => countedSubjectIds.has(grade.subject_id));
@@ -265,7 +297,9 @@ export function evaluateResultCard(
     return grade;
   });
 
-  const incompleteSubjects = evaluatedGrades.flatMap((grade): ResultCardIncompleteSubject[] => {
+  const incompleteForGrades = (
+    targetGrades: ResultCardGrade[],
+  ): ResultCardIncompleteSubject[] => targetGrades.flatMap((grade): ResultCardIncompleteSubject[] => {
     const missingFields: string[] = [];
     if (!gradesBySubject.has(grade.subject_id)) missingFields.push('grade_record');
     for (const field of annualInputFields) {
@@ -298,9 +332,19 @@ export function evaluateResultCard(
       : [];
   });
 
+  const displaySubjectIds = new Set(displaySubjects.map((subject) => subject.id));
+  const displayGrades = evaluatedGrades.filter(
+    (grade) => displaySubjectIds.has(grade.subject_id),
+  );
+  const countedEvaluatedGrades = evaluatedGrades.filter(
+    (grade) => countedSubjectIds.has(grade.subject_id),
+  );
+  const incompleteSubjects = incompleteForGrades(displayGrades);
+  const incompleteCountedSubjects = incompleteForGrades(countedEvaluatedGrades);
+
   const cardMode: ResultCardMode = incompleteSubjects.length > 0 ? 'partial' : 'complete';
-  const hasFailure = evaluatedGrades.some((grade) => grade.result_status === 'راسب');
-  const hasCompletion = evaluatedGrades.some((grade) => grade.result_status === 'مكمل');
+  const hasFailure = displayGrades.some((grade) => grade.result_status === 'راسب');
+  const hasCompletion = displayGrades.some((grade) => grade.result_status === 'مكمل');
   const overallResultStatus: ResultCardOverallStatus = cardMode === 'partial'
     ? 'غير مكتمل'
     : hasFailure
@@ -308,19 +352,11 @@ export function evaluateResultCard(
       : hasCompletion
         ? 'مكمل'
         : 'ناجح';
-  const countedEvaluatedGrades = evaluatedGrades.filter(
-    (grade) => countedSubjectIds.has(grade.subject_id),
-  );
-  const incompleteCountedSubjectIds = new Set(
-    incompleteSubjects
-      .filter((subject) => countedSubjectIds.has(subject.subject_id))
-      .map((subject) => subject.subject_id),
-  );
   const effectiveGrades = countedEvaluatedGrades
     .map((grade) => grade.effective_grade)
     .filter(isFiniteNumber);
   const overallAverage = countedEvaluatedGrades.length > 0 &&
-    incompleteCountedSubjectIds.size === 0 &&
+    incompleteCountedSubjects.length === 0 &&
     effectiveGrades.length === countedEvaluatedGrades.length
     ? roundedAverage(effectiveGrades)
     : null;
@@ -328,16 +364,17 @@ export function evaluateResultCard(
   return {
     ok: true,
     academicYear,
-    grades: evaluatedGrades,
+    grades: displayGrades,
+    counted_grades: countedEvaluatedGrades,
     card_mode: cardMode,
     required_fields: requiredFields,
     incomplete_subjects: incompleteSubjects,
     summary: {
-      total_subjects: evaluatedGrades.length,
-      pass_count: evaluatedGrades.filter((grade) => grade.result_status === 'ناجح').length,
-      completion_count: evaluatedGrades.filter((grade) => grade.result_status === 'مكمل').length,
-      fail_count: evaluatedGrades.filter((grade) => grade.result_status === 'راسب').length,
-      exempt_count: evaluatedGrades.filter((grade) => grade.exemption_status === 1).length,
+      total_subjects: displayGrades.length,
+      pass_count: displayGrades.filter((grade) => grade.result_status === 'ناجح').length,
+      completion_count: displayGrades.filter((grade) => grade.result_status === 'مكمل').length,
+      fail_count: displayGrades.filter((grade) => grade.result_status === 'راسب').length,
+      exempt_count: displayGrades.filter((grade) => grade.exemption_status === 1).length,
       annual_effort_average: annualEffortAverage,
       min_annual_effort: minAnnualEffort,
       overall_average: overallAverage,

@@ -128,6 +128,7 @@ import {
   type StudentWriteValues,
 } from './lib/studentEnrollments'
 import { executeStudentPromotion } from './lib/studentPromotion'
+import { ANALYTICS_APPLICABLE_GRADE_JOINS } from './lib/subjectApplicability'
 import {
   STUDENT_RELIGION_HEADER_ALIASES,
   normalizeExcelStudentReligion,
@@ -3070,9 +3071,9 @@ async function getActiveStudentSubjects(db: D1Database, studentId: number, schoo
     SELECT ss.id as student_subject_id, s.id as subject_id, s.name as subject_name,
            c.name as class_name, sec.name as section_name
     FROM student_subjects ss
-    JOIN subjects s ON ss.subject_id = s.id
-    LEFT JOIN classes c ON s.class_id = c.id
-    LEFT JOIN sections sec ON s.section_id = sec.id
+    JOIN subjects s ON ss.subject_id = s.id AND s.school_id = ss.school_id
+    LEFT JOIN classes c ON ss.class_id = c.id AND c.school_id = ss.school_id
+    LEFT JOIN sections sec ON ss.section_id = sec.id AND sec.school_id = ss.school_id
     WHERE ss.student_id = ? AND ss.school_id = ? AND ss.is_active = 1 AND s.status = 'active'
     ORDER BY s.order_index, s.id
   `).bind(studentId, schoolId).all<any>();
@@ -3247,16 +3248,26 @@ app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRo
       return c.json({ error: 'غير مسموح' }, 403);
     }
 
-    const students = await db.prepare('SELECT id FROM students WHERE section_id = ? AND school_id = ? AND status = "active"').bind(section_id, section.school_id).all<{ id: number }>();
+    const students = (await listStudentsWithEffectivePlacement(db, {
+      schoolId: section.school_id,
+      classId: section.class_id,
+      sectionId: Number(section_id),
+    })).filter((student) => student.status === 'active');
     let created = 0;
     let skipped = 0;
 
-    for (const st of (students.results || [])) {
+    for (const st of students) {
       for (const suId of subject_ids) {
         const ss = await db.prepare(`
-          SELECT id FROM student_subjects
-          WHERE student_id = ? AND subject_id = ? AND school_id = ? AND is_active = 1
-        `).bind(st.id, suId, section.school_id).first<{ id: number }>();
+          SELECT ss.id
+          FROM student_subjects ss
+          INNER JOIN subjects su
+            ON su.id = ss.subject_id
+           AND su.school_id = ss.school_id
+           AND su.status = 'active'
+          WHERE ss.student_id = ? AND ss.subject_id = ? AND ss.school_id = ?
+            AND ss.class_id = ? AND ss.section_id = ? AND ss.is_active = 1
+        `).bind(st.id, suId, section.school_id, section.class_id, Number(section_id)).first<{ id: number }>();
         if (!ss) { skipped++; continue; }
 
         const existing = await db.prepare('SELECT id FROM grades WHERE student_subject_id = ? AND is_active = 1').bind(ss.id).first<any>();
@@ -3500,11 +3511,11 @@ function buildAnalyticsWhere(opts: { schoolId: number | null; classId: number | 
     params.push(opts.schoolId);
   }
   if (opts.classId != null) {
-    conditions.push('st.class_id = ?');
+    conditions.push('ss.class_id = ?');
     params.push(opts.classId);
   }
   if (opts.sectionId != null) {
-    conditions.push('st.section_id = ?');
+    conditions.push('ss.section_id = ?');
     params.push(opts.sectionId);
   }
   if (opts.subjectId != null) {
@@ -3559,9 +3570,7 @@ app.get('/api/analytics/overview', requireAuthEnforced(), async (c) => {
         g.annual_effort,
         g.grade_after_completion,
         g.final_grade
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN students st ON ss.student_id = st.id AND st.status = 'active'
+      ${ANALYTICS_APPLICABLE_GRADE_JOINS}
       WHERE ${where}
     `).bind(...params).all<any>();
 
@@ -3620,10 +3629,8 @@ app.get('/api/analytics/by-class', requireAuthEnforced(), async (c) => {
         g.exemption_status,
         g.effective_grade,
         g.annual_effort
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN students st ON ss.student_id = st.id AND st.status = 'active'
-      INNER JOIN classes cl ON st.class_id = cl.id
+      ${ANALYTICS_APPLICABLE_GRADE_JOINS}
+      INNER JOIN classes cl ON ss.class_id = cl.id AND cl.school_id = ss.school_id
       WHERE ${where}
     `).bind(...params).all<any>();
 
@@ -3680,11 +3687,9 @@ app.get('/api/analytics/by-section', requireAuthEnforced(), async (c) => {
         g.exemption_status,
         g.effective_grade,
         g.annual_effort
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN students st ON ss.student_id = st.id AND st.status = 'active'
-      INNER JOIN sections se ON st.section_id = se.id
-      INNER JOIN classes cl ON st.class_id = cl.id
+      ${ANALYTICS_APPLICABLE_GRADE_JOINS}
+      INNER JOIN sections se ON ss.section_id = se.id AND se.school_id = ss.school_id
+      INNER JOIN classes cl ON ss.class_id = cl.id AND cl.school_id = ss.school_id
       WHERE ${where}
     `).bind(...params).all<any>();
 
@@ -3740,10 +3745,7 @@ app.get('/api/analytics/by-subject', requireAuthEnforced(), async (c) => {
         g.exemption_status,
         g.effective_grade,
         g.annual_effort
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN students st ON ss.student_id = st.id AND st.status = 'active'
-      INNER JOIN subjects su ON ss.subject_id = su.id
+      ${ANALYTICS_APPLICABLE_GRADE_JOINS}
       WHERE ${where}
     `).bind(...params).all<any>();
 
@@ -3802,12 +3804,9 @@ app.get('/api/analytics/students-close-to-passing', requireAuthEnforced(), async
         g.final_grade,
         g.grade_after_completion,
         g.result_status
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN students st ON ss.student_id = st.id AND st.status = 'active'
-      INNER JOIN classes cl ON st.class_id = cl.id
-      INNER JOIN sections se ON st.section_id = se.id
-      INNER JOIN subjects su ON ss.subject_id = su.id
+      ${ANALYTICS_APPLICABLE_GRADE_JOINS}
+      INNER JOIN classes cl ON ss.class_id = cl.id AND cl.school_id = ss.school_id
+      INNER JOIN sections se ON ss.section_id = se.id AND se.school_id = ss.school_id
       WHERE ${where}
         AND g.effective_grade IS NOT NULL
         AND g.effective_grade < ?
@@ -3855,12 +3854,9 @@ app.get('/api/analytics/students-close-to-exemption', requireAuthEnforced(), asy
         g.final_grade,
         g.grade_after_completion,
         g.result_status
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN students st ON ss.student_id = st.id AND st.status = 'active'
-      INNER JOIN classes cl ON st.class_id = cl.id
-      INNER JOIN sections se ON st.section_id = se.id
-      INNER JOIN subjects su ON ss.subject_id = su.id
+      ${ANALYTICS_APPLICABLE_GRADE_JOINS}
+      INNER JOIN classes cl ON ss.class_id = cl.id AND cl.school_id = ss.school_id
+      INNER JOIN sections se ON ss.section_id = se.id AND se.school_id = ss.school_id
       WHERE ${where}
         AND g.annual_effort IS NOT NULL
         AND g.annual_effort < ?
@@ -3902,15 +3898,12 @@ app.get('/api/analytics/exemption-blockers', requireAuthEnforced(), async (c) =>
         COUNT(*) AS total_students,
         SUM(CASE WHEN g.exemption_status = 1 THEN 1 ELSE 0 END) AS exempt_count,
         SUM(CASE WHEN g.annual_effort IS NULL OR g.annual_effort < ? THEN 1 ELSE 0 END) AS blocker_count
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN students st ON ss.student_id = st.id AND st.status = 'active'
-      INNER JOIN subjects su ON ss.subject_id = su.id
+      ${ANALYTICS_APPLICABLE_GRADE_JOINS}
       WHERE ${where}
       GROUP BY su.id, su.name
       HAVING blocker_count > 0
       ORDER BY blocker_count DESC, su.order_index, su.id
-    `).bind(...params, genMin).all<any>();
+    `).bind(genMin, ...params).all<any>();
 
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
@@ -3970,9 +3963,7 @@ app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), asy
         g.mid_year_exam,
         g.final_exam,
         g.completion_exam
-      FROM grades g
-      INNER JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.is_active = 1
-      INNER JOIN subjects su ON ss.subject_id = su.id
+      ${ANALYTICS_APPLICABLE_GRADE_JOINS}
       WHERE ss.student_id = ? AND g.is_active = 1
       ORDER BY su.order_index, su.id
     `).bind(studentId).all<any>();
@@ -4119,19 +4110,38 @@ async function loadResultCardStudent(
   db: D1Database,
   studentId: number,
 ): Promise<ResultCardStudentSnapshot | null> {
-  return db.prepare(`
-    SELECT s.id, s.school_id, s.full_name, s.student_number, s.gender, s.photo_url,
-           s.class_id, s.section_id, c.name AS class_name, c.stage AS class_stage,
-           sec.name AS section_name, sch.name AS school_name, sch.name_en AS school_name_en,
-           sch.address AS school_address, sch.phone AS school_phone, sch.email AS school_email,
-           sch.website AS school_website, sch.principal_name, sch.logo_url,
-           sch.official_stamp_url
-    FROM students s
-    LEFT JOIN classes c ON s.class_id = c.id AND c.school_id = s.school_id
-    LEFT JOIN sections sec ON s.section_id = sec.id AND sec.school_id = s.school_id
-    INNER JOIN schools sch ON s.school_id = sch.id
-    WHERE s.id = ? AND s.status = 'active'
-  `).bind(studentId).first<ResultCardStudentSnapshot>();
+  const student = await getStudentWithEffectivePlacement(db, studentId);
+  if (!student || student.status !== 'active') return null;
+
+  const school = await db.prepare(`
+    SELECT sch.name AS school_name, sch.name_en AS school_name_en,
+           sch.address AS school_address, sch.phone AS school_phone,
+           sch.email AS school_email, sch.website AS school_website,
+           sch.principal_name, sch.logo_url, sch.official_stamp_url,
+           c.stage AS class_stage
+    FROM schools sch
+    LEFT JOIN classes c ON c.id = ? AND c.school_id = sch.id
+    WHERE sch.id = ?
+  `).bind(student.class_id, student.school_id).first<Omit<
+    ResultCardStudentSnapshot,
+    'id' | 'school_id' | 'full_name' | 'student_number' | 'gender' |
+    'photo_url' | 'class_id' | 'section_id' | 'class_name' | 'section_name'
+  >>();
+  if (!school) return null;
+
+  return {
+    id: student.id,
+    school_id: student.school_id,
+    full_name: student.full_name,
+    student_number: student.student_number,
+    gender: student.gender,
+    photo_url: student.photo_url,
+    class_id: student.class_id,
+    section_id: student.section_id,
+    class_name: student.class_name,
+    section_name: student.section_name,
+    ...school,
+  };
 }
 
 async function loadResultCardEvaluation(
@@ -4144,12 +4154,13 @@ async function loadResultCardEvaluation(
   subjects: ResultCardSubject[];
 }> {
   const subjectRows = await db.prepare(`
-    SELECT su.id, su.name AS subject_name, su.counts_in_average
+    SELECT su.id, su.name AS subject_name, su.appears_in_report_card,
+           su.counts_in_average
     FROM student_subjects ss
     INNER JOIN subjects su
       ON ss.subject_id = su.id AND su.school_id = ss.school_id
     WHERE ss.student_id = ? AND ss.school_id = ?
-      AND ss.is_active = 1 AND su.status = 'active' AND su.appears_in_report_card = 1
+      AND ss.is_active = 1 AND su.status = 'active'
     ORDER BY su.order_index, su.id
   `).bind(studentId, schoolId).all<ResultCardSubject>();
 
@@ -4183,7 +4194,6 @@ async function loadResultCardEvaluation(
       ON ss.subject_id = su.id
       AND su.school_id = ss.school_id
       AND su.status = 'active'
-      AND su.appears_in_report_card = 1
     WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1
     ORDER BY su.order_index, su.id
   `).bind(studentId, schoolId).all<ResultCardGrade>();
@@ -4288,6 +4298,17 @@ async function buildResultCardSnapshot(
   options: ResultCardIssueOptions,
   identity: { cardNumber: string | null; token: string | null },
 ): Promise<ResultCardSnapshotBuild> {
+  // With an active academic year, effective placement intentionally resolves to
+  // null when the student has no enrollment. Never issue an official card from
+  // legacy placement (or from an empty placement) in that state.
+  if (student.class_id == null) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'invalid_student_placement',
+      error: 'لا يوجد تسجيل دراسي فعال للطالب في السنة الدراسية الحالية',
+    };
+  }
   const placement = await validateStudentPlacement(
     db,
     student.school_id,
@@ -4326,13 +4347,13 @@ async function buildResultCardSnapshot(
   const visibleColumns = buildResultCardColumns(settings, displaySettings);
   const columnAverages = calculateResultCardColumnAverages(
     subjects,
-    evaluation.grades,
+    evaluation.counted_grades,
     settings,
     visibleColumns,
     evaluation.summary.general_exemption_eligible,
   );
   const cardData = {
-    schema_version: 3,
+    schema_version: 4,
     card_mode: evaluation.card_mode,
     school: {
       id: student.school_id,
@@ -4362,6 +4383,10 @@ async function buildResultCardSnapshot(
     visible_columns: visibleColumns,
     column_averages: columnAverages,
     subjects: evaluation.grades,
+    applicability: {
+      display_subject_ids: evaluation.grades.map((grade) => grade.subject_id),
+      counted_subject_ids: evaluation.counted_grades.map((grade) => grade.subject_id),
+    },
     incomplete_subjects: evaluation.incomplete_subjects,
     summary: evaluation.summary,
     document_settings: {
@@ -4744,13 +4769,11 @@ app.post(
         );
       }
 
-      const studentRows = await db.prepare(`
-        SELECT id
-        FROM students
-        WHERE school_id = ? AND class_id = ? AND section_id = ? AND status = 'active'
-        ORDER BY full_name
-      `).bind(section.school_id, classId, sectionId).all<{ id: number }>();
-      const students = studentRows.results || [];
+      const students = (await listStudentsWithEffectivePlacement(db, {
+        schoolId: section.school_id,
+        classId,
+        sectionId,
+      })).filter((student) => student.status === 'active');
 
       if (students.length === 0) {
         return c.json({ error: 'لا يوجد طلاب فعالون في هذه الشعبة' }, 400);
@@ -8125,12 +8148,15 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
 }
 
 async function loadGradeImportContext(db: D1Database, schoolId: number): Promise<GradeImportContext> {
-  const [settingsResult, studentsResult, subjectsResult, assignmentsResult, gradesResult, classesResult, sectionsResult] = await db.batch<any>([
+  const students = (await listStudentsWithEffectivePlacement(db, { schoolId }))
+    .filter((student) => student.status !== 'archived');
+  const [settingsResult, subjectsResult, assignmentsResult, gradesResult, classesResult, sectionsResult] = await db.batch<any>([
     db.prepare(`SELECT max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade,
                        first_term_input_mode, second_term_input_mode, mid_year_exam_enabled, final_exam_enabled, completion_exam_enabled
                 FROM grade_settings WHERE school_id = ?`).bind(schoolId),
-    db.prepare(`SELECT id, school_id, student_number, full_name, class_id, section_id FROM students WHERE school_id = ? AND status != 'archived'`).bind(schoolId),
-    db.prepare(`SELECT id, school_id, name, class_id, section_id, status FROM subjects WHERE school_id = ? AND status != 'archived'`).bind(schoolId),
+    // Keep archived subject metadata in context so religious-conflict preflight
+    // matches the D1 trigger; subject resolution still excludes archived rows.
+    db.prepare(`SELECT id, school_id, name, class_id, section_id, status, religious_track FROM subjects WHERE school_id = ?`).bind(schoolId),
     db.prepare(`SELECT id, school_id, student_id, subject_id, class_id, section_id, is_active FROM student_subjects WHERE school_id = ?`).bind(schoolId),
     db.prepare(`SELECT id, school_id, student_subject_id, first_term_grade, first_month, second_month, second_term_grade, third_month, fourth_month, mid_year_exam, final_exam, completion_exam, notes FROM grades WHERE school_id = ?`).bind(schoolId),
     db.prepare(`SELECT id, school_id, name, status FROM classes WHERE school_id = ?`).bind(schoolId),
@@ -8146,7 +8172,7 @@ async function loadGradeImportContext(db: D1Database, schoolId: number): Promise
   return {
     schoolId,
     settings,
-    students: studentsResult.results || [],
+    students,
     subjects: subjectsResult.results || [],
     assignments: assignmentsResult.results || [],
     grades: gradesResult.results || [],

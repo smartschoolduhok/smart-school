@@ -128,7 +128,7 @@ export default function StudentSubjectsPage() {
     }
     setLoading(true); setError('');
     const [aRes, cRes, sRes, stRes, suRes] = await Promise.all([
-      getStudentSubjects(schoolId, undefined, undefined, undefined, undefined, filterActive === '' ? null : filterActive === '1'),
+      getStudentSubjects(schoolId, undefined, undefined, undefined, undefined, null),
       getClasses(schoolId), getSections(schoolId), getStudents(schoolId), getSubjects(schoolId)
     ]);
     if (!isCurrentRequest()) return;

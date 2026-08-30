@@ -558,6 +558,39 @@ test('bulk assignment UI hides religious subjects for class/section while explic
   assert.match(studentSubjectsPage, /religiousTrackLabel/);
 });
 
+test('Student Subjects loads the complete assignment dataset and filters status locally', () => {
+  const schoolEffect = studentSubjectsPage.slice(
+    studentSubjectsPage.indexOf('useEffect(() => {'),
+    studentSubjectsPage.indexOf('async function loadData()'),
+  );
+  const loader = studentSubjectsPage.slice(
+    studentSubjectsPage.indexOf('async function loadData()'),
+    studentSubjectsPage.indexOf('const filteredAssignments'),
+  );
+  const localFilter = studentSubjectsPage.slice(
+    studentSubjectsPage.indexOf('const filteredAssignments'),
+    studentSubjectsPage.indexOf('const sectionsForClass'),
+  );
+  const stats = studentSubjectsPage.slice(
+    studentSubjectsPage.indexOf('const activeCount'),
+    studentSubjectsPage.indexOf('return ('),
+  );
+
+  assert.match(studentSubjectsPage, /const \[filterActive, setFilterActive\] = useState<string>\('1'\)/);
+  assert.match(loader, /getStudentSubjects\(schoolId, undefined, undefined, undefined, undefined, null\)/);
+  assert.doesNotMatch(loader, /filterActive/);
+  assert.match(schoolEffect, /\}, \[schoolId\]\);/);
+  assert.doesNotMatch(schoolEffect, /\[schoolId, filterActive\]/);
+  assert.match(localFilter, /filterActive !== ''/);
+  assert.match(localFilter, /String\(a\.is_active\) === filterActive/);
+  assert.match(studentSubjectsPage, /<option value="1">نشط<\/option>/);
+  assert.match(studentSubjectsPage, /<option value="0">غير نشط<\/option>/);
+  assert.match(studentSubjectsPage, /<option value="">الكل<\/option>/);
+  assert.match(stats, /assignments\.filter\(\(a\) => a\.is_active === 1\)\.length/);
+  assert.match(stats, /assignments\.filter\(\(a\) => a\.is_active === 0\)\.length/);
+  assert.match(studentSubjectsPage, /new Set\(assignments\.map\(\(a\) => a\.student_id\)\)\.size/);
+});
+
 test('Student Profile distinguishes personal religion and academic religious subject with safe empty state', () => {
   assert.match(studentProfilePage, /الديانة الشخصية/);
   assert.match(studentProfilePage, /مادة الديانة الدراسية/);

@@ -66,6 +66,7 @@ function baseContext({ studentCount = 2, includeAssignments = true, grades = [] 
     class_id: 10,
     section_id: null,
     status: 'active',
+    religious_track: null,
   }));
   const assignments = includeAssignments
     ? students.flatMap(student => subjects.map(subject => ({
@@ -106,6 +107,12 @@ function payloadSheet(subject, rows, mapping = gradeMapping, extra = {}) {
     ...extra,
   };
 }
+
+function oneGradeRow(value = 80, studentNumber = '5/001') {
+  return [{ _excel_row_number: 2, 'column:0': studentNumber, 'column:2': value }];
+}
+
+const oneGradeMapping = { student_number: 'column:0', first_month: 'column:2' };
 
 test('recognizes all 13 Iraqi subject sheets and excludes report/control sheets', () => {
   const subjects = subjectNames.map((name, index) => ({ id: 100 + index, name, status: 'active' }));
@@ -288,6 +295,129 @@ test('reactivates an existing inactive assignment only in explicit auto-assignme
   assert.equal(autoPlan.errors.length, 0);
   assert.equal(autoPlan.records[0].assignment_action, 'reactivate');
   assert.equal(autoPlan.summary.assignment_reactivations, 1);
+});
+
+test('religious auto-assignment cannot replace an active assignment of another track', () => {
+  for (const [activeTrack, incomingTrack] of [['islamic', 'christian'], ['christian', 'islamic']]) {
+    const context = baseContext({ studentCount: 1 });
+    const activeSubject = { ...context.subjects[0], religious_track: activeTrack };
+    const incomingSubject = { ...context.subjects[1], religious_track: incomingTrack };
+    context.subjects = [activeSubject, incomingSubject, ...context.subjects.slice(2)];
+    context.assignments = [context.assignments.find((item) => item.subject_id === activeSubject.id)];
+
+    const plan = buildGradeImportPlan({
+      assignment_mode: 'auto_assign_missing_subjects',
+      grade_sources: [payloadSheet(incomingSubject, oneGradeRow(), oneGradeMapping)],
+    }, context);
+    assert.equal(plan.records.length, 0);
+    assert.ok(plan.errors.some((item) => item.field === 'religious_assignment'));
+  }
+});
+
+test('one religious auto-assignment is allowed without a competing religious assignment', () => {
+  const context = baseContext({ studentCount: 1, includeAssignments: false });
+  const islamic = { ...context.subjects[0], religious_track: 'islamic' };
+  context.subjects[0] = islamic;
+
+  const plan = buildGradeImportPlan({
+    assignment_mode: 'auto_assign_missing_subjects',
+    grade_sources: [payloadSheet(islamic, oneGradeRow(), oneGradeMapping)],
+  }, context);
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records[0].assignment_action, 'create');
+});
+
+test('religious reactivation is allowed alone and rejected beside a different active track', () => {
+  const context = baseContext({ studentCount: 1 });
+  const islamic = { ...context.subjects[0], religious_track: 'islamic' };
+  const christian = { ...context.subjects[1], religious_track: 'christian' };
+  context.subjects = [islamic, christian, ...context.subjects.slice(2)];
+  const islamicAssignment = context.assignments.find((item) => item.subject_id === islamic.id);
+  const christianAssignment = context.assignments.find((item) => item.subject_id === christian.id);
+  islamicAssignment.is_active = 0;
+  context.assignments = [islamicAssignment];
+
+  const allowed = buildGradeImportPlan({
+    assignment_mode: 'auto_assign_missing_subjects',
+    grade_sources: [payloadSheet(islamic, oneGradeRow(), oneGradeMapping)],
+  }, context);
+  assert.equal(allowed.errors.length, 0);
+  assert.equal(allowed.records[0].assignment_action, 'reactivate');
+
+  context.assignments.push(christianAssignment);
+  const rejected = buildGradeImportPlan({
+    assignment_mode: 'auto_assign_missing_subjects',
+    grade_sources: [payloadSheet(islamic, oneGradeRow(), oneGradeMapping)],
+  }, context);
+  assert.equal(rejected.records.length, 0);
+  assert.ok(rejected.errors.some((item) => item.field === 'religious_assignment'));
+});
+
+test('one plan cannot auto-assign two different religious subjects to one student', () => {
+  const context = baseContext({ studentCount: 1, includeAssignments: false });
+  const islamic = { ...context.subjects[0], religious_track: 'islamic' };
+  const christian = { ...context.subjects[1], religious_track: 'christian' };
+  context.subjects = [islamic, christian, ...context.subjects.slice(2)];
+
+  const plan = buildGradeImportPlan({
+    assignment_mode: 'auto_assign_missing_subjects',
+    grade_sources: [
+      payloadSheet(islamic, oneGradeRow(80), oneGradeMapping),
+      payloadSheet(christian, oneGradeRow(81), oneGradeMapping),
+    ],
+  }, context);
+  assert.equal(plan.records.length, 1);
+  assert.equal(plan.records[0].subject_id, islamic.id);
+  assert.ok(plan.errors.some((item) => item.field === 'religious_assignment'));
+});
+
+test('religious and ordinary assignments can be planned together and personal religion is irrelevant', () => {
+  const context = baseContext({ studentCount: 1, includeAssignments: false });
+  context.students[0].religion = 'christian';
+  const islamic = { ...context.subjects[0], religious_track: 'islamic' };
+  const ordinary = context.subjects[1];
+  context.subjects[0] = islamic;
+
+  const plan = buildGradeImportPlan({
+    assignment_mode: 'auto_assign_missing_subjects',
+    grade_sources: [
+      payloadSheet(islamic, oneGradeRow(80), oneGradeMapping),
+      payloadSheet(ordinary, oneGradeRow(81), oneGradeMapping),
+    ],
+  }, context);
+  assert.equal(plan.errors.length, 0);
+  assert.deepEqual(plan.records.map((record) => record.subject_id), [islamic.id, ordinary.id]);
+  assert.ok(plan.records.every((record) => record.assignment_action === 'create'));
+});
+
+test('preview and confirm planning deterministically revalidate religious conflicts from fresh context', () => {
+  const context = baseContext({ studentCount: 1, includeAssignments: false });
+  const islamic = { ...context.subjects[0], religious_track: 'islamic' };
+  const christian = { ...context.subjects[1], religious_track: 'christian' };
+  context.subjects = [islamic, christian, ...context.subjects.slice(2)];
+  const payload = {
+    assignment_mode: 'auto_assign_missing_subjects',
+    grade_sources: [payloadSheet(islamic, oneGradeRow(), oneGradeMapping)],
+  };
+
+  const preview = buildGradeImportPlan(payload, context);
+  assert.equal(preview.errors.length, 0);
+  const confirmWithSameContext = buildGradeImportPlan(payload, structuredClone(context));
+  assert.deepEqual(confirmWithSameContext.errors, preview.errors);
+
+  const changedContext = structuredClone(context);
+  changedContext.assignments.push({
+    id: 9901,
+    school_id: 1,
+    student_id: 1,
+    subject_id: christian.id,
+    class_id: 10,
+    section_id: 20,
+    is_active: 1,
+  });
+  const confirmAfterConflict = buildGradeImportPlan(payload, changedContext);
+  assert.equal(confirmAfterConflict.records.length, 0);
+  assert.ok(confirmAfterConflict.errors.some((item) => item.field === 'religious_assignment'));
 });
 
 test('rejects a stale assignment whose placement no longer matches the student', () => {
@@ -888,7 +1018,7 @@ test('one generic source resolves multiple subjects per row without treating the
   assert.equal(fixedOverride.errors.length, 0);
   assert.equal(fixedOverride.records[0].subject_id, chemistry.id);
 
-  const economics = { id: 777, school_id: 1, name: 'الاقتصاد', class_id: 10, section_id: null, status: 'active' };
+  const economics = { id: 777, school_id: 1, name: 'الاقتصاد', class_id: 10, section_id: null, status: 'active', religious_track: null };
   const economicsAssignment = { id: 1777, school_id: 1, student_id: 1, subject_id: economics.id, class_id: 10, section_id: 20, is_active: 1 };
   const outsideHints = buildGradeImportPlan({ grade_sources: [{
     ...source,
@@ -934,7 +1064,13 @@ test('grade preview remains write-free and confirm uses one transactional D1 bat
   const confirmStart = worker.indexOf("app.post('/api/import-export/:type/confirm'");
   const previewPrefix = worker.slice(previewStart, confirmStart);
   assert.match(previewPrefix, /if \(type === 'grades'\)[\s\S]*loadGradeImportContext[\s\S]*buildGradeImportPlan[\s\S]*return c\.json/);
-  assert.doesNotMatch(worker.slice(worker.indexOf('async function loadGradeImportContext'), worker.indexOf('function gradeImportPreviewData')), /\.run\(\)/);
+  const contextLoader = worker.slice(worker.indexOf('async function loadGradeImportContext'), worker.indexOf('function gradeImportPreviewData'));
+  assert.doesNotMatch(contextLoader, /\.run\(\)/);
+  assert.match(contextLoader, /listStudentsWithEffectivePlacement\(db, \{ schoolId \}\)/);
+  assert.match(contextLoader, /status !== 'archived'/);
+  assert.match(contextLoader, /status, religious_track FROM subjects/);
+  const confirmGrades = worker.slice(confirmStart, worker.indexOf("if (type === 'students')", confirmStart));
+  assert.match(confirmGrades, /loadGradeImportContext\(db, school_id\)[\s\S]*buildGradeImportPlan\(parsed\.payload, context\)/);
   const atomicWriter = worker.slice(worker.indexOf('async function executeGradeImportPlan'), previewStart);
   assert.match(atomicWriter, /const results = await db\.batch\(statements\)/);
   assert.match(atomicWriter, /const assignmentCreates = plan\.records\.filter/);
