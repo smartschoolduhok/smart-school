@@ -45,11 +45,28 @@ function executeLabel(action: StudentPromotionAction | null): string {
   return 'تنفيذ الترفيع';
 }
 
-function ValueCard({ label, value }: { label: string; value: string | number | null | undefined }) {
+function AcademicYearValue({ value }: { value: string | null | undefined }) {
+  if (value == null || value === '') return <span>—</span>;
+  return <bdi dir="ltr" className="inline-block">{value}</bdi>;
+}
+
+function ValueCard({
+  label,
+  value,
+  valueDirection,
+}: {
+  label: string;
+  value: string | number | null | undefined;
+  valueDirection?: 'ltr';
+}) {
   return (
     <div className="rounded-lg bg-gray-50 p-3">
       <p className="text-xs font-medium text-gray-500">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-gray-900">{value == null || value === '' ? '—' : value}</p>
+      <p className="mt-1 text-sm font-semibold text-gray-900">
+        {valueDirection === 'ltr'
+          ? <AcademicYearValue value={value == null ? null : String(value)} />
+          : value == null || value === '' ? '—' : value}
+      </p>
     </div>
   );
 }
@@ -318,9 +335,9 @@ export default function StudentPromotionPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">السنة الدراسية المصدر</label>
-                <select value={sourceAcademicYearId ?? ''} disabled className="w-full rounded-lg border border-gray-200 bg-gray-100 px-3 py-2.5 text-sm">
-                  <option value="">لا توجد سنة دراسية فعالة</option>
-                  {activeYear && <option value={activeYear.id}>{activeYear.name}</option>}
+                <select dir="ltr" value={sourceAcademicYearId ?? ''} disabled className="w-full rounded-lg border border-gray-200 bg-gray-100 px-3 py-2.5 text-sm">
+                  <option dir="rtl" value="">لا توجد سنة دراسية فعالة</option>
+                  {activeYear && <option dir="ltr" value={activeYear.id}>{activeYear.name}</option>}
                 </select>
               </div>
               <div>
@@ -337,7 +354,7 @@ export default function StudentPromotionPage() {
               <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                 <ValueCard label="اسم الطالب" value={selectedStudent.full_name} />
                 <ValueCard label="رقم الطالب" value={selectedStudent.student_number} />
-                <ValueCard label="السنة الحالية" value={selectedStudent.current_academic_year_name} />
+                <ValueCard label="السنة الحالية" value={selectedStudent.current_academic_year_name} valueDirection="ltr" />
                 <ValueCard label="الصف الحالي" value={selectedStudent.class_name} />
                 <ValueCard label="الشعبة الحالية" value={selectedStudent.section_name} />
                 <ValueCard label="حالة التسجيل / القرار" value={`${enrollmentStatusLabel(selectedStudent.current_enrollment_status)} / ${promotionStatusLabel(selectedStudent.current_promotion_status)}`} />
@@ -376,9 +393,9 @@ export default function StudentPromotionPage() {
                 <div className="grid gap-4 md:grid-cols-3">
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">السنة الدراسية المستهدفة</label>
-                    <select value={targetAcademicYearId ?? ''} onChange={(event) => setTargetAcademicYearId(event.target.value ? Number(event.target.value) : null)} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm">
-                      <option value="">اختر سنة لاحقة غير فعالة</option>
-                      {targetYears.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}
+                    <select dir="ltr" value={targetAcademicYearId ?? ''} onChange={(event) => setTargetAcademicYearId(event.target.value ? Number(event.target.value) : null)} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm">
+                      <option dir="rtl" value="">اختر سنة لاحقة غير فعالة</option>
+                      {targetYears.map((year) => <option dir="ltr" key={year.id} value={year.id}>{year.name}</option>)}
                     </select>
                   </div>
                   <div>
@@ -420,9 +437,9 @@ export default function StudentPromotionPage() {
                   <ValueCard label="المدرسة" value={preview.school.name} />
                   <ValueCard label="القرار" value={actionLabel(preview.action)} />
                   <ValueCard label="تسجيل مستهدف موجود" value={preview.target_enrollment_exists ? 'نعم' : 'لا'} />
-                  <ValueCard label="سنة المصدر" value={preview.source.academic_year_name} />
+                  <ValueCard label="سنة المصدر" value={preview.source.academic_year_name} valueDirection="ltr" />
                   <ValueCard label="موقع المصدر" value={`${preview.source.class_name}${preview.source.section_name ? ` / ${preview.source.section_name}` : ''}`} />
-                  <ValueCard label="السنة المستهدفة" value={preview.target?.academic_year_name} />
+                  <ValueCard label="السنة المستهدفة" value={preview.target?.academic_year_name} valueDirection="ltr" />
                   <ValueCard label="الموقع المستهدف" value={preview.target ? `${preview.target.class_name}${preview.target.section_name ? ` / ${preview.target.section_name}` : ''}` : 'لا يوجد — تخرج'} />
                 </div>
                 {preview.warnings.map((warning) => <p key={warning} className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{warning}</p>)}
@@ -462,8 +479,16 @@ export default function StudentPromotionPage() {
             </div>
             <div className="space-y-2 p-5 text-sm text-gray-700">
               <p><span className="font-semibold">الطالب:</span> {preview.student.full_name}</p>
-              <p><span className="font-semibold">المصدر:</span> {preview.source.academic_year_name} — {preview.source.class_name}</p>
-              <p><span className="font-semibold">الهدف:</span> {preview.target ? `${preview.target.academic_year_name} — ${preview.target.class_name}` : 'تخرج بلا تسجيل مستهدف'}</p>
+              <p>
+                <span className="font-semibold">المصدر:</span>{' '}
+                <AcademicYearValue value={preview.source.academic_year_name} /> — {preview.source.class_name}
+              </p>
+              <p>
+                <span className="font-semibold">الهدف:</span>{' '}
+                {preview.target ? (
+                  <><AcademicYearValue value={preview.target.academic_year_name} /> — {preview.target.class_name}</>
+                ) : 'تخرج بلا تسجيل مستهدف'}
+              </p>
             </div>
             <div className="flex justify-end gap-3 border-t border-gray-100 p-5">
               <button type="button" onClick={() => setConfirmOpen(false)} disabled={executing} className="rounded-lg px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">إلغاء</button>

@@ -127,6 +127,18 @@ test('confirmation text distinguishes preserved historical placement from finali
   assert.doesNotMatch(pageSource, /لن يُعدّل التسجيل التاريخي/);
 });
 
+test('academic-year values use an explicit LTR bidi isolate throughout the promotion UI', () => {
+  assert.match(pageSource, /function AcademicYearValue[\s\S]*<bdi dir="ltr"[^>]*>\{value\}<\/bdi>/);
+  assert.match(pageSource, /ValueCard label="السنة الحالية"[^>]*valueDirection="ltr"/);
+  assert.match(pageSource, /ValueCard label="سنة المصدر"[^>]*valueDirection="ltr"/);
+  assert.match(pageSource, /ValueCard label="السنة المستهدفة"[^>]*valueDirection="ltr"/);
+  assert.match(pageSource, /<AcademicYearValue value=\{preview\.source\.academic_year_name\} \/>/);
+  assert.match(pageSource, /<AcademicYearValue value=\{preview\.target\.academic_year_name\} \/>/);
+  assert.match(pageSource, /<select dir="ltr" value=\{sourceAcademicYearId/);
+  assert.match(pageSource, /<select dir="ltr" value=\{targetAcademicYearId/);
+  assert.doesNotMatch(pageSource, /academic_year_name\.(?:split|reverse)|(?:split|reverse)\([^)]*academic_year_name/);
+});
+
 test('route, sidebar, and Student Profile entry point use academic management RBAC', () => {
   assert.match(appSource, /path="\/student-promotion"[\s\S]*allowedRoles=\{ACADEMIC_MANAGEMENT_ROLES\}/);
   assert.match(sidebarSource, /label: 'ترفيع الطلاب'[\s\S]*allowedRoles: ACADEMIC_MANAGEMENT_ROLES/);
