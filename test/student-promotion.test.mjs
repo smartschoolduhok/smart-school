@@ -14,6 +14,7 @@ import {
 } from '../src/lib/studentEnrollments.ts';
 import {
   executeStudentPromotion,
+  previewStudentPromotion,
   validateStudentPromotionRequest,
 } from '../src/lib/studentPromotion.ts';
 
@@ -23,6 +24,7 @@ const initialSchema = readFileSync(join(rootDir, 'migrations', '0001_initial_sch
 const academicSchema = readFileSync(join(rootDir, 'migrations', '0002_phase2_academic_tables.sql'), 'utf8');
 const academicYearIntegrity = readFileSync(join(rootDir, 'migrations', '0017_academic_year_integrity.sql'), 'utf8');
 const enrollmentMigration = readFileSync(join(rootDir, 'migrations', '0020_student_enrollments.sql'), 'utf8');
+const studentReligionMigration = readFileSync(join(rootDir, 'migrations', '0021_student_religion.sql'), 'utf8');
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 
 class LocalPreparedStatement {
@@ -99,6 +101,7 @@ function createFixture() {
   database.exec(academicSchema);
   database.exec(academicYearIntegrity);
   database.exec(enrollmentMigration);
+  database.exec(studentReligionMigration);
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'private', 'Duhok', 'active'),
@@ -273,13 +276,110 @@ async function expectFailure(promise, status, code) {
 
 function studentValues(database, studentId, overrides = {}) {
   const student = row(database, `
-    SELECT school_id, student_number, full_name, father_name, mother_name, gender,
+    SELECT school_id, student_number, full_name, father_name, mother_name, gender, religion,
            birth_date, phone, guardian_name, guardian_phone, address, class_id,
            section_id, status, photo_url, notes
     FROM students WHERE id = ?
   `, studentId);
   return { ...student, ...overrides };
 }
+
+for (const action of ['promoted', 'repeated', 'graduated']) {
+  test(`valid ${action} preview returns complete review data and performs zero writes`, async () => {
+    const fixture = createFixture();
+    const { studentId, sourceEnrollmentId } = createPromotionSource(fixture, {
+      student: { student_number: `PREVIEW-${action}`, full_name: `Preview ${action}` },
+    });
+    const request = action === 'graduated'
+      ? { source_enrollment_id: sourceEnrollmentId, action }
+      : promotionRequest(fixture.ids, sourceEnrollmentId, {
+          action,
+          ...(action === 'repeated'
+            ? { target_class_id: fixture.ids.classA1, target_section_id: fixture.ids.sectionA1 }
+            : {}),
+        });
+    const beforeEnrollments = fixture.database.prepare(
+      'SELECT * FROM student_enrollments WHERE student_id = ? ORDER BY id',
+    ).all(studentId);
+    const beforeStudent = row(fixture.database, 'SELECT * FROM students WHERE id = ?', studentId);
+
+    const result = await previewStudentPromotion(fixture.adapter, 1, request);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.data.valid, true);
+    assert.equal(result.data.action, action);
+    assert.equal(result.data.student.id, studentId);
+    assert.equal(result.data.student.student_number, `PREVIEW-${action}`);
+    assert.equal(result.data.school.id, 1);
+    assert.equal(result.data.source.enrollment_id, sourceEnrollmentId);
+    assert.equal(result.data.source.academic_year_id, fixture.ids.sourceA);
+    assert.equal(result.data.source.class_id, fixture.ids.classA1);
+    assert.deepEqual(result.data.blocking_errors, []);
+    assert.equal(result.data.target_enrollment_exists, false);
+    assert.equal(result.data.already_applied, false);
+    if (action === 'graduated') {
+      assert.equal(result.data.target, null);
+    } else {
+      assert.equal(result.data.target.academic_year_id, fixture.ids.futureA);
+      assert.equal(result.data.target.existing_enrollment_id, null);
+    }
+    assert.equal(fixture.adapter.batchCalls, 0);
+    assert.deepEqual(
+      fixture.database.prepare('SELECT * FROM student_enrollments WHERE student_id = ? ORDER BY id').all(studentId),
+      beforeEnrollments,
+    );
+    assert.deepEqual(row(fixture.database, 'SELECT * FROM students WHERE id = ?', studentId), beforeStudent);
+    fixture.database.close();
+  });
+}
+
+test('invalid preview reports blocking errors without writing', async () => {
+  const fixture = createFixture();
+  const result = await previewStudentPromotion(fixture.adapter, 1, {
+    source_enrollment_id: 999999,
+    action: 'promoted',
+    target_academic_year_id: fixture.ids.futureA,
+    target_class_id: fixture.ids.classA2,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.data.valid, false);
+  assert.equal(result.code, 'source_not_found');
+  assert.deepEqual(result.data.blocking_errors, ['تسجيل الطالب المصدر غير موجود']);
+  assert.equal(fixture.adapter.batchCalls, 0);
+  fixture.database.close();
+});
+
+test('stale valid preview is revalidated at execute time and conflicting target causes zero partial writes', async () => {
+  const fixture = createFixture();
+  const { studentId, sourceEnrollmentId } = createPromotionSource(fixture);
+  const request = promotionRequest(fixture.ids, sourceEnrollmentId);
+  const preview = await previewStudentPromotion(fixture.adapter, 1, request);
+  assert.equal(preview.ok, true);
+
+  const conflictingTargetId = insertEnrollment(fixture.database, fixture.ids, studentId, {
+    academic_year_id: fixture.ids.futureA,
+    class_id: fixture.ids.classA3,
+    section_id: fixture.ids.sectionA3,
+  });
+  const refreshedPreview = await previewStudentPromotion(fixture.adapter, 1, request);
+  assert.equal(refreshedPreview.ok, false);
+  assert.equal(refreshedPreview.code, 'target_enrollment_conflict');
+  assert.equal(refreshedPreview.data.target_enrollment_exists, true);
+  await expectFailure(
+    executeStudentPromotion(fixture.adapter, 1, fixture.ids.userA, request),
+    409,
+    'target_enrollment_conflict',
+  );
+
+  const source = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', sourceEnrollmentId);
+  assert.equal(source.status, 'active');
+  assert.equal(source.promotion_status, 'pending');
+  assert.equal(source.completed_at, null);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.futureA).count), 1);
+  assert.equal(Number(row(fixture.database, 'SELECT id FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', studentId, fixture.ids.futureA).id), conflictingTargetId);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0').count), 0);
+  fixture.database.close();
+});
 
 test('promoted finalizes source and creates an explicit active pending target enrollment', async () => {
   const fixture = createFixture();
@@ -1010,13 +1110,25 @@ test('target enrollment uniqueness remains enforced by the database', () => {
   fixture.database.close();
 });
 
-test('promotion API is management-only and resolves an explicit tenant target before execution', () => {
-  const route = workerSource.slice(
+test('promotion preview and execute APIs are management-only and resolve an explicit tenant target', () => {
+  const routes = workerSource.slice(
+    workerSource.indexOf("app.post('/api/student-enrollments/promotion/preview'"),
+    workerSource.indexOf("app.post('/api/students'"),
+  );
+  const previewRoute = routes.slice(
+    0,
+    routes.indexOf("app.post('/api/student-enrollments/promotion'", 1),
+  );
+  const executeRoute = workerSource.slice(
     workerSource.indexOf("app.post('/api/student-enrollments/promotion'"),
     workerSource.indexOf("app.post('/api/students'"),
   );
-  assert.match(route, /requireSameSchoolOrAdmin\(\), requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/);
-  assert.match(route, /resolveActiveWriteSchool\(db, user, body\.school_id\)/);
-  assert.match(route, /executeStudentPromotion\(db, targetSchool\.schoolId, user\.id, body\)/);
-  assert.doesNotMatch(route, /students\.(?:class_id|section_id)|UPDATE students/);
+  for (const route of [previewRoute, executeRoute]) {
+    assert.match(route, /requireSameSchoolOrAdmin\(\), requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/);
+    assert.match(route, /resolveActiveWriteSchool\(db, user, body\.school_id\)/);
+  }
+  assert.match(previewRoute, /previewStudentPromotion\(db, targetSchool\.schoolId, body\)/);
+  assert.doesNotMatch(previewRoute, /\.run\(\)|\.batch\(/);
+  assert.match(executeRoute, /executeStudentPromotion\(db, targetSchool\.schoolId, user\.id, body\)/);
+  assert.doesNotMatch(executeRoute, /students\.(?:class_id|section_id)|UPDATE students/);
 });

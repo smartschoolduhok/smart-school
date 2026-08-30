@@ -47,11 +47,18 @@ interface SourceEnrollmentRecord {
   source_year_school_id: number;
   source_year_starts_at: string;
   source_year_is_active: 0 | 1;
+  student_number: string;
+  student_full_name: string;
+  school_name: string;
+  source_year_name: string;
+  source_class_name: string;
+  source_section_name: string | null;
 }
 
 interface AcademicYearRecord {
   id: number;
   school_id: number;
+  name: string;
   starts_at: string;
   is_active: 0 | 1;
 }
@@ -59,6 +66,7 @@ interface AcademicYearRecord {
 interface SchoolEntityRecord {
   id: number;
   school_id: number;
+  name: string;
 }
 
 interface SectionRecord extends SchoolEntityRecord {
@@ -86,6 +94,52 @@ export interface StudentPromotionData {
   already_applied: boolean;
 }
 
+export interface StudentPromotionPreviewData {
+  valid: true;
+  blocking_errors: [];
+  warnings: string[];
+  student: {
+    id: number;
+    student_number: string;
+    full_name: string;
+  };
+  school: {
+    id: number;
+    name: string;
+  };
+  source: {
+    enrollment_id: number;
+    academic_year_id: number;
+    academic_year_name: string;
+    class_id: number;
+    class_name: string;
+    section_id: number | null;
+    section_name: string | null;
+    status: string;
+    promotion_status: string;
+  };
+  action: StudentPromotionAction;
+  target: {
+    academic_year_id: number;
+    academic_year_name: string;
+    class_id: number;
+    class_name: string;
+    section_id: number | null;
+    section_name: string | null;
+    existing_enrollment_id: number | null;
+  } | null;
+  target_enrollment_exists: boolean;
+  already_applied: boolean;
+}
+
+export interface InvalidStudentPromotionPreviewData {
+  valid: false;
+  blocking_errors: string[];
+  warnings: [];
+  target_enrollment_exists: boolean | null;
+  already_applied: false;
+}
+
 export type StudentPromotionResult =
   | { ok: true; data: StudentPromotionData }
   | {
@@ -108,11 +162,30 @@ export type StudentPromotionResult =
       error: string;
     };
 
+type StudentPromotionFailure = Extract<StudentPromotionResult, { ok: false }>;
+type StudentPromotionInspectionFailure = StudentPromotionFailure & {
+  targetEnrollmentExists?: boolean | null;
+};
+
+export type StudentPromotionPreviewResult =
+  | { ok: true; data: StudentPromotionPreviewData }
+  | (StudentPromotionFailure & { data: InvalidStudentPromotionPreviewData });
+
+interface StudentPromotionInspection {
+  request: ValidatedPromotionRequest;
+  source: SourceEnrollmentRecord;
+  targetYear: AcademicYearRecord | null;
+  targetClass: SchoolEntityRecord | null;
+  targetSection: SectionRecord | null;
+  existingTarget: TargetEnrollmentRecord | null;
+  alreadyApplied: boolean;
+}
+
 function failure(
   status: 400 | 403 | 404 | 409,
   code: Extract<StudentPromotionResult, { ok: false }>['code'],
   error: string,
-): StudentPromotionResult {
+): StudentPromotionFailure {
   return { ok: false, status, code, error };
 }
 
@@ -210,10 +283,27 @@ async function loadSourceEnrollment(
       student.status AS student_status,
       source_year.school_id AS source_year_school_id,
       source_year.starts_at AS source_year_starts_at,
-      source_year.is_active AS source_year_is_active
+      source_year.is_active AS source_year_is_active,
+      student.student_number,
+      student.full_name AS student_full_name,
+      school.name AS school_name,
+      source_year.name AS source_year_name,
+      source_class.name AS source_class_name,
+      source_section.name AS source_section_name
     FROM student_enrollments AS source
     INNER JOIN students AS student ON student.id = source.student_id
     INNER JOIN academic_years AS source_year ON source_year.id = source.academic_year_id
+    INNER JOIN schools AS school
+      ON school.id = source.school_id
+     AND school.id = student.school_id
+     AND school.id = source_year.school_id
+    INNER JOIN classes AS source_class
+      ON source_class.id = source.class_id
+     AND source_class.school_id = source.school_id
+    LEFT JOIN sections AS source_section
+      ON source_section.id = source.section_id
+     AND source_section.school_id = source.school_id
+     AND source_section.class_id = source.class_id
     WHERE source.id = ?
   `).bind(sourceEnrollmentId).first<SourceEnrollmentRecord>();
 }
@@ -289,11 +379,252 @@ function successData(
   };
 }
 
-function sourceLifecycleConflict(source: SourceEnrollmentRecord): StudentPromotionResult {
+function sourceLifecycleConflict(source: SourceEnrollmentRecord): StudentPromotionFailure {
   if (source.status !== 'active' || source.promotion_status !== 'pending') {
     return failure(409, 'lifecycle_conflict', 'تم إقفال أو إنهاء تسجيل الطالب مسبقًا بإجراء مختلف');
   }
   return failure(409, 'lifecycle_conflict', 'تعذر تطبيق الانتقال بسبب تغير حالة تسجيل الطالب');
+}
+
+async function inspectStudentPromotion(
+  db: StudentPromotionDatabase,
+  schoolId: number,
+  input: StudentPromotionRequest,
+): Promise<{ ok: true; value: StudentPromotionInspection } | StudentPromotionInspectionFailure> {
+  const validation = validateStudentPromotionRequest(input);
+  if (!validation.ok) return failure(400, 'invalid_input', validation.error);
+  const request = validation.value;
+
+  const source = await loadSourceEnrollment(db, request.sourceEnrollmentId);
+  if (!source) return failure(404, 'source_not_found', 'تسجيل الطالب المصدر غير موجود');
+  if (
+    source.school_id !== schoolId
+    || source.student_school_id !== schoolId
+    || source.source_year_school_id !== schoolId
+  ) {
+    return failure(403, 'wrong_school', 'غير مسموح: تسجيل الطالب لا ينتمي إلى المدرسة المستهدفة');
+  }
+  if (source.source_year_is_active !== 1) {
+    return failure(409, 'source_not_current_year', 'لا يمكن تطبيق الانتقال على تسجيل سنة دراسية غير فعالة');
+  }
+  if (source.student_status !== 'active') {
+    return failure(409, 'student_inactive', 'لا يمكن تطبيق الانتقال على طالب غير فعال');
+  }
+
+  if (request.action === 'graduated') {
+    const laterEnrollmentExists = await hasLaterEnrollment(db, source);
+    if (source.status === 'completed' && source.promotion_status === 'graduated') {
+      if (laterEnrollmentExists) {
+        return {
+          ...failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق يتعارض مع قرار التخرج'),
+          targetEnrollmentExists: null,
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          request,
+          source,
+          targetYear: null,
+          targetClass: null,
+          targetSection: null,
+          existingTarget: null,
+          alreadyApplied: true,
+        },
+      };
+    }
+    if (source.status !== 'active' || source.promotion_status !== 'pending') {
+      return sourceLifecycleConflict(source);
+    }
+    if (laterEnrollmentExists) {
+      return {
+        ...failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق يتعارض مع قرار التخرج'),
+        targetEnrollmentExists: null,
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        request,
+        source,
+        targetYear: null,
+        targetClass: null,
+        targetSection: null,
+        existingTarget: null,
+        alreadyApplied: false,
+      },
+    };
+  }
+
+  const targetAcademicYearId = request.targetAcademicYearId as number;
+  const targetClassId = request.targetClassId as number;
+  if (targetAcademicYearId === source.academic_year_id) {
+    return failure(400, 'invalid_input', 'يجب أن تختلف السنة الدراسية المستهدفة عن سنة المصدر');
+  }
+
+  const targetYear = await db.prepare(`
+    SELECT id, school_id, name, starts_at, is_active
+    FROM academic_years
+    WHERE id = ?
+  `).bind(targetAcademicYearId).first<AcademicYearRecord>();
+  if (!targetYear) return failure(404, 'target_year_not_found', 'السنة الدراسية المستهدفة غير موجودة');
+  if (targetYear.school_id !== schoolId) {
+    return failure(403, 'wrong_school', 'غير مسموح: السنة الدراسية المستهدفة لا تنتمي إلى المدرسة');
+  }
+  if (targetYear.is_active !== 0) {
+    return failure(409, 'target_year_active', 'يجب أن تكون السنة الدراسية المستهدفة غير فعالة أثناء إعداد الانتقال');
+  }
+  if (targetYear.starts_at <= source.source_year_starts_at) {
+    return failure(400, 'target_year_not_later', 'يجب أن تبدأ السنة الدراسية المستهدفة بعد سنة المصدر');
+  }
+
+  const targetClass = await db.prepare('SELECT id, school_id, name FROM classes WHERE id = ?')
+    .bind(targetClassId)
+    .first<SchoolEntityRecord>();
+  if (!targetClass) return failure(404, 'target_class_not_found', 'الصف المستهدف غير موجود');
+  if (targetClass.school_id !== schoolId) {
+    return failure(403, 'wrong_school', 'غير مسموح: الصف المستهدف لا ينتمي إلى المدرسة');
+  }
+
+  let targetSection: SectionRecord | null = null;
+  if (request.targetSectionId != null) {
+    targetSection = await db.prepare('SELECT id, school_id, class_id, name FROM sections WHERE id = ?')
+      .bind(request.targetSectionId)
+      .first<SectionRecord>();
+    if (!targetSection) return failure(404, 'target_section_not_found', 'الشعبة المستهدفة غير موجودة');
+    if (targetSection.school_id !== schoolId) {
+      return failure(403, 'wrong_school', 'غير مسموح: الشعبة المستهدفة لا تنتمي إلى المدرسة');
+    }
+    if (targetSection.class_id !== targetClassId) {
+      return failure(400, 'target_section_mismatch', 'الشعبة المستهدفة لا تتبع الصف المستهدف');
+    }
+  }
+
+  const existingTarget = await loadTargetEnrollment(
+    db,
+    schoolId,
+    source.student_id,
+    targetAcademicYearId,
+  );
+  if (exactTargetMatches(source, existingTarget, request)) {
+    return {
+      ok: true,
+      value: {
+        request,
+        source,
+        targetYear,
+        targetClass,
+        targetSection,
+        existingTarget,
+        alreadyApplied: true,
+      },
+    };
+  }
+  if (source.status === 'completed' && source.promotion_status === request.action) {
+    return {
+      ...failure(409, 'target_enrollment_conflict', 'تسجيل السنة المستهدفة مفقود أو لا يطابق قرار الانتقال المطبق'),
+      targetEnrollmentExists: existingTarget != null,
+    };
+  }
+  if (source.status !== 'active' || source.promotion_status !== 'pending') {
+    return sourceLifecycleConflict(source);
+  }
+  if (existingTarget) {
+    return {
+      ...failure(409, 'target_enrollment_conflict', 'يوجد تسجيل للطالب في السنة المستهدفة ببيانات مختلفة'),
+      targetEnrollmentExists: true,
+    };
+  }
+  if (await hasLaterEnrollment(db, source)) {
+    return {
+      ...failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق للطالب يتعارض مع الانتقال المطلوب'),
+      targetEnrollmentExists: false,
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      request,
+      source,
+      targetYear,
+      targetClass,
+      targetSection,
+      existingTarget,
+      alreadyApplied: false,
+    },
+  };
+}
+
+export async function previewStudentPromotion(
+  db: StudentPromotionDatabase,
+  schoolId: number,
+  input: StudentPromotionRequest,
+): Promise<StudentPromotionPreviewResult> {
+  const inspection = await inspectStudentPromotion(db, schoolId, input);
+  if (!inspection.ok) {
+    return {
+      ...inspection,
+      data: {
+        valid: false,
+        blocking_errors: [inspection.error],
+        warnings: [],
+        target_enrollment_exists: inspection.targetEnrollmentExists
+          ?? (inspection.code === 'target_enrollment_conflict' ? null : false),
+        already_applied: false,
+      },
+    };
+  }
+
+  const {
+    request,
+    source,
+    targetYear,
+    targetClass,
+    targetSection,
+    existingTarget,
+    alreadyApplied,
+  } = inspection.value;
+  return {
+    ok: true,
+    data: {
+      valid: true,
+      blocking_errors: [],
+      warnings: alreadyApplied ? ['تم تطبيق القرار نفسه مسبقًا؛ التنفيذ التالي سيكون آمنًا ومتكررًا.'] : [],
+      student: {
+        id: source.student_id,
+        student_number: source.student_number,
+        full_name: source.student_full_name,
+      },
+      school: {
+        id: source.school_id,
+        name: source.school_name,
+      },
+      source: {
+        enrollment_id: source.id,
+        academic_year_id: source.academic_year_id,
+        academic_year_name: source.source_year_name,
+        class_id: source.class_id,
+        class_name: source.source_class_name,
+        section_id: source.section_id,
+        section_name: source.source_section_name,
+        status: source.status,
+        promotion_status: source.promotion_status,
+      },
+      action: request.action,
+      target: targetYear && targetClass ? {
+        academic_year_id: targetYear.id,
+        academic_year_name: targetYear.name,
+        class_id: targetClass.id,
+        class_name: targetClass.name,
+        section_id: targetSection?.id ?? null,
+        section_name: targetSection?.name ?? null,
+        existing_enrollment_id: existingTarget?.id ?? null,
+      } : null,
+      target_enrollment_exists: existingTarget != null,
+      already_applied: alreadyApplied,
+    },
+  };
 }
 
 function buildTransitionBatch(
@@ -467,41 +798,17 @@ export async function executeStudentPromotion(
   userId: number,
   input: StudentPromotionRequest,
 ): Promise<StudentPromotionResult> {
-  const validation = validateStudentPromotionRequest(input);
-  if (!validation.ok) return failure(400, 'invalid_input', validation.error);
-  const request = validation.value;
+  // Rebuild the transition from fresh database state on every execution.
+  // A successful preview is intentionally never trusted as authorization to write.
+  const inspection = await inspectStudentPromotion(db, schoolId, input);
+  if (!inspection.ok) return inspection;
+  const { request, source, existingTarget, alreadyApplied } = inspection.value;
 
-  const source = await loadSourceEnrollment(db, request.sourceEnrollmentId);
-  if (!source) return failure(404, 'source_not_found', 'تسجيل الطالب المصدر غير موجود');
-  if (
-    source.school_id !== schoolId
-    || source.student_school_id !== schoolId
-    || source.source_year_school_id !== schoolId
-  ) {
-    return failure(403, 'wrong_school', 'غير مسموح: تسجيل الطالب لا ينتمي إلى المدرسة المستهدفة');
-  }
-  if (source.source_year_is_active !== 1) {
-    return failure(409, 'source_not_current_year', 'لا يمكن تطبيق الانتقال على تسجيل سنة دراسية غير فعالة');
-  }
-  if (source.student_status !== 'active') {
-    return failure(409, 'student_inactive', 'لا يمكن تطبيق الانتقال على طالب غير فعال');
+  if (alreadyApplied) {
+    return successData(source, request.action, existingTarget, true);
   }
 
   if (request.action === 'graduated') {
-    const laterEnrollmentExists = await hasLaterEnrollment(db, source);
-    if (source.status === 'completed' && source.promotion_status === 'graduated') {
-      if (laterEnrollmentExists) {
-        return failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق يتعارض مع قرار التخرج');
-      }
-      return successData(source, request.action, null, true);
-    }
-    if (source.status !== 'active' || source.promotion_status !== 'pending') {
-      return sourceLifecycleConflict(source);
-    }
-    if (laterEnrollmentExists) {
-      return failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق يتعارض مع قرار التخرج');
-    }
-
     const mutation = await db.prepare(`
       UPDATE student_enrollments AS source
       SET status = 'completed',
@@ -558,69 +865,6 @@ export async function executeStudentPromotion(
   }
 
   const targetAcademicYearId = request.targetAcademicYearId as number;
-  const targetClassId = request.targetClassId as number;
-  if (targetAcademicYearId === source.academic_year_id) {
-    return failure(400, 'invalid_input', 'يجب أن تختلف السنة الدراسية المستهدفة عن سنة المصدر');
-  }
-
-  const targetYear = await db.prepare(`
-    SELECT id, school_id, starts_at, is_active
-    FROM academic_years
-    WHERE id = ?
-  `).bind(targetAcademicYearId).first<AcademicYearRecord>();
-  if (!targetYear) return failure(404, 'target_year_not_found', 'السنة الدراسية المستهدفة غير موجودة');
-  if (targetYear.school_id !== schoolId) {
-    return failure(403, 'wrong_school', 'غير مسموح: السنة الدراسية المستهدفة لا تنتمي إلى المدرسة');
-  }
-  if (targetYear.is_active !== 0) {
-    return failure(409, 'target_year_active', 'يجب أن تكون السنة الدراسية المستهدفة غير فعالة أثناء إعداد الانتقال');
-  }
-  if (targetYear.starts_at <= source.source_year_starts_at) {
-    return failure(400, 'target_year_not_later', 'يجب أن تبدأ السنة الدراسية المستهدفة بعد سنة المصدر');
-  }
-
-  const targetClass = await db.prepare('SELECT id, school_id FROM classes WHERE id = ?')
-    .bind(targetClassId)
-    .first<SchoolEntityRecord>();
-  if (!targetClass) return failure(404, 'target_class_not_found', 'الصف المستهدف غير موجود');
-  if (targetClass.school_id !== schoolId) {
-    return failure(403, 'wrong_school', 'غير مسموح: الصف المستهدف لا ينتمي إلى المدرسة');
-  }
-
-  if (request.targetSectionId != null) {
-    const targetSection = await db.prepare('SELECT id, school_id, class_id FROM sections WHERE id = ?')
-      .bind(request.targetSectionId)
-      .first<SectionRecord>();
-    if (!targetSection) return failure(404, 'target_section_not_found', 'الشعبة المستهدفة غير موجودة');
-    if (targetSection.school_id !== schoolId) {
-      return failure(403, 'wrong_school', 'غير مسموح: الشعبة المستهدفة لا تنتمي إلى المدرسة');
-    }
-    if (targetSection.class_id !== targetClassId) {
-      return failure(400, 'target_section_mismatch', 'الشعبة المستهدفة لا تتبع الصف المستهدف');
-    }
-  }
-
-  const existingTarget = await loadTargetEnrollment(
-    db,
-    schoolId,
-    source.student_id,
-    targetAcademicYearId,
-  );
-  if (exactTargetMatches(source, existingTarget, request)) {
-    return successData(source, request.action, existingTarget, true);
-  }
-  if (source.status === 'completed' && source.promotion_status === request.action) {
-    return failure(409, 'target_enrollment_conflict', 'تسجيل السنة المستهدفة مفقود أو لا يطابق قرار الانتقال المطبق');
-  }
-  if (source.status !== 'active' || source.promotion_status !== 'pending') {
-    return sourceLifecycleConflict(source);
-  }
-  if (existingTarget) {
-    return failure(409, 'target_enrollment_conflict', 'يوجد تسجيل للطالب في السنة المستهدفة ببيانات مختلفة');
-  }
-  if (await hasLaterEnrollment(db, source)) {
-    return failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق للطالب يتعارض مع الانتقال المطلوب');
-  }
 
   const claimSentinel = createTransitionClaimSentinel();
   let batchResults: StudentPromotionMutationResult[];
