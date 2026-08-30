@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowRight,
+  ArrowLeftRight,
   BookOpen,
   CalendarDays,
   GraduationCap,
@@ -71,6 +72,7 @@ export default function StudentProfilePage() {
   const { schoolId } = schoolScope;
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const canManageReligiousSubject = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES) && schoolId != null;
+  const canManagePromotion = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES) && schoolId != null;
 
   const [student, setStudent] = useState<EffectiveStudentRecord | null>(null);
   const [history, setHistory] = useState<StudentEnrollmentHistoryRecord[]>([]);
@@ -264,6 +266,16 @@ export default function StudentProfilePage() {
                   <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${studentStatusClasses(student.status)}`}>
                     حالة الطالب: {studentStatusLabel(student.status)}
                   </span>
+                  {canManagePromotion && student.current_enrollment_id != null && (
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/student-promotion?student_id=${student.id}`)}
+                      className="inline-flex items-center gap-2 rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                    >
+                      <ArrowLeftRight size={15} />
+                      إدارة الترفيع
+                    </button>
+                  )}
                 </div>
                 <p className="mt-1 flex items-center gap-2 text-sm text-gray-500">
                   <Hash size={15} />

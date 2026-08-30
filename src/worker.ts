@@ -127,7 +127,7 @@ import {
   updateStudentPlacementAtomically,
   type StudentWriteValues,
 } from './lib/studentEnrollments'
-import { executeStudentPromotion } from './lib/studentPromotion'
+import { executeStudentPromotion, previewStudentPromotion } from './lib/studentPromotion'
 import { ANALYTICS_APPLICABLE_GRADE_JOINS } from './lib/subjectApplicability'
 import {
   STUDENT_RELIGION_HEADER_ALIASES,
@@ -1660,6 +1660,26 @@ app.get('/api/students/:id/enrollments', requireSameSchoolOrAdmin(), requireRole
   }
 })
 
+app.post('/api/student-enrollments/promotion/preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات معاينة الانتقال السنوي غير صالحة' }, 400)
+
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+
+    const result = await previewStudentPromotion(db, targetSchool.schoolId, body)
+    if (!result.ok) {
+      return c.json({ error: result.error, code: result.code, data: result.data }, result.status)
+    }
+    return c.json({ data: result.data })
+  } catch {
+    return c.json({ error: 'فشل في معاينة الانتقال السنوي للطالب' }, 500)
+  }
+})
+
 app.post('/api/student-enrollments/promotion', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user = c.get('user') as UserContext
@@ -1671,7 +1691,7 @@ app.post('/api/student-enrollments/promotion', requireSameSchoolOrAdmin(), requi
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
     const result = await executeStudentPromotion(db, targetSchool.schoolId, user.id, body)
-    if (!result.ok) return c.json({ error: result.error }, result.status)
+    if (!result.ok) return c.json({ error: result.error, code: result.code }, result.status)
     return c.json({ data: result.data })
   } catch {
     return c.json({ error: 'فشل في تطبيق الانتقال السنوي للطالب' }, 500)

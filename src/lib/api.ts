@@ -7,6 +7,12 @@
 import type { AcademicYearRecord } from './academicYears';
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from './studentEnrollments';
 import type { StudentReligiousSubjectState } from './religiousSubjects';
+import type {
+  InvalidStudentPromotionPreviewData,
+  StudentPromotionData,
+  StudentPromotionPreviewData,
+  StudentPromotionRequest,
+} from './studentPromotion';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -56,7 +62,7 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      return { error: body.error || `خطأ ${res.status}`, code: body.code, meta: body.meta, status: res.status };
+      return { data: body.data, error: body.error || `خطأ ${res.status}`, code: body.code, meta: body.meta, status: res.status };
     }
 
     const body = await res.json();
@@ -245,6 +251,20 @@ export function getStudent(id: number | string) {
 export function getStudentEnrollments(studentId: number | string, schoolId: number) {
   const params = new URLSearchParams({ school_id: String(schoolId) });
   return fetchApi<StudentEnrollmentHistoryRecord[]>(`/api/students/${studentId}/enrollments?${params.toString()}`);
+}
+
+export function previewStudentPromotion(data: StudentPromotionRequest & { school_id: number }) {
+  return fetchApi<StudentPromotionPreviewData | InvalidStudentPromotionPreviewData>('/api/student-enrollments/promotion/preview', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function promoteStudent(data: StudentPromotionRequest & { school_id: number }) {
+  return fetchApi<StudentPromotionData>('/api/student-enrollments/promotion', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 }
 
 export function createStudent(data: Record<string, any>) {

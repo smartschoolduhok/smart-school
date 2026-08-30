@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import type { RoleKey } from '../types';
 import {
   ACADEMIC_ACCESS_ROLES,
+  ACADEMIC_MANAGEMENT_ROLES,
   ANALYTICS_ACCESS_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   FEE_MANAGEMENT_ROLES,
@@ -51,6 +52,7 @@ const activeModules: NavItem[] = [
 
   // Phase 2 modules - academic (admin + school staff)
   { label: 'الطلاب', path: '/students', icon: <GraduationCap size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
+  { label: 'ترفيع الطلاب', path: '/student-promotion', icon: <ArrowDownUp size={20} />, active: true, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
   { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
   { label: 'المواد', path: '/subjects', icon: <BookOpen size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
   { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
