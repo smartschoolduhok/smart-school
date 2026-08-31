@@ -43,8 +43,9 @@ import {
   type TimetableTeachingLoad,
 } from '../../lib/timetable';
 import type { Class, Section } from '../../types';
+import { TeacherAvailabilityTab } from './TeacherAvailabilityTab';
 
-type TabKey = 'week' | 'loads' | 'readiness';
+type TabKey = 'week' | 'loads' | 'availability' | 'readiness';
 
 interface SubjectOption {
   id: number;
@@ -73,6 +74,7 @@ interface SlotForm {
   label: string;
   start_time: string;
   end_time: string;
+  is_active: 0 | 1;
 }
 
 interface LoadForm {
@@ -93,6 +95,7 @@ const EMPTY_SLOT: SlotForm = {
   label: 'الحصة الأولى',
   start_time: '08:00',
   end_time: '08:40',
+  is_active: 1,
 };
 
 const EMPTY_LOAD: LoadForm = {
@@ -146,6 +149,7 @@ export default function TimetablePage() {
   const [slots, setSlots] = useState<TimetableSlot[]>([]);
   const [loads, setLoads] = useState<TimetableTeachingLoad[]>([]);
   const [readiness, setReadiness] = useState<TimetableReadinessSummary | null>(null);
+  const [yearDataVersion, setYearDataVersion] = useState(0);
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
   const [selectedSectionId, setSelectedSectionId] = useState<number | null>(null);
   const [slotForm, setSlotForm] = useState<SlotForm | null>(null);
@@ -174,6 +178,7 @@ export default function TimetablePage() {
     setSlots([]);
     setLoads([]);
     setReadiness(null);
+    setYearDataVersion((value) => value + 1);
     setSelectedClassId(null);
     setSelectedSectionId(null);
     setSlotForm(null);
@@ -236,6 +241,7 @@ export default function TimetablePage() {
     setSlots(responses[1].data || []);
     setLoads(responses[2].data || []);
     setReadiness(responses[3].data || null);
+    setYearDataVersion((value) => value + 1);
     setLoading(false);
   }, [academicYearId, captureSchoolRequest, schoolId]);
 
@@ -245,6 +251,7 @@ export default function TimetablePage() {
     setSlots([]);
     setLoads([]);
     setReadiness(null);
+    setYearDataVersion((value) => value + 1);
     setSelectedClassId(null);
     setSelectedSectionId(null);
     setSlotForm(null);
@@ -305,6 +312,7 @@ export default function TimetablePage() {
       label: slot.label,
       start_time: slot.start_time,
       end_time: slot.end_time,
+      is_active: slot.is_active,
     } : {
       ...EMPTY_SLOT,
       day_of_week: dayOfWeek,
@@ -329,6 +337,7 @@ export default function TimetablePage() {
       label: slotForm.label,
       start_time: slotForm.start_time,
       end_time: slotForm.end_time,
+      is_active: slotForm.is_active,
     };
     const response = slotForm.id == null
       ? await createTimetableSlot(payload)
@@ -454,6 +463,7 @@ export default function TimetablePage() {
                 {([
                   ['week', 'إعداد الأسبوع', Clock3],
                   ['loads', 'نصاب المواد والمدرسين', BookOpenCheck],
+                  ['availability', 'توفر المدرسين والقيود', UserRoundCheck],
                   ['readiness', 'التحقق من الجاهزية', CheckCircle2],
                 ] as const).map(([key, label, Icon]) => (
                   <button key={key} onClick={() => setTab(key)} className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold ${tab === key ? 'border-primary-600 text-primary-700' : 'border-transparent text-gray-500 hover:text-gray-800'}`}>
@@ -534,13 +544,24 @@ export default function TimetablePage() {
                 </div>
               )}
 
+              {!loading && tab === 'availability' && (
+                <TeacherAvailabilityTab
+                  key={`${schoolId}:${academicYearId}`}
+                  schoolId={schoolId}
+                  academicYearId={academicYearId}
+                  teachers={teacherCandidates}
+                  dataVersion={yearDataVersion}
+                />
+              )}
+
               {!loading && tab === 'readiness' && readiness && (
                 <div className="space-y-5">
                   <div className={`flex items-center gap-3 rounded-xl border p-4 ${readiness.ready ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
                     {readiness.ready ? <CheckCircle2 /> : <AlertTriangle />}
                     <div><p className="font-bold">{readiness.ready ? 'جاهز لبناء الجدول' : 'توجد عناصر تحتاج إلى مراجعة'}</p><p className="text-sm">السعة غير المستخدمة تحذير فقط، أما تجاوز السعة أو نقص المدرس/النصاب أو المراجع غير الصالحة فيمنع الجاهزية.</p></div>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><Metric label="السعة الأسبوعية" value={readiness.weekly_capacity} /><Metric label="الحصص المطلوبة" value={readiness.total_required_periods} tone="green" /><Metric label="التكليفات الفعالة" value={readiness.total_assignments} tone="amber" /><Metric label="مدرس غير محدد" value={readiness.missing_teacher_count} tone={readiness.missing_teacher_count ? 'red' : 'green'} /><Metric label="مراجع غير صالحة" value={readiness.invalid_reference_count} tone={readiness.invalid_reference_count ? 'red' : 'green'} /></div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6"><Metric label="السعة الأسبوعية" value={readiness.weekly_capacity} /><Metric label="الحصص المطلوبة" value={readiness.total_required_periods} tone="green" /><Metric label="التكليفات الفعالة" value={readiness.total_assignments} tone="amber" /><Metric label="مدرس غير محدد" value={readiness.missing_teacher_count} tone={readiness.missing_teacher_count ? 'red' : 'green'} /><Metric label="مراجع غير صالحة" value={readiness.invalid_reference_count} tone={readiness.invalid_reference_count ? 'red' : 'green'} /><Metric label="مشكلات سعة المدرسين" value={readiness.teacher_feasibility_issues.length} tone={readiness.teacher_feasibility_issues.length ? 'red' : 'green'} /></div>
+                  {readiness.teacher_feasibility_issues.map((issue) => <div key={`${issue.employee_id}:${issue.code}`} className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800"><AlertTriangle size={18} />{issue.message}</div>)}
                   <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white"><table className="w-full min-w-[800px] text-sm"><thead className="bg-gray-50"><tr className="text-right text-gray-600"><th className="p-3">الصف / الشعبة</th><th className="p-3">السعة</th><th className="p-3">المطلوب</th><th className="p-3">الفرق</th><th className="p-3">الحالة</th><th className="p-3">ملاحظات</th></tr></thead><tbody>{readiness.placements.map((placement) => <tr key={`${placement.class_id}:${placement.section_id ?? 'none'}`} className="border-t"><td className="p-3 font-medium">{placement.class_name}{placement.section_name ? ` / ${placement.section_name}` : ''}</td><td className="p-3"><bdi dir="ltr">{placement.available_capacity}</bdi></td><td className="p-3"><bdi dir="ltr">{placement.required_periods}</bdi></td><td className={`p-3 font-bold ${placement.difference < 0 ? 'text-red-700' : 'text-gray-800'}`}><bdi dir="ltr">{placement.difference}</bdi></td><td className={`p-3 font-semibold ${placement.status === 'over_capacity' || placement.status === 'empty_week' ? 'text-red-700' : placement.status === 'unallocated' ? 'text-amber-700' : 'text-emerald-700'}`}>{readinessLabel(placement.status)}</td><td className="p-3 text-xs text-gray-600">{placement.missing_subjects.length > 0 && <p>مواد بلا نصاب: {placement.missing_subjects.map((item) => item.name).join('، ')}</p>}{placement.missing_teacher_load_ids.length > 0 && <p className="text-amber-700">تكليفات بلا مدرس: {placement.missing_teacher_load_ids.length}</p>}{placement.invalid_load_ids.length > 0 && <p className="text-red-700">مراجع غير صالحة: {placement.invalid_load_ids.length}</p>}{placement.missing_subjects.length === 0 && placement.missing_teacher_load_ids.length === 0 && placement.invalid_load_ids.length === 0 && '—'}</td></tr>)}</tbody></table></div>
                 </div>
               )}
@@ -553,7 +574,7 @@ export default function TimetablePage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="تحرير فترة الجدول">
           <form onSubmit={submitSlot} className="w-full max-w-xl space-y-4 rounded-xl bg-white p-5 shadow-xl">
             <div className="flex items-center justify-between"><h2 className="font-bold">{slotForm.id == null ? 'إضافة فترة' : 'تعديل الفترة'} — {TIMETABLE_DAY_NAMES[slotForm.day_of_week]}</h2><button type="button" onClick={() => setSlotForm(null)}><X /></button></div>
-            <div className="grid gap-3 sm:grid-cols-2"><label className="text-sm">النوع<select value={slotForm.slot_type} onChange={(event) => setSlotForm({ ...slotForm, slot_type: event.target.value as 'lesson' | 'break', lesson_number: event.target.value === 'break' ? '' : slotForm.lesson_number })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"><option value="lesson">حصة</option><option value="break">استراحة</option></select></label><label className="text-sm">الترتيب<input required type="number" min="1" value={slotForm.slot_index} onChange={(event) => setSlotForm({ ...slotForm, slot_index: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label><label className="text-sm">رقم الحصة<input required={slotForm.slot_type === 'lesson'} disabled={slotForm.slot_type === 'break'} type="number" min="1" value={slotForm.lesson_number} onChange={(event) => setSlotForm({ ...slotForm, lesson_number: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 disabled:bg-gray-100" /></label><label className="text-sm">الاسم<input required value={slotForm.label} onChange={(event) => setSlotForm({ ...slotForm, label: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label><label className="text-sm">وقت البداية<input required type="time" value={slotForm.start_time} onChange={(event) => setSlotForm({ ...slotForm, start_time: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" dir="ltr" /></label><label className="text-sm">وقت النهاية<input required type="time" value={slotForm.end_time} onChange={(event) => setSlotForm({ ...slotForm, end_time: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" dir="ltr" /></label></div>
+            <div className="grid gap-3 sm:grid-cols-2"><label className="text-sm">النوع<select value={slotForm.slot_type} onChange={(event) => setSlotForm({ ...slotForm, slot_type: event.target.value as 'lesson' | 'break', lesson_number: event.target.value === 'break' ? '' : slotForm.lesson_number })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"><option value="lesson">حصة</option><option value="break">استراحة</option></select></label><label className="text-sm">الترتيب<input required type="number" min="1" value={slotForm.slot_index} onChange={(event) => setSlotForm({ ...slotForm, slot_index: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label><label className="text-sm">رقم الحصة<input required={slotForm.slot_type === 'lesson'} disabled={slotForm.slot_type === 'break'} type="number" min="1" value={slotForm.lesson_number} onChange={(event) => setSlotForm({ ...slotForm, lesson_number: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 disabled:bg-gray-100" /></label><label className="text-sm">الاسم<input required value={slotForm.label} onChange={(event) => setSlotForm({ ...slotForm, label: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label><label className="text-sm">وقت البداية<input required type="time" value={slotForm.start_time} onChange={(event) => setSlotForm({ ...slotForm, start_time: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" dir="ltr" /></label><label className="text-sm">وقت النهاية<input required type="time" value={slotForm.end_time} onChange={(event) => setSlotForm({ ...slotForm, end_time: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" dir="ltr" /></label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={slotForm.is_active === 1} onChange={(event) => setSlotForm({ ...slotForm, is_active: event.target.checked ? 1 : 0 })} />الفترة فعالة</label></div>
             <button disabled={saving} className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-2.5 font-semibold text-white disabled:opacity-50"><Save size={18} />حفظ الفترة</button>
           </form>
         </div>

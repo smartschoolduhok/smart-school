@@ -7,14 +7,44 @@ import test from 'node:test';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
 const pageSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TimetablePage.tsx'), 'utf8');
+const availabilitySource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TeacherAvailabilityTab.tsx'), 'utf8');
 const appSource = readFileSync(join(rootDir, 'src', 'App.tsx'), 'utf8');
 const sidebarSource = readFileSync(join(rootDir, 'src', 'components', 'Sidebar.tsx'), 'utf8');
 
-test('timetable module is Arabic RTL and exposes the three foundation tabs', () => {
+test('timetable module is Arabic RTL and exposes teacher availability as a fourth foundation tab', () => {
   assert.match(pageSource, /dir="rtl"/);
-  for (const label of ['الجدول الدراسي', 'إعداد الأسبوع', 'نصاب المواد والمدرسين', 'التحقق من الجاهزية']) {
+  for (const label of ['الجدول الدراسي', 'إعداد الأسبوع', 'نصاب المواد والمدرسين', 'توفر المدرسين والقيود', 'التحقق من الجاهزية']) {
     assert.ok(pageSource.includes(label), label);
   }
+});
+
+test('teacher availability UI exposes hard, soft, bulk-day, reset and constraint controls', () => {
+  for (const label of [
+    'متاح',
+    'غير متاح',
+    'مفضل',
+    'يفضل تجنبه',
+    'جعل اليوم متاحاً',
+    'جعل اليوم غير متاح',
+    'إعادة ضبط التوفر',
+    'الحد الأقصى للحصص يومياً',
+    'الحد الأقصى للحصص المتتالية',
+    'الحد الأقصى لأيام العمل أسبوعياً',
+    'يفضل تجميع الحصص',
+  ]) assert.ok(availabilitySource.includes(label), label);
+  assert.match(availabilitySource, /slot\.slot_type === 'break'/);
+  assert.match(availabilitySource, /استراحة — غير قابلة للتعديل/);
+  assert.match(availabilitySource, /السعة القصوى بعد القيود/);
+  assert.match(availabilitySource, /ممكن.*غير ممكن/s);
+});
+
+test('teacher availability requests are protected across school, year and teacher changes', () => {
+  assert.match(availabilitySource, /requestGenerationRef\.current \+= 1/);
+  assert.match(availabilitySource, /requestGeneration !== requestGenerationRef\.current/);
+  assert.match(availabilitySource, /currentScopeRef\.current\.selectedTeacherId === expectedTeacherId/);
+  assert.match(availabilitySource, /setSelectedTeacherId\(null\)/);
+  assert.match(availabilitySource, /setMatrix\(null\)/);
+  assert.match(availabilitySource, /scopeIsCurrent\(requestSchoolId, requestYearId, requestTeacherId\)/);
 });
 
 test('system admin uses the shared explicit tenant-school selector with no school fallback', () => {

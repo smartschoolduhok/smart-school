@@ -84,6 +84,7 @@ async function createApiFixture() {
       (3, 1, 'Teacher User', 'teacher@example.test', 5, 'active', 1);
   `);
   database.exec(migration('0023_timetable_foundation.sql'));
+  database.exec(migration('0024_teacher_timetable_constraints.sql'));
   const tokens = {
     owner: await signJWT({ email: 'owner-a@example.test', auth_version: 1 }, secret),
     admin: await signJWT({ email: 'admin@example.test', auth_version: 1 }, secret),
@@ -325,4 +326,203 @@ test('readiness API counts lessons, excludes breaks and aggregates teacher assig
   assert.equal(summary.weekly_capacity, 1);
   assert.equal(summary.break_slots, 1);
   assert.deepEqual(summary.teacher_workloads, [{ employee_id: 1, employee_name: 'Teacher A', total_weekly_periods: 1, assignment_count: 1 }]);
+});
+
+test('teacher availability API supports default, override, clear, bulk-day and reset semantics', async () => {
+  const fixture = await createApiFixture();
+  for (const day of [0, 1]) {
+    assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/days/${day}`, {
+      school_id: 1, academic_year_id: 1, is_active: 1, order_index: day,
+    })).status, 200);
+  }
+  const slotIds = [];
+  for (const slot of [
+    { day_of_week: 0, slot_index: 1, slot_type: 'lesson', lesson_number: 1, label: 'Sunday lesson', start_time: '08:00', end_time: '08:40' },
+    { day_of_week: 0, slot_index: 2, slot_type: 'break', lesson_number: null, label: 'Break', start_time: '08:40', end_time: '09:00' },
+    { day_of_week: 1, slot_index: 1, slot_type: 'lesson', lesson_number: 1, label: 'Monday lesson', start_time: '08:00', end_time: '08:40' },
+  ]) {
+    const response = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+      school_id: 1, academic_year_id: 1, ...slot,
+    });
+    assert.equal(response.status, 201);
+    slotIds.push((await response.json()).data.id);
+  }
+
+  const initial = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/teacher-availability?school_id=1&academic_year_id=1&employee_id=1');
+  assert.equal(initial.status, 200);
+  assert.equal((await initial.json()).data.summary.effective_available_slots, 2, 'missing rows are available');
+
+  const preferred = await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${slotIds[0]}`, {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: 'preferred',
+  });
+  assert.equal(preferred.status, 200);
+  assert.equal((await preferred.json()).data.status, 'preferred');
+  const clear = await api(fixture, fixture.tokens.owner, 'DELETE', `/api/timetable/teacher-availability/${slotIds[0]}`, {
+    school_id: 1, academic_year_id: 1, employee_id: 1,
+  });
+  assert.equal(clear.status, 200);
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_teacher_availability').get().count, 0);
+
+  const bulk = await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/teacher-availability/day/0', {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: 'unavailable',
+  });
+  assert.equal(bulk.status, 200);
+  const overrides = fixture.database.prepare(`
+    SELECT availability.slot_id, slot.slot_type, slot.day_of_week
+    FROM timetable_teacher_availability availability
+    JOIN timetable_slots slot ON slot.id = availability.slot_id
+  `).all();
+  assert.deepEqual(overrides.map((row) => ({ ...row })), [
+    { slot_id: slotIds[0], slot_type: 'lesson', day_of_week: 0 },
+  ]);
+
+  const resetDay = await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/teacher-availability/day/0', {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: null,
+  });
+  assert.equal(resetDay.status, 200);
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_teacher_availability').get().count, 0);
+
+  await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${slotIds[2]}`, {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: 'avoid',
+  });
+  const resetAll = await api(fixture, fixture.tokens.owner, 'DELETE', '/api/timetable/teacher-availability', {
+    school_id: 1, academic_year_id: 1, employee_id: 1,
+  });
+  assert.equal(resetAll.status, 200);
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_teacher_availability').get().count, 0);
+});
+
+test('teacher constraints and summary APIs persist nullable hard limits and soft preferences', async () => {
+  const fixture = await createApiFixture();
+  await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/days/0', {
+    school_id: 1, academic_year_id: 1, is_active: 1, order_index: 0,
+  });
+  for (let slotIndex = 1; slotIndex <= 3; slotIndex += 1) {
+    await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+      school_id: 1, academic_year_id: 1, day_of_week: 0, slot_index: slotIndex,
+      slot_type: 'lesson', lesson_number: slotIndex, label: `Lesson ${slotIndex}`,
+      start_time: `0${7 + slotIndex}:00`, end_time: `0${7 + slotIndex}:40`,
+    });
+  }
+  await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/teaching-loads', {
+    school_id: 1, academic_year_id: 1, class_id: 1, section_id: 1,
+    subject_id: 1, employee_id: 1, weekly_periods: 3,
+  });
+  const save = await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/teacher-constraints', {
+    school_id: 1, academic_year_id: 1, employee_id: 1,
+    max_periods_per_day: 2, max_consecutive_periods: 2, max_working_days: null,
+    prefer_compact_schedule: 1, avoid_first_period: 1, avoid_last_period: 0,
+  });
+  assert.equal(save.status, 200);
+  const saved = (await save.json()).data;
+  assert.equal(saved.max_periods_per_day, 2);
+  assert.equal(saved.prefer_compact_schedule, 1);
+  const get = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/teacher-constraints?school_id=1&academic_year_id=1&employee_id=1');
+  assert.equal(get.status, 200);
+  assert.equal((await get.json()).data.max_consecutive_periods, 2);
+  const summaryResponse = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/teacher-availability-summary?school_id=1&academic_year_id=1&employee_id=1');
+  assert.equal(summaryResponse.status, 200);
+  const summary = (await summaryResponse.json()).data;
+  assert.equal(summary.assigned_weekly_periods, 3);
+  assert.equal(summary.hard_weekly_capacity, 2);
+  assert.equal(summary.feasible, false);
+  assert.equal(summary.blockers[0].code, 'teacher_load_exceeds_availability');
+});
+
+test('availability shortage blocks readiness without erasing demand while soft preferences do not block', async () => {
+  const fixture = await createApiFixture();
+  await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/days/0', {
+    school_id: 1, academic_year_id: 1, is_active: 1, order_index: 0,
+  });
+  for (let slotIndex = 1; slotIndex <= 2; slotIndex += 1) {
+    await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+      school_id: 1, academic_year_id: 1, day_of_week: 0, slot_index: slotIndex,
+      slot_type: 'lesson', lesson_number: slotIndex, label: `Lesson ${slotIndex}`,
+      start_time: `0${7 + slotIndex}:00`, end_time: `0${7 + slotIndex}:40`,
+    });
+  }
+  await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/teaching-loads', {
+    school_id: 1, academic_year_id: 1, class_id: 1, section_id: 1,
+    subject_id: 1, employee_id: 1, weekly_periods: 2,
+  });
+  const hard = await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/teacher-availability/day/0', {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: 'unavailable',
+  });
+  assert.equal(hard.status, 200);
+  const blockedResponse = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1');
+  const blocked = (await blockedResponse.json()).data;
+  assert.equal(blocked.total_required_periods, 2);
+  assert.equal(blocked.placements[0].required_periods, 2);
+  assert.equal(blocked.teacher_feasibility_issues[0].code, 'teacher_no_available_slots');
+  assert.equal(blocked.ready, false);
+
+  const soft = await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/teacher-availability/day/0', {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: 'preferred',
+  });
+  assert.equal(soft.status, 200);
+  const readyResponse = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1');
+  const ready = (await readyResponse.json()).data;
+  assert.equal(ready.teacher_feasibility_issues.length, 0);
+  assert.equal(ready.ready, true);
+});
+
+test('availability APIs enforce RBAC, explicit admin school and cross-tenant/year references atomically', async () => {
+  const fixture = await createApiFixture();
+  for (const [schoolId, yearId] of [[1, 1], [1, 2], [2, 3]]) {
+    await api(fixture, schoolId === 2 ? fixture.tokens.admin : fixture.tokens.owner, 'PUT', '/api/timetable/days/0', {
+      school_id: schoolId, academic_year_id: yearId, is_active: 1, order_index: 0,
+    });
+  }
+  const ownSlotResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+    school_id: 1, academic_year_id: 1, day_of_week: 0, slot_index: 1,
+    slot_type: 'lesson', lesson_number: 1, label: 'Own', start_time: '08:00', end_time: '08:40',
+  });
+  const ownSlotId = (await ownSlotResponse.json()).data.id;
+  const futureSlotResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+    school_id: 1, academic_year_id: 2, day_of_week: 0, slot_index: 1,
+    slot_type: 'lesson', lesson_number: 1, label: 'Future', start_time: '08:00', end_time: '08:40',
+  });
+  const futureSlotId = (await futureSlotResponse.json()).data.id;
+  const foreignSlotResponse = await api(fixture, fixture.tokens.admin, 'POST', '/api/timetable/slots', {
+    school_id: 2, academic_year_id: 3, day_of_week: 0, slot_index: 1,
+    slot_type: 'lesson', lesson_number: 1, label: 'Foreign', start_time: '08:00', end_time: '08:40',
+  });
+  const foreignSlotId = (await foreignSlotResponse.json()).data.id;
+  const ownPayload = { school_id: 1, academic_year_id: 1, employee_id: 1, status: 'unavailable' };
+  assert.equal((await api(fixture, fixture.tokens.teacher, 'PUT', `/api/timetable/teacher-availability/${ownSlotId}`, ownPayload)).status, 403);
+  const adminMissingSchool = { ...ownPayload };
+  delete adminMissingSchool.school_id;
+  assert.equal((await api(fixture, fixture.tokens.admin, 'PUT', `/api/timetable/teacher-availability/${ownSlotId}`, adminMissingSchool)).status, 400);
+  assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${ownSlotId}`, { ...ownPayload, school_id: 2, academic_year_id: 3, employee_id: 2 })).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${futureSlotId}`, ownPayload)).status, 400);
+  assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${foreignSlotId}`, ownPayload)).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${ownSlotId}`, { ...ownPayload, employee_id: 2 })).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${ownSlotId}`, { ...ownPayload, employee_id: 3 })).status, 400);
+  assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${ownSlotId}`, { ...ownPayload, employee_id: 5 })).status, 400);
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_teacher_availability').get().count, 0, 'failed writes remain atomic');
+  assert.equal((await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/teacher-availability?school_id=2&academic_year_id=3&employee_id=2')).status, 403);
+});
+
+test('stored teacher configuration remains readable and clearable after teacher archival', async () => {
+  const fixture = await createApiFixture();
+  await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/days/0', {
+    school_id: 1, academic_year_id: 1, is_active: 1, order_index: 0,
+  });
+  const slotResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+    school_id: 1, academic_year_id: 1, day_of_week: 0, slot_index: 1,
+    slot_type: 'lesson', lesson_number: 1, label: 'Lesson', start_time: '08:00', end_time: '08:40',
+  });
+  const slotId = (await slotResponse.json()).data.id;
+  assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${slotId}`, {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: 'avoid',
+  })).status, 200);
+  fixture.database.prepare("UPDATE employees SET status = 'archived' WHERE id = 1").run();
+  assert.equal((await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/teacher-availability?school_id=1&academic_year_id=1&employee_id=1')).status, 200);
+  assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${slotId}`, {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: 'preferred',
+  })).status, 400);
+  assert.equal((await api(fixture, fixture.tokens.owner, 'DELETE', '/api/timetable/teacher-availability', {
+    school_id: 1, academic_year_id: 1, employee_id: 1,
+  })).status, 200);
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_teacher_availability').get().count, 0);
 });
