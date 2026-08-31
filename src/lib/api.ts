@@ -13,6 +13,11 @@ import type {
   StudentPromotionPreviewData,
   StudentPromotionRequest,
 } from './studentPromotion';
+import type {
+  BulkStudentPromotionExecutionData,
+  BulkStudentPromotionPreviewData,
+  BulkStudentPromotionRequest,
+} from './studentBulkPromotion';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -262,6 +267,20 @@ export function previewStudentPromotion(data: StudentPromotionRequest & { school
 
 export function promoteStudent(data: StudentPromotionRequest & { school_id: number }) {
   return fetchApi<StudentPromotionData>('/api/student-enrollments/promotion', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function previewBulkStudentPromotion(data: BulkStudentPromotionRequest & { school_id: number }) {
+  return fetchApi<BulkStudentPromotionPreviewData>('/api/student-enrollments/promotion/bulk-preview', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function promoteStudentsBulk(data: BulkStudentPromotionRequest & { school_id: number }) {
+  return fetchApi<BulkStudentPromotionExecutionData>('/api/student-enrollments/promotion/bulk', {
     method: 'POST',
     body: JSON.stringify(data),
   });

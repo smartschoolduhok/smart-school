@@ -128,6 +128,7 @@ import {
   type StudentWriteValues,
 } from './lib/studentEnrollments'
 import { executeStudentPromotion, previewStudentPromotion } from './lib/studentPromotion'
+import { executeBulkStudentPromotion, previewBulkStudentPromotion } from './lib/studentBulkPromotion'
 import { ANALYTICS_APPLICABLE_GRADE_JOINS } from './lib/subjectApplicability'
 import {
   STUDENT_RELIGION_HEADER_ALIASES,
@@ -1677,6 +1678,46 @@ app.post('/api/student-enrollments/promotion/preview', requireSameSchoolOrAdmin(
     return c.json({ data: result.data })
   } catch {
     return c.json({ error: 'فشل في معاينة الانتقال السنوي للطالب' }, 500)
+  }
+})
+
+app.post('/api/student-enrollments/promotion/bulk-preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات معاينة الترفيع الجماعي غير صالحة' }, 400)
+
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+
+    const result = await previewBulkStudentPromotion(db, targetSchool.schoolId, body)
+    if (!result.ok) {
+      return c.json({ error: result.error, code: result.code }, result.status)
+    }
+    return c.json({ data: result.data })
+  } catch {
+    return c.json({ error: 'فشل في معاينة الترفيع الجماعي' }, 500)
+  }
+})
+
+app.post('/api/student-enrollments/promotion/bulk', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات الترفيع الجماعي غير صالحة' }, 400)
+
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+
+    const result = await executeBulkStudentPromotion(db, targetSchool.schoolId, user.id, body)
+    if (!result.ok) {
+      return c.json({ error: result.error, code: result.code, data: result.data }, result.status)
+    }
+    return c.json({ data: result.data })
+  } catch {
+    return c.json({ error: 'فشل في تنفيذ الترفيع الجماعي' }, 500)
   }
 })
 
