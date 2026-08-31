@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, School, Users, Shield, Settings, GraduationCap, BookOpen, Calculator, CreditCard, Wallet, FileText, Printer, Bus, Globe, Brain, BookMarked, Layers, UserCheck, HeartHandshake, BarChart3, ArrowDownUp } from 'lucide-react';
+import { LayoutDashboard, School, Users, Shield, Settings, GraduationCap, BookOpen, Calculator, CreditCard, Wallet, FileText, Printer, Bus, Globe, Brain, BookMarked, Layers, UserCheck, HeartHandshake, BarChart3, ArrowDownUp, CalendarDays } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import type { RoleKey } from '../types';
 import {
@@ -53,6 +53,7 @@ const activeModules: NavItem[] = [
   // Phase 2 modules - academic (admin + school staff)
   { label: 'الطلاب', path: '/students', icon: <GraduationCap size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
   { label: 'ترفيع الطلاب', path: '/student-promotion', icon: <ArrowDownUp size={20} />, active: true, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
+  { label: 'الجدول الدراسي', path: '/timetable', icon: <CalendarDays size={20} />, active: true, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
   { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
   { label: 'المواد', path: '/subjects', icon: <BookOpen size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
   { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={20} />, active: true, allowedRoles: ACADEMIC_ACCESS_ROLES },
