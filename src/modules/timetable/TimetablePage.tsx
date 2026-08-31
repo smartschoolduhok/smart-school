@@ -60,7 +60,6 @@ interface EmployeeOption {
   school_id: number;
   full_name: string;
   role: string;
-  employee_type?: string | null;
   job_title?: string | null;
   status: string;
 }
@@ -271,7 +270,7 @@ export default function TimetablePage() {
   )), [loads, selectedClassId, selectedSectionId]);
   const teacherCandidates = useMemo(() => employees.filter((employee) => (
     employee.status === 'active'
-    && (employee.role === 'teacher' || employee.employee_type === 'teacher')
+    && employee.role === 'teacher'
   )), [employees]);
   const weekMetrics = calculateWeeklyCapacity(days, slots);
 

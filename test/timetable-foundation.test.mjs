@@ -29,7 +29,6 @@ function createFixture() {
   database.exec(readMigration('0001_initial_schema.sql'));
   database.exec(readMigration('0002_phase2_academic_tables.sql'));
   database.exec(readMigration('0010_employees.sql'));
-  database.exec(`ALTER TABLE employees ADD COLUMN employee_type TEXT DEFAULT 'other'`);
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'خاص', 'Duhok', 'active'),
@@ -54,11 +53,13 @@ function createFixture() {
       (3, 1, 2, NULL, 'Science', 1, 'active'),
       (4, 2, 3, 3, 'School B Subject', 1, 'active'),
       (5, 1, 1, NULL, 'Archived Subject', 3, 'archived');
-    INSERT INTO employees (id, school_id, full_name, role, employee_type, status) VALUES
-      (1, 1, 'Teacher One', 'teacher', 'teacher', 'active'),
-      (2, 1, 'Teacher Two', 'teacher', 'teacher', 'active'),
-      (3, 2, 'Teacher B', 'teacher', 'teacher', 'active'),
-      (4, 1, 'Archived Teacher', 'teacher', 'teacher', 'archived');
+    INSERT INTO employees (id, school_id, full_name, role, status) VALUES
+      (1, 1, 'Teacher One', 'teacher', 'active'),
+      (2, 1, 'Teacher Two', 'teacher', 'active'),
+      (3, 2, 'Teacher B', 'teacher', 'active'),
+      (4, 1, 'Archived Teacher', 'teacher', 'archived'),
+      (5, 1, 'Accountant One', 'accountant', 'active'),
+      (6, 1, 'Staff One', 'staff', 'active');
   `);
   database.exec(migration);
   return database;
@@ -156,6 +157,16 @@ test('section rules require active class sections and enforce subject placement'
   assert.ok(withoutSection > 0);
 });
 
+test('database accepts active teachers and rejects non-teacher employee roles', () => {
+  const database = createFixture();
+  assert.ok(addLoad(database, { employeeId: 1 }) > 0);
+  database.prepare('DELETE FROM timetable_teaching_loads').run();
+  assert.throws(() => addLoad(database, { employeeId: 5 }), /employee invalid/);
+  assert.throws(() => addLoad(database, { employeeId: 6 }), /employee invalid/);
+  assert.throws(() => addLoad(database, { employeeId: 4 }), /employee invalid/);
+  assert.throws(() => addLoad(database, { employeeId: 3 }), /employee invalid/);
+});
+
 test('active load uniqueness works both with a section and with NULL section', () => {
   const database = createFixture();
   addLoad(database);
@@ -250,6 +261,7 @@ function readinessFixture({ capacity = 8, loadPeriods = [4, 4], missingTeacher =
     subject_section_id: null,
     employee_status: missingTeacher && index === 0 ? null : 'active',
     employee_school_id: missingTeacher && index === 0 ? null : 1,
+    employee_role: missingTeacher && index === 0 ? null : 'teacher',
   }));
   return { days, slots, placements, subjects, loads };
 }
@@ -278,6 +290,7 @@ test('teacher aggregate combines assignments across all classes and sections', (
     employee_name: 'Teacher One', weekly_periods: 3, status: 'active',
     class_status: 'active', section_status: null, subject_status: 'active',
     subject_class_id: 2, subject_section_id: null, employee_status: 'active',
+    employee_role: 'teacher',
   });
   const summary = buildTimetableReadiness(input);
   assert.deepEqual(summary.teacher_workloads, [{
@@ -367,6 +380,8 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
   assert.match(workerSource, /resolveActiveWriteSchool\(c\.env\.DB, user, body\.school_id\)/);
   assert.doesNotMatch(timetableWorkerSource, /school_id\s*(?:\?\?|\|\|)\s*1/);
   assert.doesNotMatch(timetableWorkerSource, /students\.class_id|students\.section_id/);
+  assert.doesNotMatch(timetableWorkerSource, /employee_type/);
+  assert.match(timetableWorkerSource, /employee\.role AS employee_role/);
 });
 
 test('timetable management role matrix reuses academic management policy exactly', () => {

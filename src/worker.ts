@@ -517,8 +517,8 @@ async function validateTimetableLoadReferences(
     db.prepare('SELECT id, school_id, class_id, section_id, status FROM subjects WHERE id = ?')
       .bind(input.subjectId).first<{ id: number; school_id: number; class_id: number; section_id: number | null; status: string }>(),
     input.employeeId == null ? Promise.resolve(null) : db.prepare(
-      'SELECT id, school_id, status FROM employees WHERE id = ?',
-    ).bind(input.employeeId).first<{ id: number; school_id: number; status: string }>(),
+      'SELECT id, school_id, status, role FROM employees WHERE id = ?',
+    ).bind(input.employeeId).first<{ id: number; school_id: number; status: string; role: string }>(),
     db.prepare(`
       SELECT COUNT(*) AS count FROM sections
       WHERE school_id = ? AND class_id = ? AND status = 'active'
@@ -550,6 +550,7 @@ async function validateTimetableLoadReferences(
     if (!employeeRow) return { ok: false, status: 404, error: 'الموظف غير موجود' };
     if (Number(employeeRow.school_id) !== schoolId) return { ok: false, status: 403, error: 'غير مسموح: الموظف من مدرسة أخرى' };
     if (employeeRow.status !== 'active') return { ok: false, status: 400, error: 'الموظف غير نشط' };
+    if (employeeRow.role !== 'teacher') return { ok: false, status: 400, error: 'الموظف المحدد ليس مدرسًا' };
   }
   return { ok: true };
 }
@@ -590,7 +591,7 @@ async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, a
              subject.name AS subject_name, subject.status AS subject_status, subject.school_id AS subject_school_id,
              subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
              employee.full_name AS employee_name, employee.status AS employee_status, employee.school_id AS employee_school_id,
-             employee.employee_type AS employee_type
+             employee.role AS employee_role
       FROM timetable_teaching_loads load
       LEFT JOIN classes class ON class.id = load.class_id
       LEFT JOIN (
@@ -1671,7 +1672,7 @@ app.get('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRole
              subject.name AS subject_name, subject.status AS subject_status, subject.school_id AS subject_school_id,
              subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
              employee.full_name AS employee_name, employee.status AS employee_status, employee.school_id AS employee_school_id,
-             employee.employee_type AS employee_type
+             employee.role AS employee_role
       FROM timetable_teaching_loads load
       LEFT JOIN classes class ON class.id = load.class_id
       LEFT JOIN (

@@ -46,7 +46,8 @@ test('week, load and readiness operations reload all summaries after mutation', 
   assert.match(pageSource, /getTimetableReadiness\(schoolId, academicYearId\)/);
   const reloadCalls = pageSource.match(/await reloadYearData\(\)/g) || [];
   assert.ok(reloadCalls.length >= 5);
-  assert.match(pageSource, /employee\.role === 'teacher' \|\| employee\.employee_type === 'teacher'/);
+  assert.match(pageSource, /employee\.role === 'teacher'/);
+  assert.doesNotMatch(pageSource, /employee_type/);
 });
 
 test('route and sidebar share academic-management policy', () => {

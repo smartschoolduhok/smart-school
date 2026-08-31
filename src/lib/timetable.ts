@@ -61,7 +61,7 @@ export interface TimetableTeachingLoad {
   employee_name?: string | null;
   employee_status?: string | null;
   employee_school_id?: number | null;
-  employee_type?: string | null;
+  employee_role?: string | null;
   weekly_periods: number;
   status: TimetableLoadStatus;
   created_at: number;
@@ -233,7 +233,11 @@ function loadHasInvalidReference(load: TimetableTeachingLoad): boolean {
       || load.subject_section_id != null && load.subject_section_id !== load.section_id
     ))
     || (load.section_id == null && load.subject_section_id != null)
-    || (load.employee_id != null && (load.employee_status !== 'active' || load.employee_school_id !== load.school_id));
+    || (load.employee_id != null && (
+      load.employee_status !== 'active'
+      || load.employee_school_id !== load.school_id
+      || load.employee_role !== 'teacher'
+    ));
 }
 
 export function buildTimetableReadiness(input: {

@@ -54,7 +54,6 @@ async function createApiFixture() {
   database.exec(migration('0002_phase2_academic_tables.sql'));
   database.exec(migration('0010_employees.sql'));
   database.exec(migration('0016_auth_security.sql'));
-  database.exec(`ALTER TABLE employees ADD COLUMN employee_type TEXT DEFAULT 'other'`);
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'خاص', 'Duhok', 'active'),
@@ -72,9 +71,12 @@ async function createApiFixture() {
     INSERT INTO subjects (id, school_id, class_id, section_id, name, status) VALUES
       (1, 1, 1, NULL, 'Math', 'active'),
       (2, 2, 2, NULL, 'Math B', 'active');
-    INSERT INTO employees (id, school_id, full_name, role, employee_type, status) VALUES
-      (1, 1, 'Teacher A', 'teacher', 'teacher', 'active'),
-      (2, 2, 'Teacher B', 'teacher', 'teacher', 'active');
+    INSERT INTO employees (id, school_id, full_name, role, status) VALUES
+      (1, 1, 'Teacher A', 'teacher', 'active'),
+      (2, 2, 'Teacher B', 'teacher', 'active'),
+      (3, 1, 'Accountant A', 'accountant', 'active'),
+      (4, 1, 'Staff A', 'staff', 'active'),
+      (5, 1, 'Archived Teacher A', 'teacher', 'archived');
     INSERT INTO users (id, school_id, full_name, email, role_id, status, auth_version) VALUES
       (1, 1, 'Owner A', 'owner-a@example.test', 2, 'active', 1),
       (2, NULL, 'System Admin', 'admin@example.test', 1, 'active', 1),
@@ -157,6 +159,39 @@ test('teaching-load API creates, edits and history-safely deactivates one canoni
   });
   assert.equal(deactivateResponse.status, 200);
   assert.equal(fixture.database.prepare('SELECT status FROM timetable_teaching_loads WHERE id = ?').get(loadId).status, 'inactive');
+});
+
+test('teaching-load API uses the genuine employee role schema and rejects non-teachers', async () => {
+  const fixture = await createApiFixture();
+  const employeeColumns = fixture.database.prepare('PRAGMA table_info(employees)').all().map((column) => column.name);
+  assert.ok(employeeColumns.includes('role'));
+  assert.equal(employeeColumns.includes('employee_type'), false);
+
+  const base = {
+    school_id: 1, academic_year_id: 1, class_id: 1, section_id: 1,
+    subject_id: 1, weekly_periods: 4,
+  };
+  for (const [employeeId, expectedStatus] of [[3, 400], [4, 400], [5, 400], [2, 403]]) {
+    const response = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/teaching-loads', {
+      ...base, employee_id: employeeId,
+    });
+    assert.equal(response.status, expectedStatus, `employee ${employeeId}`);
+  }
+
+  const teacherResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/teaching-loads', {
+    ...base, employee_id: 1,
+  });
+  assert.equal(teacherResponse.status, 201);
+
+  const listResponse = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/teaching-loads?school_id=1&academic_year_id=1');
+  assert.equal(listResponse.status, 200);
+  const [load] = (await listResponse.json()).data;
+  assert.equal(load.employee_role, 'teacher');
+  assert.equal(Object.hasOwn(load, 'employee_type'), false);
+
+  const readinessResponse = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1');
+  assert.equal(readinessResponse.status, 200);
+  assert.equal((await readinessResponse.json()).data.invalid_reference_count, 0);
 });
 
 test('API enforces management RBAC, explicit admin targeting and tenant isolation', async () => {

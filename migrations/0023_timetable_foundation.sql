@@ -195,7 +195,8 @@ BEGIN
   SELECT RAISE(ABORT, 'timetable load employee invalid')
   WHERE NEW.employee_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM employees
-    WHERE id = NEW.employee_id AND school_id = NEW.school_id AND status = 'active'
+    WHERE id = NEW.employee_id AND school_id = NEW.school_id
+      AND status = 'active' AND role = 'teacher'
   );
 END;
 
@@ -239,7 +240,8 @@ BEGIN
   SELECT RAISE(ABORT, 'timetable load employee invalid')
   WHERE NEW.status = 'active' AND NEW.employee_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM employees
-    WHERE id = NEW.employee_id AND school_id = NEW.school_id AND status = 'active'
+    WHERE id = NEW.employee_id AND school_id = NEW.school_id
+      AND status = 'active' AND role = 'teacher'
   );
 END;
 
