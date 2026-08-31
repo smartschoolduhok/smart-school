@@ -18,6 +18,13 @@ import type {
   BulkStudentPromotionPreviewData,
   BulkStudentPromotionRequest,
 } from './studentBulkPromotion';
+import type {
+  TimetableDay,
+  TimetableReadinessSummary,
+  TimetableSlot,
+  TimetableTeacherWorkload,
+  TimetableTeachingLoad,
+} from './timetable';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -192,6 +199,76 @@ export function activateAcademicYear(id: number, schoolId: number) {
     method: 'PUT',
     body: JSON.stringify({ school_id: schoolId }),
   });
+}
+
+// ===========================================
+// Timetable Foundation
+// ===========================================
+function timetableQuery(schoolId: number, academicYearId: number) {
+  return new URLSearchParams({
+    school_id: String(schoolId),
+    academic_year_id: String(academicYearId),
+  }).toString();
+}
+
+export function getTimetableDays(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableDay[]>(`/api/timetable/days?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function saveTimetableDay(data: {
+  school_id: number;
+  academic_year_id: number;
+  day_of_week: number;
+  is_active: 0 | 1;
+  order_index: number;
+}) {
+  return fetchApi<TimetableDay>(`/api/timetable/days/${data.day_of_week}`, {
+    method: 'PUT', body: JSON.stringify(data),
+  });
+}
+
+export function getTimetableSlots(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableSlot[]>(`/api/timetable/slots?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function createTimetableSlot(data: Record<string, unknown>) {
+  return fetchApi<TimetableSlot>('/api/timetable/slots', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateTimetableSlot(id: number, data: Record<string, unknown>) {
+  return fetchApi<TimetableSlot>(`/api/timetable/slots/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function deleteTimetableSlot(id: number, schoolId: number, academicYearId: number) {
+  return fetchApi<{ id: number }>(`/api/timetable/slots/${id}`, {
+    method: 'DELETE', body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+  });
+}
+
+export function getTimetableTeachingLoads(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableTeachingLoad[]>(`/api/timetable/teaching-loads?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function createTimetableTeachingLoad(data: Record<string, unknown>) {
+  return fetchApi<TimetableTeachingLoad>('/api/timetable/teaching-loads', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateTimetableTeachingLoad(id: number, data: Record<string, unknown>) {
+  return fetchApi<TimetableTeachingLoad>(`/api/timetable/teaching-loads/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function deactivateTimetableTeachingLoad(id: number, schoolId: number, academicYearId: number) {
+  return fetchApi<{ id: number; status: 'inactive' }>(`/api/timetable/teaching-loads/${id}`, {
+    method: 'DELETE', body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+  });
+}
+
+export function getTimetableReadiness(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableReadinessSummary>(`/api/timetable/readiness?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function getTimetableTeacherWorkloads(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableTeacherWorkload[]>(`/api/timetable/teacher-workloads?${timetableQuery(schoolId, academicYearId)}`);
 }
 
 // ===========================================
