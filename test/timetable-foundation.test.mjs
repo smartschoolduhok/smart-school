@@ -134,6 +134,13 @@ test('0023 creates scoped tables, indexes, partial uniqueness and validation tri
   ]) assert.ok(triggers.has(triggerName), triggerName);
 });
 
+test('all seven canonical weekdays are accepted while values outside 0 through 6 are rejected', () => {
+  const database = createFixture();
+  for (let day = 0; day <= 6; day += 1) addDay(database, { day });
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM timetable_days').get().count, 7);
+  assert.throws(() => addDay(database, { day: 7 }), /CHECK constraint failed/);
+});
+
 test('day/year and all teaching-load references fail closed across schools or inactive records', () => {
   const database = createFixture();
   assert.throws(() => addDay(database, { schoolId: 1, yearId: 3 }), /academic year school mismatch/);
@@ -169,9 +176,11 @@ test('database accepts active teachers and rejects non-teacher employee roles', 
 
 test('active load uniqueness works both with a section and with NULL section', () => {
   const database = createFixture();
-  addLoad(database);
+  const activeLoadId = addLoad(database);
   assert.throws(() => addLoad(database), /UNIQUE constraint failed/);
   addLoad(database, { status: 'inactive' });
+  database.prepare("UPDATE timetable_teaching_loads SET status = 'inactive' WHERE id = ?").run(activeLoadId);
+  assert.ok(addLoad(database) > 0, 'a deactivated load may be replaced by one active load');
   addLoad(database, { classId: 2, sectionId: null, subjectId: 3 });
   assert.throws(() => addLoad(database, { classId: 2, sectionId: null, subjectId: 3 }), /UNIQUE constraint failed/);
 });
@@ -200,18 +209,30 @@ test('database update triggers refresh timetable timestamps deterministically', 
   assert.ok(database.prepare('SELECT updated_at FROM timetable_days WHERE id = ?').get(dayId).updated_at > 1);
 });
 
-test('slot validation rejects bad times and overlap while allowing touching boundaries', () => {
+test('slot validation covers duplicates, insert/update overlap, day moves and day-scoped cascading', () => {
   const database = createFixture();
   addDay(database);
+  addDay(database, { day: 1 });
   assert.throws(() => addSlot(database, { start: '25:00' }), /CHECK constraint failed/);
   assert.throws(() => addSlot(database, { start: '09:00', end: '08:00' }), /CHECK constraint failed/);
   assert.throws(() => addSlot(database, { type: 'break', lessonNumber: 1 }), /CHECK constraint failed/);
-  addSlot(database, { start: '08:00', end: '08:40' });
+  const firstSlotId = addSlot(database, { start: '08:00', end: '08:40' });
+  assert.throws(() => addSlot(database, { lessonNumber: 2, start: '09:00', end: '09:40' }), /UNIQUE constraint failed/);
+  assert.throws(() => addSlot(database, { slotIndex: 2, lessonNumber: 1, start: '09:00', end: '09:40' }), /UNIQUE constraint failed/);
   assert.throws(() => addSlot(database, { slotIndex: 2, lessonNumber: 2, start: '08:30', end: '09:00' }), /slot overlap/);
-  addSlot(database, { slotIndex: 2, lessonNumber: 2, start: '08:40', end: '09:20' });
+  const secondSlotId = addSlot(database, { slotIndex: 2, lessonNumber: 2, start: '08:40', end: '09:20' });
+  assert.throws(() => database.prepare(`
+    UPDATE timetable_slots SET start_time = '08:30', end_time = '09:10' WHERE id = ?
+  `).run(secondSlotId), /slot overlap/);
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM timetable_slots').get().count, 2);
+  database.prepare(`
+    UPDATE timetable_slots SET day_of_week = 1, slot_index = 1, lesson_number = 1,
+      start_time = '08:00', end_time = '08:40' WHERE id = ?
+  `).run(secondSlotId);
+  assert.equal(database.prepare('SELECT day_of_week FROM timetable_slots WHERE id = ?').get(secondSlotId).day_of_week, 1);
   database.prepare('DELETE FROM timetable_days WHERE school_id = 1 AND academic_year_id = 1 AND day_of_week = 0').run();
-  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM timetable_slots').get().count, 0);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM timetable_slots WHERE id = ?').get(firstSlotId).count, 0);
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM timetable_slots WHERE id = ?').get(secondSlotId).count, 1);
 });
 
 test('disabled days and breaks are excluded from weekly teaching capacity', () => {
@@ -281,6 +302,70 @@ test('readiness distinguishes under, exact, over, empty and missing-teacher stat
   assert.equal(missingTeacher.ready, false);
 });
 
+test('invalid teachers never erase academic periods or configured subject loads', () => {
+  const input = readinessFixture({ capacity: 35, loadPeriods: [30] });
+  input.placements = [input.placements[0]];
+  input.subjects = [
+    { id: 1, class_id: 1, section_id: null, name: 'Math', status: 'active' },
+    { id: 2, class_id: 1, section_id: null, name: 'Science', status: 'active' },
+  ];
+  input.loads = [
+    { ...input.loads[0], id: 1, subject_id: 1, weekly_periods: 30 },
+    {
+      ...input.loads[0], id: 2, subject_id: 2, weekly_periods: 10,
+      employee_id: 2, employee_name: 'Archived Teacher', employee_status: 'archived',
+    },
+  ];
+
+  const summary = buildTimetableReadiness(input);
+  assert.equal(summary.total_required_periods, 40);
+  assert.equal(summary.placements[0].required_periods, 40);
+  assert.equal(summary.placements[0].status, 'over_capacity');
+  assert.deepEqual(summary.placements[0].missing_subjects, []);
+  assert.equal(summary.invalid_reference_count, 1);
+  assert.equal(summary.ready, false);
+  assert.deepEqual(summary.teacher_workloads, [{
+    employee_id: 1,
+    employee_name: 'Teacher One',
+    total_weekly_periods: 30,
+    assignment_count: 1,
+  }]);
+});
+
+test('teacher role or school changes block readiness and workload without changing weekly requirements', () => {
+  const input = readinessFixture({ capacity: 20, loadPeriods: [10] });
+  input.placements = [input.placements[0]];
+  input.loads[0].employee_role = 'staff';
+  const summary = buildTimetableReadiness(input);
+  assert.equal(summary.total_required_periods, 10);
+  assert.equal(summary.placements[0].required_periods, 10);
+  assert.deepEqual(summary.placements[0].missing_subjects, []);
+  assert.deepEqual(summary.teacher_workloads, []);
+  assert.equal(summary.invalid_reference_count, 1);
+  assert.equal(summary.ready, false);
+
+  input.loads[0].employee_role = 'teacher';
+  input.loads[0].employee_school_id = 2;
+  const wrongSchoolSummary = buildTimetableReadiness(input);
+  assert.equal(wrongSchoolSummary.total_required_periods, 10);
+  assert.deepEqual(wrongSchoolSummary.teacher_workloads, []);
+  assert.equal(wrongSchoolSummary.invalid_reference_count, 1);
+  assert.equal(wrongSchoolSummary.ready, false);
+});
+
+test('a null teacher preserves the requirement and configured subject while reporting missing teacher', () => {
+  const input = readinessFixture({ capacity: 20, loadPeriods: [10], missingTeacher: true });
+  input.placements = [input.placements[0]];
+  const summary = buildTimetableReadiness(input);
+  assert.equal(summary.total_required_periods, 10);
+  assert.equal(summary.placements[0].required_periods, 10);
+  assert.deepEqual(summary.placements[0].missing_subjects, []);
+  assert.deepEqual(summary.placements[0].missing_teacher_load_ids, [1]);
+  assert.equal(summary.missing_teacher_count, 1);
+  assert.equal(summary.invalid_reference_count, 0);
+  assert.equal(summary.ready, false);
+});
+
 test('teacher aggregate combines assignments across all classes and sections', () => {
   const input = readinessFixture({ capacity: 6, loadPeriods: [4, 5] });
   input.placements.push({ class_id: 2, class_name: 'Class B', section_id: null, section_name: null });
@@ -293,6 +378,7 @@ test('teacher aggregate combines assignments across all classes and sections', (
     employee_role: 'teacher',
   });
   const summary = buildTimetableReadiness(input);
+  assert.equal(summary.total_required_periods, 12, 'each active academic load is counted exactly once');
   assert.deepEqual(summary.teacher_workloads, [{
     employee_id: 1,
     employee_name: 'Teacher One',
@@ -307,7 +393,26 @@ test('readiness exposes references that become inactive or structurally invalid 
   input.loads[1].subject_status = 'archived';
   const summary = buildTimetableReadiness(input);
   assert.equal(summary.invalid_reference_count, 2);
+  assert.equal(summary.total_required_periods, 4, 'teacher-invalid load counts; subject-invalid load does not');
+  assert.equal(summary.placements[0].required_periods, 4);
+  assert.equal(summary.placements[1].required_periods, 0);
   assert.equal(summary.ready, false);
+
+  const archivedClassSummary = buildTimetableReadiness({
+    ...input,
+    placements: [input.placements[0]],
+    loads: [{ ...input.loads[0], class_status: 'archived', employee_status: 'active' }],
+  });
+  assert.equal(archivedClassSummary.total_required_periods, 0);
+  assert.equal(archivedClassSummary.invalid_reference_count, 1);
+
+  const archivedSectionSummary = buildTimetableReadiness({
+    ...input,
+    placements: [input.placements[0]],
+    loads: [{ ...input.loads[0], section_status: 'archived', employee_status: 'active' }],
+  });
+  assert.equal(archivedSectionSummary.total_required_periods, 0);
+  assert.equal(archivedSectionSummary.invalid_reference_count, 1);
 
   const nullSectionLoad = {
     ...input.loads[0],
@@ -382,6 +487,12 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
   assert.doesNotMatch(timetableWorkerSource, /students\.class_id|students\.section_id/);
   assert.doesNotMatch(timetableWorkerSource, /employee_type/);
   assert.match(timetableWorkerSource, /employee\.role AS employee_role/);
+  const readinessHelper = workerSource.slice(
+    workerSource.indexOf('async function loadTimetableReadinessSummary'),
+    workerSource.indexOf('// Middleware: explicit CORS'),
+  );
+  assert.equal((readinessHelper.match(/db\.prepare\(/g) || []).length, 5, 'readiness uses a constant query count');
+  assert.doesNotMatch(readinessHelper, /\bIN\s*\(\s*\?/i, 'readiness has no variable-size binding list');
 });
 
 test('timetable management role matrix reuses academic management policy exactly', () => {

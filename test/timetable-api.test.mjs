@@ -61,7 +61,8 @@ async function createApiFixture() {
     INSERT INTO academic_years (id, school_id, name, starts_at, ends_at, is_active) VALUES
       (1, 1, '2026-2027', '2026-09-01', '2027-06-30', 1),
       (2, 1, '2027-2028', '2027-09-01', '2028-06-30', 0),
-      (3, 2, '2026-2027', '2026-09-01', '2027-06-30', 1);
+      (3, 2, '2026-2027', '2026-09-01', '2027-06-30', 1),
+      (4, 1, '2025-2026', '2025-09-01', '2026-06-30', 0);
     INSERT INTO classes (id, school_id, name, stage, order_index, status) VALUES
       (1, 1, 'Class A', 'ابتدائي', 1, 'active'),
       (2, 2, 'Class B', 'ابتدائي', 1, 'active');
@@ -132,6 +133,24 @@ test('timetable day and slot API CRUD persists scoped records', async () => {
   assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_slots').get().count, 0);
 });
 
+test('inactive future and historical academic years remain explicitly configurable and viewable', async () => {
+  const fixture = await createApiFixture();
+  for (const academicYearId of [2, 4]) {
+    const saveResponse = await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/days/0', {
+      school_id: 1, academic_year_id: academicYearId, is_active: 1, order_index: 0,
+    });
+    assert.equal(saveResponse.status, 200);
+    const listResponse = await api(
+      fixture,
+      fixture.tokens.owner,
+      'GET',
+      `/api/timetable/days?school_id=1&academic_year_id=${academicYearId}`,
+    );
+    assert.equal(listResponse.status, 200);
+    assert.equal((await listResponse.json()).data.length, 1);
+  }
+});
+
 test('teaching-load API creates, edits and history-safely deactivates one canonical row', async () => {
   const fixture = await createApiFixture();
   const createResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/teaching-loads', {
@@ -194,6 +213,34 @@ test('teaching-load API uses the genuine employee role schema and rejects non-te
   assert.equal((await readinessResponse.json()).data.invalid_reference_count, 0);
 });
 
+test('deleting a teacher preserves the academic load and readiness reports only the missing teacher', async () => {
+  const fixture = await createApiFixture();
+  await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/days/0', {
+    school_id: 1, academic_year_id: 1, is_active: 1, order_index: 0,
+  });
+  await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+    school_id: 1, academic_year_id: 1, day_of_week: 0, slot_index: 1,
+    slot_type: 'lesson', lesson_number: 1, label: 'Lesson', start_time: '08:00', end_time: '08:40',
+  });
+  const loadResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/teaching-loads', {
+    school_id: 1, academic_year_id: 1, class_id: 1, section_id: 1,
+    subject_id: 1, employee_id: 1, weekly_periods: 1,
+  });
+  assert.equal(loadResponse.status, 201);
+  fixture.database.prepare('DELETE FROM employees WHERE id = 1').run();
+  assert.equal(fixture.database.prepare('SELECT employee_id FROM timetable_teaching_loads').get().employee_id, null);
+
+  const readinessResponse = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1');
+  assert.equal(readinessResponse.status, 200);
+  const summary = (await readinessResponse.json()).data;
+  assert.equal(summary.total_required_periods, 1);
+  assert.equal(summary.missing_teacher_count, 1);
+  assert.equal(summary.invalid_reference_count, 0);
+  assert.deepEqual(summary.placements[0].missing_subjects, []);
+  assert.deepEqual(summary.teacher_workloads, []);
+  assert.equal(summary.ready, false);
+});
+
 test('API enforces management RBAC, explicit admin targeting and tenant isolation', async () => {
   const fixture = await createApiFixture();
   const payload = { school_id: 1, academic_year_id: 1, is_active: 1, order_index: 0 };
@@ -201,6 +248,39 @@ test('API enforces management RBAC, explicit admin targeting and tenant isolatio
   assert.equal((await api(fixture, fixture.tokens.admin, 'PUT', '/api/timetable/days/0', { ...payload, school_id: undefined })).status, 400);
   assert.equal((await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/days/0', { ...payload, school_id: 2 })).status, 403);
   assert.equal((await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/days?school_id=2&academic_year_id=3')).status, 403);
+});
+
+test('every timetable mutation rejects forged tenant schools and missing system-admin targets', async () => {
+  const fixture = await createApiFixture();
+  await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/days/0', {
+    school_id: 1, academic_year_id: 1, is_active: 1, order_index: 0,
+  });
+  const slotResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+    school_id: 1, academic_year_id: 1, day_of_week: 0, slot_index: 1,
+    slot_type: 'lesson', lesson_number: 1, label: 'Lesson', start_time: '08:00', end_time: '08:40',
+  });
+  const slotId = (await slotResponse.json()).data.id;
+  const loadResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/teaching-loads', {
+    school_id: 1, academic_year_id: 1, class_id: 1, section_id: 1,
+    subject_id: 1, employee_id: 1, weekly_periods: 1,
+  });
+  const loadId = (await loadResponse.json()).data.id;
+
+  const foreignMutations = [
+    ['PUT', '/api/timetable/days/1', { school_id: 2, academic_year_id: 3, is_active: 1, order_index: 1 }],
+    ['POST', '/api/timetable/slots', { school_id: 2, academic_year_id: 3, day_of_week: 0, slot_index: 1, slot_type: 'lesson', lesson_number: 1, label: 'x', start_time: '08:00', end_time: '08:40' }],
+    ['PUT', `/api/timetable/slots/${slotId}`, { school_id: 2, academic_year_id: 3, day_of_week: 0, slot_index: 1, slot_type: 'lesson', lesson_number: 1, label: 'x', start_time: '08:00', end_time: '08:40' }],
+    ['DELETE', `/api/timetable/slots/${slotId}`, { school_id: 2, academic_year_id: 3 }],
+    ['POST', '/api/timetable/teaching-loads', { school_id: 2, academic_year_id: 3, class_id: 2, section_id: 2, subject_id: 2, employee_id: 2, weekly_periods: 1 }],
+    ['PUT', `/api/timetable/teaching-loads/${loadId}`, { school_id: 2, academic_year_id: 3, class_id: 2, section_id: 2, subject_id: 2, employee_id: 2, weekly_periods: 1 }],
+    ['DELETE', `/api/timetable/teaching-loads/${loadId}`, { school_id: 2, academic_year_id: 3 }],
+  ];
+  for (const [method, path, body] of foreignMutations) {
+    assert.equal((await api(fixture, fixture.tokens.owner, method, path, body)).status, 403, `${method} ${path}`);
+    const withoutSchool = { ...body };
+    delete withoutSchool.school_id;
+    assert.equal((await api(fixture, fixture.tokens.admin, method, path, withoutSchool)).status, 400, `${method} ${path}`);
+  }
 });
 
 test('forged year, class, section, subject and employee IDs are rejected by API authority', async () => {

@@ -219,7 +219,7 @@ export function calculateWeeklyCapacity(days: TimetableDay[], slots: TimetableSl
   };
 }
 
-function loadHasInvalidReference(load: TimetableTeachingLoad): boolean {
+function loadHasInvalidAcademicReference(load: TimetableTeachingLoad): boolean {
   return load.class_status !== 'active'
     || load.class_school_id !== load.school_id
     || (load.section_id == null && Number(load.active_section_count || 0) > 0)
@@ -232,12 +232,15 @@ function loadHasInvalidReference(load: TimetableTeachingLoad): boolean {
       || load.section_class_id !== load.class_id
       || load.subject_section_id != null && load.subject_section_id !== load.section_id
     ))
-    || (load.section_id == null && load.subject_section_id != null)
-    || (load.employee_id != null && (
-      load.employee_status !== 'active'
-      || load.employee_school_id !== load.school_id
-      || load.employee_role !== 'teacher'
-    ));
+    || (load.section_id == null && load.subject_section_id != null);
+}
+
+function loadHasInvalidTeacherReference(load: TimetableTeachingLoad): boolean {
+  return load.employee_id != null && (
+    load.employee_status !== 'active'
+    || load.employee_school_id !== load.school_id
+    || load.employee_role !== 'teacher'
+  );
 }
 
 export function buildTimetableReadiness(input: {
@@ -249,12 +252,14 @@ export function buildTimetableReadiness(input: {
 }): TimetableReadinessSummary {
   const capacity = calculateWeeklyCapacity(input.days, input.slots);
   const activeLoads = input.loads.filter((load) => load.status === 'active');
-  const invalidLoadIds = new Set(activeLoads.filter(loadHasInvalidReference).map((load) => load.id));
-  const validLoads = activeLoads.filter((load) => !invalidLoadIds.has(load.id));
-  const missingTeacherLoads = validLoads.filter((load) => load.employee_id == null);
+  const invalidAcademicLoadIds = new Set(activeLoads.filter(loadHasInvalidAcademicReference).map((load) => load.id));
+  const invalidTeacherLoadIds = new Set(activeLoads.filter(loadHasInvalidTeacherReference).map((load) => load.id));
+  const invalidLoadIds = new Set([...invalidAcademicLoadIds, ...invalidTeacherLoadIds]);
+  const academicallyValidLoads = activeLoads.filter((load) => !invalidAcademicLoadIds.has(load.id));
+  const missingTeacherLoads = academicallyValidLoads.filter((load) => load.employee_id == null);
   const teacherMap = new Map<number, TimetableTeacherWorkload>();
-  for (const load of validLoads) {
-    if (load.employee_id == null) continue;
+  for (const load of academicallyValidLoads) {
+    if (load.employee_id == null || invalidTeacherLoadIds.has(load.id)) continue;
     const current = teacherMap.get(load.employee_id) || {
       employee_id: load.employee_id,
       employee_name: load.employee_name || 'موظف غير معروف',
@@ -267,7 +272,7 @@ export function buildTimetableReadiness(input: {
   }
 
   const placements = input.placements.map<TimetableReadinessRow>((placement) => {
-    const placementLoads = validLoads.filter((load) => (
+    const placementLoads = academicallyValidLoads.filter((load) => (
       load.class_id === placement.class_id && load.section_id === placement.section_id
     ));
     const applicableSubjects = input.subjects.filter((subject) => (
@@ -317,7 +322,7 @@ export function buildTimetableReadiness(input: {
     teaching_days: capacity.teachingDays,
     lesson_slots: capacity.lessonSlots,
     break_slots: capacity.breakSlots,
-    total_required_periods: validLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0),
+    total_required_periods: academicallyValidLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0),
     total_assignments: activeLoads.length,
     active_teachers: teacherWorkloads.length,
     missing_teacher_count: missingTeacherLoads.length,
