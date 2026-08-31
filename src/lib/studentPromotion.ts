@@ -1,11 +1,13 @@
 export interface StudentPromotionPreparedStatement {
   bind(...values: unknown[]): StudentPromotionPreparedStatement;
   first<T = unknown>(): Promise<T | null>;
+  all<T = unknown>(): Promise<{ results?: T[] }>;
   run(): Promise<StudentPromotionMutationResult>;
 }
 
 export interface StudentPromotionMutationResult {
   meta?: { changes?: number };
+  results?: unknown[];
 }
 
 export interface StudentPromotionDatabase {
@@ -23,7 +25,7 @@ export interface StudentPromotionRequest {
   target_section_id?: unknown;
 }
 
-interface ValidatedPromotionRequest {
+export interface ValidatedPromotionRequest {
   sourceEnrollmentId: number;
   action: StudentPromotionAction;
   targetAcademicYearId: number | null;
@@ -31,7 +33,7 @@ interface ValidatedPromotionRequest {
   targetSectionId: number | null;
 }
 
-interface SourceEnrollmentRecord {
+export interface SourceEnrollmentRecord {
   id: number;
   school_id: number;
   student_id: number;
@@ -55,7 +57,7 @@ interface SourceEnrollmentRecord {
   source_section_name: string | null;
 }
 
-interface AcademicYearRecord {
+export interface AcademicYearRecord {
   id: number;
   school_id: number;
   name: string;
@@ -63,18 +65,18 @@ interface AcademicYearRecord {
   is_active: 0 | 1;
 }
 
-interface SchoolEntityRecord {
+export interface SchoolEntityRecord {
   id: number;
   school_id: number;
   name: string;
   status: string;
 }
 
-interface SectionRecord extends SchoolEntityRecord {
+export interface SectionRecord extends SchoolEntityRecord {
   class_id: number;
 }
 
-interface TargetEnrollmentRecord {
+export interface TargetEnrollmentRecord {
   id: number;
   school_id: number;
   student_id: number;
@@ -166,16 +168,17 @@ export type StudentPromotionResult =
       error: string;
     };
 
-type StudentPromotionFailure = Extract<StudentPromotionResult, { ok: false }>;
-type StudentPromotionInspectionFailure = StudentPromotionFailure & {
+export type StudentPromotionFailure = Extract<StudentPromotionResult, { ok: false }>;
+export type StudentPromotionInspectionFailure = StudentPromotionFailure & {
   targetEnrollmentExists?: boolean | null;
+  source?: SourceEnrollmentRecord;
 };
 
 export type StudentPromotionPreviewResult =
   | { ok: true; data: StudentPromotionPreviewData }
   | (StudentPromotionFailure & { data: InvalidStudentPromotionPreviewData });
 
-interface StudentPromotionInspection {
+export interface StudentPromotionInspection {
   request: ValidatedPromotionRequest;
   source: SourceEnrollmentRecord;
   targetYear: AcademicYearRecord | null;
@@ -184,6 +187,10 @@ interface StudentPromotionInspection {
   existingTarget: TargetEnrollmentRecord | null;
   alreadyApplied: boolean;
 }
+
+export type StudentPromotionInspectionResult =
+  | { ok: true; value: StudentPromotionInspection }
+  | StudentPromotionInspectionFailure;
 
 function failure(
   status: 400 | 403 | 404 | 409,
@@ -198,7 +205,7 @@ function toPositiveInteger(value: unknown): number | null {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
-function createTransitionClaimSentinel(): number {
+export function createTransitionClaimSentinel(): number {
   const words = new Uint32Array(2);
   crypto.getRandomValues(words);
   const positiveSafeInteger = ((words[0] & 0x000fffff) * 0x100000000) + words[1] + 1;
@@ -390,16 +397,217 @@ function sourceLifecycleConflict(source: SourceEnrollmentRecord): StudentPromoti
   return failure(409, 'lifecycle_conflict', 'تعذر تطبيق الانتقال بسبب تغير حالة تسجيل الطالب');
 }
 
-async function inspectStudentPromotion(
-  db: StudentPromotionDatabase,
-  schoolId: number,
-  input: StudentPromotionRequest,
-): Promise<{ ok: true; value: StudentPromotionInspection } | StudentPromotionInspectionFailure> {
-  const validation = validateStudentPromotionRequest(input);
-  if (!validation.ok) return failure(400, 'invalid_input', validation.error);
-  const request = validation.value;
+interface StudentPromotionInspectionRow {
+  request_index: number;
+  id: number | null;
+  school_id: number | null;
+  student_id: number | null;
+  academic_year_id: number | null;
+  class_id: number | null;
+  section_id: number | null;
+  status: string | null;
+  promotion_status: string | null;
+  completed_at: number | null;
+  updated_by_user_id: number | null;
+  student_school_id: number | null;
+  student_status: string | null;
+  source_year_school_id: number | null;
+  source_year_starts_at: string | null;
+  source_year_is_active: 0 | 1 | null;
+  student_number: string | null;
+  student_full_name: string | null;
+  school_name: string | null;
+  source_year_name: string | null;
+  source_class_name: string | null;
+  source_section_name: string | null;
+  target_year_id: number | null;
+  target_year_school_id: number | null;
+  target_year_name: string | null;
+  target_year_starts_at: string | null;
+  target_year_is_active: 0 | 1 | null;
+  target_class_id: number | null;
+  target_class_school_id: number | null;
+  target_class_name: string | null;
+  target_class_status: string | null;
+  target_section_id: number | null;
+  target_section_school_id: number | null;
+  target_section_class_id: number | null;
+  target_section_name: string | null;
+  target_section_status: string | null;
+  active_section_count: number;
+  existing_target_id: number | null;
+  existing_target_school_id: number | null;
+  existing_target_student_id: number | null;
+  existing_target_academic_year_id: number | null;
+  existing_target_class_id: number | null;
+  existing_target_section_id: number | null;
+  existing_target_status: string | null;
+  existing_target_promotion_status: string | null;
+  later_enrollment_count: number;
+}
 
-  const source = await loadSourceEnrollment(db, request.sourceEnrollmentId);
+async function loadStudentPromotionInspectionRows(
+  db: StudentPromotionDatabase,
+  requests: Array<{ requestIndex: number; request: ValidatedPromotionRequest }>,
+): Promise<Map<number, StudentPromotionInspectionRow>> {
+  if (requests.length === 0) return new Map();
+  const payload = JSON.stringify(requests.map(({ requestIndex, request }) => ({
+    request_index: requestIndex,
+    source_enrollment_id: request.sourceEnrollmentId,
+    target_academic_year_id: request.targetAcademicYearId,
+    target_class_id: request.targetClassId,
+    target_section_id: request.targetSectionId,
+  })));
+  const result = await db.prepare(`
+    WITH requested AS (
+      SELECT
+        CAST(json_extract(value, '$.request_index') AS INTEGER) AS request_index,
+        CAST(json_extract(value, '$.source_enrollment_id') AS INTEGER) AS source_enrollment_id,
+        CAST(json_extract(value, '$.target_academic_year_id') AS INTEGER) AS target_academic_year_id,
+        CAST(json_extract(value, '$.target_class_id') AS INTEGER) AS target_class_id,
+        CAST(json_extract(value, '$.target_section_id') AS INTEGER) AS target_section_id
+      FROM json_each(?)
+    )
+    SELECT
+      requested.request_index,
+      source.id,
+      source.school_id,
+      source.student_id,
+      source.academic_year_id,
+      source.class_id,
+      source.section_id,
+      source.status,
+      source.promotion_status,
+      source.completed_at,
+      source.updated_by_user_id,
+      student.school_id AS student_school_id,
+      student.status AS student_status,
+      source_year.school_id AS source_year_school_id,
+      source_year.starts_at AS source_year_starts_at,
+      source_year.is_active AS source_year_is_active,
+      student.student_number,
+      student.full_name AS student_full_name,
+      school.name AS school_name,
+      source_year.name AS source_year_name,
+      source_class.name AS source_class_name,
+      source_section.name AS source_section_name,
+      target_year.id AS target_year_id,
+      target_year.school_id AS target_year_school_id,
+      target_year.name AS target_year_name,
+      target_year.starts_at AS target_year_starts_at,
+      target_year.is_active AS target_year_is_active,
+      target_class.id AS target_class_id,
+      target_class.school_id AS target_class_school_id,
+      target_class.name AS target_class_name,
+      target_class.status AS target_class_status,
+      target_section.id AS target_section_id,
+      target_section.school_id AS target_section_school_id,
+      target_section.class_id AS target_section_class_id,
+      target_section.name AS target_section_name,
+      target_section.status AS target_section_status,
+      COALESCE((
+        SELECT COUNT(*)
+        FROM sections AS active_section
+        WHERE active_section.school_id = source.school_id
+          AND active_section.class_id = requested.target_class_id
+          AND active_section.status = 'active'
+      ), 0) AS active_section_count,
+      existing_target.id AS existing_target_id,
+      existing_target.school_id AS existing_target_school_id,
+      existing_target.student_id AS existing_target_student_id,
+      existing_target.academic_year_id AS existing_target_academic_year_id,
+      existing_target.class_id AS existing_target_class_id,
+      existing_target.section_id AS existing_target_section_id,
+      existing_target.status AS existing_target_status,
+      existing_target.promotion_status AS existing_target_promotion_status,
+      COALESCE((
+        SELECT COUNT(*)
+        FROM student_enrollments AS later_enrollment
+        INNER JOIN academic_years AS later_year
+          ON later_year.id = later_enrollment.academic_year_id
+         AND later_year.school_id = later_enrollment.school_id
+        WHERE later_enrollment.school_id = source.school_id
+          AND later_enrollment.student_id = source.student_id
+          AND later_year.starts_at > source_year.starts_at
+      ), 0) AS later_enrollment_count
+    FROM requested
+    LEFT JOIN student_enrollments AS source ON source.id = requested.source_enrollment_id
+    LEFT JOIN students AS student ON student.id = source.student_id
+    LEFT JOIN academic_years AS source_year ON source_year.id = source.academic_year_id
+    LEFT JOIN schools AS school
+      ON school.id = source.school_id
+     AND school.id = student.school_id
+     AND school.id = source_year.school_id
+    LEFT JOIN classes AS source_class
+      ON source_class.id = source.class_id
+     AND source_class.school_id = source.school_id
+    LEFT JOIN sections AS source_section
+      ON source_section.id = source.section_id
+     AND source_section.school_id = source.school_id
+     AND source_section.class_id = source.class_id
+    LEFT JOIN academic_years AS target_year ON target_year.id = requested.target_academic_year_id
+    LEFT JOIN classes AS target_class ON target_class.id = requested.target_class_id
+    LEFT JOIN sections AS target_section ON target_section.id = requested.target_section_id
+    LEFT JOIN student_enrollments AS existing_target
+      ON existing_target.school_id = source.school_id
+     AND existing_target.student_id = source.student_id
+     AND existing_target.academic_year_id = requested.target_academic_year_id
+    ORDER BY requested.request_index
+  `).bind(payload).all<StudentPromotionInspectionRow>();
+  return new Map((result.results ?? []).map((row) => [Number(row.request_index), row]));
+}
+
+function sourceFromInspectionRow(row: StudentPromotionInspectionRow): SourceEnrollmentRecord | null {
+  if (
+    row.id == null
+    || row.school_id == null
+    || row.student_id == null
+    || row.academic_year_id == null
+    || row.class_id == null
+    || row.status == null
+    || row.promotion_status == null
+    || row.student_school_id == null
+    || row.student_status == null
+    || row.source_year_school_id == null
+    || row.source_year_starts_at == null
+    || row.source_year_is_active == null
+    || row.student_number == null
+    || row.student_full_name == null
+    || row.school_name == null
+    || row.source_year_name == null
+    || row.source_class_name == null
+  ) return null;
+  return {
+    id: row.id,
+    school_id: row.school_id,
+    student_id: row.student_id,
+    academic_year_id: row.academic_year_id,
+    class_id: row.class_id,
+    section_id: row.section_id,
+    status: row.status,
+    promotion_status: row.promotion_status,
+    completed_at: row.completed_at,
+    updated_by_user_id: row.updated_by_user_id,
+    student_school_id: row.student_school_id,
+    student_status: row.student_status,
+    source_year_school_id: row.source_year_school_id,
+    source_year_starts_at: row.source_year_starts_at,
+    source_year_is_active: row.source_year_is_active,
+    student_number: row.student_number,
+    student_full_name: row.student_full_name,
+    school_name: row.school_name,
+    source_year_name: row.source_year_name,
+    source_class_name: row.source_class_name,
+    source_section_name: row.source_section_name,
+  };
+}
+
+function evaluateStudentPromotionInspection(
+  schoolId: number,
+  request: ValidatedPromotionRequest,
+  row: StudentPromotionInspectionRow | undefined,
+): StudentPromotionInspectionResult {
+  const source = row ? sourceFromInspectionRow(row) : null;
   if (!source) return failure(404, 'source_not_found', 'تسجيل الطالب المصدر غير موجود');
   if (
     source.school_id !== schoolId
@@ -408,21 +616,25 @@ async function inspectStudentPromotion(
   ) {
     return failure(403, 'wrong_school', 'غير مسموح: تسجيل الطالب لا ينتمي إلى المدرسة المستهدفة');
   }
+  const fail = (result: StudentPromotionInspectionFailure): StudentPromotionInspectionFailure => ({
+    ...result,
+    source,
+  });
   if (source.source_year_is_active !== 1) {
-    return failure(409, 'source_not_current_year', 'لا يمكن تطبيق الانتقال على تسجيل سنة دراسية غير فعالة');
+    return fail(failure(409, 'source_not_current_year', 'لا يمكن تطبيق الانتقال على تسجيل سنة دراسية غير فعالة'));
   }
   if (source.student_status !== 'active') {
-    return failure(409, 'student_inactive', 'لا يمكن تطبيق الانتقال على طالب غير فعال');
+    return fail(failure(409, 'student_inactive', 'لا يمكن تطبيق الانتقال على طالب غير فعال'));
   }
 
+  const laterEnrollmentExists = Number(row?.later_enrollment_count ?? 0) > 0;
   if (request.action === 'graduated') {
-    const laterEnrollmentExists = await hasLaterEnrollment(db, source);
     if (source.status === 'completed' && source.promotion_status === 'graduated') {
       if (laterEnrollmentExists) {
-        return {
+        return fail({
           ...failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق يتعارض مع قرار التخرج'),
           targetEnrollmentExists: null,
-        };
+        });
       }
       return {
         ok: true,
@@ -438,13 +650,13 @@ async function inspectStudentPromotion(
       };
     }
     if (source.status !== 'active' || source.promotion_status !== 'pending') {
-      return sourceLifecycleConflict(source);
+      return fail(sourceLifecycleConflict(source));
     }
     if (laterEnrollmentExists) {
-      return {
+      return fail({
         ...failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق يتعارض مع قرار التخرج'),
         targetEnrollmentExists: null,
-      };
+      });
     }
     return {
       ok: true,
@@ -460,119 +672,136 @@ async function inspectStudentPromotion(
     };
   }
 
-  const targetAcademicYearId = request.targetAcademicYearId as number;
-  const targetClassId = request.targetClassId as number;
-  if (targetAcademicYearId === source.academic_year_id) {
-    return failure(400, 'invalid_input', 'يجب أن تختلف السنة الدراسية المستهدفة عن سنة المصدر');
+  if (request.targetAcademicYearId === source.academic_year_id) {
+    return fail(failure(400, 'invalid_input', 'يجب أن تختلف السنة الدراسية المستهدفة عن سنة المصدر'));
   }
-
-  const targetYear = await db.prepare(`
-    SELECT id, school_id, name, starts_at, is_active
-    FROM academic_years
-    WHERE id = ?
-  `).bind(targetAcademicYearId).first<AcademicYearRecord>();
-  if (!targetYear) return failure(404, 'target_year_not_found', 'السنة الدراسية المستهدفة غير موجودة');
+  const targetYear = row?.target_year_id == null ? null : {
+    id: row.target_year_id,
+    school_id: row.target_year_school_id as number,
+    name: row.target_year_name as string,
+    starts_at: row.target_year_starts_at as string,
+    is_active: row.target_year_is_active as 0 | 1,
+  };
+  if (!targetYear) return fail(failure(404, 'target_year_not_found', 'السنة الدراسية المستهدفة غير موجودة'));
   if (targetYear.school_id !== schoolId) {
-    return failure(403, 'wrong_school', 'غير مسموح: السنة الدراسية المستهدفة لا تنتمي إلى المدرسة');
+    return fail(failure(403, 'wrong_school', 'غير مسموح: السنة الدراسية المستهدفة لا تنتمي إلى المدرسة'));
   }
   if (targetYear.is_active !== 0) {
-    return failure(409, 'target_year_active', 'يجب أن تكون السنة الدراسية المستهدفة غير فعالة أثناء إعداد الانتقال');
+    return fail(failure(409, 'target_year_active', 'يجب أن تكون السنة الدراسية المستهدفة غير فعالة أثناء إعداد الانتقال'));
   }
   if (targetYear.starts_at <= source.source_year_starts_at) {
-    return failure(400, 'target_year_not_later', 'يجب أن تبدأ السنة الدراسية المستهدفة بعد سنة المصدر');
+    return fail(failure(400, 'target_year_not_later', 'يجب أن تبدأ السنة الدراسية المستهدفة بعد سنة المصدر'));
   }
 
-  const targetClass = await db.prepare('SELECT id, school_id, name, status FROM classes WHERE id = ?')
-    .bind(targetClassId)
-    .first<SchoolEntityRecord>();
-  if (!targetClass) return failure(404, 'target_class_not_found', 'الصف المستهدف غير موجود');
+  const targetClass = row?.target_class_id == null ? null : {
+    id: row.target_class_id,
+    school_id: row.target_class_school_id as number,
+    name: row.target_class_name as string,
+    status: row.target_class_status as string,
+  };
+  if (!targetClass) return fail(failure(404, 'target_class_not_found', 'الصف المستهدف غير موجود'));
   if (targetClass.school_id !== schoolId) {
-    return failure(403, 'wrong_school', 'غير مسموح: الصف المستهدف لا ينتمي إلى المدرسة');
+    return fail(failure(403, 'wrong_school', 'غير مسموح: الصف المستهدف لا ينتمي إلى المدرسة'));
   }
   if (targetClass.status !== 'active') {
-    return failure(409, 'target_class_inactive', 'الصف المستهدف غير نشط ولا يمكن استخدامه في الترفيع');
+    return fail(failure(409, 'target_class_inactive', 'الصف المستهدف غير نشط ولا يمكن استخدامه في الترفيع'));
   }
-
-  const activeSectionCount = await db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM sections
-    WHERE school_id = ? AND class_id = ? AND status = 'active'
-  `).bind(schoolId, targetClassId).first<{ count: number }>();
-  if (Number(activeSectionCount?.count ?? 0) > 0 && request.targetSectionId == null) {
-    return failure(400, 'target_section_required', 'يجب تحديد شعبة مستهدفة لأن الصف المختار يحتوي على شعب نشطة');
+  if (Number(row?.active_section_count ?? 0) > 0 && request.targetSectionId == null) {
+    return fail(failure(400, 'target_section_required', 'يجب تحديد شعبة مستهدفة لأن الصف المختار يحتوي على شعب نشطة'));
   }
 
   let targetSection: SectionRecord | null = null;
   if (request.targetSectionId != null) {
-    targetSection = await db.prepare('SELECT id, school_id, class_id, name, status FROM sections WHERE id = ?')
-      .bind(request.targetSectionId)
-      .first<SectionRecord>();
-    if (!targetSection) return failure(404, 'target_section_not_found', 'الشعبة المستهدفة غير موجودة');
+    targetSection = row?.target_section_id == null ? null : {
+      id: row.target_section_id,
+      school_id: row.target_section_school_id as number,
+      class_id: row.target_section_class_id as number,
+      name: row.target_section_name as string,
+      status: row.target_section_status as string,
+    };
+    if (!targetSection) return fail(failure(404, 'target_section_not_found', 'الشعبة المستهدفة غير موجودة'));
     if (targetSection.school_id !== schoolId) {
-      return failure(403, 'wrong_school', 'غير مسموح: الشعبة المستهدفة لا تنتمي إلى المدرسة');
+      return fail(failure(403, 'wrong_school', 'غير مسموح: الشعبة المستهدفة لا تنتمي إلى المدرسة'));
     }
-    if (targetSection.class_id !== targetClassId) {
-      return failure(400, 'target_section_mismatch', 'الشعبة المستهدفة لا تتبع الصف المستهدف');
+    if (targetSection.class_id !== request.targetClassId) {
+      return fail(failure(400, 'target_section_mismatch', 'الشعبة المستهدفة لا تتبع الصف المستهدف'));
     }
     if (targetSection.status !== 'active') {
-      return failure(409, 'target_section_inactive', 'الشعبة المستهدفة غير نشطة ولا يمكن استخدامها في الترفيع');
+      return fail(failure(409, 'target_section_inactive', 'الشعبة المستهدفة غير نشطة ولا يمكن استخدامها في الترفيع'));
     }
   }
 
-  const existingTarget = await loadTargetEnrollment(
-    db,
-    schoolId,
-    source.student_id,
-    targetAcademicYearId,
-  );
+  const existingTarget = row?.existing_target_id == null ? null : {
+    id: row.existing_target_id,
+    school_id: row.existing_target_school_id as number,
+    student_id: row.existing_target_student_id as number,
+    academic_year_id: row.existing_target_academic_year_id as number,
+    class_id: row.existing_target_class_id as number,
+    section_id: row.existing_target_section_id,
+    status: row.existing_target_status as string,
+    promotion_status: row.existing_target_promotion_status as string,
+  };
   if (exactTargetMatches(source, existingTarget, request)) {
     return {
       ok: true,
-      value: {
-        request,
-        source,
-        targetYear,
-        targetClass,
-        targetSection,
-        existingTarget,
-        alreadyApplied: true,
-      },
+      value: { request, source, targetYear, targetClass, targetSection, existingTarget, alreadyApplied: true },
     };
   }
   if (source.status === 'completed' && source.promotion_status === request.action) {
-    return {
+    return fail({
       ...failure(409, 'target_enrollment_conflict', 'تسجيل السنة المستهدفة مفقود أو لا يطابق قرار الانتقال المطبق'),
       targetEnrollmentExists: existingTarget != null,
-    };
+    });
   }
   if (source.status !== 'active' || source.promotion_status !== 'pending') {
-    return sourceLifecycleConflict(source);
+    return fail(sourceLifecycleConflict(source));
   }
   if (existingTarget) {
-    return {
+    return fail({
       ...failure(409, 'target_enrollment_conflict', 'يوجد تسجيل للطالب في السنة المستهدفة ببيانات مختلفة'),
       targetEnrollmentExists: true,
-    };
+    });
   }
-  if (await hasLaterEnrollment(db, source)) {
-    return {
+  if (laterEnrollmentExists) {
+    return fail({
       ...failure(409, 'target_enrollment_conflict', 'يوجد تسجيل لاحق للطالب يتعارض مع الانتقال المطلوب'),
       targetEnrollmentExists: false,
-    };
+    });
   }
-
   return {
     ok: true,
-    value: {
-      request,
-      source,
-      targetYear,
-      targetClass,
-      targetSection,
-      existingTarget,
-      alreadyApplied: false,
-    },
+    value: { request, source, targetYear, targetClass, targetSection, existingTarget, alreadyApplied: false },
   };
+}
+
+export async function inspectStudentPromotions(
+  db: StudentPromotionDatabase,
+  schoolId: number,
+  inputs: StudentPromotionRequest[],
+): Promise<StudentPromotionInspectionResult[]> {
+  const results: Array<StudentPromotionInspectionResult | null> = inputs.map(() => null);
+  const validRequests: Array<{ requestIndex: number; request: ValidatedPromotionRequest }> = [];
+  inputs.forEach((input, requestIndex) => {
+    const validation = validateStudentPromotionRequest(input);
+    if (!validation.ok) {
+      results[requestIndex] = failure(400, 'invalid_input', validation.error);
+      return;
+    }
+    validRequests.push({ requestIndex, request: validation.value });
+  });
+  const rows = await loadStudentPromotionInspectionRows(db, validRequests);
+  validRequests.forEach(({ requestIndex, request }) => {
+    results[requestIndex] = evaluateStudentPromotionInspection(schoolId, request, rows.get(requestIndex));
+  });
+  return results.map((result) => result as StudentPromotionInspectionResult);
+}
+
+export async function inspectStudentPromotion(
+  db: StudentPromotionDatabase,
+  schoolId: number,
+  input: StudentPromotionRequest,
+): Promise<StudentPromotionInspectionResult> {
+  return (await inspectStudentPromotions(db, schoolId, [input]))[0];
 }
 
 export async function previewStudentPromotion(
@@ -646,7 +875,7 @@ export async function previewStudentPromotion(
   };
 }
 
-function buildTransitionBatch(
+export function buildTransitionBatch(
   db: StudentPromotionDatabase,
   source: SourceEnrollmentRecord,
   request: ValidatedPromotionRequest,

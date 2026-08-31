@@ -32,6 +32,7 @@ import {
 import { enrollmentStatusLabel, promotionStatusLabel } from '../../lib/studentProfilePresentation';
 import type { EffectiveStudentRecord } from '../../lib/studentEnrollments';
 import type { Class, Section } from '../../types';
+import BulkStudentPromotionPanel from './BulkStudentPromotionPanel';
 
 function actionLabel(action: StudentPromotionAction): string {
   if (action === 'promoted') return 'ترفيع';
@@ -80,6 +81,7 @@ export default function StudentPromotionPage() {
   const { schoolId } = schoolScope;
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const sectionRequestIdRef = useRef(0);
+  const [mode, setMode] = useState<'individual' | 'bulk'>('individual');
 
   const [academicYears, setAcademicYears] = useState<AcademicYearRecord[]>([]);
   const [classes, setClasses] = useState<Class[]>([]);
@@ -310,10 +312,15 @@ export default function StudentPromotionPage() {
     <div className="space-y-6" dir="rtl">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">ترفيع الطلاب</h1>
-        <p className="mt-1 text-sm text-gray-500">قرار فردي مع معاينة إلزامية قبل التنفيذ</p>
+        <p className="mt-1 text-sm text-gray-500">قرارات فردية أو جماعية مع معاينة إلزامية قبل التنفيذ</p>
       </div>
 
       <SystemAdminSchoolSelector {...schoolScope} />
+
+      <div className="inline-flex rounded-xl border border-gray-200 bg-white p-1" role="tablist" aria-label="نمط الترفيع">
+        <button type="button" role="tab" aria-selected={mode === 'individual'} onClick={() => setMode('individual')} className={`rounded-lg px-4 py-2 text-sm font-medium ${mode === 'individual' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>ترفيع فردي</button>
+        <button type="button" role="tab" aria-selected={mode === 'bulk'} onClick={() => setMode('bulk')} className={`rounded-lg px-4 py-2 text-sm font-medium ${mode === 'bulk' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}>ترفيع جماعي</button>
+      </div>
 
       {schoolId == null ? (
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-8 text-center text-blue-900">
@@ -325,6 +332,13 @@ export default function StudentPromotionPage() {
         <div className="rounded-xl border border-gray-200 bg-white p-12 text-center text-gray-500">جاري تحميل بيانات الترفيع...</div>
       ) : loadError ? (
         <div className="rounded-xl border border-red-200 bg-red-50 p-5 text-red-700">{loadError}</div>
+      ) : mode === 'bulk' ? (
+        <BulkStudentPromotionPanel
+          schoolId={schoolId}
+          academicYears={academicYears}
+          classes={classes}
+          students={students}
+        />
       ) : (
         <>
           <section className="rounded-xl border border-gray-200 bg-white p-6">

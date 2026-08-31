@@ -9,6 +9,11 @@ import {
   isTargetSectionSelectionReady,
   promotionSelectionFingerprint,
 } from '../src/lib/studentPromotionUi.ts';
+import {
+  buildBulkPromotionRequest,
+  bulkPromotionSelectionFingerprint,
+  isBulkPromotionPreviewCurrent,
+} from '../src/lib/studentBulkPromotionUi.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -17,6 +22,7 @@ const pageSource = source('src/modules/studentPromotion/StudentPromotionPage.tsx
 const appSource = source('src/App.tsx');
 const sidebarSource = source('src/components/Sidebar.tsx');
 const profileSource = source('src/modules/students/StudentProfilePage.tsx');
+const bulkPageSource = source('src/modules/studentPromotion/BulkStudentPromotionPanel.tsx');
 
 function baseSelection(overrides = {}) {
   return {
@@ -156,4 +162,98 @@ test('the UI presents separate current, decision, target, preview, and execute s
   assert.match(pageSource, /تنفيذ الترفيع/);
   assert.match(pageSource, /تأكيد إعادة السنة/);
   assert.match(pageSource, /تأكيد التخرج/);
+});
+
+function bulkSelection(overrides = {}) {
+  return {
+    schoolId: 2,
+    sourceAcademicYearId: 3,
+    sourceClassId: 3,
+    sourceSectionId: 3,
+    targetAcademicYearId: 4,
+    rows: [
+      { sourceEnrollmentId: 28, action: 'promoted', targetClassId: 4, targetSectionId: 6 },
+      { sourceEnrollmentId: 29, action: 'graduated', targetClassId: null, targetSectionId: null },
+    ],
+    ...overrides,
+  };
+}
+
+test('bulk payload has one explicit target year and keeps per-student decisions and placement overrides', () => {
+  assert.deepEqual(buildBulkPromotionRequest(bulkSelection()), {
+    school_id: 2,
+    source_academic_year_id: 3,
+    source_class_id: 3,
+    source_section_id: 3,
+    target_academic_year_id: 4,
+    rows: [
+      { source_enrollment_id: 28, action: 'promoted', target_class_id: 4, target_section_id: 6 },
+      { source_enrollment_id: 29, action: 'graduated' },
+    ],
+  });
+  assert.equal(buildBulkPromotionRequest(bulkSelection({ targetAcademicYearId: null })), null);
+});
+
+test('bulk preview fingerprint is invalidated by source, target, or any row decision change', () => {
+  const selection = bulkSelection();
+  const fingerprint = bulkPromotionSelectionFingerprint(selection);
+  assert.equal(isBulkPromotionPreviewCurrent(fingerprint, selection), true);
+  for (const changed of [
+    { schoolId: 1 },
+    { sourceAcademicYearId: 2 },
+    { sourceClassId: 9 },
+    { sourceSectionId: null },
+    { targetAcademicYearId: 5 },
+    { rows: [{ ...selection.rows[0], action: 'repeated' }, selection.rows[1]] },
+    { rows: [{ ...selection.rows[0], targetClassId: 10 }, selection.rows[1]] },
+  ]) {
+    assert.equal(isBulkPromotionPreviewCurrent(fingerprint, bulkSelection(changed)), false);
+  }
+});
+
+test('bulk UI provides explicit source cohort, common year, row decisions, preview, and atomic confirmation', () => {
+  assert.match(pageSource, /ترفيع فردي/);
+  assert.match(pageSource, /ترفيع جماعي/);
+  assert.match(pageSource, /<BulkStudentPromotionPanel/);
+  for (const text of [
+    'أ) تحديد مجموعة المصدر',
+    'الصف المصدر',
+    'الشعبة المصدر (اختياري)',
+    'السنة المستهدفة',
+    'تعيين الكل مترفعين',
+    'تعيين الكل معيدين',
+    'مسح القرارات',
+    'بحث بالاسم أو الرقم',
+    'معاينة إلزامية',
+    'تأكيد تنفيذ الترفيع الجماعي',
+  ]) {
+    assert.match(bulkPageSource, new RegExp(text.replace(/[()]/g, '\\$&')));
+  }
+  assert.match(bulkPageSource, /option value="promoted">مترفع/);
+  assert.match(bulkPageSource, /option value="repeated">معيد/);
+  assert.match(bulkPageSource, /option value="graduated">متخرج/);
+  assert.match(bulkPageSource, /option value="skipped">تخطي/);
+  assert.match(bulkPageSource, /لن تُحفظ أي كتابة جزئية/);
+});
+
+test('bulk UI fails closed for limits and stale school or selection responses', () => {
+  assert.match(bulkPageSource, /MAX_BULK_PROMOTION_ROWS/);
+  assert.match(bulkPageSource, /الحد الآمن للعملية الواحدة/);
+  assert.match(bulkPageSource, /sectionRequestIdRef\.current/);
+  assert.match(bulkPageSource, /requestId !== sectionRequestIdRef\.current/);
+  assert.match(bulkPageSource, /currentFingerprintRef\.current !== requestedFingerprint/);
+  assert.match(bulkPageSource, /disabled=\{!canPreview \|\| previewing\}/);
+  assert.match(bulkPageSource, /disabled=\{!canExecute \|\| executing\}/);
+  assert.match(bulkPageSource, /setPreview\(null\)[\s\S]*setPreviewFingerprint\(null\)[\s\S]*\}, \[fingerprint\]\)/);
+  assert.match(bulkPageSource, /setDecisions\(cohort\.map[\s\S]*\}, \[cohort\]\)/);
+  assert.match(bulkPageSource, /setSourceClassId[\s\S]*setSourceSectionId\(null\)/);
+  assert.match(bulkPageSource, /current_enrollment_status === 'active'/);
+  assert.match(bulkPageSource, /current_promotion_status === 'pending'/);
+});
+
+test('bulk UI preserves RTL while isolating academic years and student numbers as LTR', () => {
+  assert.match(pageSource, /<div className="space-y-6" dir="rtl">/);
+  assert.match(bulkPageSource, /<bdi dir="ltr" className="inline-block isolate">\{value\}<\/bdi>/);
+  assert.match(bulkPageSource, /<bdi dir="ltr" className="text-xs text-gray-500">\{row\.studentNumber\}<\/bdi>/);
+  assert.doesNotMatch(bulkPageSource, /(?:split|reverse)\([^)]*(?:year|studentNumber)/);
 });

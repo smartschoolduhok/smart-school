@@ -17,6 +17,11 @@ import {
   previewStudentPromotion,
   validateStudentPromotionRequest,
 } from '../src/lib/studentPromotion.ts';
+import {
+  MAX_BULK_PROMOTION_ROWS,
+  executeBulkStudentPromotion,
+  previewBulkStudentPromotion,
+} from '../src/lib/studentBulkPromotion.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -40,6 +45,10 @@ class LocalPreparedStatement {
 
   first() {
     return this.owner.database.prepare(this.sql).get(...this.params) || null;
+  }
+
+  all() {
+    return { results: this.owner.database.prepare(this.sql).all(...this.params) };
   }
 
   run() {
@@ -273,6 +282,17 @@ function promotionRequest(ids, sourceEnrollmentId, overrides = {}) {
     target_academic_year_id: ids.futureA,
     target_class_id: ids.classA2,
     target_section_id: ids.sectionA2,
+    ...overrides,
+  };
+}
+
+function bulkPromotionRequest(ids, rows, overrides = {}) {
+  return {
+    source_academic_year_id: ids.sourceA,
+    source_class_id: ids.classA1,
+    source_section_id: ids.sectionA1,
+    target_academic_year_id: ids.futureA,
+    rows,
     ...overrides,
   };
 }
@@ -1288,6 +1308,312 @@ test('target enrollment uniqueness remains enforced by the database', () => {
   fixture.database.close();
 });
 
+test('bulk preview validates multiple promoted students in one read-only plan', async () => {
+  const fixture = createFixture();
+  const first = createPromotionSource(fixture, { student: { student_number: 'BULK-PREVIEW-1' } });
+  const second = createPromotionSource(fixture, { student: { student_number: 'BULK-PREVIEW-2' } });
+  const before = fixture.database.prepare('SELECT * FROM student_enrollments ORDER BY id').all();
+  const result = await previewBulkStudentPromotion(fixture.adapter, 1, bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: first.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+    { source_enrollment_id: second.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+  ]));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data.valid, true);
+  assert.equal(result.data.atomic, true);
+  assert.equal(result.data.summary.total, 2);
+  assert.equal(result.data.summary.selected, 2);
+  assert.equal(result.data.summary.valid, 2);
+  assert.equal(result.data.summary.promoted, 2);
+  assert.equal(fixture.adapter.batchCalls, 0);
+  assert.deepEqual(fixture.database.prepare('SELECT * FROM student_enrollments ORDER BY id').all(), before);
+  fixture.database.close();
+});
+
+test('bulk execution atomically applies mixed promoted, repeated, and graduated decisions while skipping writes', async () => {
+  const fixture = createFixture();
+  const promoted = createPromotionSource(fixture, { student: { student_number: 'BULK-MIX-P' } });
+  const repeated = createPromotionSource(fixture, { student: { student_number: 'BULK-MIX-R' } });
+  const graduated = createPromotionSource(fixture, { student: { student_number: 'BULK-MIX-G' } });
+  const skipped = createPromotionSource(fixture, { student: { student_number: 'BULK-MIX-S' } });
+  const request = bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: promoted.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+    { source_enrollment_id: repeated.sourceEnrollmentId, action: 'repeated', target_class_id: fixture.ids.classA1, target_section_id: fixture.ids.sectionA1 },
+    { source_enrollment_id: graduated.sourceEnrollmentId, action: 'graduated' },
+    { source_enrollment_id: skipped.sourceEnrollmentId, action: 'skipped' },
+  ]);
+
+  const result = await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, request);
+  assert.equal(result.ok, true);
+  assert.equal(result.data.atomic, true);
+  assert.equal(result.data.summary.executed, 3);
+  assert.equal(result.data.summary.skipped, 1);
+  assert.equal(fixture.adapter.batchCalls, 1);
+  for (const [sourceId, action] of [
+    [promoted.sourceEnrollmentId, 'promoted'],
+    [repeated.sourceEnrollmentId, 'repeated'],
+    [graduated.sourceEnrollmentId, 'graduated'],
+  ]) {
+    const source = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', sourceId);
+    assert.equal(source.status, 'completed');
+    assert.equal(source.promotion_status, action);
+    assert.ok(Number(source.completed_at) > 0);
+  }
+  const skippedSource = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', skipped.sourceEnrollmentId);
+  assert.equal(skippedSource.status, 'active');
+  assert.equal(skippedSource.promotion_status, 'pending');
+  assert.equal(skippedSource.completed_at, null);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', promoted.studentId, fixture.ids.futureA).count), 1);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', repeated.studentId, fixture.ids.futureA).count), 1);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', graduated.studentId, fixture.ids.futureA).count), 0);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', skipped.studentId, fixture.ids.futureA).count), 0);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0').count), 0);
+  fixture.database.close();
+});
+
+test('one invalid bulk row blocks the entire execution with zero writes', async () => {
+  const fixture = createFixture();
+  const valid = createPromotionSource(fixture, { student: { student_number: 'BULK-BLOCK-VALID' } });
+  const invalid = createPromotionSource(fixture, { student: { student_number: 'BULK-BLOCK-INVALID' } });
+  const request = bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: valid.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+    { source_enrollment_id: invalid.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: null },
+  ]);
+  const preview = await previewBulkStudentPromotion(fixture.adapter, 1, request);
+  assert.equal(preview.ok, true);
+  assert.equal(preview.data.valid, false);
+  assert.equal(preview.data.summary.invalid, 1);
+  assert.equal(preview.data.rows[1].blocking_errors[0].includes('يجب تحديد شعبة'), true);
+  const execution = await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, request);
+  assert.equal(execution.ok, false);
+  assert.equal(execution.code, 'bulk_invalid');
+  assert.equal(fixture.adapter.batchCalls, 0);
+  for (const sourceId of [valid.sourceEnrollmentId, invalid.sourceEnrollmentId]) {
+    const source = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', sourceId);
+    assert.equal(source.status, 'active');
+    assert.equal(source.promotion_status, 'pending');
+    assert.equal(source.completed_at, null);
+  }
+  fixture.database.close();
+});
+
+test('bulk preview rejects inactive and mismatched target placement per row', async () => {
+  const fixture = createFixture();
+  const sources = Array.from({ length: 4 }, (_, index) => createPromotionSource(fixture, {
+    student: { student_number: `BULK-TARGET-${index}` },
+  }));
+  const result = await previewBulkStudentPromotion(fixture.adapter, 1, bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: sources[0].sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classAInactive, target_section_id: null },
+    { source_enrollment_id: sources[1].sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2Inactive },
+    { source_enrollment_id: sources[2].sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA3 },
+    { source_enrollment_id: sources[3].sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionB1 },
+  ]));
+  assert.equal(result.ok, true);
+  assert.equal(result.data.valid, false);
+  assert.equal(result.data.summary.invalid, 4);
+  assert.match(result.data.rows[0].blocking_errors[0], /الصف المستهدف غير نشط/);
+  assert.match(result.data.rows[1].blocking_errors[0], /الشعبة المستهدفة غير نشطة/);
+  assert.match(result.data.rows[2].blocking_errors[0], /لا تتبع الصف/);
+  assert.match(result.data.rows[3].blocking_errors[0], /لا تنتمي إلى المدرسة/);
+  fixture.database.close();
+});
+
+test('bulk preview rejects cross-school sources and targets without exposing tenant data', async () => {
+  const fixture = createFixture();
+  const local = createPromotionSource(fixture);
+  const foreignStudentId = insertStudent(fixture.database, fixture.ids, {
+    school_id: 2,
+    class_id: fixture.ids.classB1,
+    section_id: fixture.ids.sectionB1,
+  });
+  const foreignSourceId = insertEnrollment(fixture.database, fixture.ids, foreignStudentId, {
+    school_id: 2,
+    academic_year_id: fixture.ids.sourceB,
+    class_id: fixture.ids.classB1,
+    section_id: fixture.ids.sectionB1,
+  });
+  const sourceResult = await previewBulkStudentPromotion(fixture.adapter, 1, bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: foreignSourceId, action: 'graduated' },
+  ]));
+  assert.equal(sourceResult.ok, true);
+  assert.equal(sourceResult.data.rows[0].state, 'invalid');
+  assert.equal(sourceResult.data.rows[0].student, null);
+
+  const targetResult = await previewBulkStudentPromotion(fixture.adapter, 1, bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: local.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classB1, target_section_id: fixture.ids.sectionB1 },
+  ]));
+  assert.equal(targetResult.ok, true);
+  assert.match(targetResult.data.rows[0].blocking_errors[0], /لا ينتمي إلى المدرسة/);
+  fixture.database.close();
+});
+
+test('bulk exact retry is idempotent and never creates duplicate target enrollments', async () => {
+  const fixture = createFixture();
+  const source = createPromotionSource(fixture);
+  const request = bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: source.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+  ]);
+  const first = await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, request);
+  assert.equal(first.ok, true);
+  const completedAt = Number(row(fixture.database, 'SELECT completed_at FROM student_enrollments WHERE id = ?', source.sourceEnrollmentId).completed_at);
+  const retryPreview = await previewBulkStudentPromotion(fixture.adapter, 1, request);
+  assert.equal(retryPreview.ok, true);
+  assert.equal(retryPreview.data.rows[0].already_applied, true);
+  const retry = await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, request);
+  assert.equal(retry.ok, true);
+  assert.equal(retry.data.rows[0].status, 'already_applied');
+  assert.equal(Number(row(fixture.database, 'SELECT completed_at FROM student_enrollments WHERE id = ?', source.sourceEnrollmentId).completed_at), completedAt);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', source.studentId, fixture.ids.futureA).count), 1);
+  fixture.database.close();
+});
+
+test('a concurrent change to an idempotent row rolls back new rows in the same bulk batch', async () => {
+  const fixture = createFixture();
+  const alreadyApplied = createPromotionSource(fixture, { student: { student_number: 'BULK-IDEMPOTENT-RACE-1' } });
+  const pending = createPromotionSource(fixture, { student: { student_number: 'BULK-IDEMPOTENT-RACE-2' } });
+  const firstRequest = bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: alreadyApplied.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+  ]);
+  assert.equal((await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, firstRequest)).ok, true);
+
+  const mixedRequest = bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: alreadyApplied.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+    { source_enrollment_id: pending.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA3, target_section_id: fixture.ids.sectionA3 },
+  ]);
+  const preview = await previewBulkStudentPromotion(fixture.adapter, 1, mixedRequest);
+  assert.equal(preview.ok, true);
+  assert.equal(preview.data.valid, true);
+  assert.equal(preview.data.rows[0].already_applied, true);
+  fixture.adapter.beforeBatch = () => {
+    fixture.database.prepare("UPDATE classes SET status = 'archived' WHERE id = ?").run(fixture.ids.classA2);
+  };
+
+  const execution = await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, mixedRequest);
+  assert.equal(execution.ok, false);
+  assert.equal(execution.code, 'bulk_conflict');
+  const pendingSource = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', pending.sourceEnrollmentId);
+  assert.equal(pendingSource.status, 'active');
+  assert.equal(pendingSource.promotion_status, 'pending');
+  assert.equal(pendingSource.completed_at, null);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', pending.studentId, fixture.ids.futureA).count), 0);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0').count), 0);
+  fixture.database.close();
+});
+
+test('stale bulk preview is revalidated and target changes roll back the whole atomic batch', async () => {
+  for (const mutate of ['source', 'target', 'class', 'section', 'year']) {
+    const fixture = createFixture();
+    const first = createPromotionSource(fixture, { student: { student_number: `BULK-STALE-${mutate}-1` } });
+    const second = createPromotionSource(fixture, { student: { student_number: `BULK-STALE-${mutate}-2` } });
+    const request = bulkPromotionRequest(fixture.ids, [
+      { source_enrollment_id: first.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+      { source_enrollment_id: second.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+    ]);
+    const preview = await previewBulkStudentPromotion(fixture.adapter, 1, request);
+    assert.equal(preview.ok, true, mutate);
+    assert.equal(preview.data.valid, true, mutate);
+    if (mutate === 'source') {
+      fixture.database.prepare("UPDATE student_enrollments SET status = 'completed', promotion_status = 'graduated', completed_at = 123 WHERE id = ?").run(second.sourceEnrollmentId);
+    } else if (mutate === 'target') {
+      insertEnrollment(fixture.database, fixture.ids, second.studentId, {
+        academic_year_id: fixture.ids.futureA,
+        class_id: fixture.ids.classA3,
+        section_id: fixture.ids.sectionA3,
+      });
+    } else if (mutate === 'class') {
+      fixture.database.prepare("UPDATE classes SET status = 'archived' WHERE id = ?").run(fixture.ids.classA2);
+    } else if (mutate === 'section') {
+      fixture.database.prepare("UPDATE sections SET status = 'archived' WHERE id = ?").run(fixture.ids.sectionA2);
+    } else {
+      fixture.database.prepare('UPDATE academic_years SET is_active = 0 WHERE id = ?').run(fixture.ids.sourceA);
+      fixture.database.prepare('UPDATE academic_years SET is_active = 1 WHERE id = ?').run(fixture.ids.futureA);
+    }
+    const execution = await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, request);
+    assert.equal(execution.ok, false, mutate);
+    assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', first.studentId, fixture.ids.futureA).count), 0, mutate);
+    const firstSource = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', first.sourceEnrollmentId);
+    assert.equal(firstSource.status, 'active', mutate);
+    assert.equal(firstSource.promotion_status, 'pending', mutate);
+    assert.equal(firstSource.completed_at, null, mutate);
+    fixture.database.close();
+  }
+});
+
+test('bulk transaction failure rolls back every student and leaves no claim sentinel', async () => {
+  const fixture = createFixture();
+  const first = createPromotionSource(fixture);
+  const second = createPromotionSource(fixture);
+  fixture.adapter.failAtBatchStatement = 2;
+  const result = await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: first.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+    { source_enrollment_id: second.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+  ]));
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'bulk_conflict');
+  for (const sourceId of [first.sourceEnrollmentId, second.sourceEnrollmentId]) {
+    const source = row(fixture.database, 'SELECT status, promotion_status, completed_at FROM student_enrollments WHERE id = ?', sourceId);
+    assert.equal(source.status, 'active');
+    assert.equal(source.promotion_status, 'pending');
+    assert.equal(source.completed_at, null);
+  }
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0').count), 0);
+  fixture.database.close();
+});
+
+test('bulk API rejects oversized requests before reading or writing D1', async () => {
+  const fixture = createFixture();
+  const rows = Array.from({ length: MAX_BULK_PROMOTION_ROWS + 1 }, (_, index) => ({
+    source_enrollment_id: index + 1,
+    action: 'skipped',
+  }));
+  const result = await previewBulkStudentPromotion(fixture.adapter, 1, bulkPromotionRequest(fixture.ids, rows));
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'invalid_input');
+  assert.match(result.error, new RegExp(String(MAX_BULK_PROMOTION_ROWS)));
+  assert.equal(fixture.adapter.batchCalls, 0);
+  fixture.database.close();
+});
+
+test('bulk API executes exactly the documented maximum in one fixed atomic batch', async () => {
+  const fixture = createFixture();
+  const sources = Array.from({ length: MAX_BULK_PROMOTION_ROWS }, (_, index) => (
+    createPromotionSource(fixture, { student: { student_number: `BULK-MAX-${index + 1}` } })
+  ));
+  const result = await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, bulkPromotionRequest(
+    fixture.ids,
+    sources.map((source) => ({
+      source_enrollment_id: source.sourceEnrollmentId,
+      action: 'promoted',
+      target_class_id: fixture.ids.classA2,
+      target_section_id: fixture.ids.sectionA2,
+    })),
+  ));
+  assert.equal(result.ok, true);
+  assert.equal(result.data.summary.executed, MAX_BULK_PROMOTION_ROWS);
+  assert.equal(fixture.adapter.batchCalls, 1);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE academic_year_id = ?', fixture.ids.futureA).count), MAX_BULK_PROMOTION_ROWS);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE completed_at < 0').count), 0);
+  fixture.database.close();
+});
+
+test('bulk preview rejects a completed source when the requested action conflicts', async () => {
+  const fixture = createFixture();
+  const source = createPromotionSource(fixture);
+  const promoted = bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: source.sourceEnrollmentId, action: 'promoted', target_class_id: fixture.ids.classA2, target_section_id: fixture.ids.sectionA2 },
+  ]);
+  assert.equal((await executeBulkStudentPromotion(fixture.adapter, 1, fixture.ids.userA, promoted)).ok, true);
+  const conflicting = await previewBulkStudentPromotion(fixture.adapter, 1, bulkPromotionRequest(fixture.ids, [
+    { source_enrollment_id: source.sourceEnrollmentId, action: 'repeated', target_class_id: fixture.ids.classA1, target_section_id: fixture.ids.sectionA1 },
+  ]));
+  assert.equal(conflicting.ok, true);
+  assert.equal(conflicting.data.valid, false);
+  assert.equal(conflicting.data.rows[0].state, 'invalid');
+  assert.match(conflicting.data.rows[0].blocking_errors[0], /تسجيل الطالب|يتعارض/);
+  assert.equal(Number(row(fixture.database, 'SELECT COUNT(*) AS count FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', source.studentId, fixture.ids.futureA).count), 1);
+  fixture.database.close();
+});
+
 test('promotion preview and execute APIs are management-only and resolve an explicit tenant target', () => {
   const routes = workerSource.slice(
     workerSource.indexOf("app.post('/api/student-enrollments/promotion/preview'"),
@@ -1309,4 +1635,22 @@ test('promotion preview and execute APIs are management-only and resolve an expl
   assert.doesNotMatch(previewRoute, /\.run\(\)|\.batch\(/);
   assert.match(executeRoute, /executeStudentPromotion\(db, targetSchool\.schoolId, user\.id, body\)/);
   assert.doesNotMatch(executeRoute, /students\.(?:class_id|section_id)|UPDATE students/);
+});
+
+test('bulk promotion APIs share management RBAC, explicit tenant resolution, and authoritative helpers', () => {
+  const previewStart = workerSource.indexOf("app.post('/api/student-enrollments/promotion/bulk-preview'");
+  const executeStart = workerSource.indexOf("app.post('/api/student-enrollments/promotion/bulk'");
+  const individualStart = workerSource.indexOf("app.post('/api/student-enrollments/promotion'", executeStart + 1);
+  assert.notEqual(previewStart, -1);
+  assert.notEqual(executeStart, -1);
+  const previewRoute = workerSource.slice(previewStart, executeStart);
+  const executeRoute = workerSource.slice(executeStart, individualStart);
+  for (const route of [previewRoute, executeRoute]) {
+    assert.match(route, /requireSameSchoolOrAdmin\(\), requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/);
+    assert.match(route, /resolveActiveWriteSchool\(db, user, body\.school_id\)/);
+  }
+  assert.match(previewRoute, /previewBulkStudentPromotion\(db, targetSchool\.schoolId, body\)/);
+  assert.match(executeRoute, /executeBulkStudentPromotion\(db, targetSchool\.schoolId, user\.id, body\)/);
+  assert.doesNotMatch(previewRoute, /\.run\(\)|\.batch\(/);
+  assert.doesNotMatch(executeRoute, /UPDATE students|students\.(?:class_id|section_id)/);
 });
