@@ -12,7 +12,10 @@ import {
 import {
   buildBulkPromotionRequest,
   bulkPromotionSelectionFingerprint,
+  filterBulkPromotionRows,
+  isBulkPromotionCohortWithinLimit,
   isBulkPromotionPreviewCurrent,
+  selectBulkPromotionCohort,
 } from '../src/lib/studentBulkPromotionUi.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -23,6 +26,7 @@ const appSource = source('src/App.tsx');
 const sidebarSource = source('src/components/Sidebar.tsx');
 const profileSource = source('src/modules/students/StudentProfilePage.tsx');
 const bulkPageSource = source('src/modules/studentPromotion/BulkStudentPromotionPanel.tsx');
+const bulkUiSource = source('src/lib/studentBulkPromotionUi.ts');
 
 function baseSelection(overrides = {}) {
   return {
@@ -247,8 +251,8 @@ test('bulk UI fails closed for limits and stale school or selection responses', 
   assert.match(bulkPageSource, /setPreview\(null\)[\s\S]*setPreviewFingerprint\(null\)[\s\S]*\}, \[fingerprint\]\)/);
   assert.match(bulkPageSource, /setDecisions\(cohort\.map[\s\S]*\}, \[cohort\]\)/);
   assert.match(bulkPageSource, /setSourceClassId[\s\S]*setSourceSectionId\(null\)/);
-  assert.match(bulkPageSource, /current_enrollment_status === 'active'/);
-  assert.match(bulkPageSource, /current_promotion_status === 'pending'/);
+  assert.match(bulkUiSource, /current_enrollment_status === 'active'/);
+  assert.match(bulkUiSource, /current_promotion_status === 'pending'/);
 });
 
 test('bulk UI preserves RTL while isolating academic years and student numbers as LTR', () => {
@@ -256,4 +260,60 @@ test('bulk UI preserves RTL while isolating academic years and student numbers a
   assert.match(bulkPageSource, /<bdi dir="ltr" className="inline-block isolate">\{value\}<\/bdi>/);
   assert.match(bulkPageSource, /<bdi dir="ltr" className="text-xs text-gray-500">\{row\.studentNumber\}<\/bdi>/);
   assert.doesNotMatch(bulkPageSource, /(?:split|reverse)\([^)]*(?:year|studentNumber)/);
+});
+
+test('bulk search only changes visible rows and never removes hidden decisions from the payload', () => {
+  const selection = bulkSelection({
+    rows: [
+      { sourceEnrollmentId: 28, action: 'promoted', targetClassId: 4, targetSectionId: 6, fullName: 'أحمد علي', studentNumber: 'QA-001' },
+      { sourceEnrollmentId: 29, action: 'graduated', targetClassId: null, targetSectionId: null, fullName: 'سارة محمد', studentNumber: 'QA-002' },
+    ],
+  });
+  const payloadBeforeSearch = buildBulkPromotionRequest(selection);
+  const visible = filterBulkPromotionRows(selection.rows, 'QA-001');
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].sourceEnrollmentId, 28);
+  assert.deepEqual(buildBulkPromotionRequest(selection), payloadBeforeSearch);
+  assert.equal(payloadBeforeSearch.rows.length, 2);
+  assert.match(bulkPageSource, /const visibleRows = filterBulkPromotionRows\(decisions, search\)/);
+});
+
+test('a cohort over 30 fails closed while selecting a smaller section restores an eligible cohort', () => {
+  const students = Array.from({ length: 31 }, (_, index) => ({
+    id: index + 1,
+    current_enrollment_id: index + 100,
+    current_academic_year_id: 3,
+    current_enrollment_status: 'active',
+    current_promotion_status: 'pending',
+    class_id: 8,
+    section_id: index < 20 ? 81 : 82,
+  }));
+  const wholeClass = selectBulkPromotionCohort(students, 3, 8, null);
+  assert.equal(wholeClass.length, 31);
+  assert.equal(isBulkPromotionCohortWithinLimit(wholeClass.length, 30), false);
+  const smallerSection = selectBulkPromotionCohort(students, 3, 8, 81);
+  assert.equal(smallerSection.length, 20);
+  assert.equal(isBulkPromotionCohortWithinLimit(smallerSection.length, 30), true);
+  assert.match(bulkPageSource, /اختر شعبة أصغر/);
+  assert.match(bulkPageSource, /request != null[\s\S]*selectedCount > 0[\s\S]*cohortWithinLimit/);
+});
+
+test('bulk cohort selection rebuilds from current source scope and excludes finalized or inactive rows', () => {
+  const students = [
+    { id: 1, current_enrollment_id: 11, current_academic_year_id: 3, current_enrollment_status: 'active', current_promotion_status: 'pending', class_id: 8, section_id: 81 },
+    { id: 2, current_enrollment_id: 12, current_academic_year_id: 3, current_enrollment_status: 'active', current_promotion_status: 'pending', class_id: 8, section_id: 82 },
+    { id: 3, current_enrollment_id: 13, current_academic_year_id: 3, current_enrollment_status: 'completed', current_promotion_status: 'promoted', class_id: 8, section_id: 81 },
+    { id: 4, current_enrollment_id: 14, current_academic_year_id: 2, current_enrollment_status: 'active', current_promotion_status: 'pending', class_id: 8, section_id: 81 },
+  ];
+  assert.deepEqual(selectBulkPromotionCohort(students, 3, 8, null).map((item) => item.id), [1, 2]);
+  assert.deepEqual(selectBulkPromotionCohort(students, 3, 8, 81).map((item) => item.id), [1]);
+  assert.deepEqual(selectBulkPromotionCohort(students, 3, 9, null), []);
+  assert.match(bulkPageSource, /setDecisions\(cohort\.map/);
+  assert.match(bulkPageSource, /setTargetAcademicYearId\(null\)[\s\S]*setDefaultTargetClassId\(null\)[\s\S]*setDefaultTargetSectionId\(null\)/);
+});
+
+test('switching Individual and Bulk unmounts bulk state so an executable preview cannot survive the mode change', () => {
+  assert.match(pageSource, /mode === 'bulk' \? \([\s\S]*<BulkStudentPromotionPanel[\s\S]*\) : \(/);
+  assert.match(pageSource, /onClick=\{\(\) => setMode\('individual'\)\}/);
+  assert.match(pageSource, /onClick=\{\(\) => setMode\('bulk'\)\}/);
 });

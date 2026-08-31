@@ -199,6 +199,9 @@ function validateBulkRequest(
   if (needsTargetYear && targetAcademicYearId == null) {
     return { ok: false, error: 'السنة الدراسية المستهدفة مطلوبة للترفيع أو إعادة السنة' };
   }
+  if (!needsTargetYear && targetAcademicYearId != null) {
+    return { ok: false, error: 'لا تُرسل سنة مستهدفة عندما تقتصر الدفعة على التخرج أو التخطي' };
+  }
 
   return {
     ok: true,
@@ -723,6 +726,14 @@ export async function executeBulkStudentPromotion(
     return { ok: false, status: 400, code: 'invalid_input', error: planResult.error };
   }
   const plan = planResult.value;
+  if (plan.preview.summary.selected === 0) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'invalid_input',
+      error: 'يجب تحديد قرار لطالب واحد على الأقل قبل تنفيذ الدفعة',
+    };
+  }
   if (!plan.preview.valid) {
     return {
       ok: false,
@@ -778,6 +789,8 @@ export async function executeBulkStudentPromotion(
     target_academic_year_id: row.target?.academic_year_id ?? null,
   }));
   const summary = refreshed.value.preview.summary;
+  const executed = executionRows.filter((row) => row.status === 'executed').length;
+  const alreadyApplied = executionRows.filter((row) => row.status === 'already_applied').length;
   return {
     ok: true,
     data: {
@@ -785,7 +798,8 @@ export async function executeBulkStudentPromotion(
       rows: executionRows,
       summary: {
         ...summary,
-        executed: executionRows.filter((row) => row.status === 'executed').length,
+        already_applied: alreadyApplied,
+        executed,
       },
     },
   };

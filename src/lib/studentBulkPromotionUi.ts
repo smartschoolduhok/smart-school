@@ -19,6 +19,49 @@ export interface BulkPromotionUiSelection {
   rows: BulkPromotionUiRow[];
 }
 
+export interface BulkPromotionCohortStudent {
+  current_enrollment_id: number | null;
+  current_academic_year_id: number | null;
+  current_enrollment_status: string | null;
+  current_promotion_status: string | null;
+  class_id: number | null;
+  section_id: number | null;
+}
+
+export interface BulkPromotionSearchRow {
+  fullName: string;
+  studentNumber: string;
+}
+
+export function selectBulkPromotionCohort<T extends BulkPromotionCohortStudent>(
+  students: T[],
+  activeAcademicYearId: number | null,
+  sourceClassId: number | null,
+  sourceSectionId: number | null,
+): T[] {
+  return students.filter((student) => (
+    student.current_enrollment_id != null
+    && student.current_academic_year_id === activeAcademicYearId
+    && student.current_enrollment_status === 'active'
+    && student.current_promotion_status === 'pending'
+    && student.class_id === sourceClassId
+    && (sourceSectionId == null || student.section_id === sourceSectionId)
+  ));
+}
+
+export function filterBulkPromotionRows<T extends BulkPromotionSearchRow>(rows: T[], search: string): T[] {
+  const needle = search.trim().toLocaleLowerCase('ar');
+  if (!needle) return rows;
+  return rows.filter((row) => (
+    row.fullName.toLocaleLowerCase('ar').includes(needle)
+    || row.studentNumber.toLocaleLowerCase('ar').includes(needle)
+  ));
+}
+
+export function isBulkPromotionCohortWithinLimit(count: number, maxRows: number): boolean {
+  return Number.isInteger(count) && count >= 0 && count <= maxRows;
+}
+
 export function bulkPromotionSelectionFingerprint(selection: BulkPromotionUiSelection): string {
   return JSON.stringify({
     school_id: selection.schoolId,

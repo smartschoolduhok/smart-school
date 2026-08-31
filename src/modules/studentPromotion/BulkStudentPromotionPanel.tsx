@@ -15,7 +15,10 @@ import {
 import {
   buildBulkPromotionRequest,
   bulkPromotionSelectionFingerprint,
+  filterBulkPromotionRows,
+  isBulkPromotionCohortWithinLimit,
   isBulkPromotionPreviewCurrent,
+  selectBulkPromotionCohort,
   type BulkPromotionUiRow,
   type BulkPromotionUiSelection,
 } from '../../lib/studentBulkPromotionUi';
@@ -114,14 +117,12 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
     () => allSections.filter((section) => Number(section.class_id) === defaultTargetClassId),
     [allSections, defaultTargetClassId],
   );
-  const cohort = useMemo(() => students.filter((student) => (
-    student.current_enrollment_id != null
-    && student.current_academic_year_id === activeYear?.id
-    && student.current_enrollment_status === 'active'
-    && student.current_promotion_status === 'pending'
-    && student.class_id === sourceClassId
-    && (sourceSectionId == null || student.section_id === sourceSectionId)
-  )), [activeYear?.id, sourceClassId, sourceSectionId, students]);
+  const cohort = useMemo(() => selectBulkPromotionCohort(
+    students,
+    activeYear?.id ?? null,
+    sourceClassId,
+    sourceSectionId,
+  ), [activeYear?.id, sourceClassId, sourceSectionId, students]);
 
   useEffect(() => {
     setDecisions(cohort.map((student) => ({
@@ -181,7 +182,7 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
     return activeSections.length === 0 || row.targetSectionId != null;
   });
   const request = buildBulkPromotionRequest(selection);
-  const cohortWithinLimit = decisions.length <= MAX_BULK_PROMOTION_ROWS;
+  const cohortWithinLimit = isBulkPromotionCohortWithinLimit(decisions.length, MAX_BULK_PROMOTION_ROWS);
   const canPreview = request != null
     && selectedCount > 0
     && cohortWithinLimit
@@ -191,12 +192,7 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
   const previewCurrent = preview != null
     && isBulkPromotionPreviewCurrent(previewFingerprint, selection);
   const canExecute = previewCurrent && preview.valid && preview.summary.invalid === 0 && selectedCount > 0;
-  const visibleRows = decisions.filter((row) => {
-    const needle = search.trim().toLocaleLowerCase('ar');
-    return !needle
-      || row.fullName.toLocaleLowerCase('ar').includes(needle)
-      || row.studentNumber.toLocaleLowerCase('ar').includes(needle);
-  });
+  const visibleRows = filterBulkPromotionRows(decisions, search);
 
   function updateDecision(sourceEnrollmentId: number, updater: (row: StudentDecision) => StudentDecision) {
     setDecisions((current) => current.map((row) => (
