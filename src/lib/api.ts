@@ -22,6 +22,10 @@ import type {
   TimetableDay,
   TimetableReadinessSummary,
   TimetableSlot,
+  TimetableTeacherAvailabilityMatrix,
+  TimetableTeacherAvailabilityOverride,
+  TimetableTeacherAvailabilitySummary,
+  TimetableTeacherConstraints,
   TimetableTeacherWorkload,
   TimetableTeachingLoad,
 } from './timetable';
@@ -269,6 +273,81 @@ export function getTimetableReadiness(schoolId: number, academicYearId: number) 
 
 export function getTimetableTeacherWorkloads(schoolId: number, academicYearId: number) {
   return fetchApi<TimetableTeacherWorkload[]>(`/api/timetable/teacher-workloads?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+function teacherTimetableQuery(schoolId: number, academicYearId: number, employeeId: number) {
+  return new URLSearchParams({
+    school_id: String(schoolId),
+    academic_year_id: String(academicYearId),
+    employee_id: String(employeeId),
+  }).toString();
+}
+
+export function getTeacherTimetableAvailability(schoolId: number, academicYearId: number, employeeId: number) {
+  return fetchApi<TimetableTeacherAvailabilityMatrix>(
+    `/api/timetable/teacher-availability?${teacherTimetableQuery(schoolId, academicYearId, employeeId)}`,
+  );
+}
+
+export function saveTeacherTimetableAvailabilityOverride(data: {
+  school_id: number;
+  academic_year_id: number;
+  employee_id: number;
+  slot_id: number;
+  status: 'unavailable' | 'preferred' | 'avoid';
+}) {
+  return fetchApi<TimetableTeacherAvailabilityOverride>(`/api/timetable/teacher-availability/${data.slot_id}`, {
+    method: 'PUT', body: JSON.stringify(data),
+  });
+}
+
+export function clearTeacherTimetableAvailabilityOverride(
+  schoolId: number,
+  academicYearId: number,
+  employeeId: number,
+  slotId: number,
+) {
+  return fetchApi<{ slot_id: number; status: 'available' }>(`/api/timetable/teacher-availability/${slotId}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId, employee_id: employeeId }),
+  });
+}
+
+export function saveTeacherTimetableAvailabilityDay(data: {
+  school_id: number;
+  academic_year_id: number;
+  employee_id: number;
+  day_of_week: number;
+  status: 'unavailable' | 'preferred' | 'avoid' | null;
+}) {
+  return fetchApi<TimetableTeacherAvailabilityMatrix>(`/api/timetable/teacher-availability/day/${data.day_of_week}`, {
+    method: 'PUT', body: JSON.stringify(data),
+  });
+}
+
+export function resetTeacherTimetableAvailability(schoolId: number, academicYearId: number, employeeId: number) {
+  return fetchApi<{ employee_id: number; reset: true }>('/api/timetable/teacher-availability', {
+    method: 'DELETE',
+    body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId, employee_id: employeeId }),
+  });
+}
+
+export function getTeacherTimetableConstraints(schoolId: number, academicYearId: number, employeeId: number) {
+  return fetchApi<TimetableTeacherConstraints>(
+    `/api/timetable/teacher-constraints?${teacherTimetableQuery(schoolId, academicYearId, employeeId)}`,
+  );
+}
+
+export function saveTeacherTimetableConstraints(data: Omit<TimetableTeacherConstraints, 'id'> & { id?: number | null }) {
+  return fetchApi<TimetableTeacherConstraints>('/api/timetable/teacher-constraints', {
+    method: 'PUT', body: JSON.stringify(data),
+  });
+}
+
+export function getTeacherTimetableAvailabilitySummary(schoolId: number, academicYearId: number, employeeId: number) {
+  return fetchApi<TimetableTeacherAvailabilitySummary>(
+    `/api/timetable/teacher-availability-summary?${teacherTimetableQuery(schoolId, academicYearId, employeeId)}`,
+  );
 }
 
 // ===========================================

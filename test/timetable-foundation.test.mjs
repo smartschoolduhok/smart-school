@@ -18,6 +18,7 @@ const rootDir = join(testDir, '..');
 const readMigration = (name) => readFileSync(join(rootDir, 'migrations', name), 'utf8');
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 const migration = readMigration('0023_timetable_foundation.sql');
+const availabilityMigration = readMigration('0024_teacher_timetable_constraints.sql');
 
 function insertId(database, sql, ...params) {
   return Number(database.prepare(`${sql} RETURNING id`).get(...params).id);
@@ -62,6 +63,7 @@ function createFixture() {
       (6, 1, 'Staff One', 'staff', 'active');
   `);
   database.exec(migration);
+  database.exec(availabilityMigration);
   return database;
 }
 
@@ -108,10 +110,10 @@ function addLoad(database, {
   `, schoolId, yearId, classId, sectionId, subjectId, employeeId, weeklyPeriods, status);
 }
 
-test('0023 creates scoped tables, indexes, partial uniqueness and validation triggers', () => {
+test('0023 and 0024 create scoped timetable tables, indexes and validation triggers', () => {
   const database = createFixture();
   const tables = new Set(database.prepare(`SELECT name FROM sqlite_schema WHERE type = 'table'`).all().map((row) => row.name));
-  for (const tableName of ['timetable_days', 'timetable_slots', 'timetable_teaching_loads']) assert.ok(tables.has(tableName));
+  for (const tableName of ['timetable_days', 'timetable_slots', 'timetable_teaching_loads', 'timetable_teacher_availability', 'timetable_teacher_constraints']) assert.ok(tables.has(tableName));
   const indexes = new Set(database.prepare(`SELECT name FROM sqlite_schema WHERE type = 'index'`).all().map((row) => row.name));
   for (const indexName of [
     'idx_timetable_days_school_year',
@@ -120,17 +122,26 @@ test('0023 creates scoped tables, indexes, partial uniqueness and validation tri
     'idx_timetable_loads_active_without_section',
     'idx_timetable_loads_active_with_section',
     'idx_timetable_loads_employee',
+    'idx_timetable_teacher_availability_scope',
+    'idx_timetable_teacher_constraints_scope',
   ]) assert.ok(indexes.has(indexName), indexName);
   const triggers = new Set(database.prepare(`SELECT name FROM sqlite_schema WHERE type = 'trigger'`).all().map((row) => row.name));
   for (const triggerName of [
     'trg_timetable_days_validate_insert',
     'trg_timetable_slots_validate_insert',
     'trg_timetable_slots_validate_update',
+    'trg_timetable_slots_preserve_teacher_availability',
     'trg_timetable_loads_validate_insert',
     'trg_timetable_loads_validate_update',
     'trg_timetable_days_updated_at',
     'trg_timetable_slots_updated_at',
     'trg_timetable_loads_updated_at',
+    'trg_timetable_teacher_availability_validate_insert',
+    'trg_timetable_teacher_availability_validate_update',
+    'trg_timetable_teacher_constraints_validate_insert',
+    'trg_timetable_teacher_constraints_validate_update',
+    'trg_timetable_teacher_availability_updated_at',
+    'trg_timetable_teacher_constraints_updated_at',
   ]) assert.ok(triggers.has(triggerName), triggerName);
 });
 
@@ -288,7 +299,10 @@ function readinessFixture({ capacity = 8, loadPeriods = [4, 4], missingTeacher =
 }
 
 test('readiness distinguishes under, exact, over, empty and missing-teacher states', () => {
-  const exactAndUnder = buildTimetableReadiness(readinessFixture({ capacity: 4, loadPeriods: [4, 3] }));
+  const exactAndUnderFixture = readinessFixture({ capacity: 4, loadPeriods: [4, 3] });
+  exactAndUnderFixture.loads[1].employee_id = 2;
+  exactAndUnderFixture.loads[1].employee_name = 'Teacher Two';
+  const exactAndUnder = buildTimetableReadiness(exactAndUnderFixture);
   assert.deepEqual(exactAndUnder.placements.map((row) => row.status), ['exact', 'unallocated']);
   assert.equal(exactAndUnder.ready, true, 'unused capacity is only a warning');
   const over = buildTimetableReadiness(readinessFixture({ capacity: 3, loadPeriods: [4, 3] }));
@@ -479,9 +493,17 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.delete('/api/timetable/teaching-loads/:id'",
     "app.get('/api/timetable/readiness'",
     "app.get('/api/timetable/teacher-workloads'",
+    "app.get('/api/timetable/teacher-availability'",
+    "app.put('/api/timetable/teacher-availability/:slotId'",
+    "app.delete('/api/timetable/teacher-availability/:slotId'",
+    "app.put('/api/timetable/teacher-availability/day/:day'",
+    "app.delete('/api/timetable/teacher-availability'",
+    "app.get('/api/timetable/teacher-constraints'",
+    "app.put('/api/timetable/teacher-constraints'",
+    "app.get('/api/timetable/teacher-availability-summary'",
   ]) assert.ok(workerSource.includes(route), route);
   const routeGuards = timetableWorkerSource.match(/app\.(?:get|post|put|delete)\('\/api\/timetable[^\n]*requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/g) || [];
-  assert.equal(routeGuards.length, 12);
+  assert.equal(routeGuards.length, 20);
   assert.match(workerSource, /resolveActiveWriteSchool\(c\.env\.DB, user, body\.school_id\)/);
   assert.doesNotMatch(timetableWorkerSource, /school_id\s*(?:\?\?|\|\|)\s*1/);
   assert.doesNotMatch(timetableWorkerSource, /students\.class_id|students\.section_id/);
@@ -491,7 +513,7 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     workerSource.indexOf('async function loadTimetableReadinessSummary'),
     workerSource.indexOf('// Middleware: explicit CORS'),
   );
-  assert.equal((readinessHelper.match(/db\.prepare\(/g) || []).length, 5, 'readiness uses a constant query count');
+  assert.equal((readinessHelper.match(/db\.prepare\(/g) || []).length, 7, 'readiness uses a constant query count');
   assert.doesNotMatch(readinessHelper, /\bIN\s*\(\s*\?/i, 'readiness has no variable-size binding list');
 });
 

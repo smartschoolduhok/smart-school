@@ -150,8 +150,13 @@ import {
   type ReligiousTrack,
 } from './lib/religiousSubjects'
 import {
+  buildTeacherAvailabilityMatrix,
   buildTimetableReadiness,
   isTimetableConstraintError,
+  validateTeacherAvailabilityDayInput,
+  validateTeacherAvailabilityOverrideInput,
+  validateTeacherAvailabilityScopeInput,
+  validateTeacherConstraintsInput,
   validateTimetableDayInput,
   validateTimetableLoadInput,
   validateTimetableSlotInput,
@@ -159,6 +164,9 @@ import {
   type TimetablePlacement,
   type TimetableSlot,
   type TimetableSubjectOption,
+  type TimetableTeacherAvailabilityMatrix,
+  type TimetableTeacherAvailabilityOverride,
+  type TimetableTeacherConstraints,
   type TimetableTeachingLoad,
 } from './lib/timetable'
 
@@ -555,8 +563,117 @@ async function validateTimetableLoadReferences(
   return { ok: true };
 }
 
+type TimetableTeacherReference = {
+  id: number;
+  school_id: number;
+  full_name: string;
+  role: string;
+  status: string;
+};
+
+function emptyTimetableTeacherConstraints(
+  schoolId: number,
+  academicYearId: number,
+  employeeId: number,
+): TimetableTeacherConstraints {
+  return {
+    id: null,
+    school_id: schoolId,
+    academic_year_id: academicYearId,
+    employee_id: employeeId,
+    max_periods_per_day: null,
+    max_consecutive_periods: null,
+    max_working_days: null,
+    prefer_compact_schedule: 0,
+    avoid_first_period: 0,
+    avoid_last_period: 0,
+  }
+}
+
+async function validateTimetableTeacherReference(
+  db: D1Database,
+  schoolId: number,
+  employeeId: number,
+  requireActive: boolean,
+): Promise<TimetableReferenceValidation & { teacher?: TimetableTeacherReference }> {
+  const teacher = await db.prepare(`
+    SELECT id, school_id, full_name, role, status
+    FROM employees WHERE id = ?
+  `).bind(employeeId).first<TimetableTeacherReference>()
+  if (!teacher) return { ok: false, status: 404, error: 'المدرس غير موجود' }
+  if (Number(teacher.school_id) !== schoolId) {
+    return { ok: false, status: 403, error: 'غير مسموح: المدرس من مدرسة أخرى' }
+  }
+  if (teacher.role !== 'teacher') return { ok: false, status: 400, error: 'الموظف المحدد ليس مدرسًا' }
+  if (requireActive && teacher.status !== 'active') return { ok: false, status: 400, error: 'المدرس غير نشط' }
+  return { ok: true, teacher }
+}
+
+async function validateTimetableAvailabilitySlot(
+  db: D1Database,
+  schoolId: number,
+  academicYearId: number,
+  slotId: number,
+): Promise<TimetableReferenceValidation & { slot?: TimetableSlot }> {
+  const slot = await db.prepare('SELECT * FROM timetable_slots WHERE id = ?')
+    .bind(slotId).first<TimetableSlot>()
+  if (!slot) return { ok: false, status: 404, error: 'فترة الجدول غير موجودة' }
+  if (Number(slot.school_id) !== schoolId) {
+    return { ok: false, status: 403, error: 'غير مسموح: الفترة من مدرسة أخرى' }
+  }
+  if (Number(slot.academic_year_id) !== academicYearId) {
+    return { ok: false, status: 400, error: 'الفترة لا تنتمي إلى السنة الدراسية المحددة' }
+  }
+  if (slot.slot_type !== 'lesson') return { ok: false, status: 400, error: 'لا يمكن ضبط توفر المدرس لفترة استراحة' }
+  return { ok: true, slot }
+}
+
+async function loadTeacherAvailabilityMatrix(
+  db: D1Database,
+  schoolId: number,
+  academicYearId: number,
+  teacher: TimetableTeacherReference,
+): Promise<TimetableTeacherAvailabilityMatrix> {
+  const [daysResult, slotsResult, overridesResult, constraints, assignedLoad] = await Promise.all([
+    db.prepare(`
+      SELECT * FROM timetable_days
+      WHERE school_id = ? AND academic_year_id = ?
+      ORDER BY order_index, day_of_week
+    `).bind(schoolId, academicYearId).all<TimetableDay>(),
+    db.prepare(`
+      SELECT * FROM timetable_slots
+      WHERE school_id = ? AND academic_year_id = ?
+      ORDER BY day_of_week, slot_index
+    `).bind(schoolId, academicYearId).all<TimetableSlot>(),
+    db.prepare(`
+      SELECT * FROM timetable_teacher_availability
+      WHERE school_id = ? AND academic_year_id = ? AND employee_id = ?
+      ORDER BY slot_id
+    `).bind(schoolId, academicYearId, teacher.id).all<TimetableTeacherAvailabilityOverride>(),
+    db.prepare(`
+      SELECT * FROM timetable_teacher_constraints
+      WHERE school_id = ? AND academic_year_id = ? AND employee_id = ?
+    `).bind(schoolId, academicYearId, teacher.id).first<TimetableTeacherConstraints>(),
+    db.prepare(`
+      SELECT COALESCE(SUM(weekly_periods), 0) AS assigned_weekly_periods
+      FROM timetable_teaching_loads
+      WHERE school_id = ? AND academic_year_id = ? AND employee_id = ? AND status = 'active'
+    `).bind(schoolId, academicYearId, teacher.id).first<{ assigned_weekly_periods: number }>(),
+  ])
+  return buildTeacherAvailabilityMatrix({
+    schoolId,
+    academicYearId,
+    teacher,
+    days: daysResult.results || [],
+    slots: slotsResult.results || [],
+    overrides: overridesResult.results || [],
+    constraints,
+    assignedWeeklyPeriods: Number(assignedLoad?.assigned_weekly_periods || 0),
+  })
+}
+
 async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, academicYearId: number) {
-  const [daysResult, slotsResult, placementsResult, subjectsResult, loadsResult] = await Promise.all([
+  const [daysResult, slotsResult, placementsResult, subjectsResult, loadsResult, availabilityResult, constraintsResult] = await Promise.all([
     db.prepare(`
       SELECT * FROM timetable_days
       WHERE school_id = ? AND academic_year_id = ?
@@ -605,6 +722,16 @@ async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, a
       WHERE load.school_id = ? AND load.academic_year_id = ?
       ORDER BY load.class_id, load.section_id, load.subject_id, load.id
     `).bind(schoolId, academicYearId).all<TimetableTeachingLoad>(),
+    db.prepare(`
+      SELECT * FROM timetable_teacher_availability
+      WHERE school_id = ? AND academic_year_id = ?
+      ORDER BY employee_id, slot_id
+    `).bind(schoolId, academicYearId).all<TimetableTeacherAvailabilityOverride>(),
+    db.prepare(`
+      SELECT * FROM timetable_teacher_constraints
+      WHERE school_id = ? AND academic_year_id = ?
+      ORDER BY employee_id
+    `).bind(schoolId, academicYearId).all<TimetableTeacherConstraints>(),
   ]);
 
   return buildTimetableReadiness({
@@ -613,6 +740,8 @@ async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, a
     placements: placementsResult.results || [],
     subjects: subjectsResult.results || [],
     loads: loadsResult.results || [],
+    teacherAvailability: availabilityResult.results || [],
+    teacherConstraints: constraintsResult.results || [],
   });
 }
 
@@ -1567,8 +1696,8 @@ app.post('/api/timetable/slots', requireSameSchoolOrAdmin(), requireRoles(ACADEM
     const result = await c.env.DB.prepare(`
       INSERT INTO timetable_slots (
         school_id, academic_year_id, day_of_week, slot_index, slot_type,
-        lesson_number, label, start_time, end_time
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        lesson_number, label, start_time, end_time, is_active
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       targetSchool.schoolId,
       validation.value.academicYearId,
@@ -1579,6 +1708,7 @@ app.post('/api/timetable/slots', requireSameSchoolOrAdmin(), requireRoles(ACADEM
       validation.value.label,
       validation.value.startTime,
       validation.value.endTime,
+      validation.value.isActive,
     ).run()
     const slot = await c.env.DB.prepare('SELECT * FROM timetable_slots WHERE id = ? AND school_id = ?')
       .bind(result.meta.last_row_id, targetSchool.schoolId).first<TimetableSlot>()
@@ -1600,19 +1730,37 @@ app.put('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(ACA
     if (!body) return c.json({ error: 'بيانات الفترة غير صالحة' }, 400)
     const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
-    const existing = await c.env.DB.prepare('SELECT school_id, academic_year_id FROM timetable_slots WHERE id = ?')
-      .bind(id).first<{ school_id: number; academic_year_id: number }>()
+    const existing = await c.env.DB.prepare(`
+      SELECT slot.school_id, slot.academic_year_id,
+             EXISTS (
+               SELECT 1 FROM timetable_teacher_availability availability
+               WHERE availability.slot_id = slot.id
+             ) AS has_teacher_availability
+      FROM timetable_slots slot
+      WHERE slot.id = ?
+    `).bind(id).first<{
+      school_id: number;
+      academic_year_id: number;
+      has_teacher_availability: number;
+    }>()
     if (!existing) return c.json({ error: 'الفترة غير موجودة' }, 404)
     if (Number(existing.school_id) !== targetSchool.schoolId) return c.json({ error: 'غير مسموح: الفترة من مدرسة أخرى' }, 403)
     const validation = validateTimetableSlotInput(body)
     if (!validation.ok) return c.json({ error: validation.error }, 400)
+    const changesAvailabilityScope = Number(existing.academic_year_id) !== validation.value.academicYearId
+      || validation.value.slotType !== 'lesson'
+    if (Number(existing.has_teacher_availability) === 1 && changesAvailabilityScope) {
+      return c.json({
+        error: 'توجد إعدادات توفر مدرسين مرتبطة بهذه الفترة. امسح إعدادات التوفر أولًا قبل تغيير نوعها أو سنتها الدراسية.',
+      }, 400)
+    }
     if (Number(existing.academic_year_id) !== validation.value.academicYearId) {
       return c.json({ error: 'لا يمكن نقل الفترة إلى سنة دراسية أخرى' }, 400)
     }
     await c.env.DB.prepare(`
       UPDATE timetable_slots SET
         day_of_week = ?, slot_index = ?, slot_type = ?, lesson_number = ?,
-        label = ?, start_time = ?, end_time = ?, updated_at = unixepoch()
+        label = ?, start_time = ?, end_time = ?, is_active = ?, updated_at = unixepoch()
       WHERE id = ? AND school_id = ? AND academic_year_id = ?
     `).bind(
       validation.value.dayOfWeek,
@@ -1622,6 +1770,7 @@ app.put('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(ACA
       validation.value.label,
       validation.value.startTime,
       validation.value.endTime,
+      validation.value.isActive,
       id,
       targetSchool.schoolId,
       validation.value.academicYearId,
@@ -1631,6 +1780,11 @@ app.put('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(ACA
     return c.json({ data: slot })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (/timetable slot has teacher availability settings/i.test(message)) {
+      return c.json({
+        error: 'توجد إعدادات توفر مدرسين مرتبطة بهذه الفترة. امسح إعدادات التوفر أولًا قبل تعديل نوعها أو نطاقها.',
+      }, 400)
+    }
     if (/overlap/i.test(message)) return c.json({ error: 'تتداخل الفترة مع فترة أخرى في اليوم نفسه' }, 409)
     if (isTimetableConstraintError(error)) return c.json({ error: 'ترتيب الفترة أو رقم الحصة مستخدم في هذا اليوم' }, 409)
     return c.json({ error: 'فشل في تعديل فترة الجدول' }, 500)
@@ -1790,6 +1944,331 @@ app.delete('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), requ
     WHERE id = ? AND school_id = ? AND academic_year_id = ?
   `).bind(user.id, id, targetSchool.schoolId, existing.academic_year_id).run()
   return c.json({ data: { id, status: 'inactive' } })
+})
+
+app.get('/api/timetable/teacher-availability', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  if (schoolId == null) return c.json({ error: 'يجب تحديد مدرسة لعرض توفر المدرس' }, 400)
+  const validation = validateTeacherAvailabilityScopeInput({
+    academic_year_id: c.req.query('academic_year_id'),
+    employee_id: c.req.query('employee_id'),
+  })
+  if (!validation.ok) return c.json({ error: validation.error }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, schoolId, validation.value.academicYearId)
+  if (!year.ok) return c.json({ error: year.error }, year.status)
+  const teacher = await validateTimetableTeacherReference(c.env.DB, schoolId, validation.value.employeeId, false)
+  if (!teacher.ok) return c.json({ error: teacher.error }, teacher.status)
+  try {
+    return c.json({
+      data: await loadTeacherAvailabilityMatrix(
+        c.env.DB,
+        schoolId,
+        validation.value.academicYearId,
+        teacher.teacher!,
+      ),
+    })
+  } catch {
+    return c.json({ error: 'فشل في جلب توفر المدرس وقيوده' }, 500)
+  }
+})
+
+app.put('/api/timetable/teacher-availability/:slotId', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const slotId = Number(c.req.param('slotId'))
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات توفر المدرس غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    const validation = validateTeacherAvailabilityOverrideInput({ ...body, slot_id: slotId })
+    if (!validation.ok) return c.json({ error: validation.error }, 400)
+    const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+    if (!year.ok) return c.json({ error: year.error }, year.status)
+    const teacher = await validateTimetableTeacherReference(
+      c.env.DB,
+      targetSchool.schoolId,
+      validation.value.employeeId,
+      true,
+    )
+    if (!teacher.ok) return c.json({ error: teacher.error }, teacher.status)
+    const slot = await validateTimetableAvailabilitySlot(
+      c.env.DB,
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.slotId,
+    )
+    if (!slot.ok) return c.json({ error: slot.error }, slot.status)
+    await c.env.DB.prepare(`
+      INSERT INTO timetable_teacher_availability (
+        school_id, academic_year_id, employee_id, slot_id, status,
+        created_by_user_id, updated_by_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(school_id, academic_year_id, employee_id, slot_id) DO UPDATE SET
+        status = excluded.status,
+        updated_by_user_id = excluded.updated_by_user_id,
+        updated_at = unixepoch()
+    `).bind(
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.employeeId,
+      validation.value.slotId,
+      validation.value.status,
+      user.id,
+      user.id,
+    ).run()
+    const override = await c.env.DB.prepare(`
+      SELECT * FROM timetable_teacher_availability
+      WHERE school_id = ? AND academic_year_id = ? AND employee_id = ? AND slot_id = ?
+    `).bind(
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.employeeId,
+      validation.value.slotId,
+    ).first<TimetableTeacherAvailabilityOverride>()
+    return c.json({ data: override })
+  } catch (error) {
+    if (isTimetableConstraintError(error)) return c.json({ error: 'تعذر حفظ توفر المدرس بسبب مرجع غير صالح' }, 400)
+    return c.json({ error: 'فشل في حفظ توفر المدرس' }, 500)
+  }
+})
+
+app.delete('/api/timetable/teacher-availability/:slotId', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const slotId = Number(c.req.param('slotId'))
+  const body = await readJsonObject(c)
+  if (!body) return c.json({ error: 'سياق إعادة توفر الفترة غير صالح' }, 400)
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+  const validation = validateTeacherAvailabilityScopeInput(body)
+  if (!validation.ok || !Number.isInteger(slotId) || slotId <= 0) {
+    return c.json({ error: validation.ok ? 'فترة الدرس غير صالحة' : validation.error }, 400)
+  }
+  const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+  if (!year.ok) return c.json({ error: year.error }, year.status)
+  const teacher = await validateTimetableTeacherReference(c.env.DB, targetSchool.schoolId, validation.value.employeeId, false)
+  if (!teacher.ok) return c.json({ error: teacher.error }, teacher.status)
+  const slot = await validateTimetableAvailabilitySlot(
+    c.env.DB,
+    targetSchool.schoolId,
+    validation.value.academicYearId,
+    slotId,
+  )
+  if (!slot.ok) return c.json({ error: slot.error }, slot.status)
+  await c.env.DB.prepare(`
+    DELETE FROM timetable_teacher_availability
+    WHERE school_id = ? AND academic_year_id = ? AND employee_id = ? AND slot_id = ?
+  `).bind(targetSchool.schoolId, validation.value.academicYearId, validation.value.employeeId, slotId).run()
+  return c.json({ data: { slot_id: slotId, status: 'available' } })
+})
+
+app.put('/api/timetable/teacher-availability/day/:day', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات توفر اليوم غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    const validation = validateTeacherAvailabilityDayInput({ ...body, day_of_week: c.req.param('day') })
+    if (!validation.ok) return c.json({ error: validation.error }, 400)
+    const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+    if (!year.ok) return c.json({ error: year.error }, year.status)
+    const teacher = await validateTimetableTeacherReference(
+      c.env.DB,
+      targetSchool.schoolId,
+      validation.value.employeeId,
+      true,
+    )
+    if (!teacher.ok) return c.json({ error: teacher.error }, teacher.status)
+    const day = await c.env.DB.prepare(`
+      SELECT id FROM timetable_days
+      WHERE school_id = ? AND academic_year_id = ? AND day_of_week = ?
+    `).bind(
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.dayOfWeek,
+    ).first<{ id: number }>()
+    if (!day) return c.json({ error: 'يوم الجدول غير موجود' }, 404)
+    if (validation.value.status == null) {
+      await c.env.DB.prepare(`
+        DELETE FROM timetable_teacher_availability
+        WHERE school_id = ? AND academic_year_id = ? AND employee_id = ?
+          AND slot_id IN (
+            SELECT id FROM timetable_slots
+            WHERE school_id = ? AND academic_year_id = ? AND day_of_week = ? AND slot_type = 'lesson'
+          )
+      `).bind(
+        targetSchool.schoolId,
+        validation.value.academicYearId,
+        validation.value.employeeId,
+        targetSchool.schoolId,
+        validation.value.academicYearId,
+        validation.value.dayOfWeek,
+      ).run()
+    } else {
+      await c.env.DB.prepare(`
+        INSERT INTO timetable_teacher_availability (
+          school_id, academic_year_id, employee_id, slot_id, status,
+          created_by_user_id, updated_by_user_id
+        )
+        SELECT ?, ?, ?, slot.id, ?, ?, ?
+        FROM timetable_slots slot
+        WHERE slot.school_id = ? AND slot.academic_year_id = ?
+          AND slot.day_of_week = ? AND slot.slot_type = 'lesson'
+        ON CONFLICT(school_id, academic_year_id, employee_id, slot_id) DO UPDATE SET
+          status = excluded.status,
+          updated_by_user_id = excluded.updated_by_user_id,
+          updated_at = unixepoch()
+      `).bind(
+        targetSchool.schoolId,
+        validation.value.academicYearId,
+        validation.value.employeeId,
+        validation.value.status,
+        user.id,
+        user.id,
+        targetSchool.schoolId,
+        validation.value.academicYearId,
+        validation.value.dayOfWeek,
+      ).run()
+    }
+    return c.json({ data: await loadTeacherAvailabilityMatrix(
+      c.env.DB,
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      teacher.teacher!,
+    ) })
+  } catch (error) {
+    if (isTimetableConstraintError(error)) return c.json({ error: 'تعذر حفظ توفر اليوم بسبب مرجع غير صالح' }, 400)
+    return c.json({ error: 'فشل في حفظ توفر اليوم' }, 500)
+  }
+})
+
+app.delete('/api/timetable/teacher-availability', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const body = await readJsonObject(c)
+  if (!body) return c.json({ error: 'سياق إعادة ضبط توفر المدرس غير صالح' }, 400)
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+  const validation = validateTeacherAvailabilityScopeInput(body)
+  if (!validation.ok) return c.json({ error: validation.error }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+  if (!year.ok) return c.json({ error: year.error }, year.status)
+  const teacher = await validateTimetableTeacherReference(c.env.DB, targetSchool.schoolId, validation.value.employeeId, false)
+  if (!teacher.ok) return c.json({ error: teacher.error }, teacher.status)
+  await c.env.DB.prepare(`
+    DELETE FROM timetable_teacher_availability
+    WHERE school_id = ? AND academic_year_id = ? AND employee_id = ?
+  `).bind(targetSchool.schoolId, validation.value.academicYearId, validation.value.employeeId).run()
+  return c.json({ data: { employee_id: validation.value.employeeId, reset: true } })
+})
+
+app.get('/api/timetable/teacher-constraints', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  if (schoolId == null) return c.json({ error: 'يجب تحديد مدرسة لعرض قيود المدرس' }, 400)
+  const validation = validateTeacherAvailabilityScopeInput({
+    academic_year_id: c.req.query('academic_year_id'),
+    employee_id: c.req.query('employee_id'),
+  })
+  if (!validation.ok) return c.json({ error: validation.error }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, schoolId, validation.value.academicYearId)
+  if (!year.ok) return c.json({ error: year.error }, year.status)
+  const teacher = await validateTimetableTeacherReference(c.env.DB, schoolId, validation.value.employeeId, false)
+  if (!teacher.ok) return c.json({ error: teacher.error }, teacher.status)
+  const constraints = await c.env.DB.prepare(`
+    SELECT * FROM timetable_teacher_constraints
+    WHERE school_id = ? AND academic_year_id = ? AND employee_id = ?
+  `).bind(schoolId, validation.value.academicYearId, validation.value.employeeId).first<TimetableTeacherConstraints>()
+  return c.json({ data: constraints || emptyTimetableTeacherConstraints(
+    schoolId,
+    validation.value.academicYearId,
+    validation.value.employeeId,
+  ) })
+})
+
+app.put('/api/timetable/teacher-constraints', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات قيود المدرس غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    const validation = validateTeacherConstraintsInput(body)
+    if (!validation.ok) return c.json({ error: validation.error }, 400)
+    const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+    if (!year.ok) return c.json({ error: year.error }, year.status)
+    const teacher = await validateTimetableTeacherReference(
+      c.env.DB,
+      targetSchool.schoolId,
+      validation.value.employeeId,
+      true,
+    )
+    if (!teacher.ok) return c.json({ error: teacher.error }, teacher.status)
+    await c.env.DB.prepare(`
+      INSERT INTO timetable_teacher_constraints (
+        school_id, academic_year_id, employee_id,
+        max_periods_per_day, max_consecutive_periods, max_working_days,
+        prefer_compact_schedule, avoid_first_period, avoid_last_period,
+        created_by_user_id, updated_by_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(school_id, academic_year_id, employee_id) DO UPDATE SET
+        max_periods_per_day = excluded.max_periods_per_day,
+        max_consecutive_periods = excluded.max_consecutive_periods,
+        max_working_days = excluded.max_working_days,
+        prefer_compact_schedule = excluded.prefer_compact_schedule,
+        avoid_first_period = excluded.avoid_first_period,
+        avoid_last_period = excluded.avoid_last_period,
+        updated_by_user_id = excluded.updated_by_user_id,
+        updated_at = unixepoch()
+    `).bind(
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.employeeId,
+      validation.value.maxPeriodsPerDay,
+      validation.value.maxConsecutivePeriods,
+      validation.value.maxWorkingDays,
+      validation.value.preferCompactSchedule,
+      validation.value.avoidFirstPeriod,
+      validation.value.avoidLastPeriod,
+      user.id,
+      user.id,
+    ).run()
+    const constraints = await c.env.DB.prepare(`
+      SELECT * FROM timetable_teacher_constraints
+      WHERE school_id = ? AND academic_year_id = ? AND employee_id = ?
+    `).bind(
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.employeeId,
+    ).first<TimetableTeacherConstraints>()
+    return c.json({ data: constraints })
+  } catch (error) {
+    if (isTimetableConstraintError(error)) return c.json({ error: 'تعذر حفظ قيود المدرس بسبب قيمة أو مرجع غير صالح' }, 400)
+    return c.json({ error: 'فشل في حفظ قيود المدرس' }, 500)
+  }
+})
+
+app.get('/api/timetable/teacher-availability-summary', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  if (schoolId == null) return c.json({ error: 'يجب تحديد مدرسة لعرض ملخص توفر المدرس' }, 400)
+  const validation = validateTeacherAvailabilityScopeInput({
+    academic_year_id: c.req.query('academic_year_id'),
+    employee_id: c.req.query('employee_id'),
+  })
+  if (!validation.ok) return c.json({ error: validation.error }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, schoolId, validation.value.academicYearId)
+  if (!year.ok) return c.json({ error: year.error }, year.status)
+  const teacher = await validateTimetableTeacherReference(c.env.DB, schoolId, validation.value.employeeId, false)
+  if (!teacher.ok) return c.json({ error: teacher.error }, teacher.status)
+  try {
+    const matrix = await loadTeacherAvailabilityMatrix(
+      c.env.DB,
+      schoolId,
+      validation.value.academicYearId,
+      teacher.teacher!,
+    )
+    return c.json({ data: matrix.summary })
+  } catch {
+    return c.json({ error: 'فشل في حساب ملخص توفر المدرس' }, 500)
+  }
 })
 
 app.get('/api/timetable/readiness', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {

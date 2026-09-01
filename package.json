@@ -29,7 +29,7 @@
     "test:subject-order": "node --experimental-strip-types --test test/subject-order.test.mjs",
     "test:religious-subjects": "node --experimental-strip-types --test test/religious-subjects.test.mjs",
     "test:subject-applicability": "node --experimental-strip-types --test test/subject-applicability.test.mjs",
-    "test:timetable": "node --experimental-strip-types --test test/timetable-foundation.test.mjs test/timetable-api.test.mjs test/timetable-ui.test.mjs",
+    "test:timetable": "node --experimental-strip-types --test test/timetable-foundation.test.mjs test/timetable-availability.test.mjs test/timetable-api.test.mjs test/timetable-ui.test.mjs",
     "test:excel-import": "node --experimental-strip-types --test test/excel-import.test.mjs test/grade-excel-import.test.mjs"
   },
   "dependencies": {
