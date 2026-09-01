@@ -201,6 +201,7 @@ export interface TimetableGridEntry extends TimetableEntry {
   employee_name: string | null;
   weekly_periods: number;
   load_status: TimetableLoadStatus;
+  hard_conflicts: TimetableEntryNotice[];
   warnings: TimetableEntryNotice[];
 }
 
@@ -743,11 +744,13 @@ export function evaluateTimetableEntryPlacement(input: {
   }
 
   const otherEntries = input.entries.filter((entry) => candidateId == null || Number(entry.id) !== candidateId);
-  const activeDayNumbers = new Set(input.days.filter((item) => Number(item.is_active) === 1).map((item) => Number(item.day_of_week)));
+  const activeDayScopes = new Set(input.days.filter((item) => Number(item.is_active) === 1).map((item) => (
+    `${Number(item.school_id)}:${Number(item.academic_year_id)}:${Number(item.day_of_week)}`
+  )));
   const activeLessonSlotIds = new Set(input.slots.filter((item) => (
     item.slot_type === 'lesson'
     && Number(item.is_active) === 1
-    && activeDayNumbers.has(Number(item.day_of_week))
+    && activeDayScopes.has(`${Number(item.school_id)}:${Number(item.academic_year_id)}:${Number(item.day_of_week)}`)
   )).map((item) => Number(item.id)));
   const activeEntries = otherEntries.filter((entry) => activeLessonSlotIds.has(Number(entry.slot_id)));
   const scheduledForLoad = activeEntries.filter((entry) => (
@@ -784,6 +787,8 @@ export function evaluateTimetableEntryPlacement(input: {
     const availability = input.teacherAvailability?.find((override) => (
       Number(override.employee_id) === Number(load.employee_id)
       && Number(override.slot_id) === Number(slot.id)
+      && Number(override.school_id) === Number(load.school_id)
+      && Number(override.academic_year_id) === Number(load.academic_year_id)
     ));
     if (availability?.status === 'unavailable') {
       hardConflicts.push(entryNotice('teacher_unavailable', 'المدرس غير متاح في هذه الفترة'));
@@ -791,6 +796,8 @@ export function evaluateTimetableEntryPlacement(input: {
 
     const constraints = input.teacherConstraints?.find((item) => (
       Number(item.employee_id) === Number(load.employee_id)
+      && Number(item.school_id) === Number(load.school_id)
+      && Number(item.academic_year_id) === Number(load.academic_year_id)
     ));
     const activeTeacherEntries = teacherEntries.filter((entry) => activeLessonSlotIds.has(Number(entry.slot_id)));
     const teacherEntriesForDay = activeTeacherEntries.filter((entry) => {
@@ -844,7 +851,11 @@ export function evaluateTimetableEntryPlacement(input: {
       warnings.push(entryNotice('preferred_slot', 'هذا الوقت مفضل للمدرس'));
     }
     const preferredOverrides = (input.teacherAvailability || []).filter((override) => (
-      Number(override.employee_id) === Number(load.employee_id) && override.status === 'preferred'
+      Number(override.employee_id) === Number(load.employee_id)
+      && Number(override.school_id) === Number(load.school_id)
+      && Number(override.academic_year_id) === Number(load.academic_year_id)
+      && override.status === 'preferred'
+      && activeLessonSlotIds.has(Number(override.slot_id))
     ));
     if (preferredOverrides.length > 0 && availability?.status !== 'preferred') {
       warnings.push(entryNotice('outside_preferred_slots', 'هذه الفترة ليست ضمن الفترات المفضلة للمدرس'));

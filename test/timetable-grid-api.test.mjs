@@ -115,7 +115,7 @@ function setup(context) {
       (2, 1, 1, 0, 2, 'lesson', 2, 'Second', '08:40', '09:20', 1),
       (3, 1, 1, 0, 3, 'break', NULL, 'Break', '09:20', '09:35', 1),
       (4, 1, 1, 0, 4, 'lesson', 3, 'Third', '09:35', '10:15', 1),
-      (5, 1, 1, 1, 1, 'lesson', 1, 'First', '08:00', '08:40', 1),
+      (5, 1, 1, 1, 1, 'lesson', 1, 'Monday Opening', '07:50', '08:30', 1),
       (6, 1, 1, 1, 2, 'lesson', 2, 'Second', '08:40', '09:20', 1),
       (7, 1, 1, 1, 3, 'lesson', 3, 'Disabled', '09:20', '10:00', 0),
       (8, 1, 1, 2, 1, 'lesson', 1, 'Inactive day', '08:00', '08:40', 1);
@@ -141,6 +141,10 @@ test('grid API returns active days, active lessons, visible breaks and scoped lo
   assert.ok(data.slots.some((row) => row.slot_type === 'break'));
   assert.equal(data.slots.some((row) => row.id === 7 || row.id === 8), false);
   assert.deepEqual(data.loads.map((row) => row.id), [1, 2]);
+  assert.deepEqual(
+    data.slots.filter((row) => row.slot_index === 1).map((row) => [row.day_of_week, row.label, row.start_time, row.end_time]),
+    [[0, 'First', '08:00', '08:40'], [1, 'Monday Opening', '07:50', '08:30']],
+  );
 });
 
 test('grid loading uses a bounded constant number of D1 queries', async () => {
@@ -330,6 +334,81 @@ test('soft preference warnings are returned without blocking save', async () => 
   const savedEntry = (await grid.json()).data.entries.find((entry) => entry.slot_id === 2);
   assert.ok(savedEntry.warnings.some((warning) => warning.code === 'avoid_slot'));
   assert.ok(savedEntry.warnings.some((warning) => warning.code === 'outside_preferred_slots'));
+});
+
+test('inactive preferred slots and days stay stored but do not define the current preferred window', async () => {
+  for (const inactiveParent of ['slot', 'day']) {
+    const context = await fixture(); setup(context);
+    const preferredSlotId = inactiveParent === 'slot' ? 2 : 5;
+    context.database.prepare(`INSERT INTO timetable_teacher_availability
+      (school_id, academic_year_id, employee_id, slot_id, status) VALUES (1,1,1,?,'preferred')`).run(preferredSlotId);
+    if (inactiveParent === 'slot') {
+      context.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = ?').run(preferredSlotId);
+    } else {
+      context.database.prepare('UPDATE timetable_days SET is_active = 0 WHERE school_id = 1 AND academic_year_id = 1 AND day_of_week = 1').run();
+    }
+
+    const response = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }));
+    assert.equal(response.status, 201, inactiveParent);
+    const warnings = (await response.json()).meta.warnings;
+    assert.equal(warnings.some((warning) => warning.code === 'outside_preferred_slots'), false, inactiveParent);
+    assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_teacher_availability WHERE slot_id = ?').get(preferredSlotId).count, 1);
+  }
+});
+
+test('grid returns hard conflicts for saved entries invalidated by later availability and keeps soft notices separate', async () => {
+  const context = await fixture(); setup(context);
+  const created = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }));
+  assert.equal(created.status, 201);
+  context.database.exec(`
+    INSERT INTO timetable_teacher_availability (school_id, academic_year_id, employee_id, slot_id, status)
+      VALUES (1,1,1,1,'unavailable');
+    INSERT INTO timetable_teacher_constraints (school_id, academic_year_id, employee_id, avoid_first_period)
+      VALUES (1,1,1,1);
+  `);
+
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
+  assert.equal(response.status, 200);
+  const savedEntry = (await response.json()).data.entries[0];
+  assert.ok(savedEntry.hard_conflicts.some((conflict) => conflict.code === 'teacher_unavailable'));
+  assert.ok(savedEntry.warnings.some((warning) => warning.code === 'first_period_preference'));
+  assert.equal(savedEntry.hard_conflicts.some((conflict) => conflict.code === 'first_period_preference'), false);
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
+});
+
+test('grid returns invalid_teaching_load when a scheduled teacher is archived later', async () => {
+  const context = await fixture(); setup(context);
+  const created = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }));
+  assert.equal(created.status, 201);
+  context.database.prepare("UPDATE employees SET status = 'archived' WHERE id = 1").run();
+
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
+  assert.equal(response.status, 200);
+  const savedEntry = (await response.json()).data.entries[0];
+  assert.ok(savedEntry.hard_conflicts.some((conflict) => conflict.code === 'invalid_teaching_load'));
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
+});
+
+test('grid returns a later hard daily constraint violation for existing entries', async () => {
+  const context = await fixture(); setup(context);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1, teaching_load_id: 1 }))).status, 201);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2, teaching_load_id: 4 }))).status, 201);
+  context.database.exec(`INSERT INTO timetable_teacher_constraints
+    (school_id, academic_year_id, employee_id, max_periods_per_day) VALUES (1,1,1,1)`);
+
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
+  assert.equal(response.status, 200);
+  const savedEntry = (await response.json()).data.entries[0];
+  assert.ok(savedEntry.hard_conflicts.some((conflict) => conflict.code === 'teacher_max_periods_per_day'));
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 2);
+});
+
+test('valid scheduled entries expose empty hard-conflict collections', async () => {
+  const context = await fixture(); setup(context);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }))).status, 201);
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
+  const savedEntry = (await response.json()).data.entries[0];
+  assert.deepEqual(savedEntry.hard_conflicts, []);
 });
 
 test('move revalidates target atomically and successful move keeps one row', async () => {

@@ -34,6 +34,15 @@ function slotLabel(slot: TimetableSlot) {
   return `${TIMETABLE_DAY_NAMES[slot.day_of_week]} — ${slot.label} (${slot.start_time}–${slot.end_time})`;
 }
 
+function SlotIdentity({ slot }: { slot: TimetableSlot }) {
+  return (
+    <div className="mb-2 text-center">
+      <p className="font-semibold text-gray-800">{slot.label}</p>
+      <bdi dir="ltr" className="mt-0.5 block text-xs text-gray-500">{slot.start_time}–{slot.end_time}</bdi>
+    </div>
+  );
+}
+
 export function TimetableGridTab({
   schoolId,
   academicYearId,
@@ -251,46 +260,62 @@ export function TimetableGridTab({
                 </tr>
               </thead>
               <tbody>
-                {rowIndexes.map((rowIndex) => {
-                  const representative = grid.slots.find((slot) => slot.slot_index === rowIndex);
-                  return (
+                {rowIndexes.map((rowIndex) => (
                     <tr key={rowIndex} className="border-t align-top">
                       <th className="p-3 text-right font-medium text-gray-700">
-                        {representative?.label || `الفترة ${rowIndex}`}
-                        {representative && <bdi dir="ltr" className="mt-1 block text-xs font-normal text-gray-500">{representative.start_time}–{representative.end_time}</bdi>}
+                        الفترة <bdi dir="ltr">{rowIndex}</bdi>
                       </th>
                       {orderedDays.map((day) => {
                         const slot = grid.slots.find((item) => item.day_of_week === day.day_of_week && item.slot_index === rowIndex);
                         if (!slot) return <td key={day.id} className="border-r bg-gray-50 p-3 text-center text-gray-400">—</td>;
-                        if (slot.slot_type === 'break') return <td key={day.id} className="border-r bg-slate-100 p-3 text-center font-semibold text-slate-600">استراحة</td>;
+                        if (slot.slot_type === 'break') return (
+                          <td key={day.id} className="border-r bg-slate-100 p-3 text-center text-slate-600">
+                            <SlotIdentity slot={slot} />
+                            <p className="text-xs font-semibold">استراحة</p>
+                          </td>
+                        );
                         const entries = grid.entries.filter((entry) => Number(entry.slot_id) === Number(slot.id));
                         return (
                           <td key={day.id} className="border-r p-2">
+                            <SlotIdentity slot={slot} />
                             {entries.length === 0 ? (
                               <button type="button" onClick={() => setScheduleDialog({ slotId: slot.id })} className="flex min-h-24 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-primary-300 text-primary-700 hover:bg-primary-50">
                                 <Plus size={17} />جدولة حصة
                               </button>
-                            ) : entries.map((entry) => (
-                              <div key={entry.id} className="mb-2 rounded-lg border border-primary-200 bg-primary-50 p-2 last:mb-0">
-                                <p className="font-bold text-primary-900">{entry.subject_name}</p>
-                                <p className={`text-xs ${entry.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-600'}`}>{entry.employee_name || 'بدون مدرس'}</p>
-                                {entry.warnings.length > 0 && (
-                                  <p className="mt-1 flex items-center gap-1 text-xs font-semibold text-amber-700" title={entry.warnings.map((warning) => warning.message).join(' • ')}>
-                                    <AlertTriangle size={13} />تنبيه تفضيل
-                                  </p>
-                                )}
-                                <div className="mt-2 flex gap-1">
-                                  <button type="button" onClick={() => setMoveDialog({ entry })} className="rounded p-1.5 text-blue-700 hover:bg-blue-100" aria-label="نقل الحصة"><ArrowLeftRight size={15} /></button>
-                                  <button type="button" onClick={() => void removeEntry(entry)} className="rounded p-1.5 text-red-700 hover:bg-red-100" aria-label="حذف الحصة"><Trash2 size={15} /></button>
+                            ) : entries.map((entry) => {
+                              const hasHardConflicts = entry.hard_conflicts.length > 0;
+                              return (
+                                <div key={entry.id} className={`mb-2 rounded-lg border p-2 last:mb-0 ${hasHardConflicts ? 'border-red-300 bg-red-50' : 'border-primary-200 bg-primary-50'}`}>
+                                  <p className={`font-bold ${hasHardConflicts ? 'text-red-950' : 'text-primary-900'}`}>{entry.subject_name}</p>
+                                  <p className={`text-xs ${entry.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-600'}`}>{entry.employee_name || 'بدون مدرس'}</p>
+                                  {hasHardConflicts && (
+                                    <div className="mt-2 rounded-md border border-red-200 bg-red-100/70 p-2 text-xs text-red-900" title={entry.hard_conflicts.map((conflict) => conflict.message).join(' • ')}>
+                                      <p className="flex items-center gap-1 font-bold"><AlertTriangle size={13} />تعارض صلب</p>
+                                      <ul className="mt-1 list-inside list-disc space-y-0.5">
+                                        {entry.hard_conflicts.map((conflict) => <li key={conflict.code}>{conflict.message}</li>)}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  {entry.warnings.length > 0 && (
+                                    <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800" title={entry.warnings.map((warning) => warning.message).join(' • ')}>
+                                      <p className="flex items-center gap-1 font-semibold"><AlertTriangle size={13} />تنبيه تفضيل</p>
+                                      <ul className="mt-1 list-inside list-disc space-y-0.5">
+                                        {entry.warnings.map((warning) => <li key={warning.code}>{warning.message}</li>)}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  <div className="mt-2 flex gap-1">
+                                    <button type="button" onClick={() => setMoveDialog({ entry })} className="rounded p-1.5 text-blue-700 hover:bg-blue-100" aria-label="نقل الحصة"><ArrowLeftRight size={15} /></button>
+                                    <button type="button" onClick={() => void removeEntry(entry)} className="rounded p-1.5 text-red-700 hover:bg-red-100" aria-label="حذف الحصة"><Trash2 size={15} /></button>
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </td>
                         );
                       })}
                     </tr>
-                  );
-                })}
+                ))}
               </tbody>
             </table>
           </div>

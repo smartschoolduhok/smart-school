@@ -366,6 +366,21 @@ test('soft avoid and preferred-window warnings never become hard conflicts', () 
   assert.ok(preferred.warnings.some((item) => item.code === 'preferred_slot'));
 });
 
+test('preferred overrides from another tenant or academic year never affect the current window', () => {
+  const context = pureContext();
+  context.days.push({ id: 2, school_id: 2, academic_year_id: 2, day_of_week: 0, is_active: 1, order_index: 0, created_at: 1, updated_at: 1 });
+  context.slots.push({
+    id: 4, school_id: 2, academic_year_id: 2, day_of_week: 0, slot_index: 1, slot_type: 'lesson',
+    lesson_number: 1, label: 'Foreign', start_time: '08:00', end_time: '08:40', is_active: 1, created_at: 1, updated_at: 1,
+  });
+  context.teacherAvailability.push({
+    id: 4, school_id: 2, academic_year_id: 2, employee_id: 1, slot_id: 4, status: 'preferred',
+  });
+  const result = evaluateTimetableEntryPlacement({ ...context, candidate: { slot_id: 2, teaching_load_id: 1 } });
+  assert.equal(result.warnings.some((item) => item.code === 'outside_preferred_slots'), false);
+  assert.deepEqual(result.hard_conflicts, []);
+});
+
 test('first and last period preferences produce nonblocking warnings', () => {
   const context = pureContext({ teacherConstraints: [{
     id: 1, school_id: 1, academic_year_id: 1, employee_id: 1,

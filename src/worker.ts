@@ -816,6 +816,7 @@ function timetableGridEntry(
   entry: TimetableEntry,
   load: TimetableTeachingLoad,
   warnings: TimetableEntryNotice[] = [],
+  hardConflicts: TimetableEntryNotice[] = [],
 ): TimetableGridEntry {
   return {
     ...entry,
@@ -828,6 +829,7 @@ function timetableGridEntry(
     employee_name: load.employee_name || null,
     weekly_periods: Number(load.weekly_periods),
     load_status: load.status,
+    hard_conflicts: hardConflicts,
     warnings,
   };
 }
@@ -2498,19 +2500,19 @@ app.get('/api/timetable/grid', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
     const visibleSlots = context.slots.filter((slot) => (
       Number(slot.is_active) === 1 && activeDayNumbers.has(Number(slot.day_of_week))
     ))
-    const relevantLoads = context.loads.filter((load) => (
-      load.status === 'active'
-      && Number(load.class_id) === validation.value.classId
+    const scopedLoads = context.loads.filter((load) => (
+      Number(load.class_id) === validation.value.classId
       && (validation.value.sectionId == null
         ? load.section_id == null
         : load.section_id == null || Number(load.section_id) === validation.value.sectionId)
     ))
-    const relevantLoadIds = new Set(relevantLoads.map((load) => Number(load.id)))
+    const relevantLoads = scopedLoads.filter((load) => load.status === 'active')
+    const scopedLoadIds = new Set(scopedLoads.map((load) => Number(load.id)))
     const visibleSlotIds = new Set(visibleSlots.map((slot) => Number(slot.id)))
     const gridEntries = context.entries
-      .filter((entry) => relevantLoadIds.has(Number(entry.teaching_load_id)) && visibleSlotIds.has(Number(entry.slot_id)))
+      .filter((entry) => scopedLoadIds.has(Number(entry.teaching_load_id)) && visibleSlotIds.has(Number(entry.slot_id)))
       .map((entry) => {
-        const load = relevantLoads.find((item) => Number(item.id) === Number(entry.teaching_load_id))!
+        const load = scopedLoads.find((item) => Number(item.id) === Number(entry.teaching_load_id))!
         const evaluation = evaluateTimetableEntryPlacement({
           candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
           days: context.days,
@@ -2520,7 +2522,7 @@ app.get('/api/timetable/grid', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
           teacherAvailability: context.availability,
           teacherConstraints: context.constraints,
         })
-        return timetableGridEntry(entry, load, evaluation.warnings)
+        return timetableGridEntry(entry, load, evaluation.warnings, evaluation.hard_conflicts)
       })
     const scheduledByLoad = new Map<number, number>()
     for (const entry of context.entries) {
