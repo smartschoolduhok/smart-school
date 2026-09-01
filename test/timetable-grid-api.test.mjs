@@ -140,6 +140,7 @@ test('grid API returns active days, active lessons, visible breaks and scoped lo
   assert.deepEqual(data.days.map((row) => row.day_of_week), [0, 1]);
   assert.ok(data.slots.some((row) => row.slot_type === 'break'));
   assert.equal(data.slots.some((row) => row.id === 7 || row.id === 8), false);
+  assert.deepEqual(data.historical_entries, []);
   assert.deepEqual(data.loads.map((row) => row.id), [1, 2]);
   assert.deepEqual(
     data.slots.filter((row) => row.slot_index === 1).map((row) => [row.day_of_week, row.label, row.start_time, row.end_time]),
@@ -149,10 +150,133 @@ test('grid API returns active days, active lessons, visible breaks and scoped lo
 
 test('grid loading uses a bounded constant number of D1 queries', async () => {
   const context = await fixture(); setup(context);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody())).status, 201);
+  context.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run();
   context.d1.prepareCount = 0;
   const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
   assert.equal(response.status, 200);
   assert.ok(context.d1.prepareCount <= 14, `query count: ${context.d1.prepareCount}`);
+  assert.equal((await response.json()).data.historical_entries.length, 1);
+});
+
+test('disabled-slot entries stay visible for repair, reject new placement, and support move or delete', async () => {
+  const context = await fixture(); setup(context);
+  context.database.prepare('UPDATE timetable_teaching_loads SET weekly_periods = 1 WHERE id = 1').run();
+  const createdResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }));
+  assert.equal(createdResponse.status, 201);
+  const entryId = (await createdResponse.json()).data.id;
+  context.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run();
+
+  let response = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
+  let data = (await response.json()).data;
+  assert.equal(data.entries.some((entry) => entry.id === entryId), false);
+  const historical = data.historical_entries.find((entry) => entry.id === entryId);
+  assert.equal(historical.slot.label, 'First');
+  assert.equal(historical.slot.start_time, '08:00');
+  assert.ok(historical.hard_conflicts.some((conflict) => conflict.code === 'inactive_slot'));
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries WHERE id = ?').get(entryId).count, 1);
+
+  response = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }));
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, 'inactive_slot');
+
+  response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${entryId}`, {
+    school_id: 1, academic_year_id: 1, slot_id: 2,
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).data.id, entryId);
+  assert.equal(context.database.prepare('SELECT slot_id FROM timetable_entries WHERE id = ?').get(entryId).slot_id, 2);
+  data = (await (await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).json()).data;
+  assert.equal(data.historical_entries.length, 0);
+  assert.ok(data.entries.some((entry) => entry.id === entryId));
+  const repairedLoad = data.loads.find((load) => load.id === 1);
+  assert.equal(repairedLoad.total_placements, 1);
+  assert.equal(repairedLoad.scheduled_periods, 1);
+  assert.equal(repairedLoad.invalid_placements, 0);
+  assert.equal(repairedLoad.remaining_periods, 0);
+  response = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 4 }));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'weekly_periods_exceeded');
+
+  const deleteContext = await fixture(); setup(deleteContext);
+  const deleteCreated = await api(deleteContext, deleteContext.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }));
+  const deleteEntryId = (await deleteCreated.json()).data.id;
+  deleteContext.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run();
+  response = await api(deleteContext, deleteContext.tokens.owner, 'DELETE', `/api/timetable/entries/${deleteEntryId}`, {
+    school_id: 1, academic_year_id: 1,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(deleteContext.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries WHERE id = ?').get(deleteEntryId).count, 0);
+});
+
+test('disabled-day entries stay visible with inactive_day and can move only to an active day', async () => {
+  const context = await fixture(); setup(context);
+  const createdResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }));
+  const entryId = (await createdResponse.json()).data.id;
+  context.database.prepare('UPDATE timetable_days SET is_active = 0 WHERE school_id = 1 AND academic_year_id = 1 AND day_of_week = 0').run();
+
+  let response = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
+  let data = (await response.json()).data;
+  const historical = data.historical_entries.find((entry) => entry.id === entryId);
+  assert.equal(historical.slot.day_of_week, 0);
+  assert.ok(historical.hard_conflicts.some((conflict) => conflict.code === 'inactive_day'));
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries WHERE id = ?').get(entryId).count, 1);
+
+  response = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2 }));
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, 'inactive_day');
+
+  response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${entryId}`, {
+    school_id: 1, academic_year_id: 1, slot_id: 5,
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).data.id, entryId);
+  assert.equal(context.database.prepare('SELECT slot_id FROM timetable_entries WHERE id = ?').get(entryId).slot_id, 5);
+  data = (await (await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).json()).data;
+  assert.equal(data.historical_entries.length, 0);
+  assert.ok(data.entries.some((entry) => entry.id === entryId));
+});
+
+test('readiness and grid progress exclude an inactive historical placement from valid scheduling', async () => {
+  const context = await fixture(); setup(context);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }))).status, 201);
+  const before = (await (await api(context, context.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1')).json()).data;
+  context.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run();
+  const after = (await (await api(context, context.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1')).json()).data;
+  assert.equal(after.total_required_periods, before.total_required_periods);
+  assert.equal(after.total_scheduled_periods, before.total_scheduled_periods - 1);
+  assert.equal(after.total_unscheduled_periods, before.total_unscheduled_periods + 1);
+  assert.equal(after.schedule_ready, false);
+  assert.ok(after.entry_issues.some((issue) => issue.hard_conflicts.some((conflict) => conflict.code === 'inactive_slot')));
+
+  const grid = (await (await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).json()).data;
+  const load = grid.loads.find((item) => item.id === 1);
+  assert.equal(load.total_placements, 1);
+  assert.equal(load.scheduled_periods, 0);
+  assert.equal(load.invalid_placements, 1);
+  assert.equal(load.remaining_periods, load.weekly_periods);
+});
+
+test('historical entries remain strictly scoped to their own tenant and academic year', async () => {
+  const context = await fixture(); setup(context);
+  context.database.exec(`
+    INSERT INTO timetable_days (school_id, academic_year_id, day_of_week, is_active, order_index) VALUES (2,2,0,1,0);
+    INSERT INTO timetable_slots (id, school_id, academic_year_id, day_of_week, slot_index, slot_type, lesson_number, label, start_time, end_time, is_active)
+      VALUES (20,2,2,0,1,'lesson',1,'Foreign','08:00','08:40',1);
+    INSERT INTO timetable_teaching_loads (id, school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods, status)
+      VALUES (20,2,2,3,4,4,3,1,'active');
+    INSERT INTO timetable_entries (id, school_id, academic_year_id, slot_id, teaching_load_id)
+      VALUES (20,2,2,20,20);
+    UPDATE timetable_slots SET is_active = 0 WHERE id = 20;
+  `);
+
+  const schoolOne = (await (await api(context, context.tokens.admin, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).json()).data;
+  assert.equal(schoolOne.historical_entries.some((entry) => entry.id === 20), false);
+  const schoolTwoResponse = await api(context, context.tokens.admin, 'GET', '/api/timetable/grid?school_id=2&academic_year_id=2&class_id=3&section_id=4');
+  assert.equal(schoolTwoResponse.status, 200);
+  const schoolTwo = (await schoolTwoResponse.json()).data;
+  assert.deepEqual(schoolTwo.historical_entries.map((entry) => entry.id), [20]);
+  assert.ok(schoolTwo.historical_entries[0].hard_conflicts.some((conflict) => conflict.code === 'inactive_slot'));
 });
 
 test('owner and registrar can create a schedule entry and readiness reports progress', async () => {

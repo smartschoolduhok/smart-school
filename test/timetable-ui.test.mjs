@@ -9,6 +9,7 @@ const rootDir = join(testDir, '..');
 const pageSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TimetablePage.tsx'), 'utf8');
 const availabilitySource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TeacherAvailabilityTab.tsx'), 'utf8');
 const gridSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TimetableGridTab.tsx'), 'utf8');
+const timetableSource = readFileSync(join(rootDir, 'src', 'lib', 'timetable.ts'), 'utf8');
 const apiSource = readFileSync(join(rootDir, 'src', 'lib', 'api.ts'), 'utf8');
 const appSource = readFileSync(join(rootDir, 'src', 'App.tsx'), 'utf8');
 const sidebarSource = readFileSync(join(rootDir, 'src', 'components', 'Sidebar.tsx'), 'utf8');
@@ -41,11 +42,33 @@ test('each day cell renders its own slot identity without a representative-row s
 
 test('hard conflicts and preference warnings remain visually and semantically separate', () => {
   assert.match(gridSource, /border-red-300 bg-red-50/);
-  assert.match(gridSource, /entry\.hard_conflicts\.map\(\(conflict\)/);
+  assert.match(gridSource, /function HardConflictNotice/);
+  assert.match(gridSource, /conflicts\.map\(\(conflict\)/);
   assert.match(gridSource, /border-amber-200 bg-amber-50/);
   assert.match(gridSource, /entry\.warnings\.map\(\(warning\)/);
   assert.match(gridSource, /setMoveDialog\(\{ entry \}\)/);
   assert.match(gridSource, /removeEntry\(entry\)/);
+});
+
+test('historical invalid placements render in a dedicated repair section without becoming schedule targets', () => {
+  for (const label of ['حصص تحتاج إصلاح', 'لا تُحتسب ضمن الحصص المجدولة الصحيحة', 'نقل إلى فترة فعالة']) {
+    assert.ok(gridSource.includes(label), label);
+  }
+  assert.match(timetableSource, /historical_entries: TimetableHistoricalGridEntry\[\]/);
+  assert.match(gridSource, /grid\.historical_entries\.map/);
+  assert.match(gridSource, /entry\.slot\.start_time.*entry\.slot\.end_time/);
+  const historicalSection = gridSource.slice(gridSource.indexOf('grid.historical_entries.length'), gridSource.indexOf('{scheduleDialog && grid'));
+  assert.match(historicalSection, /setMoveDialog\(\{ entry \}\)/);
+  assert.match(historicalSection, /removeEntry\(entry\)/);
+  assert.doesNotMatch(historicalSection, /setScheduleDialog/);
+});
+
+test('grid progress distinguishes total, valid, invalid and remaining placements', () => {
+  for (const field of ['total_placements', 'scheduled_periods', 'invalid_placements', 'remaining_periods']) {
+    assert.ok(timetableSource.includes(field), field);
+    assert.ok(gridSource.includes(`load.${field}`), field);
+  }
+  assert.ok(gridSource.includes('المجدول الصحيح'));
 });
 
 test('weekly grid uses explicit move/delete controls and server APIs', () => {

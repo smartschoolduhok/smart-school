@@ -205,6 +205,11 @@ export interface TimetableGridEntry extends TimetableEntry {
   warnings: TimetableEntryNotice[];
 }
 
+export interface TimetableHistoricalGridEntry extends TimetableGridEntry {
+  slot: TimetableSlot | null;
+  day: TimetableDay | null;
+}
+
 export interface TimetableLoadProgress {
   teaching_load_id: number;
   subject_name: string;
@@ -227,8 +232,11 @@ export interface TimetableGridData {
   days: TimetableDay[];
   slots: TimetableSlot[];
   entries: TimetableGridEntry[];
+  historical_entries: TimetableHistoricalGridEntry[];
   loads: Array<TimetableTeachingLoad & {
+    total_placements: number;
     scheduled_periods: number;
+    invalid_placements: number;
     remaining_periods: number;
   }>;
 }

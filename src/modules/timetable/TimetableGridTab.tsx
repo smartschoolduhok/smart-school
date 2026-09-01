@@ -43,6 +43,18 @@ function SlotIdentity({ slot }: { slot: TimetableSlot }) {
   );
 }
 
+function HardConflictNotice({ conflicts }: { conflicts: TimetableEntryNotice[] }) {
+  if (conflicts.length === 0) return null;
+  return (
+    <div className="mt-2 rounded-md border border-red-200 bg-red-100/70 p-2 text-xs text-red-900" title={conflicts.map((conflict) => conflict.message).join(' • ')}>
+      <p className="flex items-center gap-1 font-bold"><AlertTriangle size={13} />تعارض صلب</p>
+      <ul className="mt-1 list-inside list-disc space-y-0.5">
+        {conflicts.map((conflict) => <li key={conflict.code}>{conflict.message}</li>)}
+      </ul>
+    </div>
+  );
+}
+
 export function TimetableGridTab({
   schoolId,
   academicYearId,
@@ -247,7 +259,8 @@ export function TimetableGridTab({
               <div key={load.id} className="rounded-lg border border-gray-200 bg-white p-3">
                 <p className="font-semibold text-gray-900">{load.subject_name}</p>
                 <p className={`text-xs ${load.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-500'}`}>{load.employee_name || 'بدون مدرس'}</p>
-                <p className="mt-2 text-xs text-gray-600">المطلوب <bdi dir="ltr">{load.weekly_periods}</bdi> · المجدول <bdi dir="ltr">{load.scheduled_periods}</bdi> · المتبقي <bdi dir="ltr">{load.remaining_periods}</bdi></p>
+                <p className="mt-2 text-xs text-gray-600">المطلوب <bdi dir="ltr">{load.weekly_periods}</bdi> · المجدول الصحيح <bdi dir="ltr">{load.scheduled_periods}</bdi> · المتبقي <bdi dir="ltr">{load.remaining_periods}</bdi></p>
+                <p className={`mt-1 text-xs ${load.invalid_placements > 0 ? 'font-semibold text-red-700' : 'text-gray-500'}`}>كل المواضع <bdi dir="ltr">{load.total_placements}</bdi> · تحتاج إصلاح <bdi dir="ltr">{load.invalid_placements}</bdi></p>
               </div>
             ))}
           </div>
@@ -288,14 +301,7 @@ export function TimetableGridTab({
                                 <div key={entry.id} className={`mb-2 rounded-lg border p-2 last:mb-0 ${hasHardConflicts ? 'border-red-300 bg-red-50' : 'border-primary-200 bg-primary-50'}`}>
                                   <p className={`font-bold ${hasHardConflicts ? 'text-red-950' : 'text-primary-900'}`}>{entry.subject_name}</p>
                                   <p className={`text-xs ${entry.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-600'}`}>{entry.employee_name || 'بدون مدرس'}</p>
-                                  {hasHardConflicts && (
-                                    <div className="mt-2 rounded-md border border-red-200 bg-red-100/70 p-2 text-xs text-red-900" title={entry.hard_conflicts.map((conflict) => conflict.message).join(' • ')}>
-                                      <p className="flex items-center gap-1 font-bold"><AlertTriangle size={13} />تعارض صلب</p>
-                                      <ul className="mt-1 list-inside list-disc space-y-0.5">
-                                        {entry.hard_conflicts.map((conflict) => <li key={conflict.code}>{conflict.message}</li>)}
-                                      </ul>
-                                    </div>
-                                  )}
+                                  <HardConflictNotice conflicts={entry.hard_conflicts} />
                                   {entry.warnings.length > 0 && (
                                     <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800" title={entry.warnings.map((warning) => warning.message).join(' • ')}>
                                       <p className="flex items-center gap-1 font-semibold"><AlertTriangle size={13} />تنبيه تفضيل</p>
@@ -319,6 +325,31 @@ export function TimetableGridTab({
               </tbody>
             </table>
           </div>
+          {grid.historical_entries.length > 0 && (
+            <section className="rounded-xl border border-red-300 bg-red-50 p-4" aria-label="حصص تحتاج إصلاح">
+              <h3 className="flex items-center gap-2 font-bold text-red-950"><AlertTriangle size={19} />حصص تحتاج إصلاح</h3>
+              <p className="mt-1 text-sm text-red-800">هذه الحصص محفوظة تاريخيًا لكنها تقع في يوم أو فترة غير فعالة، ولا تُحتسب ضمن الحصص المجدولة الصحيحة.</p>
+              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {grid.historical_entries.map((entry) => (
+                  <article key={entry.id} className="rounded-lg border border-red-300 bg-white p-3">
+                    <p className="font-bold text-red-950">{entry.subject_name}</p>
+                    <p className={`text-xs ${entry.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-600'}`}>{entry.employee_name || 'بدون مدرس'}</p>
+                    {entry.slot ? (
+                      <div className="mt-2 text-sm text-gray-700">
+                        <p>{TIMETABLE_DAY_NAMES[entry.slot.day_of_week]} — {entry.slot.label}</p>
+                        <bdi dir="ltr" className="mt-0.5 block text-xs text-gray-500">{entry.slot.start_time}–{entry.slot.end_time}</bdi>
+                      </div>
+                    ) : <p className="mt-2 text-sm text-gray-600">الفترة الأصلية غير متاحة</p>}
+                    <HardConflictNotice conflicts={entry.hard_conflicts} />
+                    <div className="mt-3 flex gap-2">
+                      <button type="button" onClick={() => setMoveDialog({ entry })} className="flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"><ArrowLeftRight size={14} />نقل إلى فترة فعالة</button>
+                      <button type="button" onClick={() => void removeEntry(entry)} className="flex items-center gap-1 rounded-md bg-red-100 px-2 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-200"><Trash2 size={14} />حذف</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
         </>
       )}
 
