@@ -19,6 +19,7 @@ const readMigration = (name) => readFileSync(join(rootDir, 'migrations', name), 
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 const migration = readMigration('0023_timetable_foundation.sql');
 const availabilityMigration = readMigration('0024_teacher_timetable_constraints.sql');
+const entriesMigration = readMigration('0025_timetable_entries.sql');
 
 function insertId(database, sql, ...params) {
   return Number(database.prepare(`${sql} RETURNING id`).get(...params).id);
@@ -64,6 +65,7 @@ function createFixture() {
   `);
   database.exec(migration);
   database.exec(availabilityMigration);
+  database.exec(entriesMigration);
   return database;
 }
 
@@ -503,7 +505,7 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.get('/api/timetable/teacher-availability-summary'",
   ]) assert.ok(workerSource.includes(route), route);
   const routeGuards = timetableWorkerSource.match(/app\.(?:get|post|put|delete)\('\/api\/timetable[^\n]*requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/g) || [];
-  assert.equal(routeGuards.length, 20);
+  assert.equal(routeGuards.length, 24);
   assert.match(workerSource, /resolveActiveWriteSchool\(c\.env\.DB, user, body\.school_id\)/);
   assert.doesNotMatch(timetableWorkerSource, /school_id\s*(?:\?\?|\|\|)\s*1/);
   assert.doesNotMatch(timetableWorkerSource, /students\.class_id|students\.section_id/);
@@ -513,7 +515,12 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     workerSource.indexOf('async function loadTimetableReadinessSummary'),
     workerSource.indexOf('// Middleware: explicit CORS'),
   );
-  assert.equal((readinessHelper.match(/db\.prepare\(/g) || []).length, 7, 'readiness uses a constant query count');
+  const schedulingContext = workerSource.slice(
+    workerSource.indexOf('async function loadTimetableSchedulingContext'),
+    workerSource.indexOf('async function validateTimetableGridReferences'),
+  );
+  assert.equal((schedulingContext.match(/db\.prepare\(/g) || []).length, 6, 'scheduling context uses six set-based queries');
+  assert.equal((readinessHelper.match(/db\.prepare\(/g) || []).length, 2, 'readiness adds only placement and subject queries');
   assert.doesNotMatch(readinessHelper, /\bIN\s*\(\s*\?/i, 'readiness has no variable-size binding list');
 });
 

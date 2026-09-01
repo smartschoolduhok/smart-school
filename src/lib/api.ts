@@ -20,6 +20,9 @@ import type {
 } from './studentBulkPromotion';
 import type {
   TimetableDay,
+  TimetableEntry,
+  TimetableEntryNotice,
+  TimetableGridData,
   TimetableReadinessSummary,
   TimetableSlot,
   TimetableTeacherAvailabilityMatrix,
@@ -273,6 +276,60 @@ export function getTimetableReadiness(schoolId: number, academicYearId: number) 
 
 export function getTimetableTeacherWorkloads(schoolId: number, academicYearId: number) {
   return fetchApi<TimetableTeacherWorkload[]>(`/api/timetable/teacher-workloads?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function getTimetableGrid(
+  schoolId: number,
+  academicYearId: number,
+  classId: number,
+  sectionId: number | null,
+) {
+  const query = new URLSearchParams({
+    school_id: String(schoolId),
+    academic_year_id: String(academicYearId),
+    class_id: String(classId),
+  });
+  if (sectionId != null) query.set('section_id', String(sectionId));
+  return fetchApi<TimetableGridData>(`/api/timetable/grid?${query.toString()}`);
+}
+
+export function createTimetableEntry(data: {
+  school_id: number;
+  academic_year_id: number;
+  slot_id: number;
+  teaching_load_id: number;
+}) {
+  return fetchApi<TimetableEntry>('/api/timetable/entries', {
+    method: 'POST', body: JSON.stringify(data),
+  }) as Promise<{
+    data?: TimetableEntry;
+    meta?: { warnings?: TimetableEntryNotice[] };
+    error?: string;
+    code?: string;
+    status?: number;
+  }>;
+}
+
+export function moveTimetableEntry(id: number, data: {
+  school_id: number;
+  academic_year_id: number;
+  slot_id: number;
+}) {
+  return fetchApi<TimetableEntry>(`/api/timetable/entries/${id}`, {
+    method: 'PUT', body: JSON.stringify(data),
+  }) as Promise<{
+    data?: TimetableEntry;
+    meta?: { warnings?: TimetableEntryNotice[] };
+    error?: string;
+    code?: string;
+    status?: number;
+  }>;
+}
+
+export function deleteTimetableEntry(id: number, schoolId: number, academicYearId: number) {
+  return fetchApi<{ id: number }>(`/api/timetable/entries/${id}`, {
+    method: 'DELETE', body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+  });
 }
 
 function teacherTimetableQuery(schoolId: number, academicYearId: number, employeeId: number) {

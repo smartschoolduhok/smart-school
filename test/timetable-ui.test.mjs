@@ -8,13 +8,46 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
 const pageSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TimetablePage.tsx'), 'utf8');
 const availabilitySource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TeacherAvailabilityTab.tsx'), 'utf8');
+const gridSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TimetableGridTab.tsx'), 'utf8');
+const apiSource = readFileSync(join(rootDir, 'src', 'lib', 'api.ts'), 'utf8');
 const appSource = readFileSync(join(rootDir, 'src', 'App.tsx'), 'utf8');
 const sidebarSource = readFileSync(join(rootDir, 'src', 'components', 'Sidebar.tsx'), 'utf8');
 
-test('timetable module is Arabic RTL and exposes teacher availability as a fourth foundation tab', () => {
+test('timetable module is Arabic RTL and exposes the weekly grid with all foundation tabs', () => {
   assert.match(pageSource, /dir="rtl"/);
-  for (const label of ['الجدول الدراسي', 'إعداد الأسبوع', 'نصاب المواد والمدرسين', 'توفر المدرسين والقيود', 'التحقق من الجاهزية']) {
+  for (const label of ['الجدول الدراسي', 'الجدول الأسبوعي', 'إعداد الأسبوع', 'نصاب المواد والمدرسين', 'توفر المدرسين والقيود', 'التحقق من الجاهزية']) {
     assert.ok(pageSource.includes(label), label);
+  }
+});
+
+test('weekly grid exposes explicit class/section flow, breaks and missing-teacher demand', () => {
+  assert.match(gridSource, /dir="rtl"/);
+  for (const label of ['اختر الصف', 'اختر الشعبة', 'جدولة حصة', 'استراحة', 'بدون مدرس', 'المطلوب', 'المجدول', 'المتبقي', 'تنبيه تفضيل']) {
+    assert.ok(gridSource.includes(label), label);
+  }
+  assert.match(gridSource, /slot\.slot_type === 'break'/);
+  assert.match(gridSource, /entry\.warnings\.length > 0/);
+  assert.doesNotMatch(gridSource, /draggable|onDragStart|onDrop/);
+});
+
+test('weekly grid uses explicit move/delete controls and server APIs', () => {
+  assert.match(gridSource, /moveTimetableEntry/);
+  assert.match(gridSource, /deleteTimetableEntry/);
+  assert.match(gridSource, /window\.confirm/);
+  assert.match(apiSource, /\/api\/timetable\/grid/);
+  assert.match(apiSource, /\/api\/timetable\/entries/);
+});
+
+test('weekly grid ignores stale school, year, class and section responses', () => {
+  assert.match(gridSource, /requestGenerationRef\.current \+= 1/);
+  assert.match(gridSource, /requestGeneration !== requestGenerationRef\.current/);
+  assert.match(gridSource, /currentScopeRef\.current !== expectedScope/);
+  for (const reset of [/setGrid\(null\)/, /setScheduleDialog\(null\)/, /setMoveDialog\(null\)/, /setSelectedSectionId\(null\)/]) assert.match(gridSource, reset);
+});
+
+test('readiness presents scheduled, remaining and hard-conflict totals separately', () => {
+  for (const field of ['schedule_ready', 'total_scheduled_periods', 'total_unscheduled_periods', 'hard_constraint_violation_count']) {
+    assert.ok(pageSource.includes(field), field);
   }
 });
 

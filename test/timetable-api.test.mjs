@@ -85,6 +85,7 @@ async function createApiFixture() {
   `);
   database.exec(migration('0023_timetable_foundation.sql'));
   database.exec(migration('0024_teacher_timetable_constraints.sql'));
+  database.exec(migration('0025_timetable_entries.sql'));
   const tokens = {
     owner: await signJWT({ email: 'owner-a@example.test', auth_version: 1 }, secret),
     admin: await signJWT({ email: 'admin@example.test', auth_version: 1 }, secret),

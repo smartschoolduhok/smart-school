@@ -152,15 +152,23 @@ import {
 import {
   buildTeacherAvailabilityMatrix,
   buildTimetableReadiness,
+  evaluateTimetableEntryPlacement,
   isTimetableConstraintError,
   validateTeacherAvailabilityDayInput,
   validateTeacherAvailabilityOverrideInput,
   validateTeacherAvailabilityScopeInput,
   validateTeacherConstraintsInput,
   validateTimetableDayInput,
+  validateTimetableEntryInput,
+  validateTimetableGridScopeInput,
   validateTimetableLoadInput,
   validateTimetableSlotInput,
   type TimetableDay,
+  type TimetableEntry,
+  type TimetableEntryHardConflictCode,
+  type TimetableGridData,
+  type TimetableGridEntry,
+  type TimetableEntryNotice,
   type TimetablePlacement,
   type TimetableSlot,
   type TimetableSubjectOption,
@@ -486,7 +494,7 @@ async function readJsonObject(c: any): Promise<Record<string, any> | null> {
 
 type TimetableReferenceValidation =
   | { ok: true }
-  | { ok: false; status: 400 | 403 | 404; error: string };
+  | { ok: false; status: 400 | 403 | 404; error: string; code?: TimetableEntryHardConflictCode };
 
 async function validateTimetableAcademicYear(
   db: D1Database,
@@ -495,9 +503,9 @@ async function validateTimetableAcademicYear(
 ): Promise<TimetableReferenceValidation> {
   const year = await db.prepare('SELECT id, school_id FROM academic_years WHERE id = ?')
     .bind(academicYearId).first<{ id: number; school_id: number }>();
-  if (!year) return { ok: false, status: 404, error: 'السنة الدراسية غير موجودة' };
+  if (!year) return { ok: false, status: 404, error: 'السنة الدراسية غير موجودة', code: 'invalid_academic_year' };
   if (Number(year.school_id) !== schoolId) {
-    return { ok: false, status: 403, error: 'غير مسموح: السنة الدراسية لا تنتمي إلى المدرسة المستهدفة' };
+    return { ok: false, status: 403, error: 'غير مسموح: السنة الدراسية لا تنتمي إلى المدرسة المستهدفة', code: 'invalid_tenant_scope' };
   }
   return { ok: true };
 }
@@ -672,8 +680,21 @@ async function loadTeacherAvailabilityMatrix(
   })
 }
 
-async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, academicYearId: number) {
-  const [daysResult, slotsResult, placementsResult, subjectsResult, loadsResult, availabilityResult, constraintsResult] = await Promise.all([
+type TimetableSchedulingContext = {
+  days: TimetableDay[];
+  slots: TimetableSlot[];
+  loads: TimetableTeachingLoad[];
+  entries: TimetableEntry[];
+  availability: TimetableTeacherAvailabilityOverride[];
+  constraints: TimetableTeacherConstraints[];
+};
+
+async function loadTimetableSchedulingContext(
+  db: D1Database,
+  schoolId: number,
+  academicYearId: number,
+): Promise<TimetableSchedulingContext> {
+  const [daysResult, slotsResult, loadsResult, entriesResult, availabilityResult, constraintsResult] = await Promise.all([
     db.prepare(`
       SELECT * FROM timetable_days
       WHERE school_id = ? AND academic_year_id = ?
@@ -682,8 +703,175 @@ async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, a
     db.prepare(`
       SELECT * FROM timetable_slots
       WHERE school_id = ? AND academic_year_id = ?
-      ORDER BY day_of_week, slot_index
+      ORDER BY day_of_week, start_time, slot_index, id
     `).bind(schoolId, academicYearId).all<TimetableSlot>(),
+    db.prepare(`
+      SELECT load.*,
+             class.name AS class_name, class.status AS class_status, class.school_id AS class_school_id,
+             COALESCE(class_sections.active_section_count, 0) AS active_section_count,
+             section.name AS section_name, section.status AS section_status,
+             section.school_id AS section_school_id, section.class_id AS section_class_id,
+             subject.name AS subject_name, subject.status AS subject_status, subject.school_id AS subject_school_id,
+             subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
+             employee.full_name AS employee_name, employee.status AS employee_status,
+             employee.school_id AS employee_school_id, employee.role AS employee_role
+      FROM timetable_teaching_loads load
+      LEFT JOIN classes class ON class.id = load.class_id
+      LEFT JOIN (
+        SELECT school_id, class_id, COUNT(*) AS active_section_count
+        FROM sections WHERE status = 'active'
+        GROUP BY school_id, class_id
+      ) class_sections ON class_sections.school_id = load.school_id AND class_sections.class_id = load.class_id
+      LEFT JOIN sections section ON section.id = load.section_id
+      LEFT JOIN subjects subject ON subject.id = load.subject_id
+      LEFT JOIN employees employee ON employee.id = load.employee_id
+      WHERE load.school_id = ? AND load.academic_year_id = ?
+      ORDER BY load.class_id, load.section_id, load.subject_id, load.id
+    `).bind(schoolId, academicYearId).all<TimetableTeachingLoad>(),
+    db.prepare(`
+      SELECT * FROM timetable_entries
+      WHERE school_id = ? AND academic_year_id = ?
+      ORDER BY slot_id, id
+    `).bind(schoolId, academicYearId).all<TimetableEntry>(),
+    db.prepare(`
+      SELECT * FROM timetable_teacher_availability
+      WHERE school_id = ? AND academic_year_id = ?
+      ORDER BY employee_id, slot_id
+    `).bind(schoolId, academicYearId).all<TimetableTeacherAvailabilityOverride>(),
+    db.prepare(`
+      SELECT * FROM timetable_teacher_constraints
+      WHERE school_id = ? AND academic_year_id = ?
+      ORDER BY employee_id
+    `).bind(schoolId, academicYearId).all<TimetableTeacherConstraints>(),
+  ]);
+  return {
+    days: daysResult.results || [],
+    slots: slotsResult.results || [],
+    loads: loadsResult.results || [],
+    entries: entriesResult.results || [],
+    availability: availabilityResult.results || [],
+    constraints: constraintsResult.results || [],
+  };
+}
+
+async function validateTimetableGridReferences(
+  db: D1Database,
+  schoolId: number,
+  classId: number,
+  sectionId: number | null,
+): Promise<TimetableReferenceValidation> {
+  const [classRow, sectionRow, activeSectionCount] = await Promise.all([
+    db.prepare('SELECT id, school_id, status FROM classes WHERE id = ?').bind(classId)
+      .first<{ id: number; school_id: number; status: string }>(),
+    sectionId == null ? Promise.resolve(null) : db.prepare(
+      'SELECT id, school_id, class_id, status FROM sections WHERE id = ?',
+    ).bind(sectionId).first<{ id: number; school_id: number; class_id: number; status: string }>(),
+    db.prepare(`
+      SELECT COUNT(*) AS count FROM sections
+      WHERE school_id = ? AND class_id = ? AND status = 'active'
+    `).bind(schoolId, classId).first<{ count: number }>(),
+  ]);
+  if (!classRow) return { ok: false, status: 404, error: 'الصف غير موجود' };
+  if (Number(classRow.school_id) !== schoolId) return { ok: false, status: 403, error: 'غير مسموح: الصف من مدرسة أخرى', code: 'invalid_tenant_scope' };
+  if (classRow.status !== 'active') return { ok: false, status: 400, error: 'الصف غير نشط' };
+  if (sectionId != null) {
+    if (!sectionRow) return { ok: false, status: 404, error: 'الشعبة غير موجودة' };
+    if (Number(sectionRow.school_id) !== schoolId) return { ok: false, status: 403, error: 'غير مسموح: الشعبة من مدرسة أخرى', code: 'invalid_tenant_scope' };
+    if (Number(sectionRow.class_id) !== classId) return { ok: false, status: 400, error: 'الشعبة لا تتبع الصف المحدد' };
+    if (sectionRow.status !== 'active') return { ok: false, status: 400, error: 'الشعبة غير نشطة' };
+  } else if (Number(activeSectionCount?.count || 0) > 0) {
+    return { ok: false, status: 400, error: 'يجب تحديد شعبة لعرض جدول هذا الصف' };
+  }
+  return { ok: true };
+}
+
+async function validateTimetableEntryReferences(
+  db: D1Database,
+  context: TimetableSchedulingContext,
+  schoolId: number,
+  academicYearId: number,
+  slotId: number,
+  teachingLoadId: number,
+): Promise<TimetableReferenceValidation> {
+  let slot = context.slots.find((item) => Number(item.id) === slotId);
+  if (!slot) {
+    slot = await db.prepare('SELECT * FROM timetable_slots WHERE id = ?').bind(slotId).first<TimetableSlot>() || undefined;
+    if (!slot) return { ok: false, status: 404, error: 'فترة الجدول غير موجودة', code: 'slot_not_schedulable' };
+  }
+  if (Number(slot.school_id) !== schoolId) return { ok: false, status: 403, error: 'غير مسموح: الفترة من مدرسة أخرى', code: 'invalid_tenant_scope' };
+  if (Number(slot.academic_year_id) !== academicYearId) return { ok: false, status: 400, error: 'الفترة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' };
+
+  let load = context.loads.find((item) => Number(item.id) === teachingLoadId);
+  if (!load) {
+    load = await db.prepare('SELECT * FROM timetable_teaching_loads WHERE id = ?')
+      .bind(teachingLoadId).first<TimetableTeachingLoad>() || undefined;
+    if (!load) return { ok: false, status: 404, error: 'نصاب المادة غير موجود', code: 'invalid_teaching_load' };
+  }
+  if (Number(load.school_id) !== schoolId) return { ok: false, status: 403, error: 'غير مسموح: النصاب من مدرسة أخرى', code: 'invalid_tenant_scope' };
+  if (Number(load.academic_year_id) !== academicYearId) return { ok: false, status: 400, error: 'النصاب لا ينتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' };
+  return { ok: true };
+}
+
+function timetableGridEntry(
+  entry: TimetableEntry,
+  load: TimetableTeachingLoad,
+  warnings: TimetableEntryNotice[] = [],
+): TimetableGridEntry {
+  return {
+    ...entry,
+    subject_name: load.subject_name || 'مادة غير معروفة',
+    class_id: Number(load.class_id),
+    class_name: load.class_name || 'صف غير معروف',
+    section_id: load.section_id == null ? null : Number(load.section_id),
+    section_name: load.section_name || null,
+    employee_id: load.employee_id == null ? null : Number(load.employee_id),
+    employee_name: load.employee_name || null,
+    weekly_periods: Number(load.weekly_periods),
+    load_status: load.status,
+    warnings,
+  };
+}
+
+const TIMETABLE_ENTRY_CONSTRAINT_ERRORS: Array<{
+  pattern: RegExp;
+  status: 400 | 403 | 409;
+  code: TimetableEntryHardConflictCode;
+  error: string;
+}> = [
+  { pattern: /academic year school mismatch|academic year mismatch/, status: 400, code: 'invalid_academic_year', error: 'السنة الدراسية لا تطابق نطاق الحصة' },
+  { pattern: /tenant scope mismatch/, status: 403, code: 'invalid_tenant_scope', error: 'غير مسموح: مراجع الحصة من مدرسة أخرى' },
+  { pattern: /day inactive/, status: 400, code: 'inactive_day', error: 'اليوم المحدد غير فعال ولا يقبل حصصًا جديدة' },
+  { pattern: /slot inactive/, status: 400, code: 'inactive_slot', error: 'الفترة المحددة غير فعالة ولا تقبل حصصًا جديدة' },
+  { pattern: /slot not schedulable/, status: 400, code: 'slot_not_schedulable', error: 'الفترة المحددة ليست حصة فعالة قابلة للجدولة' },
+  { pattern: /teaching load not schedulable/, status: 400, code: 'invalid_teaching_load', error: 'نصاب المادة غير فعال أو يحتوي على مرجع غير صالح' },
+  { pattern: /weekly periods exceeded/, status: 409, code: 'weekly_periods_exceeded', error: 'اكتمل عدد الحصص الأسبوعية المطلوبة لهذا النصاب' },
+  { pattern: /group collision/, status: 409, code: 'class_section_collision', error: 'توجد حصة أخرى للصف أو الشعبة في هذه الفترة' },
+  { pattern: /teacher collision/, status: 409, code: 'teacher_collision', error: 'المدرس مرتبط بحصة أخرى في الفترة نفسها' },
+  { pattern: /teacher unavailable/, status: 409, code: 'teacher_unavailable', error: 'المدرس غير متاح في هذه الفترة' },
+  { pattern: /max periods per day/, status: 409, code: 'teacher_max_periods_per_day', error: 'تجاوز المدرس الحد الأقصى للحصص اليومية' },
+  { pattern: /max working days/, status: 409, code: 'teacher_max_working_days', error: 'تجاوز المدرس الحد الأقصى لأيام العمل الأسبوعية' },
+  { pattern: /max consecutive periods/, status: 409, code: 'teacher_max_consecutive_periods', error: 'تجاوز المدرس الحد الأقصى للحصص المتتالية' },
+];
+
+function timetableEntryConstraintError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return TIMETABLE_ENTRY_CONSTRAINT_ERRORS.find((item) => item.pattern.test(message)) || null;
+}
+
+function timetableEntryNoticeStatus(notice: TimetableEntryNotice): 400 | 403 | 409 {
+  if (notice.code === 'invalid_tenant_scope') return 403;
+  return [
+    'slot_not_schedulable',
+    'inactive_day',
+    'inactive_slot',
+    'invalid_teaching_load',
+    'invalid_academic_year',
+  ].includes(notice.code) ? 400 : 409;
+}
+
+async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, academicYearId: number) {
+  const [context, placementsResult, subjectsResult] = await Promise.all([
+    loadTimetableSchedulingContext(db, schoolId, academicYearId),
     db.prepare(`
       SELECT c.id AS class_id, c.name AS class_name,
              s.id AS section_id, s.name AS section_name
@@ -699,49 +887,17 @@ async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, a
       WHERE school_id = ? AND status = 'active'
       ORDER BY class_id, order_index, id
     `).bind(schoolId).all<TimetableSubjectOption>(),
-    db.prepare(`
-      SELECT load.*,
-             class.name AS class_name, class.status AS class_status, class.school_id AS class_school_id,
-             COALESCE(class_sections.active_section_count, 0) AS active_section_count,
-             section.name AS section_name, section.status AS section_status,
-             section.school_id AS section_school_id, section.class_id AS section_class_id,
-             subject.name AS subject_name, subject.status AS subject_status, subject.school_id AS subject_school_id,
-             subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
-             employee.full_name AS employee_name, employee.status AS employee_status, employee.school_id AS employee_school_id,
-             employee.role AS employee_role
-      FROM timetable_teaching_loads load
-      LEFT JOIN classes class ON class.id = load.class_id
-      LEFT JOIN (
-        SELECT school_id, class_id, COUNT(*) AS active_section_count
-        FROM sections WHERE status = 'active'
-        GROUP BY school_id, class_id
-      ) class_sections ON class_sections.school_id = load.school_id AND class_sections.class_id = load.class_id
-      LEFT JOIN sections section ON section.id = load.section_id
-      LEFT JOIN subjects subject ON subject.id = load.subject_id
-      LEFT JOIN employees employee ON employee.id = load.employee_id
-      WHERE load.school_id = ? AND load.academic_year_id = ?
-      ORDER BY load.class_id, load.section_id, load.subject_id, load.id
-    `).bind(schoolId, academicYearId).all<TimetableTeachingLoad>(),
-    db.prepare(`
-      SELECT * FROM timetable_teacher_availability
-      WHERE school_id = ? AND academic_year_id = ?
-      ORDER BY employee_id, slot_id
-    `).bind(schoolId, academicYearId).all<TimetableTeacherAvailabilityOverride>(),
-    db.prepare(`
-      SELECT * FROM timetable_teacher_constraints
-      WHERE school_id = ? AND academic_year_id = ?
-      ORDER BY employee_id
-    `).bind(schoolId, academicYearId).all<TimetableTeacherConstraints>(),
   ]);
 
   return buildTimetableReadiness({
-    days: daysResult.results || [],
-    slots: slotsResult.results || [],
+    days: context.days,
+    slots: context.slots,
     placements: placementsResult.results || [],
     subjects: subjectsResult.results || [],
-    loads: loadsResult.results || [],
-    teacherAvailability: availabilityResult.results || [],
-    teacherConstraints: constraintsResult.results || [],
+    loads: context.loads,
+    entries: context.entries,
+    teacherAvailability: context.availability,
+    teacherConstraints: context.constraints,
   });
 }
 
@@ -1780,6 +1936,9 @@ app.put('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(ACA
     return c.json({ data: slot })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (/timetable slot has scheduled entries/i.test(message)) {
+      return c.json({ error: 'توجد حصص مجدولة مرتبطة بهذه الفترة. احذف الحصص المجدولة أولًا قبل تغيير بنية الفترة.' }, 400)
+    }
     if (/timetable slot has teacher availability settings/i.test(message)) {
       return c.json({
         error: 'توجد إعدادات توفر مدرسين مرتبطة بهذه الفترة. امسح إعدادات التوفر أولًا قبل تعديل نوعها أو نطاقها.',
@@ -1804,9 +1963,17 @@ app.delete('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(
   if (!existing) return c.json({ error: 'الفترة غير موجودة' }, 404)
   if (Number(existing.school_id) !== targetSchool.schoolId) return c.json({ error: 'غير مسموح: الفترة من مدرسة أخرى' }, 403)
   if (Number(body.academic_year_id) !== Number(existing.academic_year_id)) return c.json({ error: 'السنة الدراسية لا تطابق الفترة' }, 400)
-  await c.env.DB.prepare('DELETE FROM timetable_slots WHERE id = ? AND school_id = ? AND academic_year_id = ?')
-    .bind(id, targetSchool.schoolId, existing.academic_year_id).run()
-  return c.json({ data: { id } })
+  try {
+    await c.env.DB.prepare('DELETE FROM timetable_slots WHERE id = ? AND school_id = ? AND academic_year_id = ?')
+      .bind(id, targetSchool.schoolId, existing.academic_year_id).run()
+    return c.json({ data: { id } })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/FOREIGN KEY constraint failed/i.test(message)) {
+      return c.json({ error: 'لا يمكن حذف الفترة لأنها تحتوي على حصص مجدولة. احذف الحصص المجدولة أولًا.' }, 409)
+    }
+    return c.json({ error: 'فشل في حذف فترة الجدول' }, 500)
+  }
 })
 
 app.get('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
@@ -1920,6 +2087,13 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
       .bind(id, targetSchool.schoolId).first<TimetableTeachingLoad>()
     return c.json({ data: load })
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/timetable load has scheduled entries/i.test(message)) {
+      return c.json({ error: 'توجد حصص مجدولة مرتبطة بهذا النصاب. احذف الحصص المجدولة أولًا قبل تغيير صفه أو مادته أو مدرسه.' }, 400)
+    }
+    if (/weekly periods below scheduled entries/i.test(message)) {
+      return c.json({ error: 'لا يمكن تقليل عدد الحصص الأسبوعية عن عدد الحصص المجدولة حاليًا.' }, 400)
+    }
     if (isTimetableConstraintError(error)) return c.json({ error: 'يوجد نصاب فعال لهذه المادة في الصف والشعبة المحددين' }, 409)
     return c.json({ error: 'فشل في تعديل نصاب المادة' }, 500)
   }
@@ -2297,6 +2471,244 @@ app.get('/api/timetable/teacher-workloads', requireSameSchoolOrAdmin(), requireR
     return c.json({ data: summary.teacher_workloads })
   } catch {
     return c.json({ error: 'فشل في حساب إجمالي أنصبة المدرسين' }, 500)
+  }
+})
+
+app.get('/api/timetable/grid', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  if (schoolId == null) return c.json({ error: 'يجب تحديد مدرسة لعرض الجدول الأسبوعي', code: 'invalid_tenant_scope' }, 400)
+  const validation = validateTimetableGridScopeInput({
+    academic_year_id: c.req.query('academic_year_id'),
+    class_id: c.req.query('class_id'),
+    section_id: c.req.query('section_id'),
+  })
+  if (!validation.ok) return c.json({ error: validation.error }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, schoolId, validation.value.academicYearId)
+  if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+  const placement = await validateTimetableGridReferences(
+    c.env.DB,
+    schoolId,
+    validation.value.classId,
+    validation.value.sectionId,
+  )
+  if (!placement.ok) return c.json({ error: placement.error, code: placement.code }, placement.status)
+  try {
+    const context = await loadTimetableSchedulingContext(c.env.DB, schoolId, validation.value.academicYearId)
+    const activeDayNumbers = new Set(context.days.filter((day) => Number(day.is_active) === 1).map((day) => Number(day.day_of_week)))
+    const visibleSlots = context.slots.filter((slot) => (
+      Number(slot.is_active) === 1 && activeDayNumbers.has(Number(slot.day_of_week))
+    ))
+    const relevantLoads = context.loads.filter((load) => (
+      load.status === 'active'
+      && Number(load.class_id) === validation.value.classId
+      && (validation.value.sectionId == null
+        ? load.section_id == null
+        : load.section_id == null || Number(load.section_id) === validation.value.sectionId)
+    ))
+    const relevantLoadIds = new Set(relevantLoads.map((load) => Number(load.id)))
+    const visibleSlotIds = new Set(visibleSlots.map((slot) => Number(slot.id)))
+    const gridEntries = context.entries
+      .filter((entry) => relevantLoadIds.has(Number(entry.teaching_load_id)) && visibleSlotIds.has(Number(entry.slot_id)))
+      .map((entry) => {
+        const load = relevantLoads.find((item) => Number(item.id) === Number(entry.teaching_load_id))!
+        const evaluation = evaluateTimetableEntryPlacement({
+          candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
+          days: context.days,
+          slots: context.slots,
+          loads: context.loads,
+          entries: context.entries,
+          teacherAvailability: context.availability,
+          teacherConstraints: context.constraints,
+        })
+        return timetableGridEntry(entry, load, evaluation.warnings)
+      })
+    const scheduledByLoad = new Map<number, number>()
+    for (const entry of context.entries) {
+      if (!visibleSlotIds.has(Number(entry.slot_id))) continue
+      const loadId = Number(entry.teaching_load_id)
+      scheduledByLoad.set(loadId, (scheduledByLoad.get(loadId) || 0) + 1)
+    }
+    const data: TimetableGridData = {
+      school_id: schoolId,
+      academic_year_id: validation.value.academicYearId,
+      class_id: validation.value.classId,
+      section_id: validation.value.sectionId,
+      days: context.days.filter((day) => Number(day.is_active) === 1),
+      slots: visibleSlots,
+      entries: gridEntries,
+      loads: relevantLoads.map((load) => {
+        const scheduledPeriods = scheduledByLoad.get(Number(load.id)) || 0
+        return {
+          ...load,
+          scheduled_periods: scheduledPeriods,
+          remaining_periods: Math.max(0, Number(load.weekly_periods) - scheduledPeriods),
+        }
+      }),
+    }
+    return c.json({ data })
+  } catch {
+    return c.json({ error: 'فشل في تحميل الجدول الأسبوعي' }, 500)
+  }
+})
+
+app.post('/api/timetable/entries', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات الحصة غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
+    const validation = validateTimetableEntryInput(body)
+    if (!validation.ok || validation.value.teachingLoadId == null) return c.json({ error: validation.error }, 400)
+    const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+    if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+    const context = await loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+    const references = await validateTimetableEntryReferences(
+      c.env.DB,
+      context,
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.slotId,
+      validation.value.teachingLoadId,
+    )
+    if (!references.ok) return c.json({ error: references.error, code: references.code }, references.status)
+    const evaluation = evaluateTimetableEntryPlacement({
+      candidate: { slot_id: validation.value.slotId, teaching_load_id: validation.value.teachingLoadId },
+      days: context.days,
+      slots: context.slots,
+      loads: context.loads,
+      entries: context.entries,
+      teacherAvailability: context.availability,
+      teacherConstraints: context.constraints,
+    })
+    const hardConflict = evaluation.hard_conflicts[0]
+    if (hardConflict) return c.json(
+      { error: hardConflict.message, code: hardConflict.code },
+      timetableEntryNoticeStatus(hardConflict),
+    )
+    const result = await c.env.DB.prepare(`
+      INSERT INTO timetable_entries (
+        school_id, academic_year_id, slot_id, teaching_load_id,
+        created_by_user_id, updated_by_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.slotId,
+      validation.value.teachingLoadId,
+      user.id,
+      user.id,
+    ).run()
+    const entry = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ? AND school_id = ?')
+      .bind(result.meta?.last_row_id, targetSchool.schoolId).first<TimetableEntry>()
+    const load = context.loads.find((item) => Number(item.id) === validation.value.teachingLoadId)!
+    return c.json({ data: entry ? timetableGridEntry(entry, load, evaluation.warnings) : entry, meta: { warnings: evaluation.warnings } }, 201)
+  } catch (error) {
+    const conflict = timetableEntryConstraintError(error)
+    if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
+    return c.json({ error: 'فشل في جدولة الحصة' }, 500)
+  }
+})
+
+app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الحصة غير صالح' }, 400)
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات نقل الحصة غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
+    const validation = validateTimetableEntryInput(body, false)
+    if (!validation.ok) return c.json({ error: validation.error }, 400)
+    const existing = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ?')
+      .bind(id).first<TimetableEntry>()
+    if (!existing) return c.json({ error: 'الحصة المجدولة غير موجودة' }, 404)
+    if (Number(existing.school_id) !== targetSchool.schoolId) {
+      return c.json({ error: 'غير مسموح: الحصة المجدولة من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
+    }
+    if (Number(existing.academic_year_id) !== validation.value.academicYearId) {
+      return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
+    }
+    if (validation.value.teachingLoadId != null
+      && validation.value.teachingLoadId !== Number(existing.teaching_load_id)) {
+      return c.json({ error: 'لا يمكن تغيير نصاب الحصة أثناء النقل' }, 400)
+    }
+    const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+    if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+    const context = await loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+    const references = await validateTimetableEntryReferences(
+      c.env.DB,
+      context,
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+      validation.value.slotId,
+      Number(existing.teaching_load_id),
+    )
+    if (!references.ok) return c.json({ error: references.error, code: references.code }, references.status)
+    const evaluation = evaluateTimetableEntryPlacement({
+      candidate: { id, slot_id: validation.value.slotId, teaching_load_id: Number(existing.teaching_load_id) },
+      days: context.days,
+      slots: context.slots,
+      loads: context.loads,
+      entries: context.entries,
+      teacherAvailability: context.availability,
+      teacherConstraints: context.constraints,
+    })
+    const hardConflict = evaluation.hard_conflicts[0]
+    if (hardConflict) return c.json(
+      { error: hardConflict.message, code: hardConflict.code },
+      timetableEntryNoticeStatus(hardConflict),
+    )
+    await c.env.DB.prepare(`
+      UPDATE timetable_entries
+      SET slot_id = ?, updated_by_user_id = ?, updated_at = unixepoch()
+      WHERE id = ? AND school_id = ? AND academic_year_id = ?
+    `).bind(
+      validation.value.slotId,
+      user.id,
+      id,
+      targetSchool.schoolId,
+      validation.value.academicYearId,
+    ).run()
+    const entry = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ? AND school_id = ?')
+      .bind(id, targetSchool.schoolId).first<TimetableEntry>()
+    const load = context.loads.find((item) => Number(item.id) === Number(existing.teaching_load_id))!
+    return c.json({ data: entry ? timetableGridEntry(entry, load, evaluation.warnings) : entry, meta: { warnings: evaluation.warnings } })
+  } catch (error) {
+    const conflict = timetableEntryConstraintError(error)
+    if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
+    return c.json({ error: 'فشل في نقل الحصة' }, 500)
+  }
+})
+
+app.delete('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الحصة غير صالح' }, 400)
+  const body = await readJsonObject(c)
+  if (!body) return c.json({ error: 'بيانات حذف الحصة غير صالحة' }, 400)
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
+  const academicYearId = Number(body.academic_year_id)
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0) return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
+  const existing = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ?')
+    .bind(id).first<TimetableEntry>()
+  if (!existing) return c.json({ error: 'الحصة المجدولة غير موجودة' }, 404)
+  if (Number(existing.school_id) !== targetSchool.schoolId) {
+    return c.json({ error: 'غير مسموح: الحصة المجدولة من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
+  }
+  if (Number(existing.academic_year_id) !== academicYearId) {
+    return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
+  }
+  try {
+    await c.env.DB.prepare(`
+      DELETE FROM timetable_entries
+      WHERE id = ? AND school_id = ? AND academic_year_id = ?
+    `).bind(id, targetSchool.schoolId, academicYearId).run()
+    return c.json({ data: { id } })
+  } catch {
+    return c.json({ error: 'فشل في حذف الحصة المجدولة' }, 500)
   }
 })
 
