@@ -1730,12 +1730,30 @@ app.put('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(ACA
     if (!body) return c.json({ error: 'بيانات الفترة غير صالحة' }, 400)
     const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
-    const existing = await c.env.DB.prepare('SELECT school_id, academic_year_id FROM timetable_slots WHERE id = ?')
-      .bind(id).first<{ school_id: number; academic_year_id: number }>()
+    const existing = await c.env.DB.prepare(`
+      SELECT slot.school_id, slot.academic_year_id,
+             EXISTS (
+               SELECT 1 FROM timetable_teacher_availability availability
+               WHERE availability.slot_id = slot.id
+             ) AS has_teacher_availability
+      FROM timetable_slots slot
+      WHERE slot.id = ?
+    `).bind(id).first<{
+      school_id: number;
+      academic_year_id: number;
+      has_teacher_availability: number;
+    }>()
     if (!existing) return c.json({ error: 'الفترة غير موجودة' }, 404)
     if (Number(existing.school_id) !== targetSchool.schoolId) return c.json({ error: 'غير مسموح: الفترة من مدرسة أخرى' }, 403)
     const validation = validateTimetableSlotInput(body)
     if (!validation.ok) return c.json({ error: validation.error }, 400)
+    const changesAvailabilityScope = Number(existing.academic_year_id) !== validation.value.academicYearId
+      || validation.value.slotType !== 'lesson'
+    if (Number(existing.has_teacher_availability) === 1 && changesAvailabilityScope) {
+      return c.json({
+        error: 'توجد إعدادات توفر مدرسين مرتبطة بهذه الفترة. امسح إعدادات التوفر أولًا قبل تغيير نوعها أو سنتها الدراسية.',
+      }, 400)
+    }
     if (Number(existing.academic_year_id) !== validation.value.academicYearId) {
       return c.json({ error: 'لا يمكن نقل الفترة إلى سنة دراسية أخرى' }, 400)
     }
@@ -1762,6 +1780,11 @@ app.put('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(ACA
     return c.json({ data: slot })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (/timetable slot has teacher availability settings/i.test(message)) {
+      return c.json({
+        error: 'توجد إعدادات توفر مدرسين مرتبطة بهذه الفترة. امسح إعدادات التوفر أولًا قبل تعديل نوعها أو نطاقها.',
+      }, 400)
+    }
     if (/overlap/i.test(message)) return c.json({ error: 'تتداخل الفترة مع فترة أخرى في اليوم نفسه' }, 409)
     if (isTimetableConstraintError(error)) return c.json({ error: 'ترتيب الفترة أو رقم الحصة مستخدم في هذا اليوم' }, 409)
     return c.json({ error: 'فشل في تعديل فترة الجدول' }, 500)

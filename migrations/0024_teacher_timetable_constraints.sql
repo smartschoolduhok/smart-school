@@ -45,6 +45,21 @@ CREATE TABLE IF NOT EXISTS timetable_teacher_constraints (
 CREATE INDEX IF NOT EXISTS idx_timetable_teacher_constraints_scope
 ON timetable_teacher_constraints(school_id, academic_year_id, employee_id);
 
+CREATE TRIGGER IF NOT EXISTS trg_timetable_slots_preserve_teacher_availability
+BEFORE UPDATE OF school_id, academic_year_id, slot_type ON timetable_slots
+WHEN EXISTS (
+  SELECT 1 FROM timetable_teacher_availability
+  WHERE slot_id = OLD.id
+)
+AND (
+  NEW.school_id != OLD.school_id
+  OR NEW.academic_year_id != OLD.academic_year_id
+  OR NEW.slot_type != 'lesson'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'timetable slot has teacher availability settings');
+END;
+
 CREATE TRIGGER IF NOT EXISTS trg_timetable_teacher_availability_validate_insert
 BEFORE INSERT ON timetable_teacher_availability
 BEGIN

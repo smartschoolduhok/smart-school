@@ -120,6 +120,7 @@ test('0024 applies to the genuine employee schema and creates canonical tables, 
   assert.ok(indexes.has('idx_timetable_teacher_constraints_scope'));
   const triggers = new Set(database.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger'").all().map((row) => row.name));
   for (const name of [
+    'trg_timetable_slots_preserve_teacher_availability',
     'trg_timetable_teacher_availability_validate_insert',
     'trg_timetable_teacher_availability_validate_update',
     'trg_timetable_teacher_constraints_validate_insert',
@@ -127,6 +128,52 @@ test('0024 applies to the genuine employee schema and creates canonical tables, 
     'trg_timetable_teacher_availability_updated_at',
     'trg_timetable_teacher_constraints_updated_at',
   ]) assert.ok(triggers.has(name), name);
+});
+
+test('referenced lesson slots cannot become breaks or move scope while ordinary edits remain valid', () => {
+  const database = createFixture();
+  addDay(database);
+  addDay(database, { yearId: 2 });
+  addDay(database, { schoolId: 2, yearId: 3 });
+  const slotId = addSlot(database);
+  addOverride(database, { slotId, status: 'preferred' });
+
+  database.prepare(`
+    UPDATE timetable_slots
+    SET label = 'Renamed lesson', start_time = '08:05', end_time = '08:45',
+        is_active = 0, lesson_number = 2
+    WHERE id = ?
+  `).run(slotId);
+  const ordinaryEdit = database.prepare(`
+    SELECT label, start_time, end_time, is_active, lesson_number
+    FROM timetable_slots WHERE id = ?
+  `).get(slotId);
+  assert.deepEqual({ ...ordinaryEdit }, {
+    label: 'Renamed lesson',
+    start_time: '08:05',
+    end_time: '08:45',
+    is_active: 0,
+    lesson_number: 2,
+  });
+
+  assert.throws(() => database.prepare(`
+    UPDATE timetable_slots SET slot_type = 'break', lesson_number = NULL WHERE id = ?
+  `).run(slotId), /timetable slot has teacher availability settings/);
+  assert.throws(() => database.prepare(`
+    UPDATE timetable_slots SET academic_year_id = 2 WHERE id = ?
+  `).run(slotId), /timetable slot has teacher availability settings/);
+  assert.throws(() => database.prepare(`
+    UPDATE timetable_slots SET school_id = 2, academic_year_id = 3 WHERE id = ?
+  `).run(slotId), /timetable slot has teacher availability settings/);
+
+  const protectedSlot = database.prepare(`
+    SELECT school_id, academic_year_id, slot_type FROM timetable_slots WHERE id = ?
+  `).get(slotId);
+  assert.deepEqual({ ...protectedSlot }, { school_id: 1, academic_year_id: 1, slot_type: 'lesson' });
+  assert.deepEqual(
+    { ...database.prepare(`SELECT school_id, academic_year_id, slot_id, status FROM timetable_teacher_availability`).get() },
+    { school_id: 1, academic_year_id: 1, slot_id: slotId, status: 'preferred' },
+  );
 });
 
 test('availability schema rejects duplicates, bad statuses, breaks, cross-year, cross-school and non-teachers', () => {

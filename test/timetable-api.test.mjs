@@ -134,6 +134,65 @@ test('timetable day and slot API CRUD persists scoped records', async () => {
   assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_slots').get().count, 0);
 });
 
+test('slot API preserves teacher availability until overrides are explicitly cleared', async () => {
+  const fixture = await createApiFixture();
+  await api(fixture, fixture.tokens.owner, 'PUT', '/api/timetable/days/0', {
+    school_id: 1, academic_year_id: 1, is_active: 1, order_index: 0,
+  });
+  const createResponse = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/slots', {
+    school_id: 1, academic_year_id: 1, day_of_week: 0, slot_index: 1,
+    slot_type: 'lesson', lesson_number: 1, label: 'Lesson', start_time: '08:00', end_time: '08:40',
+  });
+  assert.equal(createResponse.status, 201);
+  const slotId = (await createResponse.json()).data.id;
+  const overrideResponse = await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/teacher-availability/${slotId}`, {
+    school_id: 1, academic_year_id: 1, employee_id: 1, status: 'preferred',
+  });
+  assert.equal(overrideResponse.status, 200);
+
+  const ordinaryEdits = [
+    { label: 'Renamed lesson' },
+    { start_time: '08:05', end_time: '08:45' },
+    { is_active: 0 },
+    { lesson_number: 2 },
+  ];
+  let lessonPayload = {
+    school_id: 1, academic_year_id: 1, day_of_week: 0, slot_index: 1,
+    slot_type: 'lesson', lesson_number: 1, label: 'Lesson', start_time: '08:00', end_time: '08:40', is_active: 1,
+  };
+  for (const changes of ordinaryEdits) {
+    lessonPayload = { ...lessonPayload, ...changes };
+    const response = await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/slots/${slotId}`, lessonPayload);
+    assert.equal(response.status, 200, JSON.stringify(changes));
+  }
+  assert.equal(
+    fixture.database.prepare('SELECT status FROM timetable_teacher_availability WHERE slot_id = ?').get(slotId).status,
+    'preferred',
+  );
+
+  const breakPayload = { ...lessonPayload, slot_type: 'break', lesson_number: null };
+  const blockedResponse = await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/slots/${slotId}`, breakPayload);
+  assert.equal(blockedResponse.status, 400);
+  assert.match((await blockedResponse.json()).error, /إعدادات توفر مدرسين.*امسح إعدادات التوفر أولًا/);
+  const blockedYearMove = await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/slots/${slotId}`, {
+    ...lessonPayload,
+    academic_year_id: 2,
+  });
+  assert.equal(blockedYearMove.status, 400);
+  assert.match((await blockedYearMove.json()).error, /إعدادات توفر مدرسين.*امسح إعدادات التوفر أولًا/);
+  assert.equal(fixture.database.prepare('SELECT slot_type FROM timetable_slots WHERE id = ?').get(slotId).slot_type, 'lesson');
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_teacher_availability WHERE slot_id = ?').get(slotId).count, 1);
+
+  const clearResponse = await api(fixture, fixture.tokens.owner, 'DELETE', `/api/timetable/teacher-availability/${slotId}`, {
+    school_id: 1, academic_year_id: 1, employee_id: 1,
+  });
+  assert.equal(clearResponse.status, 200);
+  const retryResponse = await api(fixture, fixture.tokens.owner, 'PUT', `/api/timetable/slots/${slotId}`, breakPayload);
+  assert.equal(retryResponse.status, 200);
+  assert.equal((await retryResponse.json()).data.slot_type, 'break');
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM timetable_teacher_availability WHERE slot_id = ?').get().count, 0);
+});
+
 test('inactive future and historical academic years remain explicitly configurable and viewable', async () => {
   const fixture = await createApiFixture();
   for (const academicYearId of [2, 4]) {

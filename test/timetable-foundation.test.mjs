@@ -130,6 +130,7 @@ test('0023 and 0024 create scoped timetable tables, indexes and validation trigg
     'trg_timetable_days_validate_insert',
     'trg_timetable_slots_validate_insert',
     'trg_timetable_slots_validate_update',
+    'trg_timetable_slots_preserve_teacher_availability',
     'trg_timetable_loads_validate_insert',
     'trg_timetable_loads_validate_update',
     'trg_timetable_days_updated_at',
