@@ -2517,15 +2517,27 @@ app.get('/api/timetable/master-grid', requireSameSchoolOrAdmin(), requireRoles(A
       c.env.DB.prepare(`
         SELECT section.id, section.school_id, section.class_id, section.name, section.status
         FROM sections section
-        JOIN classes class ON class.id = section.class_id
+        JOIN classes class ON class.id = section.class_id AND class.school_id = section.school_id
         WHERE section.school_id = ? AND section.status = 'active' AND class.status = 'active'
         ORDER BY class.order_index, class.id, section.id
       `).bind(schoolId).all<TimetableMasterSection>(),
       c.env.DB.prepare(`
-        SELECT id, school_id, class_id, section_id, name, status
-        FROM subjects
-        WHERE school_id = ? AND status = 'active'
-        ORDER BY class_id, order_index, id
+        SELECT subject.id, subject.school_id, subject.class_id, subject.section_id,
+               subject.name, subject.status
+        FROM subjects subject
+        JOIN classes class
+          ON class.id = subject.class_id
+         AND class.school_id = subject.school_id
+         AND class.status = 'active'
+        LEFT JOIN sections section ON section.id = subject.section_id
+        WHERE subject.school_id = ?
+          AND subject.status = 'active'
+          AND (subject.section_id IS NULL OR (
+            section.school_id = subject.school_id
+            AND section.class_id = subject.class_id
+            AND section.status = 'active'
+          ))
+        ORDER BY subject.class_id, subject.order_index, subject.id
       `).bind(schoolId).all<TimetableMasterSubject>(),
       c.env.DB.prepare(`
         SELECT id, school_id, full_name, role, status
@@ -2547,7 +2559,19 @@ app.get('/api/timetable/master-grid', requireSameSchoolOrAdmin(), requireRoles(A
       .map((slot) => Number(slot.id)))
 
     const evaluatedEntries = context.entries.map((entry) => {
-      const load = context.loads.find((item) => Number(item.id) === Number(entry.teaching_load_id))!
+      const load = context.loads.find((item) => Number(item.id) === Number(entry.teaching_load_id))
+      if (!load) {
+        return {
+          entry: null,
+          invalid: {
+            id: Number(entry.id),
+            slot_id: Number(entry.slot_id),
+            teaching_load_id: Number(entry.teaching_load_id),
+            hard_conflicts: [{ code: 'invalid_teaching_load' as const, message: 'نصاب المادة غير موجود أو خارج نطاق المدرسة' }],
+            reason: 'invalid' as const,
+          },
+        }
+      }
       const evaluation = evaluateTimetableEntryPlacement({
         candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
         days: context.days,
@@ -2559,19 +2583,22 @@ app.get('/api/timetable/master-grid', requireSameSchoolOrAdmin(), requireRoles(A
       })
       return {
         entry: timetableGridEntry(entry, load, evaluation.warnings, evaluation.hard_conflicts),
+        invalid: null,
       }
     })
     const entries = evaluatedEntries
-      .filter((item) => activeLessonSlotIds.has(Number(item.entry.slot_id)) && item.entry.hard_conflicts.length === 0)
-      .map((item) => item.entry)
+      .filter((item) => item.entry != null && activeLessonSlotIds.has(Number(item.entry.slot_id)) && item.entry.hard_conflicts.length === 0)
+      .map((item) => item.entry!)
     const invalidEntries = evaluatedEntries
-      .filter((item) => !activeLessonSlotIds.has(Number(item.entry.slot_id)) || item.entry.hard_conflicts.length > 0)
-      .map((item) => ({
-        id: Number(item.entry.id),
-        slot_id: Number(item.entry.slot_id),
-        teaching_load_id: Number(item.entry.teaching_load_id),
-        hard_conflicts: item.entry.hard_conflicts,
-        reason: item.entry.hard_conflicts.length > 0 ? 'invalid' as const : 'historical' as const,
+      .filter((item) => item.invalid != null || (item.entry != null && (
+        !activeLessonSlotIds.has(Number(item.entry.slot_id)) || item.entry.hard_conflicts.length > 0
+      )))
+      .map((item) => item.invalid || ({
+        id: Number(item.entry!.id),
+        slot_id: Number(item.entry!.slot_id),
+        teaching_load_id: Number(item.entry!.teaching_load_id),
+        hard_conflicts: item.entry!.hard_conflicts,
+        reason: item.entry!.hard_conflicts.length > 0 ? 'invalid' as const : 'historical' as const,
       }))
     const data: TimetableMasterGridData = {
       school,

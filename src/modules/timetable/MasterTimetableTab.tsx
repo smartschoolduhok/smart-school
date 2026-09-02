@@ -7,7 +7,8 @@ import {
   buildTimetableMasterPlacements,
   timetableEntryForPlacement,
   timetablePlacementKey,
-  timetableSubjectColor,
+  timetableSubjectColorForSubject,
+  timetableSubjectVisualKey,
   type TimetableGridEntry,
   type TimetableMasterGridData,
   type TimetablePlacement,
@@ -41,7 +42,8 @@ function slotLabel(slot: TimetableSlot) {
 
 function SubjectCell({ entry, extra }: { entry: TimetableGridEntry | null; extra?: ReactNode }) {
   if (!entry) return <span className="text-gray-400">—</span>;
-  const color = timetableSubjectColor(entry.subject_id);
+  const subjectVisualKey = timetableSubjectVisualKey(entry.school_id, entry.subject_name);
+  const color = timetableSubjectColorForSubject(entry.school_id, entry.subject_name);
   const style = {
     '--subject-bg': color.background,
     '--subject-border': color.border,
@@ -52,6 +54,7 @@ function SubjectCell({ entry, extra }: { entry: TimetableGridEntry | null; extra
       className="timetable-subject-card"
       style={style}
       data-subject-id={entry.subject_id}
+      data-subject-visual-key={subjectVisualKey}
       title={`${entry.subject_name}\n${entry.employee_name || 'بدون مدرس'}\n${entry.class_name}${entry.section_name ? ` / ${entry.section_name}` : ''}`}
     >
       <strong>{entry.subject_name}</strong>
@@ -78,10 +81,11 @@ function PrintHeader({ data, title }: { data: TimetableMasterGridData; title: st
 
 function SubjectLegend({ entries }: { entries: TimetableGridEntry[] }) {
   const subjects = useMemo(() => {
-    const seen = new Set<number>();
+    const seen = new Set<string>();
     return entries.filter((entry) => {
-      if (seen.has(Number(entry.subject_id))) return false;
-      seen.add(Number(entry.subject_id));
+      const subjectVisualKey = timetableSubjectVisualKey(entry.school_id, entry.subject_name);
+      if (seen.has(subjectVisualKey)) return false;
+      seen.add(subjectVisualKey);
       return true;
     }).sort((a, b) => a.subject_name.localeCompare(b.subject_name, 'ar'));
   }, [entries]);
@@ -90,9 +94,10 @@ function SubjectLegend({ entries }: { entries: TimetableGridEntry[] }) {
     <section className="timetable-subject-legend" aria-label="دليل ألوان المواد">
       <strong>مفتاح الألوان:</strong>
       {subjects.map((entry) => {
-        const color = timetableSubjectColor(entry.subject_id);
+        const subjectVisualKey = timetableSubjectVisualKey(entry.school_id, entry.subject_name);
+        const color = timetableSubjectColorForSubject(entry.school_id, entry.subject_name);
         return (
-          <span key={entry.subject_id} style={{ '--legend-color': color.background, '--legend-border': color.border } as CSSProperties}>
+          <span key={subjectVisualKey} style={{ '--legend-color': color.background, '--legend-border': color.border } as CSSProperties}>
             <i aria-hidden="true" />{entry.subject_name}
           </span>
         );
@@ -333,16 +338,19 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
             </label>
           )}
           <label className="flex items-center gap-2 self-end rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700">
-            <input type="checkbox" checked={fitOnePage} onChange={(event) => setFitOnePage(event.target.checked)} />ملاءمة مضغوطة لورقة واحدة
+            <input type="checkbox" checked={fitOnePage} onChange={(event) => setFitOnePage(event.target.checked)} />تنسيق مضغوط للطباعة
           </label>
           <button type="button" disabled={!canPrint} onClick={printTimetable} className="flex items-center justify-center gap-2 self-end rounded-lg bg-primary-700 px-4 py-2.5 font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">
             <Printer size={18} />طباعة / حفظ PDF
           </button>
         </div>
         {mode === 'master' && (
-          <p className={`text-sm ${pageSize === recommendedPageSize ? 'text-emerald-700' : 'text-amber-700'}`}>
-            يفضل استخدام <bdi dir="ltr">{recommendedPageSize}</bdi> لهذا الجدول (عدد الأعمدة: <bdi dir="ltr">{placements.length}</bdi>). استخدم المقاس الأكبر إذا أصبحت النصوص ضيقة.
-          </p>
+          <div className="space-y-1 text-sm">
+            <p className={pageSize === recommendedPageSize ? 'text-emerald-700' : 'text-amber-700'}>
+              يفضل استخدام <bdi dir="ltr">{recommendedPageSize}</bdi> لهذا الجدول (عدد الأعمدة: <bdi dir="ltr">{placements.length}</bdi>). استخدم المقاس الأكبر إذا أصبحت النصوص ضيقة.
+            </p>
+            {fitOnePage && <p className="text-gray-600">يقلل التنسيق المضغوط حجم الخلايا، وقد يوزّع المتصفح الجدول على أكثر من ورقة حسب المحتوى وإعدادات الطباعة.</p>}
+          </div>
         )}
       </div>
 

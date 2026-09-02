@@ -387,6 +387,29 @@ export function timetableSubjectColor(subjectId: number | string): TimetableSubj
   return TIMETABLE_SUBJECT_PALETTE[(hash >>> 0) % TIMETABLE_SUBJECT_PALETTE.length];
 }
 
+export function normalizeTimetableSubjectVisualKey(subjectName: string): string {
+  return subjectName
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\u0640\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+export function timetableSubjectVisualKey(schoolId: number | string, subjectName: string): string {
+  return `${String(schoolId)}:${normalizeTimetableSubjectVisualKey(subjectName)}`;
+}
+
+export function timetableSubjectColorForSubject(
+  schoolId: number | string,
+  subjectName: string,
+): TimetableSubjectColor {
+  return timetableSubjectColor(timetableSubjectVisualKey(schoolId, subjectName));
+}
+
 export interface TimetableSubjectOption {
   id: number;
   class_id: number;

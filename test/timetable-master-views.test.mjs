@@ -5,9 +5,12 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   buildTimetableMasterPlacements,
+  normalizeTimetableSubjectVisualKey,
   timetableEntryForPlacement,
   timetablePlacementKey,
   timetableSubjectColor,
+  timetableSubjectColorForSubject,
+  timetableSubjectVisualKey,
 } from '../src/lib/timetable.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -92,12 +95,53 @@ test('empty slot and unrelated class resolve to an empty cell', () => {
   assert.equal(timetableEntryForPlacement([entry()], 9, { class_id: 3, section_id: null }), null);
 });
 
-test('subject colors are deterministic and reused across views', () => {
-  assert.deepEqual(timetableSubjectColor(7), timetableSubjectColor(7));
-  assert.notDeepEqual(timetableSubjectColor(7), timetableSubjectColor(8));
-  assert.match(viewSource, /timetableSubjectColor\(entry\.subject_id\)/);
+test('logical subject colors are deterministic across different subject row ids', () => {
+  const gradeOne = entry({ subject_id: 7, subject_name: 'رياضيات' });
+  const gradeTwo = entry({ subject_id: 81, subject_name: '  رِيَـاضِيَّات  ' });
+  assert.equal(normalizeTimetableSubjectVisualKey(gradeOne.subject_name), 'رياضيات');
+  assert.equal(normalizeTimetableSubjectVisualKey(gradeTwo.subject_name), 'رياضيات');
+  assert.equal(
+    timetableSubjectVisualKey(gradeOne.school_id, gradeOne.subject_name),
+    timetableSubjectVisualKey(gradeTwo.school_id, gradeTwo.subject_name),
+  );
+  assert.deepEqual(
+    timetableSubjectColorForSubject(gradeOne.school_id, gradeOne.subject_name),
+    timetableSubjectColorForSubject(gradeTwo.school_id, gradeTwo.subject_name),
+  );
+  assert.equal(timetableSubjectVisualKey(1, 'Math'), timetableSubjectVisualKey(1, 'ｍＡＴＨ'));
+  assert.notEqual(timetableSubjectVisualKey(1, 'Math'), timetableSubjectVisualKey(2, 'Math'));
+  assert.match(viewSource, /timetableSubjectColorForSubject\(entry\.school_id, entry\.subject_name\)/);
+  assert.match(viewSource, /timetableSubjectVisualKey\(entry\.school_id, entry\.subject_name\)/);
   assert.match(viewSource, /data-subject-id=\{entry\.subject_id\}/);
+  assert.match(viewSource, /data-subject-visual-key=\{subjectVisualKey\}/);
   assert.ok((viewSource.match(/<SubjectCell/g) || []).length >= 3);
+});
+
+test('subject palette maintains readable text contrast for representative visual keys', () => {
+  function luminance(hex) {
+    const channels = hex.match(/[a-f\d]{2}/gi).map((value) => Number.parseInt(value, 16) / 255)
+      .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  }
+  function contrast(left, right) {
+    const [lighter, darker] = [luminance(left), luminance(right)].sort((a, b) => b - a);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+  const colors = new Map();
+  for (let index = 0; index < 200; index += 1) {
+    const color = timetableSubjectColor(`1:subject-${index}`);
+    colors.set(color.background, color);
+  }
+  assert.equal(colors.size, 12);
+  for (const color of colors.values()) {
+    assert.ok(contrast(color.background, color.foreground) >= 4.5, JSON.stringify(color));
+  }
+});
+
+test('subject legend deduplicates by normalized school-scoped visual key', () => {
+  assert.match(viewSource, /const seen = new Set<string>\(\)/);
+  assert.match(viewSource, /key=\{subjectVisualKey\}/);
+  assert.doesNotMatch(viewSource, /key=\{entry\.subject_id\} style=\{\{ '--legend-color'/);
 });
 
 test('full schedule tab exposes master, class-section and teacher views in RTL', () => {
@@ -131,11 +175,14 @@ test('invalid placements are visible as an alert and link back to repair without
 test('print mode supports large master sizes, A4 focused views and exact colors', () => {
   for (const size of ['A3', 'A2', 'A1']) assert.ok(viewSource.includes(size), size);
   assert.match(viewSource, /mode === 'master' \? pageSize : 'A4'/);
-  assert.match(viewSource, /ملاءمة مضغوطة لورقة واحدة/);
   assert.match(cssSource, /body\.timetable-print-mode \*/);
   assert.match(cssSource, /print-color-adjust: exact/);
   assert.match(cssSource, /position: sticky/);
   assert.match(cssSource, /overflow: auto/);
+  assert.match(cssSource, /margin: 0 !important/);
+  assert.ok(viewSource.includes('تنسيق مضغوط للطباعة'));
+  assert.ok(viewSource.includes('قد يوزّع المتصفح الجدول على أكثر من ورقة'));
+  assert.equal(viewSource.includes('ملاءمة مضغوطة لورقة واحدة'), false);
 });
 
 test('printed header includes school identity, logo, year and a subject legend', () => {
@@ -151,6 +198,24 @@ test('master timetable component is read-only and imports no mutation endpoint',
     assert.equal(viewSource.includes(mutation), false, mutation);
   }
   assert.match(viewSource, /getTimetableMasterGrid/);
+});
+
+test('school and academic-year response generations reject stale A to B to A repainting', () => {
+  assert.match(viewSource, /const generation = \+\+requestGenerationRef\.current/);
+  assert.match(viewSource, /const isCurrentSchool = captureSchoolRequest\(\)/);
+  assert.match(viewSource, /generation !== requestGenerationRef\.current \|\| !isCurrentSchool\(\)/);
+  assert.match(viewSource, /return \(\) => \{ requestGenerationRef\.current \+= 1; \}/);
+  assert.match(viewSource, /\[academicYearId, captureSchoolRequest, dataVersion, schoolId\]/);
+  for (const reset of ["setData(null)", "setPlacementKey('')", 'setTeacherId(null)', "setError('')"]) {
+    assert.ok(viewSource.includes(reset), reset);
+  }
+});
+
+test('all master columns share canonical school-year slots and breaks render once', () => {
+  assert.match(viewSource, /data\.days\.map\(\(day\) =>/);
+  assert.match(viewSource, /data\.slots\.filter\(\(slot\) => Number\(slot\.day_of_week\) === Number\(day\.day_of_week\)\)/);
+  assert.match(viewSource, /YearValue value=\{`\$\{slot\.start_time\}–\$\{slot\.end_time\}`\}/);
+  assert.match(viewSource, /colSpan=\{Math\.max\(1, placements\.length \+ 1\)\}/);
 });
 
 test('master endpoint is set-based and contains no row-loop database query', () => {
