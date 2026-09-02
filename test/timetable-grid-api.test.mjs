@@ -697,3 +697,104 @@ test('parent edits cannot silently invalidate scheduled entries', async () => {
   assert.equal(loadResponse.status, 400);
   assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
 });
+
+test('master-grid returns one normalized school schedule with canonical active dimensions', async () => {
+  const context = await fixture(); setup(context);
+  context.database.prepare(`INSERT INTO classes
+    (id, school_id, name, stage, order_index, status) VALUES (4,1,'Class Without Sections','ابتدائي',3,'active')`).run();
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody())).status, 201);
+
+  const beforeEntries = context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count;
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200);
+  const data = (await response.json()).data;
+  assert.deepEqual(data.school, { id: 1, name: 'School A', logo_url: null });
+  assert.deepEqual(data.academic_year, { id: 1, name: '2026-2027' });
+  assert.deepEqual(data.days.map((row) => row.day_of_week), [0, 1]);
+  assert.equal(data.slots.some((row) => row.slot_type === 'break'), true);
+  assert.equal(data.slots.some((row) => row.id === 7 || row.id === 8), false);
+  assert.deepEqual(data.classes.map((row) => row.id), [1, 2, 4]);
+  assert.deepEqual(data.sections.map((row) => row.id), [1, 2, 3]);
+  assert.equal(data.teachers.every((row) => row.role === 'teacher' && row.status === 'active'), true);
+  assert.equal(data.entries.length, 1);
+  assert.equal(data.entries[0].subject_id, 1);
+  assert.equal(data.invalid_entry_count, 0);
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, beforeEntries);
+});
+
+test('master-grid excludes invalid or historical placements and reports them for repair', async () => {
+  const context = await fixture(); setup(context);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody())).status, 201);
+  context.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run();
+
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200);
+  const data = (await response.json()).data;
+  assert.equal(data.entries.length, 0);
+  assert.equal(data.invalid_entry_count, 1);
+  assert.equal(data.invalid_entries[0].id > 0, true);
+  assert.equal(data.invalid_entries[0].reason, 'invalid');
+  assert.ok(data.invalid_entries[0].hard_conflicts.some((item) => item.code === 'inactive_slot'));
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
+});
+
+test('master-grid enforces academic RBAC, explicit admin targeting and tenant isolation', async () => {
+  const context = await fixture(); setup(context);
+  const path = '/api/timetable/master-grid?school_id=1&academic_year_id=1';
+  assert.equal((await api(context, context.tokens.owner, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.principal, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.vice, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.registrar, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.admin, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.admin, 'GET', '/api/timetable/master-grid?academic_year_id=1')).status, 400);
+  assert.equal((await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=2&academic_year_id=2')).status, 403);
+  assert.equal((await api(context, context.tokens.teacher, 'GET', path)).status, 403);
+  assert.equal((await api(context, context.tokens.accountant, 'GET', path)).status, 403);
+});
+
+test('master-grid rejects a cross-school academic year even for system admin', async () => {
+  const context = await fixture(); setup(context);
+  const response = await api(context, context.tokens.admin, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=2');
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, 'invalid_tenant_scope');
+});
+
+test('master-grid uses a constant bounded query count as timetable dimensions grow', async () => {
+  async function queryCount(large) {
+    const context = await fixture(); setup(context);
+    if (large) {
+      const insertClass = context.database.prepare(`INSERT INTO classes
+        (id, school_id, name, stage, order_index, status) VALUES (?,1,?,'ابتدائي',?,'active')`);
+      const insertSection = context.database.prepare(`INSERT INTO sections
+        (id, school_id, class_id, name, status) VALUES (?,1,?,?,'active')`);
+      const insertSubject = context.database.prepare(`INSERT INTO subjects
+        (id, school_id, class_id, section_id, name, order_index, status) VALUES (?,1,?,NULL,?,1,'active')`);
+      const insertTeacher = context.database.prepare(`INSERT INTO employees
+        (id, school_id, full_name, role, status) VALUES (?,1,?,'teacher','active')`);
+      const insertLoad = context.database.prepare(`INSERT INTO timetable_teaching_loads
+        (id, school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods, status)
+        VALUES (?,1,1,?,?,?,?,1,'active')`);
+      const insertEntry = context.database.prepare(`INSERT INTO timetable_entries
+        (id, school_id, academic_year_id, slot_id, teaching_load_id) VALUES (?,1,1,1,?)`);
+      for (let index = 0; index < 24; index += 1) {
+        const id = 100 + index;
+        insertClass.run(id, `Extra ${index}`, id);
+        insertSection.run(id, id, `Section ${index}`);
+        insertSubject.run(id, id, `Subject ${index}`);
+        insertTeacher.run(id, `Teacher ${index}`);
+        insertLoad.run(id, id, id, id, id);
+        insertEntry.run(id, id);
+      }
+    }
+    context.d1.prepareCount = 0;
+    const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+    assert.equal(response.status, 200);
+    await response.json();
+    return context.d1.prepareCount;
+  }
+  const small = await queryCount(false);
+  const large = await queryCount(true);
+  assert.equal(small, 15, `master-grid baseline query count: ${small}`);
+  assert.equal(large, small);
+  assert.ok(small <= 18, `query count: ${small}`);
+});

@@ -1,0 +1,202 @@
+.timetable-print-root {
+  direction: rtl;
+  border: 1px solid #d1d5db;
+  border-radius: 0.75rem;
+  background: #fff;
+  padding: 1rem;
+  color: #111827;
+}
+
+.timetable-print-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  border-bottom: 2px solid #1f2937;
+  padding-bottom: 0.75rem;
+}
+
+.timetable-print-school {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.timetable-print-school img {
+  width: 3.75rem;
+  height: 3.75rem;
+  object-fit: contain;
+}
+
+.timetable-print-school p,
+.timetable-print-school h2,
+.timetable-print-year { margin: 0; }
+.timetable-print-school p { font-size: 1.1rem; font-weight: 800; }
+.timetable-print-school h2 { margin-top: 0.2rem; font-size: 0.95rem; }
+.timetable-print-year { font-weight: 700; }
+
+.timetable-master-scroll {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid #d1d5db;
+}
+
+.timetable-master-table,
+.timetable-focused-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 0.78rem;
+}
+
+.timetable-master-table th,
+.timetable-master-table td,
+.timetable-focused-table th,
+.timetable-focused-table td {
+  border-inline-start: 1px solid #d1d5db;
+  border-block-end: 1px solid #d1d5db;
+  padding: 0.35rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.timetable-master-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #f3f4f6;
+  font-weight: 800;
+}
+
+.timetable-master-table .timetable-sticky-axis {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  width: 145px;
+  min-width: 145px;
+  background: #f9fafb;
+}
+
+.timetable-master-table thead .timetable-sticky-axis { z-index: 4; }
+.timetable-sticky-axis span,
+.timetable-focused-table tbody th span { display: block; font-weight: 800; }
+.timetable-sticky-axis bdi,
+.timetable-focused-table tbody th bdi { display: block; margin-top: 0.15rem; font-size: 0.68rem; color: #4b5563; }
+
+.timetable-day-row th {
+  background: #1e3a5f !important;
+  color: #fff;
+  text-align: right;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.85rem;
+}
+
+.timetable-break-row td {
+  background: #f3f4f6;
+  color: #374151;
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+
+.timetable-subject-card {
+  min-height: 3rem;
+  border: 1px solid var(--subject-border);
+  border-radius: 0.45rem;
+  background: var(--subject-bg);
+  padding: 0.3rem;
+  color: var(--subject-text);
+}
+
+.timetable-subject-card strong,
+.timetable-subject-card span,
+.timetable-subject-card small { display: block; }
+.timetable-subject-card span,
+.timetable-subject-card small { margin-top: 0.12rem; font-size: 0.68rem; }
+.timetable-subject-card small { font-weight: 700; }
+
+.timetable-focused-table { max-width: 900px; margin-inline: auto; }
+.timetable-focused-table thead th { background: #f3f4f6; font-weight: 800; }
+.timetable-focused-table th:first-child { width: 32%; }
+
+.timetable-subject-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.8rem;
+  margin-top: 0.9rem;
+  border-top: 1px solid #d1d5db;
+  padding-top: 0.65rem;
+  font-size: 0.72rem;
+}
+
+.timetable-subject-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
+.timetable-subject-legend i {
+  display: inline-block;
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 1px solid var(--legend-border);
+  border-radius: 0.2rem;
+  background: var(--legend-color);
+}
+
+.timetable-empty {
+  display: flex;
+  min-height: 9rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: #6b7280;
+  text-align: center;
+}
+
+@media print {
+  html,
+  body.timetable-print-mode {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+    direction: rtl !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body.timetable-print-mode * { visibility: hidden !important; }
+  body.timetable-print-mode .timetable-print-root,
+  body.timetable-print-mode .timetable-print-root * { visibility: visible !important; }
+  body.timetable-print-mode .timetable-print-root {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    box-sizing: border-box;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .timetable-master-scroll { overflow: visible; border: 0; }
+  .timetable-master-table { min-width: 0 !important; width: 100%; }
+  .timetable-master-table thead th,
+  .timetable-master-table .timetable-sticky-axis { position: static; }
+  .timetable-master-table thead { display: table-header-group; }
+  .timetable-master-table tr,
+  .timetable-focused-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .timetable-day-row { break-after: avoid; page-break-after: avoid; }
+
+  .timetable-fit-one-page .timetable-master-table { font-size: 6.5pt; }
+  .timetable-fit-one-page .timetable-master-table th,
+  .timetable-fit-one-page .timetable-master-table td { padding: 1.1mm; }
+  .timetable-fit-one-page .timetable-focused-table { font-size: 7.5pt; }
+  .timetable-fit-one-page .timetable-focused-table th,
+  .timetable-fit-one-page .timetable-focused-table td { padding: 0.8mm; }
+  .timetable-fit-one-page .timetable-subject-card { min-height: 0; padding: 0.7mm; }
+  .timetable-fit-one-page .timetable-print-header { margin-bottom: 2mm; padding-bottom: 2mm; }
+  .timetable-fit-one-page .timetable-print-school img { width: 12mm; height: 12mm; }
+  .timetable-print-placement,
+  .timetable-print-teacher { font-size: 9pt; }
+  .timetable-print-placement .timetable-print-header,
+  .timetable-print-teacher .timetable-print-header { margin-bottom: 3mm; }
+}

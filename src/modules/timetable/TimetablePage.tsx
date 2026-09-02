@@ -5,6 +5,7 @@ import {
   CalendarDays,
   CheckCircle2,
   Clock3,
+  LayoutGrid,
   Pencil,
   Plus,
   Save,
@@ -44,9 +45,10 @@ import {
 } from '../../lib/timetable';
 import type { Class, Section } from '../../types';
 import { TeacherAvailabilityTab } from './TeacherAvailabilityTab';
+import { MasterTimetableTab } from './MasterTimetableTab';
 import { TimetableGridTab } from './TimetableGridTab';
 
-type TabKey = 'grid' | 'week' | 'loads' | 'availability' | 'readiness';
+type TabKey = 'grid' | 'master' | 'week' | 'loads' | 'availability' | 'readiness';
 
 interface SubjectOption {
   id: number;
@@ -463,6 +465,7 @@ export default function TimetablePage() {
               <div className="flex flex-wrap gap-2 border-b border-gray-200">
                 {([
                   ['grid', 'الجدول الأسبوعي', CalendarDays],
+                  ['master', 'الجدول الكامل', LayoutGrid],
                   ['week', 'إعداد الأسبوع', Clock3],
                   ['loads', 'نصاب المواد والمدرسين', BookOpenCheck],
                   ['availability', 'توفر المدرسين والقيود', UserRoundCheck],
@@ -522,6 +525,15 @@ export default function TimetablePage() {
                   classes={classes}
                   sections={sections}
                   onChanged={reloadYearData}
+                />
+              )}
+
+              {!loading && tab === 'master' && schoolId != null && academicYearId != null && (
+                <MasterTimetableTab
+                  schoolId={schoolId}
+                  academicYearId={academicYearId}
+                  dataVersion={yearDataVersion}
+                  onOpenRepair={() => setTab('grid')}
                 />
               )}
 

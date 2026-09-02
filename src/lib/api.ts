@@ -23,6 +23,7 @@ import type {
   TimetableEntry,
   TimetableEntryNotice,
   TimetableGridData,
+  TimetableMasterGridData,
   TimetableReadinessSummary,
   TimetableSlot,
   TimetableTeacherAvailabilityMatrix,
@@ -291,6 +292,10 @@ export function getTimetableGrid(
   });
   if (sectionId != null) query.set('section_id', String(sectionId));
   return fetchApi<TimetableGridData>(`/api/timetable/grid?${query.toString()}`);
+}
+
+export function getTimetableMasterGrid(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableMasterGridData>(`/api/timetable/master-grid?${timetableQuery(schoolId, academicYearId)}`);
 }
 
 export function createTimetableEntry(data: {
