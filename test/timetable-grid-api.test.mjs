@@ -82,7 +82,9 @@ async function fixture() {
       (2, NULL, 'System Admin', 'admin@example.test', 1, 'active', 1),
       (3, 1, 'Teacher User', 'teacher@example.test', 5, 'active', 1),
       (4, 1, 'Registrar User', 'registrar@example.test', 7, 'active', 1),
-      (5, 1, 'Accountant User', 'accountant@example.test', 6, 'active', 1);
+      (5, 1, 'Accountant User', 'accountant@example.test', 6, 'active', 1),
+      (6, 1, 'Principal User', 'principal@example.test', 3, 'active', 1),
+      (7, 1, 'Vice Principal User', 'vice@example.test', 4, 'active', 1);
   `);
   const tokens = {
     owner: await signJWT({ email: 'owner@example.test', auth_version: 1 }, secret),
@@ -90,6 +92,8 @@ async function fixture() {
     teacher: await signJWT({ email: 'teacher@example.test', auth_version: 1 }, secret),
     registrar: await signJWT({ email: 'registrar@example.test', auth_version: 1 }, secret),
     accountant: await signJWT({ email: 'accountant@example.test', auth_version: 1 }, secret),
+    principal: await signJWT({ email: 'principal@example.test', auth_version: 1 }, secret),
+    vice: await signJWT({ email: 'vice@example.test', auth_version: 1 }, secret),
   };
   const d1 = new LocalD1(database);
   return { database, d1, env: { DB: d1, JWT_SECRET: secret, APP_ENV: 'test' }, tokens };
@@ -157,6 +161,46 @@ test('grid loading uses a bounded constant number of D1 queries', async () => {
   assert.equal(response.status, 200);
   assert.ok(context.d1.prepareCount <= 14, `query count: ${context.d1.prepareCount}`);
   assert.equal((await response.json()).data.historical_entries.length, 1);
+});
+
+test('grid and readiness query counts stay exactly constant as scheduling rows grow', async () => {
+  async function counts(large) {
+    const context = await fixture(); setup(context);
+    if (large) {
+      const insertClass = context.database.prepare(`INSERT INTO classes
+        (id, school_id, name, stage, order_index, status) VALUES (?,1,?,'ابتدائي',?,'active')`);
+      const insertSection = context.database.prepare(`INSERT INTO sections
+        (id, school_id, class_id, name, status) VALUES (?,1,?,?,'active')`);
+      const insertSubject = context.database.prepare(`INSERT INTO subjects
+        (id, school_id, class_id, section_id, name, status) VALUES (?,1,?,NULL,?,'active')`);
+      const insertEmployee = context.database.prepare(`INSERT INTO employees
+        (id, school_id, full_name, role, status) VALUES (?,1,?,'teacher','active')`);
+      const insertLoad = context.database.prepare(`INSERT INTO timetable_teaching_loads
+        (id, school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods, status)
+        VALUES (?,1,1,?,?,?,?,1,'active')`);
+      const insertEntry = context.database.prepare(`INSERT INTO timetable_entries
+        (school_id, academic_year_id, slot_id, teaching_load_id) VALUES (1,1,1,?)`);
+      for (let offset = 0; offset < 24; offset += 1) {
+        const id = 100 + offset;
+        insertClass.run(id, `Class ${id}`, id);
+        insertSection.run(id, id, `Section ${id}`);
+        insertSubject.run(id, id, `Subject ${id}`);
+        insertEmployee.run(id, `Teacher ${id}`);
+        insertLoad.run(id, id, id, id, id);
+        insertEntry.run(id);
+      }
+    }
+    context.d1.prepareCount = 0;
+    assert.equal((await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).status, 200);
+    const grid = context.d1.prepareCount;
+    context.d1.prepareCount = 0;
+    assert.equal((await api(context, context.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1')).status, 200);
+    return { grid, readiness: context.d1.prepareCount };
+  }
+  const small = await counts(false);
+  const large = await counts(true);
+  assert.deepEqual(small, { grid: 12, readiness: 11 });
+  assert.deepEqual(large, small);
 });
 
 test('disabled-slot entries stay visible for repair, reject new placement, and support move or delete', async () => {
@@ -289,6 +333,14 @@ test('owner and registrar can create a schedule entry and readiness reports prog
     const data = (await readiness.json()).data;
     assert.equal(data.total_scheduled_periods, 1);
     assert.ok(data.total_unscheduled_periods > 0);
+  }
+});
+
+test('principal and vice principal retain timetable management access', async () => {
+  for (const role of ['principal', 'vice']) {
+    const context = await fixture(); setup(context);
+    const response = await api(context, context.tokens[role], 'POST', '/api/timetable/entries', createBody());
+    assert.equal(response.status, 201, role);
   }
 });
 
@@ -511,6 +563,62 @@ test('grid returns invalid_teaching_load when a scheduled teacher is archived la
   const savedEntry = (await response.json()).data.entries[0];
   assert.ok(savedEntry.hard_conflicts.some((conflict) => conflict.code === 'invalid_teaching_load'));
   assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
+});
+
+test('inactive load with a saved entry remains visible as invalid demand in grid and readiness', async () => {
+  const context = await fixture(); setup(context);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 1 }))).status, 201);
+  context.database.prepare("UPDATE timetable_teaching_loads SET status = 'inactive' WHERE id = 1").run();
+
+  const gridResponse = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
+  assert.equal(gridResponse.status, 200);
+  const grid = (await gridResponse.json()).data;
+  const load = grid.loads.find((item) => item.id === 1);
+  assert.equal(load.status, 'inactive');
+  assert.equal(load.total_placements, 1);
+  assert.equal(load.scheduled_periods, 0);
+  assert.equal(load.invalid_placements, 1);
+  assert.equal(load.remaining_periods, 4);
+  assert.ok(grid.entries[0].hard_conflicts.some((item) => item.code === 'invalid_teaching_load'));
+
+  const readinessResponse = await api(context, context.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1');
+  assert.equal(readinessResponse.status, 200);
+  const readiness = (await readinessResponse.json()).data;
+  assert.equal(readiness.total_required_periods, 12);
+  assert.equal(readiness.total_scheduled_periods, 0);
+  assert.equal(readiness.total_unscheduled_periods, 12);
+  assert.equal(readiness.invalid_reference_count, 1);
+  assert.equal(readiness.load_progress.find((item) => item.teaching_load_id === 1).remaining_periods, 4);
+  assert.ok(readiness.entry_issues[0].hard_conflicts.some((item) => item.code === 'invalid_teaching_load'));
+  assert.equal(readiness.schedule_ready, false);
+});
+
+test('stale client assumptions are rejected by current server state without partial writes', async () => {
+  const collision = await fixture(); setup(collision);
+  assert.equal((await api(collision, collision.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).status, 200);
+  assert.equal((await api(collision, collision.tokens.owner, 'POST', '/api/timetable/entries', createBody())).status, 201);
+  const staleCollision = await api(collision, collision.tokens.owner, 'POST', '/api/timetable/entries', createBody({ teaching_load_id: 2 }));
+  assert.equal(staleCollision.status, 409);
+  assert.equal((await staleCollision.json()).code, 'class_section_collision');
+  assert.equal(collision.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
+
+  const availability = await fixture(); setup(availability);
+  assert.equal((await api(availability, availability.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).status, 200);
+  availability.database.exec(`INSERT INTO timetable_teacher_availability
+    (school_id, academic_year_id, employee_id, slot_id, status) VALUES (1,1,1,1,'unavailable')`);
+  const staleAvailability = await api(availability, availability.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  assert.equal(staleAvailability.status, 409);
+  assert.equal((await staleAvailability.json()).code, 'teacher_unavailable');
+  assert.equal(availability.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 0);
+
+  const weekly = await fixture(); setup(weekly);
+  weekly.database.prepare('UPDATE timetable_teaching_loads SET weekly_periods = 1 WHERE id = 1').run();
+  assert.equal((await api(weekly, weekly.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).status, 200);
+  assert.equal((await api(weekly, weekly.tokens.owner, 'POST', '/api/timetable/entries', createBody())).status, 201);
+  const staleWeekly = await api(weekly, weekly.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2 }));
+  assert.equal(staleWeekly.status, 409);
+  assert.equal((await staleWeekly.json()).code, 'weekly_periods_exceeded');
+  assert.equal(weekly.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
 });
 
 test('grid returns a later hard daily constraint violation for existing entries', async () => {

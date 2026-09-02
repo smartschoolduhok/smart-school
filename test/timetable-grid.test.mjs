@@ -121,6 +121,21 @@ test('0025 creates the empty scoped entries table, indexes, foreign keys and tri
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 0);
 });
 
+test('0025 scoped parent and collision lookups use the existing composite indexes', () => {
+  const database = fixture();
+  const slotPlan = database.prepare(`EXPLAIN QUERY PLAN
+    SELECT 1 FROM timetable_entries
+    WHERE school_id = ? AND academic_year_id = ? AND slot_id = ?`).all(1, 1, 1);
+  const loadPlan = database.prepare(`EXPLAIN QUERY PLAN
+    SELECT 1 FROM timetable_entries
+    WHERE school_id = ? AND academic_year_id = ? AND teaching_load_id = ?`).all(1, 1, 1);
+  assert.ok(slotPlan.some((row) => String(row.detail).includes('idx_timetable_entries_scope_slot')));
+  assert.ok(loadPlan.some((row) => String(row.detail).includes('idx_timetable_entries_scope_load')));
+  const source = migration('0025_timetable_entries.sql');
+  assert.match(source, /WHERE school_id = OLD\.school_id\s+AND academic_year_id = OLD\.academic_year_id\s+AND slot_id = OLD\.id/);
+  assert.match(source, /WHERE school_id = OLD\.school_id\s+AND academic_year_id = OLD\.academic_year_id\s+AND teaching_load_id = OLD\.id/);
+});
+
 test('same section cannot receive two entries in the same slot', () => {
   const database = fixture();
   const [slotId] = simpleWeek(database);
@@ -423,6 +438,32 @@ test('readiness reports required, scheduled and remaining demand without erasing
   assert.equal(summary.total_scheduled_periods, 1);
   assert.equal(summary.total_unscheduled_periods, 2);
   assert.equal(summary.missing_teacher_count, 1);
+  assert.equal(summary.ready, false);
+  assert.equal(summary.schedule_ready, false);
+});
+
+test('readiness preserves demand owned by an inactive load until its saved placement is repaired', () => {
+  const context = pureContext();
+  context.loads[0].status = 'inactive';
+  context.entries = [{ id: 1, school_id: 1, academic_year_id: 1, slot_id: 1, teaching_load_id: 1 }];
+  const summary = buildTimetableReadiness({
+    ...context,
+    placements: [{ class_id: 1, class_name: 'Class', section_id: 1, section_name: 'A' }],
+    subjects: [{ id: 1, class_id: 1, section_id: null, name: 'Math', status: 'active' }],
+  });
+  assert.equal(summary.total_required_periods, 3);
+  assert.equal(summary.total_scheduled_periods, 0);
+  assert.equal(summary.total_unscheduled_periods, 3);
+  assert.equal(summary.invalid_reference_count, 1);
+  assert.deepEqual(summary.load_progress[0], {
+    teaching_load_id: 1,
+    subject_name: 'Math',
+    employee_name: 'Teacher',
+    required_periods: 3,
+    scheduled_periods: 0,
+    remaining_periods: 3,
+  });
+  assert.ok(summary.entry_issues[0].hard_conflicts.some((item) => item.code === 'invalid_teaching_load'));
   assert.equal(summary.ready, false);
   assert.equal(summary.schedule_ready, false);
 });

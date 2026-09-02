@@ -2506,11 +2506,14 @@ app.get('/api/timetable/grid', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
         ? load.section_id == null
         : load.section_id == null || Number(load.section_id) === validation.value.sectionId)
     ))
-    const relevantLoads = scopedLoads.filter((load) => load.status === 'active')
     const scopedLoadIds = new Set(scopedLoads.map((load) => Number(load.id)))
+    const scopedEntries = context.entries.filter((entry) => scopedLoadIds.has(Number(entry.teaching_load_id)))
+    const placedLoadIds = new Set(scopedEntries.map((entry) => Number(entry.teaching_load_id)))
+    const relevantLoads = scopedLoads.filter((load) => (
+      load.status === 'active' || placedLoadIds.has(Number(load.id))
+    ))
     const activeLessonSlotIds = new Set(visibleSlots.filter((slot) => slot.slot_type === 'lesson').map((slot) => Number(slot.id)))
-    const evaluatedEntries = context.entries
-      .filter((entry) => scopedLoadIds.has(Number(entry.teaching_load_id)))
+    const evaluatedEntries = scopedEntries
       .map((entry) => {
         const load = scopedLoads.find((item) => Number(item.id) === Number(entry.teaching_load_id))!
         const slot = context.slots.find((item) => Number(item.id) === Number(entry.slot_id)) || null

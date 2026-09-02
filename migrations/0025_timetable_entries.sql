@@ -27,7 +27,12 @@ CREATE TRIGGER IF NOT EXISTS trg_timetable_slots_preserve_entries
 BEFORE UPDATE OF school_id, academic_year_id, day_of_week, slot_index,
   slot_type, start_time, end_time
 ON timetable_slots
-WHEN EXISTS (SELECT 1 FROM timetable_entries WHERE slot_id = OLD.id)
+WHEN EXISTS (
+  SELECT 1 FROM timetable_entries
+  WHERE school_id = OLD.school_id
+    AND academic_year_id = OLD.academic_year_id
+    AND slot_id = OLD.id
+)
 AND (
   NEW.school_id != OLD.school_id
   OR NEW.academic_year_id != OLD.academic_year_id
@@ -44,7 +49,12 @@ END;
 CREATE TRIGGER IF NOT EXISTS trg_timetable_loads_preserve_entries
 BEFORE UPDATE OF school_id, academic_year_id, class_id, section_id, subject_id, employee_id
 ON timetable_teaching_loads
-WHEN EXISTS (SELECT 1 FROM timetable_entries WHERE teaching_load_id = OLD.id)
+WHEN EXISTS (
+  SELECT 1 FROM timetable_entries
+  WHERE school_id = OLD.school_id
+    AND academic_year_id = OLD.academic_year_id
+    AND teaching_load_id = OLD.id
+)
 AND (
   NEW.school_id != OLD.school_id
   OR NEW.academic_year_id != OLD.academic_year_id
@@ -60,7 +70,10 @@ END;
 CREATE TRIGGER IF NOT EXISTS trg_timetable_loads_preserve_weekly_periods
 BEFORE UPDATE OF weekly_periods ON timetable_teaching_loads
 WHEN NEW.weekly_periods < (
-  SELECT COUNT(*) FROM timetable_entries WHERE teaching_load_id = OLD.id
+  SELECT COUNT(*) FROM timetable_entries
+  WHERE school_id = OLD.school_id
+    AND academic_year_id = OLD.academic_year_id
+    AND teaching_load_id = OLD.id
 )
 BEGIN
   SELECT RAISE(ABORT, 'timetable load weekly periods below scheduled entries');
@@ -175,7 +188,9 @@ BEGIN
       ON day.school_id = slot.school_id
       AND day.academic_year_id = slot.academic_year_id
       AND day.day_of_week = slot.day_of_week
-    WHERE entry.teaching_load_id = NEW.teaching_load_id
+    WHERE entry.school_id = NEW.school_id
+      AND entry.academic_year_id = NEW.academic_year_id
+      AND entry.teaching_load_id = NEW.teaching_load_id
       AND slot.slot_type = 'lesson'
       AND slot.is_active = 1
       AND day.is_active = 1
@@ -207,6 +222,8 @@ BEGIN
     JOIN timetable_teaching_loads existing_load ON existing_load.id = existing_entry.teaching_load_id
     JOIN timetable_teaching_loads new_load ON new_load.id = NEW.teaching_load_id
     WHERE existing_entry.slot_id = NEW.slot_id
+      AND existing_entry.school_id = NEW.school_id
+      AND existing_entry.academic_year_id = NEW.academic_year_id
       AND new_load.employee_id IS NOT NULL
       AND existing_load.employee_id = new_load.employee_id
   );
@@ -322,7 +339,9 @@ BEGIN
                        SELECT 1
                        FROM timetable_entries entry
                        JOIN timetable_teaching_loads load ON load.id = entry.teaching_load_id
-                       WHERE entry.slot_id = slot.id
+                       WHERE entry.school_id = NEW.school_id
+                         AND entry.academic_year_id = NEW.academic_year_id
+                         AND entry.slot_id = slot.id
                          AND load.employee_id = new_load.employee_id
                      )
                    ) THEN 1 ELSE 0
@@ -464,7 +483,9 @@ BEGIN
       ON day.school_id = slot.school_id
       AND day.academic_year_id = slot.academic_year_id
       AND day.day_of_week = slot.day_of_week
-    WHERE entry.teaching_load_id = NEW.teaching_load_id
+    WHERE entry.school_id = NEW.school_id
+      AND entry.academic_year_id = NEW.academic_year_id
+      AND entry.teaching_load_id = NEW.teaching_load_id
       AND entry.id != OLD.id
       AND slot.slot_type = 'lesson'
       AND slot.is_active = 1
@@ -499,6 +520,8 @@ BEGIN
     JOIN timetable_teaching_loads new_load ON new_load.id = NEW.teaching_load_id
     WHERE existing_entry.id != OLD.id
       AND existing_entry.slot_id = NEW.slot_id
+      AND existing_entry.school_id = NEW.school_id
+      AND existing_entry.academic_year_id = NEW.academic_year_id
       AND new_load.employee_id IS NOT NULL
       AND existing_load.employee_id = new_load.employee_id
   );
@@ -617,7 +640,9 @@ BEGIN
                        SELECT 1
                        FROM timetable_entries entry
                        JOIN timetable_teaching_loads load ON load.id = entry.teaching_load_id
-                       WHERE entry.id != OLD.id
+                       WHERE entry.school_id = NEW.school_id
+                         AND entry.academic_year_id = NEW.academic_year_id
+                         AND entry.id != OLD.id
                          AND entry.slot_id = slot.id
                          AND load.employee_id = new_load.employee_id
                      )

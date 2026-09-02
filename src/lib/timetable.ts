@@ -899,15 +899,27 @@ export function buildTimetableReadiness(input: {
   teacherConstraints?: TimetableTeacherConstraints[];
 }): TimetableReadinessSummary {
   const capacity = calculateWeeklyCapacity(input.days, input.slots);
+  const entries = input.entries || [];
+  const placedLoadIds = new Set(entries.map((entry) => Number(entry.teaching_load_id)));
   const activeLoads = input.loads.filter((load) => load.status === 'active');
-  const invalidAcademicLoadIds = new Set(activeLoads.filter(loadHasInvalidAcademicReference).map((load) => load.id));
-  const invalidTeacherLoadIds = new Set(activeLoads.filter(loadHasInvalidTeacherReference).map((load) => load.id));
-  const invalidLoadIds = new Set([...invalidAcademicLoadIds, ...invalidTeacherLoadIds]);
-  const academicallyValidLoads = activeLoads.filter((load) => !invalidAcademicLoadIds.has(load.id));
-  const missingTeacherLoads = academicallyValidLoads.filter((load) => load.employee_id == null);
+  // An inactive load normally leaves current demand. If it still owns a saved
+  // placement, retain that demand until the historical placement is repaired
+  // or deleted instead of silently making required periods disappear.
+  const placedInactiveLoads = input.loads.filter((load) => (
+    load.status !== 'active' && placedLoadIds.has(Number(load.id))
+  ));
+  const demandLoads = [...activeLoads, ...placedInactiveLoads];
+  const inactivePlacedLoadIds = new Set(placedInactiveLoads.map((load) => Number(load.id)));
+  const invalidAcademicLoadIds = new Set(demandLoads.filter(loadHasInvalidAcademicReference).map((load) => Number(load.id)));
+  const invalidTeacherLoadIds = new Set(demandLoads.filter(loadHasInvalidTeacherReference).map((load) => Number(load.id)));
+  const invalidLoadIds = new Set([...invalidAcademicLoadIds, ...invalidTeacherLoadIds, ...inactivePlacedLoadIds]);
+  const academicallyValidLoads = demandLoads.filter((load) => !invalidAcademicLoadIds.has(Number(load.id)));
+  const missingTeacherLoads = activeLoads.filter((load) => (
+    !invalidAcademicLoadIds.has(Number(load.id)) && load.employee_id == null
+  ));
   const teacherMap = new Map<number, TimetableTeacherWorkload>();
   for (const load of academicallyValidLoads) {
-    if (load.employee_id == null || invalidTeacherLoadIds.has(load.id)) continue;
+    if (load.status !== 'active' || load.employee_id == null || invalidTeacherLoadIds.has(Number(load.id))) continue;
     const current = teacherMap.get(load.employee_id) || {
       employee_id: load.employee_id,
       employee_name: load.employee_name || 'موظف غير معروف',
@@ -919,7 +931,6 @@ export function buildTimetableReadiness(input: {
     teacherMap.set(load.employee_id, current);
   }
 
-  const entries = input.entries || [];
   const entryIssues: TimetableEntryIssue[] = [];
   const validEntryIds = new Set<number>();
   for (const entry of entries) {
@@ -980,9 +991,11 @@ export function buildTimetableReadiness(input: {
       : difference < 0
         ? 'over_capacity'
         : difference === 0 ? 'exact' : 'unallocated';
-    const placementMissingTeachers = placementLoads.filter((load) => load.employee_id == null).map((load) => load.id);
-    const placementInvalid = activeLoads.filter((load) => (
-      invalidLoadIds.has(load.id)
+    const placementMissingTeachers = placementLoads.filter((load) => (
+      load.status === 'active' && load.employee_id == null
+    )).map((load) => load.id);
+    const placementInvalid = demandLoads.filter((load) => (
+      invalidLoadIds.has(Number(load.id))
       && load.class_id === placement.class_id
       && load.section_id === placement.section_id
     )).map((load) => load.id);
@@ -1040,7 +1053,7 @@ export function buildTimetableReadiness(input: {
     lesson_slots: capacity.lessonSlots,
     break_slots: capacity.breakSlots,
     total_required_periods: academicallyValidLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0),
-    total_assignments: activeLoads.length,
+    total_assignments: demandLoads.length,
     active_teachers: teacherWorkloads.length,
     missing_teacher_count: missingTeacherLoads.length,
     invalid_reference_count: invalidLoadIds.size,

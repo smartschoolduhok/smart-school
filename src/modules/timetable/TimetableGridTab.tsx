@@ -123,6 +123,7 @@ export function TimetableGridTab({
     setWarnings([]);
     setError('');
     setLoading(false);
+    setSaving(false);
     if (selectionReady) void loadGrid();
   }, [loadGrid, selectionReady]);
 
@@ -134,6 +135,8 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    setError('');
+    setSaving(false);
   }
 
   function changeSection(value: string) {
@@ -143,10 +146,21 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    setError('');
+    setSaving(false);
   }
 
-  async function refreshAfterMutation(expectedScope: string, notices: TimetableEntryNotice[] = []) {
-    if (currentScopeRef.current !== expectedScope) return;
+  function mutationScopeIsCurrent(expectedScope: string, expectedGeneration: number) {
+    return currentScopeRef.current === expectedScope
+      && requestGenerationRef.current === expectedGeneration;
+  }
+
+  async function refreshAfterMutation(
+    expectedScope: string,
+    expectedGeneration: number,
+    notices: TimetableEntryNotice[] = [],
+  ) {
+    if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setWarnings(notices);
     await Promise.all([loadGrid(), onChanged()]);
   }
@@ -154,6 +168,7 @@ export function TimetableGridTab({
   async function scheduleLoad(teachingLoadId: number) {
     if (!scheduleDialog) return;
     const expectedScope = currentScopeRef.current;
+    const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
     setError('');
     const response = await createTimetableEntry({
@@ -162,19 +177,20 @@ export function TimetableGridTab({
       slot_id: scheduleDialog.slotId,
       teaching_load_id: teachingLoadId,
     });
-    if (currentScopeRef.current !== expectedScope) return;
+    if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setSaving(false);
     if (response.error) {
       setError(response.error);
       return;
     }
     setScheduleDialog(null);
-    await refreshAfterMutation(expectedScope, response.meta?.warnings || []);
+    await refreshAfterMutation(expectedScope, expectedGeneration, response.meta?.warnings || []);
   }
 
   async function moveEntry(slotId: number) {
     if (!moveDialog) return;
     const expectedScope = currentScopeRef.current;
+    const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
     setError('');
     const response = await moveTimetableEntry(moveDialog.entry.id, {
@@ -182,29 +198,30 @@ export function TimetableGridTab({
       academic_year_id: academicYearId,
       slot_id: slotId,
     });
-    if (currentScopeRef.current !== expectedScope) return;
+    if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setSaving(false);
     if (response.error) {
       setError(response.error);
       return;
     }
     setMoveDialog(null);
-    await refreshAfterMutation(expectedScope, response.meta?.warnings || []);
+    await refreshAfterMutation(expectedScope, expectedGeneration, response.meta?.warnings || []);
   }
 
   async function removeEntry(entry: TimetableGridEntry) {
     if (!window.confirm(`هل تريد حذف حصة ${entry.subject_name} من الجدول؟`)) return;
     const expectedScope = currentScopeRef.current;
+    const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
     setError('');
     const response = await deleteTimetableEntry(entry.id, schoolId, academicYearId);
-    if (currentScopeRef.current !== expectedScope) return;
+    if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setSaving(false);
     if (response.error) {
       setError(response.error);
       return;
     }
-    await refreshAfterMutation(expectedScope);
+    await refreshAfterMutation(expectedScope, expectedGeneration);
   }
 
   const orderedDays = useMemo(() => (
@@ -214,6 +231,7 @@ export function TimetableGridTab({
     [...new Set((grid?.slots || []).map((slot) => slot.slot_index))].sort((left, right) => left - right)
   ), [grid]);
   const lessonSlots = useMemo(() => (grid?.slots || []).filter((slot) => slot.slot_type === 'lesson'), [grid]);
+  const schedulableLoads = useMemo(() => (grid?.loads || []).filter((load) => load.status === 'active'), [grid]);
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -359,8 +377,8 @@ export function TimetableGridTab({
             <div className="flex items-center justify-between"><h2 className="font-bold">اختيار نصاب الحصة</h2><button type="button" onClick={() => setScheduleDialog(null)}><X /></button></div>
             <p className="mt-1 text-sm text-gray-500">{slotLabel(grid.slots.find((slot) => slot.id === scheduleDialog.slotId)!)}</p>
             <div className="mt-4 max-h-96 space-y-2 overflow-y-auto">
-              {grid.loads.length === 0 && <p className="p-6 text-center text-gray-500">لا توجد أنصبة فعالة لهذه المجموعة.</p>}
-              {grid.loads.map((load) => (
+              {schedulableLoads.length === 0 && <p className="p-6 text-center text-gray-500">لا توجد أنصبة فعالة لهذه المجموعة.</p>}
+              {schedulableLoads.map((load) => (
                 <button key={load.id} type="button" disabled={saving || load.remaining_periods <= 0} onClick={() => void scheduleLoad(load.id)} className="flex w-full items-center justify-between rounded-lg border border-gray-200 p-3 text-right hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50">
                   <span><span className="block font-semibold">{load.subject_name}</span><span className="text-xs text-gray-500">{load.employee_name || 'بدون مدرس'}</span></span>
                   <span className="text-xs">المتبقي <bdi dir="ltr">{load.remaining_periods}</bdi></span>

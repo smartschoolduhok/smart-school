@@ -82,8 +82,21 @@ test('weekly grid uses explicit move/delete controls and server APIs', () => {
 test('weekly grid ignores stale school, year, class and section responses', () => {
   assert.match(gridSource, /requestGenerationRef\.current \+= 1/);
   assert.match(gridSource, /requestGeneration !== requestGenerationRef\.current/);
-  assert.match(gridSource, /currentScopeRef\.current !== expectedScope/);
+  assert.match(gridSource, /mutationScopeIsCurrent\(expectedScope, expectedGeneration\)/);
+  assert.match(gridSource, /requestGenerationRef\.current === expectedGeneration/);
   for (const reset of [/setGrid\(null\)/, /setScheduleDialog\(null\)/, /setMoveDialog\(null\)/, /setSelectedSectionId\(null\)/]) assert.match(gridSource, reset);
+  const classChange = gridSource.slice(gridSource.indexOf('function changeClass'), gridSource.indexOf('function changeSection'));
+  const sectionChange = gridSource.slice(gridSource.indexOf('function changeSection'), gridSource.indexOf('function mutationScopeIsCurrent'));
+  assert.match(classChange, /setSaving\(false\)/);
+  assert.match(sectionChange, /setSaving\(false\)/);
+});
+
+test('inactive historical loads remain visible for repair but are never new schedule choices', () => {
+  assert.match(gridSource, /load\.status === 'active'/);
+  assert.match(gridSource, /const schedulableLoads/);
+  const scheduleDialog = gridSource.slice(gridSource.indexOf('{scheduleDialog && grid'));
+  assert.match(scheduleDialog, /schedulableLoads\.map/);
+  assert.doesNotMatch(scheduleDialog, /grid\.loads\.map/);
 });
 
 test('readiness presents scheduled, remaining and hard-conflict totals separately', () => {
