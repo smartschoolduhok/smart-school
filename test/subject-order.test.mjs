@@ -218,7 +218,7 @@ test('new subjects append to the active class order while explicit import orderi
 
 test('normal subject edits preserve order and class moves append unless an explicit order is supplied', () => {
   const route = routeBlock("app.put('/api/subjects/:id'", "app.put('/api/subjects/:id/archive'");
-  assert.match(route, /SELECT school_id, class_id, order_index, status FROM subjects/);
+  assert.match(route, /SELECT school_id, class_id, order_index, status, religious_track FROM subjects/);
   assert.match(route, /let nextOrderIndex = explicitOrderIndex \?\? existing\.order_index/);
   assert.match(route, /nextClassId !== existing\.class_id/);
   assert.match(route, /COALESCE\(MAX\(order_index\), 0\) \+ 1 AS next_order_index/);

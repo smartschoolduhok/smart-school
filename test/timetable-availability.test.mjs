@@ -42,6 +42,7 @@ function createFixture() {
   `);
   database.exec(migration('0023_timetable_foundation.sql'));
   database.exec(migration('0024_teacher_timetable_constraints.sql'));
+  database.exec(migration('0025_timetable_entries.sql'));
   return database;
 }
 
