@@ -154,6 +154,8 @@ import {
   buildTimetableReadiness,
   evaluateTimetableEntryPlacement,
   isTimetableConstraintError,
+  loadHasInvalidAcademicReference,
+  loadHasInvalidTeacherReference,
   validateTeacherAvailabilityDayInput,
   validateTeacherAvailabilityOverrideInput,
   validateTeacherAvailabilityScopeInput,
@@ -168,6 +170,11 @@ import {
   type TimetableEntryHardConflictCode,
   type TimetableGridData,
   type TimetableGridEntry,
+  type TimetableMasterClass,
+  type TimetableMasterGridData,
+  type TimetableMasterSection,
+  type TimetableMasterSubject,
+  type TimetableMasterTeacher,
   type TimetableEntryNotice,
   type TimetablePlacement,
   type TimetableSlot,
@@ -716,15 +723,15 @@ async function loadTimetableSchedulingContext(
              employee.full_name AS employee_name, employee.status AS employee_status,
              employee.school_id AS employee_school_id, employee.role AS employee_role
       FROM timetable_teaching_loads load
-      LEFT JOIN classes class ON class.id = load.class_id
+      LEFT JOIN classes class ON class.id = load.class_id AND class.school_id = load.school_id
       LEFT JOIN (
         SELECT school_id, class_id, COUNT(*) AS active_section_count
         FROM sections WHERE status = 'active'
         GROUP BY school_id, class_id
       ) class_sections ON class_sections.school_id = load.school_id AND class_sections.class_id = load.class_id
-      LEFT JOIN sections section ON section.id = load.section_id
-      LEFT JOIN subjects subject ON subject.id = load.subject_id
-      LEFT JOIN employees employee ON employee.id = load.employee_id
+      LEFT JOIN sections section ON section.id = load.section_id AND section.school_id = load.school_id
+      LEFT JOIN subjects subject ON subject.id = load.subject_id AND subject.school_id = load.school_id
+      LEFT JOIN employees employee ON employee.id = load.employee_id AND employee.school_id = load.school_id
       WHERE load.school_id = ? AND load.academic_year_id = ?
       ORDER BY load.class_id, load.section_id, load.subject_id, load.id
     `).bind(schoolId, academicYearId).all<TimetableTeachingLoad>(),
@@ -820,6 +827,7 @@ function timetableGridEntry(
 ): TimetableGridEntry {
   return {
     ...entry,
+    subject_id: Number(load.subject_id),
     subject_name: load.subject_name || 'مادة غير معروفة',
     class_id: Number(load.class_id),
     class_name: load.class_name || 'صف غير معروف',
@@ -2473,6 +2481,146 @@ app.get('/api/timetable/teacher-workloads', requireSameSchoolOrAdmin(), requireR
     return c.json({ data: summary.teacher_workloads })
   } catch {
     return c.json({ error: 'فشل في حساب إجمالي أنصبة المدرسين' }, 500)
+  }
+})
+
+app.get('/api/timetable/master-grid', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const academicYearId = Number(c.req.query('academic_year_id'))
+  if (schoolId == null) {
+    return c.json({ error: 'يجب تحديد مدرسة لعرض الجدول الكامل', code: 'invalid_tenant_scope' }, 400)
+  }
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0) {
+    return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
+  }
+  const yearValidation = await validateTimetableAcademicYear(c.env.DB, schoolId, academicYearId)
+  if (!yearValidation.ok) {
+    return c.json({ error: yearValidation.error, code: yearValidation.code }, yearValidation.status)
+  }
+  try {
+    const [school, academicYear, context, classesResult, sectionsResult, subjectsResult, teachersResult] = await Promise.all([
+      c.env.DB.prepare(`
+        SELECT id, name, logo_url FROM schools
+        WHERE id = ? AND status = 'active'
+      `).bind(schoolId).first<{ id: number; name: string; logo_url: string | null }>(),
+      c.env.DB.prepare(`
+        SELECT id, name FROM academic_years
+        WHERE id = ? AND school_id = ?
+      `).bind(academicYearId, schoolId).first<{ id: number; name: string }>(),
+      loadTimetableSchedulingContext(c.env.DB, schoolId, academicYearId),
+      c.env.DB.prepare(`
+        SELECT id, school_id, name, stage, order_index, status
+        FROM classes
+        WHERE school_id = ? AND status = 'active'
+        ORDER BY order_index, id
+      `).bind(schoolId).all<TimetableMasterClass>(),
+      c.env.DB.prepare(`
+        SELECT section.id, section.school_id, section.class_id, section.name, section.status
+        FROM sections section
+        JOIN classes class ON class.id = section.class_id AND class.school_id = section.school_id
+        WHERE section.school_id = ? AND section.status = 'active' AND class.status = 'active'
+        ORDER BY class.order_index, class.id, section.id
+      `).bind(schoolId).all<TimetableMasterSection>(),
+      c.env.DB.prepare(`
+        SELECT subject.id, subject.school_id, subject.class_id, subject.section_id,
+               subject.name, subject.status
+        FROM subjects subject
+        JOIN classes class
+          ON class.id = subject.class_id
+         AND class.school_id = subject.school_id
+         AND class.status = 'active'
+        LEFT JOIN sections section ON section.id = subject.section_id
+        WHERE subject.school_id = ?
+          AND subject.status = 'active'
+          AND (subject.section_id IS NULL OR (
+            section.school_id = subject.school_id
+            AND section.class_id = subject.class_id
+            AND section.status = 'active'
+          ))
+        ORDER BY subject.class_id, subject.order_index, subject.id
+      `).bind(schoolId).all<TimetableMasterSubject>(),
+      c.env.DB.prepare(`
+        SELECT id, school_id, full_name, role, status
+        FROM employees
+        WHERE school_id = ? AND status = 'active' AND role = 'teacher'
+        ORDER BY full_name, id
+      `).bind(schoolId).all<TimetableMasterTeacher>(),
+    ])
+    if (!school) return c.json({ error: 'المدرسة غير موجودة أو غير نشطة' }, 404)
+    if (!academicYear) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404)
+
+    const activeDays = context.days.filter((day) => Number(day.is_active) === 1)
+    const activeDayNumbers = new Set(activeDays.map((day) => Number(day.day_of_week)))
+    const visibleSlots = context.slots.filter((slot) => (
+      Number(slot.is_active) === 1 && activeDayNumbers.has(Number(slot.day_of_week))
+    ))
+    const activeLessonSlotIds = new Set(visibleSlots
+      .filter((slot) => slot.slot_type === 'lesson')
+      .map((slot) => Number(slot.id)))
+
+    const evaluatedEntries = context.entries.map((entry) => {
+      const load = context.loads.find((item) => Number(item.id) === Number(entry.teaching_load_id))
+      if (!load) {
+        return {
+          entry: null,
+          invalid: {
+            id: Number(entry.id),
+            slot_id: Number(entry.slot_id),
+            teaching_load_id: Number(entry.teaching_load_id),
+            hard_conflicts: [{ code: 'invalid_teaching_load' as const, message: 'نصاب المادة غير موجود أو خارج نطاق المدرسة' }],
+            reason: 'invalid' as const,
+          },
+        }
+      }
+      const evaluation = evaluateTimetableEntryPlacement({
+        candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
+        days: context.days,
+        slots: context.slots,
+        loads: context.loads,
+        entries: context.entries,
+        teacherAvailability: context.availability,
+        teacherConstraints: context.constraints,
+      })
+      return {
+        entry: timetableGridEntry(entry, load, evaluation.warnings, evaluation.hard_conflicts),
+        invalid: null,
+      }
+    })
+    const entries = evaluatedEntries
+      .filter((item) => item.entry != null && activeLessonSlotIds.has(Number(item.entry.slot_id)) && item.entry.hard_conflicts.length === 0)
+      .map((item) => item.entry!)
+    const invalidEntries = evaluatedEntries
+      .filter((item) => item.invalid != null || (item.entry != null && (
+        !activeLessonSlotIds.has(Number(item.entry.slot_id)) || item.entry.hard_conflicts.length > 0
+      )))
+      .map((item) => item.invalid || ({
+        id: Number(item.entry!.id),
+        slot_id: Number(item.entry!.slot_id),
+        teaching_load_id: Number(item.entry!.teaching_load_id),
+        hard_conflicts: item.entry!.hard_conflicts,
+        reason: item.entry!.hard_conflicts.length > 0 ? 'invalid' as const : 'historical' as const,
+      }))
+    const data: TimetableMasterGridData = {
+      school,
+      academic_year: academicYear,
+      days: activeDays,
+      slots: visibleSlots,
+      classes: classesResult.results || [],
+      sections: sectionsResult.results || [],
+      subjects: subjectsResult.results || [],
+      teachers: teachersResult.results || [],
+      loads: context.loads.filter((load) => (
+        load.status === 'active'
+        && !loadHasInvalidAcademicReference(load)
+        && !loadHasInvalidTeacherReference(load)
+      )),
+      entries,
+      invalid_entries: invalidEntries,
+      invalid_entry_count: invalidEntries.length,
+    }
+    return c.json({ data })
+  } catch {
+    return c.json({ error: 'فشل في تحميل الجدول الكامل' }, 500)
   }
 })
 

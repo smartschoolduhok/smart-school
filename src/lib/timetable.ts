@@ -192,6 +192,7 @@ export interface TimetableEntryNotice {
 }
 
 export interface TimetableGridEntry extends TimetableEntry {
+  subject_id: number;
   subject_name: string;
   class_id: number;
   class_name: string;
@@ -203,6 +204,70 @@ export interface TimetableGridEntry extends TimetableEntry {
   load_status: TimetableLoadStatus;
   hard_conflicts: TimetableEntryNotice[];
   warnings: TimetableEntryNotice[];
+}
+
+export interface TimetableMasterClass {
+  id: number;
+  school_id: number;
+  name: string;
+  stage: string;
+  order_index: number;
+  status: string;
+}
+
+export interface TimetableMasterSection {
+  id: number;
+  school_id: number;
+  class_id: number;
+  name: string;
+  status: string;
+}
+
+export interface TimetableMasterSubject {
+  id: number;
+  school_id: number;
+  class_id: number;
+  section_id: number | null;
+  name: string;
+  status: string;
+}
+
+export interface TimetableMasterTeacher {
+  id: number;
+  school_id: number;
+  full_name: string;
+  role: string;
+  status: string;
+}
+
+export interface TimetableMasterInvalidEntry {
+  id: number;
+  slot_id: number;
+  teaching_load_id: number;
+  hard_conflicts: TimetableEntryNotice[];
+  reason: 'invalid' | 'historical';
+}
+
+export interface TimetableMasterGridData {
+  school: {
+    id: number;
+    name: string;
+    logo_url: string | null;
+  };
+  academic_year: {
+    id: number;
+    name: string;
+  };
+  days: TimetableDay[];
+  slots: TimetableSlot[];
+  classes: TimetableMasterClass[];
+  sections: TimetableMasterSection[];
+  subjects: TimetableMasterSubject[];
+  teachers: TimetableMasterTeacher[];
+  loads: TimetableTeachingLoad[];
+  entries: TimetableGridEntry[];
+  invalid_entries: TimetableMasterInvalidEntry[];
+  invalid_entry_count: number;
 }
 
 export interface TimetableHistoricalGridEntry extends TimetableGridEntry {
@@ -246,6 +311,103 @@ export interface TimetablePlacement {
   class_name: string;
   section_id: number | null;
   section_name: string | null;
+}
+
+export interface TimetableSubjectColor {
+  background: string;
+  border: string;
+  foreground: string;
+}
+
+const TIMETABLE_SUBJECT_PALETTE: readonly TimetableSubjectColor[] = [
+  { background: '#dbeafe', border: '#60a5fa', foreground: '#1e3a8a' },
+  { background: '#dcfce7', border: '#4ade80', foreground: '#14532d' },
+  { background: '#fef3c7', border: '#fbbf24', foreground: '#78350f' },
+  { background: '#fce7f3', border: '#f472b6', foreground: '#831843' },
+  { background: '#ede9fe', border: '#a78bfa', foreground: '#4c1d95' },
+  { background: '#cffafe', border: '#22d3ee', foreground: '#164e63' },
+  { background: '#ffedd5', border: '#fb923c', foreground: '#7c2d12' },
+  { background: '#e0e7ff', border: '#818cf8', foreground: '#312e81' },
+  { background: '#ccfbf1', border: '#2dd4bf', foreground: '#134e4a' },
+  { background: '#fae8ff', border: '#d946ef', foreground: '#701a75' },
+  { background: '#ecfccb', border: '#a3e635', foreground: '#365314' },
+  { background: '#fee2e2', border: '#f87171', foreground: '#7f1d1d' },
+] as const;
+
+export function timetablePlacementKey(placement: Pick<TimetablePlacement, 'class_id' | 'section_id'>) {
+  return `${Number(placement.class_id)}:${placement.section_id == null ? 'none' : Number(placement.section_id)}`;
+}
+
+export function buildTimetableMasterPlacements(
+  classes: TimetableMasterClass[],
+  sections: TimetableMasterSection[],
+): TimetablePlacement[] {
+  const activeSections = sections.filter((section) => section.status === 'active');
+  return [...classes]
+    .filter((classRecord) => classRecord.status === 'active')
+    .sort((a, b) => Number(a.order_index) - Number(b.order_index) || Number(a.id) - Number(b.id))
+    .flatMap((classRecord): TimetablePlacement[] => {
+      const classSections = activeSections
+        .filter((section) => Number(section.class_id) === Number(classRecord.id))
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      if (classSections.length === 0) {
+        return [{ class_id: Number(classRecord.id), class_name: classRecord.name, section_id: null, section_name: null }];
+      }
+      return classSections.map((section) => ({
+        class_id: Number(classRecord.id),
+        class_name: classRecord.name,
+        section_id: Number(section.id),
+        section_name: section.name,
+      }));
+    });
+}
+
+export function timetableEntryForPlacement(
+  entries: TimetableGridEntry[],
+  slotId: number,
+  placement: Pick<TimetablePlacement, 'class_id' | 'section_id'>,
+) {
+  const candidates = entries.filter((entry) => (
+    Number(entry.slot_id) === Number(slotId)
+    && Number(entry.class_id) === Number(placement.class_id)
+    && (entry.section_id == null || Number(entry.section_id) === Number(placement.section_id))
+  ));
+  return candidates.find((entry) => (
+    placement.section_id != null && Number(entry.section_id) === Number(placement.section_id)
+  )) || candidates.find((entry) => entry.section_id == null) || null;
+}
+
+export function timetableSubjectColor(subjectId: number | string): TimetableSubjectColor {
+  const value = String(subjectId);
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return TIMETABLE_SUBJECT_PALETTE[(hash >>> 0) % TIMETABLE_SUBJECT_PALETTE.length];
+}
+
+export function normalizeTimetableSubjectVisualKey(subjectName: string): string {
+  return subjectName
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\u0640\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+export function timetableSubjectVisualKey(schoolId: number | string, subjectName: string): string {
+  return `${String(schoolId)}:${normalizeTimetableSubjectVisualKey(subjectName)}`;
+}
+
+export function timetableSubjectColorForSubject(
+  schoolId: number | string,
+  subjectName: string,
+): TimetableSubjectColor {
+  return timetableSubjectColor(timetableSubjectVisualKey(schoolId, subjectName));
 }
 
 export interface TimetableSubjectOption {

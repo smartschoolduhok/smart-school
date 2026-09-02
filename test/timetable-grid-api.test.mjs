@@ -697,3 +697,229 @@ test('parent edits cannot silently invalidate scheduled entries', async () => {
   assert.equal(loadResponse.status, 400);
   assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
 });
+
+test('master-grid returns one normalized school schedule with canonical active dimensions', async () => {
+  const context = await fixture(); setup(context);
+  context.database.prepare(`INSERT INTO classes
+    (id, school_id, name, stage, order_index, status) VALUES (4,1,'Class Without Sections','ابتدائي',3,'active')`).run();
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody())).status, 201);
+
+  const beforeEntries = context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count;
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200);
+  const data = (await response.json()).data;
+  assert.deepEqual(data.school, { id: 1, name: 'School A', logo_url: null });
+  assert.deepEqual(data.academic_year, { id: 1, name: '2026-2027' });
+  assert.deepEqual(data.days.map((row) => row.day_of_week), [0, 1]);
+  assert.equal(data.slots.some((row) => row.slot_type === 'break'), true);
+  assert.equal(data.slots.some((row) => row.id === 7 || row.id === 8), false);
+  assert.deepEqual(data.classes.map((row) => row.id), [1, 2, 4]);
+  assert.deepEqual(data.sections.map((row) => row.id), [1, 2, 3]);
+  assert.equal(data.teachers.every((row) => row.role === 'teacher' && row.status === 'active'), true);
+  assert.equal(data.entries.length, 1);
+  assert.equal(data.entries[0].subject_id, 1);
+  assert.equal(data.invalid_entry_count, 0);
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, beforeEntries);
+});
+
+test('master-grid excludes invalid or historical placements and reports them for repair', async () => {
+  const context = await fixture(); setup(context);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody())).status, 201);
+  context.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run();
+
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200);
+  const data = (await response.json()).data;
+  assert.equal(data.entries.length, 0);
+  assert.equal(data.invalid_entry_count, 1);
+  assert.equal(data.invalid_entries[0].id > 0, true);
+  assert.equal(data.invalid_entries[0].reason, 'invalid');
+  assert.ok(data.invalid_entries[0].hard_conflicts.some((item) => item.code === 'inactive_slot'));
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
+});
+
+test('master-grid enforces academic RBAC, explicit admin targeting and tenant isolation', async () => {
+  const context = await fixture(); setup(context);
+  const path = '/api/timetable/master-grid?school_id=1&academic_year_id=1';
+  assert.equal((await api(context, context.tokens.owner, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.principal, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.vice, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.registrar, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.admin, 'GET', path)).status, 200);
+  assert.equal((await api(context, context.tokens.admin, 'GET', '/api/timetable/master-grid?academic_year_id=1')).status, 400);
+  assert.equal((await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=2&academic_year_id=2')).status, 403);
+  assert.equal((await api(context, context.tokens.teacher, 'GET', path)).status, 403);
+  assert.equal((await api(context, context.tokens.accountant, 'GET', path)).status, 403);
+});
+
+test('master-grid rejects a cross-school academic year even for system admin', async () => {
+  const context = await fixture(); setup(context);
+  const response = await api(context, context.tokens.admin, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=2');
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, 'invalid_tenant_scope');
+});
+
+test('master-grid excludes corrupted cross-tenant dimensions and references without leaking labels', async () => {
+  const context = await fixture(); setup(context);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody())).status, 201);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2, teaching_load_id: 2 }))).status, 201);
+  context.database.exec(`
+    INSERT INTO sections (id, school_id, class_id, name, status)
+      VALUES (50, 1, 3, 'Cross tenant section secret', 'active');
+    INSERT INTO subjects (id, school_id, class_id, section_id, name, status) VALUES
+      (50, 1, 3, NULL, 'Cross tenant class subject secret', 'active'),
+      (51, 1, 1, 4, 'Cross tenant section subject secret', 'active');
+    UPDATE employees SET school_id = 2, full_name = 'Cross tenant teacher secret' WHERE id = 2;
+    DROP TRIGGER trg_timetable_loads_preserve_entries;
+    DROP TRIGGER trg_timetable_loads_validate_update;
+    UPDATE timetable_teaching_loads SET school_id = 2, academic_year_id = 2 WHERE id = 1;
+  `);
+
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200);
+  const data = (await response.json()).data;
+  const classIds = new Set(data.classes.map((row) => Number(row.id)));
+  const sectionById = new Map(data.sections.map((row) => [Number(row.id), row]));
+  assert.equal(data.classes.every((row) => Number(row.school_id) === 1), true);
+  assert.equal(data.sections.every((row) => Number(row.school_id) === 1 && classIds.has(Number(row.class_id))), true);
+  assert.equal(data.subjects.every((row) => {
+    const section = row.section_id == null ? null : sectionById.get(Number(row.section_id));
+    return Number(row.school_id) === 1
+      && classIds.has(Number(row.class_id))
+      && (section == null || Number(section.class_id) === Number(row.class_id));
+  }), true);
+  assert.equal(data.teachers.every((row) => Number(row.school_id) === 1), true);
+  assert.equal(data.loads.every((row) => Number(row.school_id) === 1), true);
+  assert.equal(data.entries.every((row) => Number(row.school_id) === 1), true);
+  assert.equal(data.invalid_entries.some((row) => Number(row.teaching_load_id) === 1), true);
+  assert.equal(data.invalid_entries.some((row) => Number(row.teaching_load_id) === 2), true);
+  assert.equal(data.invalid_entries.some((row) => row.hard_conflicts.some((item) => item.code === 'invalid_teaching_load')), true);
+  const serialized = JSON.stringify(data);
+  for (const secret of ['Cross tenant section secret', 'Cross tenant class subject secret', 'Cross tenant section subject secret', 'Cross tenant teacher secret']) {
+    assert.equal(serialized.includes(secret), false, secret);
+  }
+});
+
+test('master-grid preserves and reports every invalid or historical Phase 18A.3 entry', async (t) => {
+  const cases = [
+    {
+      name: 'disabled day',
+      mutate: (database) => database.prepare('UPDATE timetable_days SET is_active = 0 WHERE school_id = 1 AND academic_year_id = 1 AND day_of_week = 0').run(),
+      code: 'inactive_day',
+    },
+    {
+      name: 'disabled slot',
+      mutate: (database) => database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run(),
+      code: 'inactive_slot',
+    },
+    {
+      name: 'inactive teaching load',
+      mutate: (database) => database.prepare("UPDATE timetable_teaching_loads SET status = 'inactive' WHERE id = 1").run(),
+      code: 'invalid_teaching_load',
+    },
+    {
+      name: 'archived teacher',
+      mutate: (database) => database.prepare("UPDATE employees SET status = 'archived' WHERE id = 1").run(),
+      code: 'invalid_teaching_load',
+    },
+    {
+      name: 'unavailable teacher override',
+      mutate: (database) => database.prepare(`INSERT INTO timetable_teacher_availability
+        (school_id, academic_year_id, employee_id, slot_id, status) VALUES (1,1,1,1,'unavailable')`).run(),
+      code: 'teacher_unavailable',
+    },
+  ];
+
+  for (const invalidCase of cases) {
+    await t.test(invalidCase.name, async () => {
+      const context = await fixture(); setup(context);
+      const created = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+      assert.equal(created.status, 201);
+      const entryId = Number((await created.json()).data.id);
+      invalidCase.mutate(context.database);
+      const before = context.database.prepare('SELECT * FROM timetable_entries WHERE id = ?').get(entryId);
+
+      const masterResponse = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+      assert.equal(masterResponse.status, 200);
+      const master = (await masterResponse.json()).data;
+      assert.equal(master.entries.some((row) => Number(row.id) === entryId), false);
+      const issue = master.invalid_entries.find((row) => Number(row.id) === entryId);
+      assert.ok(issue, invalidCase.name);
+      assert.ok(issue.hard_conflicts.some((item) => item.code === invalidCase.code), invalidCase.name);
+      assert.equal(master.invalid_entry_count, master.invalid_entries.length);
+
+      const weeklyResponse = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
+      assert.equal(weeklyResponse.status, 200);
+      const weekly = (await weeklyResponse.json()).data;
+      assert.equal([...weekly.entries, ...weekly.historical_entries].some((row) => Number(row.id) === entryId), true);
+      assert.deepEqual(context.database.prepare('SELECT * FROM timetable_entries WHERE id = ?').get(entryId), before);
+    });
+  }
+});
+
+test('master-grid reports entries invalidated by later stricter teacher constraints without mutating them', async () => {
+  const context = await fixture(); setup(context);
+  const first = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const second = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2, teaching_load_id: 4 }));
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  context.database.prepare(`INSERT INTO timetable_teacher_constraints
+    (school_id, academic_year_id, employee_id, max_periods_per_day) VALUES (1,1,1,1)`).run();
+  const before = context.database.prepare('SELECT * FROM timetable_entries ORDER BY id').all();
+
+  const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200);
+  const data = (await response.json()).data;
+  assert.equal(data.entries.length, 0);
+  assert.equal(data.invalid_entry_count, 2);
+  assert.equal(data.invalid_entries.every((row) => row.hard_conflicts.some((item) => item.code === 'teacher_max_periods_per_day')), true);
+  assert.deepEqual(context.database.prepare('SELECT * FROM timetable_entries ORDER BY id').all(), before);
+
+  for (const path of [
+    '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1',
+    '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=2&section_id=3',
+  ]) {
+    const weekly = (await (await api(context, context.tokens.owner, 'GET', path)).json()).data;
+    assert.equal(weekly.entries.some((row) => row.hard_conflicts.some((item) => item.code === 'teacher_max_periods_per_day')), true);
+  }
+});
+
+test('master-grid uses a constant bounded query count as timetable dimensions grow', async () => {
+  async function queryCount(large) {
+    const context = await fixture(); setup(context);
+    if (large) {
+      const insertClass = context.database.prepare(`INSERT INTO classes
+        (id, school_id, name, stage, order_index, status) VALUES (?,1,?,'ابتدائي',?,'active')`);
+      const insertSection = context.database.prepare(`INSERT INTO sections
+        (id, school_id, class_id, name, status) VALUES (?,1,?,?,'active')`);
+      const insertSubject = context.database.prepare(`INSERT INTO subjects
+        (id, school_id, class_id, section_id, name, order_index, status) VALUES (?,1,?,NULL,?,1,'active')`);
+      const insertTeacher = context.database.prepare(`INSERT INTO employees
+        (id, school_id, full_name, role, status) VALUES (?,1,?,'teacher','active')`);
+      const insertLoad = context.database.prepare(`INSERT INTO timetable_teaching_loads
+        (id, school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods, status)
+        VALUES (?,1,1,?,?,?,?,1,'active')`);
+      const insertEntry = context.database.prepare(`INSERT INTO timetable_entries
+        (id, school_id, academic_year_id, slot_id, teaching_load_id) VALUES (?,1,1,1,?)`);
+      for (let index = 0; index < 24; index += 1) {
+        const id = 100 + index;
+        insertClass.run(id, `Extra ${index}`, id);
+        insertSection.run(id, id, `Section ${index}`);
+        insertSubject.run(id, id, `Subject ${index}`);
+        insertTeacher.run(id, `Teacher ${index}`);
+        insertLoad.run(id, id, id, id, id);
+        insertEntry.run(id, id);
+      }
+    }
+    context.d1.prepareCount = 0;
+    const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/master-grid?school_id=1&academic_year_id=1');
+    assert.equal(response.status, 200);
+    await response.json();
+    return context.d1.prepareCount;
+  }
+  const small = await queryCount(false);
+  const large = await queryCount(true);
+  assert.equal(small, 15, `master-grid baseline query count: ${small}`);
+  assert.equal(large, small);
+  assert.ok(small <= 18, `query count: ${small}`);
+});
