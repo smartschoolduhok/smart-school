@@ -33,6 +33,7 @@ import type {
   TimetableTeacherWorkload,
   TimetableTeachingLoad,
 } from './timetable';
+import type { TimetableSolverPreview } from './timetableSolver';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -296,6 +297,13 @@ export function getTimetableGrid(
 
 export function getTimetableMasterGrid(schoolId: number, academicYearId: number) {
   return fetchApi<TimetableMasterGridData>(`/api/timetable/master-grid?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function previewAutomaticTimetable(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableSolverPreview>('/api/timetable/solver/preview', {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+  });
 }
 
 export function createTimetableEntry(data: {

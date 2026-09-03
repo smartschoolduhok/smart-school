@@ -184,6 +184,7 @@ import {
   type TimetableTeacherConstraints,
   type TimetableTeachingLoad,
 } from './lib/timetable'
+import { solveTimetable } from './lib/timetableSolver'
 
 // ===========================================
 // Types & Extended Bindings
@@ -2481,6 +2482,55 @@ app.get('/api/timetable/teacher-workloads', requireSameSchoolOrAdmin(), requireR
     return c.json({ data: summary.teacher_workloads })
   } catch {
     return c.json({ error: 'فشل في حساب إجمالي أنصبة المدرسين' }, 500)
+  }
+})
+
+app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const body = await readJsonObject(c)
+  if (!body) return c.json({ error: 'بيانات طلب التوليد غير صالحة' }, 400)
+  const user: UserContext | null = c.get('user') || null
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+  const academicYearId = Number(body.academic_year_id)
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0) {
+    return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
+  }
+  const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, academicYearId)
+  if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+
+  try {
+    const [context, placementsResult] = await Promise.all([
+      loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, academicYearId),
+      c.env.DB.prepare(`
+        SELECT class.id AS class_id, class.name AS class_name,
+               section.id AS section_id, section.name AS section_name
+        FROM classes class
+        LEFT JOIN sections section
+          ON section.school_id = class.school_id
+         AND section.class_id = class.id
+         AND section.status = 'active'
+        WHERE class.school_id = ? AND class.status = 'active'
+        ORDER BY class.order_index, class.id, section.id
+      `).bind(targetSchool.schoolId).all<TimetablePlacement>(),
+    ])
+    const data = solveTimetable({
+      schoolId: targetSchool.schoolId,
+      academicYearId,
+      days: context.days,
+      slots: context.slots,
+      placements: placementsResult.results || [],
+      loads: context.loads,
+      currentEntries: context.entries,
+      teacherAvailability: context.availability,
+      teacherConstraints: context.constraints,
+    })
+    return c.json({ data })
+  } catch (error) {
+    console.error('[timetable/solver/preview] failed', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return c.json({ error: 'فشل في إنشاء اقتراح جدول صالح' }, 500)
   }
 })
 

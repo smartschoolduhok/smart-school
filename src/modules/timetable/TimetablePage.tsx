@@ -9,6 +9,7 @@ import {
   Pencil,
   Plus,
   Save,
+  Sparkles,
   Trash2,
   UserRoundCheck,
   X,
@@ -45,10 +46,11 @@ import {
 } from '../../lib/timetable';
 import type { Class, Section } from '../../types';
 import { TeacherAvailabilityTab } from './TeacherAvailabilityTab';
+import { AutomaticTimetableTab } from './AutomaticTimetableTab';
 import { MasterTimetableTab } from './MasterTimetableTab';
 import { TimetableGridTab } from './TimetableGridTab';
 
-type TabKey = 'grid' | 'master' | 'week' | 'loads' | 'availability' | 'readiness';
+type TabKey = 'grid' | 'master' | 'automatic' | 'week' | 'loads' | 'availability' | 'readiness';
 
 interface SubjectOption {
   id: number;
@@ -466,6 +468,7 @@ export default function TimetablePage() {
                 {([
                   ['grid', 'الجدول الأسبوعي', CalendarDays],
                   ['master', 'الجدول الكامل', LayoutGrid],
+                  ['automatic', 'التوليد التلقائي', Sparkles],
                   ['week', 'إعداد الأسبوع', Clock3],
                   ['loads', 'نصاب المواد والمدرسين', BookOpenCheck],
                   ['availability', 'توفر المدرسين والقيود', UserRoundCheck],
@@ -534,6 +537,15 @@ export default function TimetablePage() {
                   academicYearId={academicYearId}
                   dataVersion={yearDataVersion}
                   onOpenRepair={() => setTab('grid')}
+                />
+              )}
+
+              {!loading && tab === 'automatic' && schoolId != null && academicYearId != null && (
+                <AutomaticTimetableTab
+                  schoolId={schoolId}
+                  academicYearId={academicYearId}
+                  dataVersion={yearDataVersion}
+                  readiness={readiness}
                 />
               )}
 
