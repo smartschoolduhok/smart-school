@@ -2523,7 +2523,6 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
       currentEntries: context.entries,
       teacherAvailability: context.availability,
       teacherConstraints: context.constraints,
-      sourceQueryCount: 9,
     })
     return c.json({ data })
   } catch (error) {

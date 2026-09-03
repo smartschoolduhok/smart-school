@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
-import { solveTimetable, validateTimetableSolverProposal } from '../src/lib/timetableSolver.ts';
+import { TimetableSolverSafetyLimitError, solveTimetable, validateTimetableSolverProposal } from '../src/lib/timetableSolver.ts';
 
 function week(dayCount = 5, lessonsPerDay = 6, options = {}) {
   const days = [];
@@ -127,6 +127,7 @@ test('class capacity overload is impossible and never emits a class collision', 
   const result = solveTimetable(input);
   assert.equal(result.status, 'impossible');
   assert.equal(result.readiness.overloaded_class_sections.length, 1);
+  assert.ok(result.unscheduled.every((item) => item.reason_codes.includes('no_class_capacity')));
   assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
 });
 
@@ -258,7 +259,7 @@ test('bounded search returns partial with unresolved reason codes instead of han
   assert.equal(result.status, 'partial');
   assert.equal(result.statistics.stopped_by_limit, true);
   assert.ok(result.unscheduled.length > 0);
-  assert.ok(result.unscheduled[0].reason_codes.length > 0);
+  assert.deepEqual(result.unscheduled[0].reason_codes, ['search_budget_exhausted']);
   assert.ok(result.quality_score < 100);
   assert.ok(result.statistics.attempts <= 10);
 });
@@ -353,3 +354,325 @@ for (const benchmark of [
     assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
   });
 }
+
+test('an impossible overloaded class still preserves an independent feasible class proposal', () => {
+  const { days, slots } = week(1, 2);
+  const loads = [
+    teachingLoad(1, { class_id: 1, employee_id: 1, weekly_periods: 2 }),
+    teachingLoad(2, { class_id: 1, employee_id: 2, weekly_periods: 1 }),
+    teachingLoad(3, { class_id: 2, employee_id: 3, weekly_periods: 2 }),
+  ];
+  const input = solverInput({ days, slots, loads, placements: [placement(1), placement(2)] });
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'impossible');
+  assert.equal(result.entries.filter((entry) => entry.class_id === 2).length, 2);
+  assert.equal(result.scheduled_periods, 4);
+  assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+});
+
+test('an invalid load does not suppress independent valid demand', () => {
+  const { days, slots } = week(2, 2);
+  const loads = [
+    teachingLoad(1, { employee_status: 'archived', weekly_periods: 2 }),
+    teachingLoad(2, { class_id: 2, employee_id: 2, weekly_periods: 3 }),
+  ];
+  const input = solverInput({ days, slots, loads, placements: [placement(1), placement(2)] });
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'impossible');
+  assert.equal(result.entries.filter((entry) => entry.teaching_load_id === 2).length, 3);
+  assert.equal(result.unscheduled.find((item) => item.teaching_load_id === 1)?.reason_codes[0], 'invalid_teaching_load');
+});
+
+test('preferred override on an inactive slot does not affect current ranking or quality', () => {
+  const { days, slots } = week(1, 3);
+  slots[0].is_active = 0;
+  const load = teachingLoad(1, { weekly_periods: 1 });
+  const baseline = solveTimetable(solverInput({ days, slots, loads: [load], placements: [placement(1)] }));
+  const historicalAvailability = [
+    { id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: slots[0].id, status: 'preferred', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0 },
+  ];
+  const result = solveTimetable(solverInput({ days, slots, loads: [load], placements: [placement(1)], availability: historicalAvailability }));
+  assert.equal(result.scoring.preferred_slots_used, 0);
+  assert.equal(result.scoring.penalties.outside_preferred_slots, 0);
+  assert.equal(result.quality_score, baseline.quality_score);
+  assert.deepEqual(result.entries.map((entry) => entry.slot_id), baseline.entries.map((entry) => entry.slot_id));
+});
+
+test('preferred override on a disabled day does not affect current ranking or quality', () => {
+  const { days, slots } = week(2, 2);
+  days[0].is_active = 0;
+  const load = teachingLoad(1, { weekly_periods: 1 });
+  const baseline = solveTimetable(solverInput({ days, slots, loads: [load], placements: [placement(1)] }));
+  const availability = [
+    { id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: slots[0].id, status: 'preferred', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0 },
+  ];
+  const result = solveTimetable(solverInput({ days, slots, loads: [load], placements: [placement(1)], availability }));
+  assert.equal(result.scoring.preferred_slots_used, 0);
+  assert.equal(result.scoring.penalties.outside_preferred_slots, 0);
+  assert.equal(result.quality_score, baseline.quality_score);
+  assert.deepEqual(result.entries.map((entry) => entry.slot_id), baseline.entries.map((entry) => entry.slot_id));
+});
+
+test('active preferred override remains authoritative for ranking and scoring', () => {
+  const { days, slots } = week(1, 3);
+  const availability = [
+    { id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: slots[2].id, status: 'preferred', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0 },
+  ];
+  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1, { weekly_periods: 1 })], placements: [placement(1)], availability }));
+  assert.equal(result.entries[0].slot_id, slots[2].id);
+  assert.equal(result.scoring.preferred_slots_used, 1);
+  assert.equal(result.scoring.penalties.outside_preferred_slots, 0);
+});
+
+test('readiness accounts for max consecutive periods when teacher demand is impossible', () => {
+  const { days, slots } = week(1, 4);
+  const constraints = [{ school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null, max_consecutive_periods: 1, max_working_days: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0, id: 1 }];
+  const input = solverInput({ days, slots, loads: [teachingLoad(1, { weekly_periods: 3 })], placements: [placement(1)], constraints });
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'impossible');
+  assert.equal(result.readiness.overloaded_teachers.length, 1);
+  assert.equal(result.readiness.overloaded_teachers[0].available_capacity, 2);
+  assert.equal(result.scheduled_periods, 2);
+  assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+});
+
+test('an overloaded teacher does not suppress unrelated feasible teachers', () => {
+  const { days, slots } = week(1, 3);
+  const loads = [
+    teachingLoad(1, { class_id: 1, employee_id: 1, weekly_periods: 2 }),
+    teachingLoad(2, { class_id: 2, employee_id: 1, weekly_periods: 2 }),
+    teachingLoad(3, { class_id: 3, employee_id: 3, weekly_periods: 3 }),
+  ];
+  const input = solverInput({ days, slots, loads, placements: [placement(1), placement(2), placement(3)] });
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'impossible');
+  assert.equal(result.entries.filter((entry) => entry.employee_id === 3).length, 3);
+  assert.equal(result.scheduled_periods, 6);
+  assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+});
+
+test('no active scheduling domain naturally returns an empty impossible proposal', () => {
+  const noDays = week(2, 2);
+  noDays.days.forEach((day) => { day.is_active = 0; });
+  const first = solveTimetable(solverInput({ ...noDays, loads: [teachingLoad(1)], placements: [placement(1)] }));
+  assert.equal(first.status, 'impossible');
+  assert.equal(first.scheduled_periods, 0);
+  assert.equal(first.entries.length, 0);
+
+  const noLessons = week(2, 2);
+  noLessons.slots.forEach((slot) => { slot.slot_type = 'break'; slot.lesson_number = null; });
+  const second = solveTimetable(solverInput({ ...noLessons, loads: [teachingLoad(1)], placements: [placement(1)] }));
+  assert.equal(second.status, 'impossible');
+  assert.equal(second.scheduled_periods, 0);
+  assert.equal(second.entries.length, 0);
+});
+
+test('cross-tenant and cross-year loads are invalid demand and never proposed', () => {
+  const { days, slots } = week(2, 2);
+  const loads = [
+    teachingLoad(1, { school_id: 2, class_school_id: 2, subject_school_id: 2, employee_school_id: 2 }),
+    teachingLoad(2, { academic_year_id: 2 }),
+    teachingLoad(3, { class_id: 3, employee_id: 3, weekly_periods: 2 }),
+  ];
+  const input = solverInput({ days, slots, loads, placements: [placement(1), placement(2), placement(3)] });
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'impossible');
+  assert.equal(result.readiness.invalid_load_count, 2);
+  assert.deepEqual(result.entries.map((entry) => entry.teaching_load_id), [3, 3]);
+  assert.ok(result.unscheduled.filter((item) => item.teaching_load_id !== 3)
+    .every((item) => item.reason_codes.length === 1 && item.reason_codes[0] === 'invalid_teaching_load'));
+});
+
+test('unscheduled reason codes identify exact teacher hard limits without conflict noise', () => {
+  const scenarios = [
+    {
+      expected: 'teacher_unavailable',
+      week: week(1, 3),
+      constraints: [],
+      availability: null,
+      required: 1,
+    },
+    {
+      expected: 'teacher_daily_limit',
+      week: week(2, 2),
+      constraints: [{ school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: 1, max_consecutive_periods: null, max_working_days: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0, id: 1 }],
+      availability: [],
+      required: 3,
+    },
+    {
+      expected: 'teacher_working_days_limit',
+      week: week(2, 2),
+      constraints: [{ school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null, max_consecutive_periods: null, max_working_days: 1, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0, id: 1 }],
+      availability: [],
+      required: 3,
+    },
+    {
+      expected: 'teacher_consecutive_limit',
+      week: week(1, 4),
+      constraints: [{ school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null, max_consecutive_periods: 1, max_working_days: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0, id: 1 }],
+      availability: [],
+      required: 3,
+    },
+  ];
+  scenarios[0].availability = scenarios[0].week.slots.map((slot, index) => ({ id: index + 1, school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: slot.id, status: 'unavailable', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0 }));
+
+  for (const scenario of scenarios) {
+    const input = solverInput({
+      ...scenario.week,
+      loads: [teachingLoad(1, { weekly_periods: scenario.required })],
+      placements: [placement(1)],
+      availability: scenario.availability,
+      constraints: scenario.constraints,
+    });
+    const result = solveTimetable(input);
+    assert.equal(result.status, 'impossible');
+    assert.ok(result.unscheduled[0].reason_codes.includes(scenario.expected), `${scenario.expected}: ${result.unscheduled[0].reason_codes.join(',')}`);
+    assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+  }
+});
+
+test('teacher collision is reported when shared demand exceeds the teacher slot domain', () => {
+  const { days, slots } = week(1, 2);
+  const loads = [
+    teachingLoad(1, { class_id: 1, employee_id: 1, weekly_periods: 2 }),
+    teachingLoad(2, { class_id: 2, employee_id: 1, weekly_periods: 1 }),
+  ];
+  const result = solveTimetable(solverInput({ days, slots, loads, placements: [placement(1), placement(2)] }));
+  assert.equal(result.status, 'impossible');
+  assert.ok(result.unscheduled.some((item) => item.reason_codes.includes('teacher_collision')));
+});
+
+test('difficult default-limit input is deterministic across repeated runs', () => {
+  const { days, slots } = week(3, 4);
+  const constraints = [{ school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: 2, max_consecutive_periods: 1, max_working_days: 3, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0, id: 1 }];
+  const loads = [
+    teachingLoad(1, { class_id: 1, employee_id: 1, weekly_periods: 7 }),
+    ...Array.from({ length: 5 }, (_, index) => teachingLoad(index + 2, { class_id: index + 2, employee_id: index + 2, weekly_periods: 3 })),
+  ];
+  const input = solverInput({ days, slots, loads, placements: loads.map((load) => placement(load.class_id)), constraints });
+  delete input.limits;
+  const normalize = (result) => ({
+    status: result.status,
+    quality: result.quality_score,
+    entries: result.entries,
+    unscheduled: result.unscheduled,
+    attempts: result.statistics.attempts,
+    backtracks: result.statistics.backtracks,
+    stopped: result.statistics.stopped_by_limit,
+  });
+  const expected = normalize(solveTimetable(input));
+  for (let iteration = 0; iteration < 7; iteration += 1) {
+    assert.deepEqual(normalize(solveTimetable(input)), expected);
+  }
+});
+
+test('wall clock is an emergency abort and never returns an ordinary speed-dependent proposal', () => {
+  const { days, slots } = week(2, 3);
+  const input = solverInput({
+    days,
+    slots,
+    loads: [teachingLoad(1, { weekly_periods: 4 })],
+    placements: [placement(1)],
+    limits: { time_budget_ms: 1, max_attempts: 10_000, max_backtracks: 1_000, max_local_improvement_attempts: 100 },
+  });
+  const originalNow = Date.now;
+  let clock = 0;
+  Date.now = () => ++clock;
+  try {
+    assert.throws(() => solveTimetable(input), TimetableSolverSafetyLimitError);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('authoritative final validation remains clean for a highly constrained generated proposal', () => {
+  const { days, slots } = week(4, 5);
+  const constraints = Array.from({ length: 4 }, (_, index) => ({
+    school_id: 1, academic_year_id: 1, employee_id: index + 1,
+    max_periods_per_day: 2, max_consecutive_periods: 1, max_working_days: 3,
+    prefer_compact_schedule: 0, avoid_first_period: index % 2, avoid_last_period: (index + 1) % 2, id: index + 1,
+  }));
+  const availability = [];
+  for (let employeeId = 1; employeeId <= 4; employeeId += 1) {
+    for (const slot of slots) {
+      if ((slot.id + employeeId) % 6 === 0) availability.push({ id: availability.length + 1, school_id: 1, academic_year_id: 1, employee_id: employeeId, slot_id: slot.id, status: 'unavailable', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0 });
+    }
+  }
+  const loads = Array.from({ length: 8 }, (_, index) => teachingLoad(index + 1, { class_id: (index % 4) + 1, employee_id: (index % 4) + 1, weekly_periods: 2 }));
+  const input = solverInput({ days, slots, loads, placements: Array.from({ length: 4 }, (_, index) => placement(index + 1)), constraints, availability });
+  const result = solveTimetable(input);
+  assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+  assert.equal(result.entries.some((entry) => availability.some((item) => item.employee_id === entry.employee_id && item.slot_id === entry.slot_id)), false);
+});
+
+function constrainedBenchmarkInput(placementCount, teacherCount, loadCount, options = {}) {
+  const { days, slots } = week(5, 7, { breaks: true });
+  const placements = Array.from({ length: placementCount }, (_, index) => placement(index + 1));
+  const loads = Array.from({ length: loadCount }, (_, index) => teachingLoad(index + 1, {
+    class_id: (index % placementCount) + 1,
+    employee_id: (index % teacherCount) + 1,
+    subject_id: index + 1,
+    weekly_periods: options.weeklyPeriods ?? 2,
+  }));
+  const constraints = Array.from({ length: teacherCount }, (_, index) => ({
+    school_id: 1, academic_year_id: 1, employee_id: index + 1,
+    max_periods_per_day: 3, max_consecutive_periods: 2, max_working_days: 4,
+    prefer_compact_schedule: 1, avoid_first_period: index % 3 === 0 ? 1 : 0,
+    avoid_last_period: index % 4 === 0 ? 1 : 0, id: index + 1,
+  }));
+  const availability = [];
+  for (let employeeId = 1; employeeId <= teacherCount; employeeId += 1) {
+    for (const slot of slots.filter((item) => item.slot_type === 'lesson')) {
+      if ((slot.id * 3 + employeeId) % 17 === 0) availability.push({ id: availability.length + 1, school_id: 1, academic_year_id: 1, employee_id: employeeId, slot_id: slot.id, status: 'unavailable', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0 });
+      else if ((slot.id + employeeId) % 19 === 0) availability.push({ id: availability.length + 1, school_id: 1, academic_year_id: 1, employee_id: employeeId, slot_id: slot.id, status: 'preferred', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0 });
+    }
+  }
+  const input = solverInput({ days, slots, loads, placements, constraints, availability });
+  delete input.limits;
+  return input;
+}
+
+for (const benchmark of [
+  { name: 'constrained-medium', placements: 12, teachers: 20, loads: 32 },
+  { name: 'constrained-large', placements: 24, teachers: 40, loads: 80 },
+]) {
+  test(`solver ${benchmark.name} full-pipeline benchmark remains bounded and valid`, () => {
+    const input = constrainedBenchmarkInput(benchmark.placements, benchmark.teachers, benchmark.loads);
+    const startedAt = performance.now();
+    const result = solveTimetable(input);
+    const runtime = Math.round(performance.now() - startedAt);
+    console.log(`SOLVER_BENCHMARK ${benchmark.name} runtime_ms=${runtime} attempts=${result.statistics.attempts} backtracks=${result.statistics.backtracks} scheduled_pct=${Math.round(result.scheduled_periods / result.required_periods * 100)} quality=${result.quality_score}`);
+    assert.ok(runtime < 2_500);
+    assert.equal(result.scheduled_periods, result.required_periods);
+    assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+  });
+}
+
+test('impossible constrained stress maximizes independent coverage within deterministic limits', () => {
+  const input = constrainedBenchmarkInput(18, 28, 56);
+  Object.assign(input.loads[0], {
+    class_id: 99,
+    class_name: 'Isolated constrained class',
+    subject_class_id: 99,
+    employee_id: 99,
+    employee_name: 'Isolated constrained teacher',
+    weekly_periods: 30,
+  });
+  input.placements.push(placement(99));
+  input.teacherConstraints.push({
+    school_id: 1, academic_year_id: 1, employee_id: 99,
+    max_periods_per_day: 1, max_consecutive_periods: 1, max_working_days: 5,
+    prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0, id: 99,
+  });
+  const startedAt = performance.now();
+  const result = solveTimetable(input);
+  const runtime = Math.round(performance.now() - startedAt);
+  const independentRequired = input.loads.slice(1).reduce((sum, load) => sum + load.weekly_periods, 0);
+  const independentScheduled = result.entries.filter((entry) => entry.teaching_load_id !== input.loads[0].id).length;
+  console.log(`SOLVER_BENCHMARK constrained-impossible runtime_ms=${runtime} attempts=${result.statistics.attempts} backtracks=${result.statistics.backtracks} scheduled=${result.scheduled_periods}/${result.required_periods} quality=${result.quality_score}`);
+  assert.equal(result.status, 'impossible');
+  assert.equal(independentScheduled, independentRequired);
+  assert.equal(result.scheduled_periods, independentRequired + 5);
+  assert.ok(runtime < 2_500);
+  assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+});

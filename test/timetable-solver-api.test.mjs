@@ -131,8 +131,10 @@ test('solver preview endpoint returns a complete school proposal and performs no
   assert.equal(data.scheduled_periods, 4);
   assert.deepEqual(tableCounts(context.database), before);
   assert.equal(context.d1.sqlLog.some((sql) => /^\s*(INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|REPLACE)\b/i.test(sql)), false);
-  assert.equal(data.statistics.source_query_count, 9);
-  assert.ok(context.d1.prepareCount <= 11, `expected bounded query count, got ${context.d1.prepareCount}`);
+  assert.equal(Object.hasOwn(data.statistics, 'source_query_count'), false);
+  const solverSourceQueryCount = context.d1.sqlLog.filter((sql) => /FROM\s+(?:timetable_days|timetable_slots|timetable_teaching_loads|timetable_entries|timetable_teacher_availability|timetable_teacher_constraints|classes\s+class)\b/i.test(sql)).length;
+  assert.equal(solverSourceQueryCount, 7);
+  assert.equal(context.d1.prepareCount, 11, `expected 7 solver-source, 2 scope-validation, and 2 authentication queries; got ${context.d1.prepareCount}`);
 });
 
 test('system admin requires an explicit active target school', async () => {
@@ -181,6 +183,7 @@ test('query count remains constant as teaching-load row count grows', async () =
   larger.d1.prepareCount = 0;
   assert.equal((await api(larger, larger.tokens.owner, { school_id: 1, academic_year_id: 1 })).status, 200);
   assert.equal(larger.d1.prepareCount, baseCount);
+  assert.equal(baseCount, 11);
 });
 
 test('existing valid and later-invalid entries are reported separately without blocking proposal generation', async () => {

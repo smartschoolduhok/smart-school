@@ -51,11 +51,12 @@ test('missing teachers and unresolved demand are visible', () => {
   assert.match(componentSource, /item\.reasons/);
 });
 
-test('quality score, penalties, readiness and solver bounds are presented', () => {
+test('quality score, penalties, readiness and solver bounds are presented without a fabricated query metric', () => {
   assert.match(componentSource, /درجة الجودة المقارنة/);
   assert.match(componentSource, /result\.scoring\.penalties/);
   assert.match(componentSource, /ملخص الجاهزية قبل التوليد/);
   assert.match(componentSource, /result\.statistics\.attempts/);
   assert.match(componentSource, /result\.statistics\.backtracks/);
-  assert.match(componentSource, /result\.statistics\.source_query_count/);
+  assert.doesNotMatch(componentSource, /source_query_count|استعلامات المصدر/);
+  assert.doesNotMatch(solverSource, /source_query_count|sourceQueryCount/);
 });

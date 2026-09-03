@@ -257,7 +257,7 @@ export function AutomaticTimetableTab({
                 <div key={key} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-sm"><span>{PENALTY_LABELS[key]}</span><bdi dir="ltr" className="font-bold [unicode-bidi:isolate]">{value}</bdi></div>
               ))}
             </div>
-            <p className="mt-3 text-xs text-gray-500">المحاولات: <bdi dir="ltr">{result.statistics.attempts}</bdi> — الرجوعات: <bdi dir="ltr">{result.statistics.backtracks}</bdi> — الزمن: <bdi dir="ltr">{result.statistics.elapsed_ms} ms</bdi> — استعلامات المصدر: <bdi dir="ltr">{result.statistics.source_query_count}</bdi></p>
+            <p className="mt-3 text-xs text-gray-500">المحاولات: <bdi dir="ltr">{result.statistics.attempts}</bdi> — الرجوعات: <bdi dir="ltr">{result.statistics.backtracks}</bdi> — الزمن: <bdi dir="ltr">{result.statistics.elapsed_ms} ms</bdi></p>
           </section>
 
           <ProposalGrid result={result} schoolId={schoolId} />
