@@ -185,6 +185,21 @@ import {
   type TimetableTeachingLoad,
 } from './lib/timetable'
 import { solveTimetable } from './lib/timetableSolver'
+import {
+  STALE_TIMETABLE_PROPOSAL_CODE,
+  STALE_TIMETABLE_PROPOSAL_MESSAGE,
+  canonicalTimetableProposalEntries,
+  compareTimetableSchedules,
+  computeTimetableProposalDigest,
+  validateCompleteTimetableSchedule,
+  type TimetableAdoptionPreview,
+  type TimetableProposalPlacement,
+  type TimetableRestorePreview,
+  type TimetableScheduleVersion,
+  type TimetableScheduleVersionDetails,
+  type TimetableScheduleVersionEntry,
+  type TimetableSolverProposalWithIntegrity,
+} from './lib/timetableAdoption'
 
 // ===========================================
 // Types & Extended Bindings
@@ -760,6 +775,286 @@ async function loadTimetableSchedulingContext(
     availability: availabilityResult.results || [],
     constraints: constraintsResult.results || [],
   };
+}
+
+type TimetableProposalPayloadValidation =
+  | { ok: true; revision: number; digest: string; entries: TimetableProposalPlacement[] }
+  | { ok: false; error: string };
+
+function hasOnlyObjectKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function parseTimetableProposalEntries(value: unknown):
+  | { ok: true; entries: TimetableProposalPlacement[] }
+  | { ok: false; error: string } {
+  if (!Array.isArray(value) || value.length > 2_000) {
+    return { ok: false, error: 'قائمة حصص المقترح غير صالحة' };
+  }
+  const entries: TimetableProposalPlacement[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, error: 'إحدى حصص المقترح غير صالحة' };
+    }
+    const record = raw as Record<string, unknown>;
+    if (!hasOnlyObjectKeys(record, ['slot_id', 'teaching_load_id', 'is_locked'])) {
+      return { ok: false, error: 'يحتوي المقترح على حقول غير معروفة' };
+    }
+    const slotId = Number(record.slot_id);
+    const teachingLoadId = Number(record.teaching_load_id);
+    const isLocked = Number(record.is_locked);
+    if (!Number.isInteger(slotId) || slotId <= 0
+      || !Number.isInteger(teachingLoadId) || teachingLoadId <= 0
+      || ![0, 1].includes(isLocked)) {
+      return { ok: false, error: 'إحدى حصص المقترح تحتوي على قيم غير صالحة' };
+    }
+    entries.push({ slot_id: slotId, teaching_load_id: teachingLoadId, is_locked: isLocked as 0 | 1 });
+  }
+  return { ok: true, entries: canonicalTimetableProposalEntries(entries) };
+}
+
+function parseTimetableFixedEntries(value: unknown):
+  | { ok: true; entries: Array<{ slot_id: number; teaching_load_id: number }> }
+  | { ok: false; error: string } {
+  if (value == null) return { ok: true, entries: [] };
+  if (!Array.isArray(value) || value.length > 2_000) return { ok: false, error: 'قائمة الحصص المثبتة غير صالحة' };
+  const entries: Array<{ slot_id: number; teaching_load_id: number }> = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'إحدى الحصص المثبتة غير صالحة' };
+    const record = raw as Record<string, unknown>;
+    if (!hasOnlyObjectKeys(record, ['slot_id', 'teaching_load_id'])) {
+      return { ok: false, error: 'تحتوي الحصص المثبتة على حقول غير معروفة' };
+    }
+    const slotId = Number(record.slot_id);
+    const teachingLoadId = Number(record.teaching_load_id);
+    if (!Number.isInteger(slotId) || slotId <= 0 || !Number.isInteger(teachingLoadId) || teachingLoadId <= 0) {
+      return { ok: false, error: 'إحدى الحصص المثبتة تحتوي على قيم غير صالحة' };
+    }
+    entries.push({ slot_id: slotId, teaching_load_id: teachingLoadId });
+  }
+  return { ok: true, entries };
+}
+
+function parseTimetableProposalPayload(
+  body: Record<string, unknown>,
+  revisionField: 'proposal_revision' | 'expected_revision',
+): TimetableProposalPayloadValidation {
+  const revision = Number(body[revisionField]);
+  const digest = typeof body.proposal_digest === 'string' ? body.proposal_digest.trim().toLowerCase() : '';
+  if (!Number.isInteger(revision) || revision < 0) return { ok: false, error: 'نسخة بيانات الجدول غير صالحة' };
+  if (!/^[a-f0-9]{64}$/.test(digest)) return { ok: false, error: 'بصمة المقترح غير صالحة' };
+  const parsedEntries = parseTimetableProposalEntries(body.entries);
+  if (!parsedEntries.ok) return parsedEntries;
+  return { ok: true, revision, digest, entries: parsedEntries.entries };
+}
+
+async function loadCurrentTimetableRevision(db: D1Database, schoolId: number, academicYearId: number): Promise<number> {
+  const row = await db.prepare(`
+    SELECT revision FROM timetable_revisions
+    WHERE school_id = ? AND academic_year_id = ?
+  `).bind(schoolId, academicYearId).first<{ revision: number }>();
+  return Number(row?.revision || 0);
+}
+
+function countInvalidCurrentTimetableEntries(context: TimetableSchedulingContext): number {
+  return context.entries.filter((entry) => {
+    const evaluation = evaluateTimetableEntryPlacement({
+      candidate: entry,
+      days: context.days,
+      slots: context.slots,
+      loads: context.loads,
+      entries: context.entries,
+      teacherAvailability: context.availability,
+      teacherConstraints: context.constraints,
+    });
+    return evaluation.hard_conflicts.length > 0;
+  }).length;
+}
+
+function currentLockedEntriesArePreserved(
+  currentEntries: TimetableEntry[],
+  proposedEntries: TimetableProposalPlacement[],
+) {
+  const proposed = new Set(proposedEntries
+    .filter((entry) => entry.is_locked === 1)
+    .map((entry) => `${entry.slot_id}:${entry.teaching_load_id}`));
+  return currentEntries
+    .filter((entry) => Number(entry.is_locked) === 1)
+    .filter((entry) => !proposed.has(`${Number(entry.slot_id)}:${Number(entry.teaching_load_id)}`))
+    .map((entry) => ({
+      code: 'locked_entry_not_preserved',
+      message: 'يجب أن تبقى الحصة الرسمية المثبتة في موضعها عند إعادة التوليد.',
+      slot_id: Number(entry.slot_id),
+      teaching_load_id: Number(entry.teaching_load_id),
+    }));
+}
+
+async function buildTimetableAdoptionPreview(input: {
+  schoolId: number;
+  academicYearId: number;
+  revision: number;
+  digest: string;
+  entries: TimetableProposalPlacement[];
+  context: TimetableSchedulingContext;
+}): Promise<TimetableAdoptionPreview> {
+  const recomputedDigest = await computeTimetableProposalDigest({
+    schoolId: input.schoolId,
+    academicYearId: input.academicYearId,
+    revision: input.revision,
+    entries: input.entries,
+  });
+  const validation = validateCompleteTimetableSchedule({
+    schoolId: input.schoolId,
+    academicYearId: input.academicYearId,
+    days: input.context.days,
+    slots: input.context.slots,
+    loads: input.context.loads,
+    availability: input.context.availability,
+    constraints: input.context.constraints,
+  }, input.entries);
+  const blockers = [
+    ...(recomputedDigest === input.digest ? [] : [{ code: 'proposal_digest_mismatch', message: 'بصمة المقترح لا تطابق محتواه الحالي.' }]),
+    ...validation.blockers,
+    ...currentLockedEntriesArePreserved(input.context.entries, input.entries),
+  ];
+  return {
+    can_apply: blockers.length === 0 && validation.complete,
+    comparison: compareTimetableSchedules(input.context.entries, input.entries),
+    current_entry_count: input.context.entries.length,
+    proposed_entry_count: input.entries.length,
+    locked_count: input.entries.filter((entry) => entry.is_locked === 1).length,
+    current_invalid_entry_count: countInvalidCurrentTimetableEntries(input.context),
+    revision: input.revision,
+    proposal_digest: recomputedDigest,
+    warnings: countInvalidCurrentTimetableEntries(input.context) > 0
+      ? ['سيتم حفظ السجلات الحالية غير الصالحة أو التاريخية كاملة في إصدار سابق قبل الاستبدال.']
+      : [],
+    blockers,
+  };
+}
+
+async function loadTimetableScheduleVersion(
+  db: D1Database,
+  versionId: number,
+): Promise<TimetableScheduleVersionDetails | null> {
+  const version = await db.prepare(`
+    SELECT version.*, user.full_name AS created_by_name
+    FROM timetable_schedule_versions version
+    LEFT JOIN users user ON user.id = version.created_by_user_id
+    WHERE version.id = ?
+  `).bind(versionId).first<TimetableScheduleVersion>();
+  if (!version) return null;
+  const { results } = await db.prepare(`
+    SELECT * FROM timetable_schedule_version_entries
+    WHERE version_id = ?
+    ORDER BY teaching_load_id, slot_id, id
+  `).bind(versionId).all<TimetableScheduleVersionEntry>();
+  return { ...version, entries: results || [] };
+}
+
+async function replaceOfficialTimetableAtomically(input: {
+  db: D1Database;
+  schoolId: number;
+  academicYearId: number;
+  expectedRevision: number;
+  digest: string;
+  entries: TimetableProposalPlacement[];
+  userId: number;
+  source: 'automatic_adoption' | 'manual_restore';
+  restoredFromVersionId?: number | null;
+}) {
+  const assertionToken = crypto.randomUUID();
+  const versionKey = crypto.randomUUID();
+  const unlockTokenPrefix = crypto.randomUUID();
+  const canonicalEntries = canonicalTimetableProposalEntries(input.entries);
+  const entriesJson = JSON.stringify(canonicalEntries);
+  const statements = [
+    input.db.prepare(`
+      INSERT INTO timetable_revision_assertions (token, school_id, academic_year_id, expected_revision)
+      VALUES (?, ?, ?, ?)
+    `).bind(assertionToken, input.schoolId, input.academicYearId, input.expectedRevision),
+    input.db.prepare(`
+      INSERT INTO timetable_schedule_versions (
+        version_key, school_id, academic_year_id, source, previous_revision,
+        created_by_user_id, restored_from_version_id, old_entry_count,
+        new_entry_count, locked_entry_count, proposal_digest
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, COUNT(*), ?, ?, ?
+      FROM timetable_entries
+      WHERE school_id = ? AND academic_year_id = ?
+    `).bind(
+      versionKey,
+      input.schoolId,
+      input.academicYearId,
+      input.source,
+      input.expectedRevision,
+      input.userId,
+      input.restoredFromVersionId ?? null,
+      canonicalEntries.length,
+      canonicalEntries.filter((entry) => entry.is_locked === 1).length,
+      input.digest,
+      input.schoolId,
+      input.academicYearId,
+    ),
+    input.db.prepare(`
+      INSERT INTO timetable_schedule_version_entries (
+        version_id, original_entry_id, school_id, academic_year_id,
+        slot_id, teaching_load_id, is_locked
+      )
+      SELECT version.id, entry.id, entry.school_id, entry.academic_year_id,
+             entry.slot_id, entry.teaching_load_id, entry.is_locked
+      FROM timetable_entries entry
+      JOIN timetable_schedule_versions version ON version.version_key = ?
+      WHERE entry.school_id = ? AND entry.academic_year_id = ?
+      ORDER BY entry.teaching_load_id, entry.slot_id, entry.id
+    `).bind(versionKey, input.schoolId, input.academicYearId),
+    input.db.prepare(`
+      INSERT INTO timetable_locked_entry_overrides (
+        token, entry_id, school_id, academic_year_id, action
+      )
+      SELECT ? || ':' || CAST(entry.id AS TEXT), entry.id,
+             entry.school_id, entry.academic_year_id, 'delete'
+      FROM timetable_entries entry
+      WHERE entry.school_id = ? AND entry.academic_year_id = ? AND entry.is_locked = 1
+    `).bind(unlockTokenPrefix, input.schoolId, input.academicYearId),
+    input.db.prepare(`
+      DELETE FROM timetable_entries
+      WHERE school_id = ? AND academic_year_id = ?
+    `).bind(input.schoolId, input.academicYearId),
+    input.db.prepare(`
+      INSERT INTO timetable_entries (
+        school_id, academic_year_id, slot_id, teaching_load_id, is_locked,
+        created_by_user_id, updated_by_user_id
+      )
+      SELECT ?, ?,
+             CAST(json_extract(value, '$.slot_id') AS INTEGER),
+             CAST(json_extract(value, '$.teaching_load_id') AS INTEGER),
+             CAST(json_extract(value, '$.is_locked') AS INTEGER),
+             ?, ?
+      FROM json_each(?)
+      ORDER BY CAST(json_extract(value, '$.teaching_load_id') AS INTEGER),
+               CAST(json_extract(value, '$.slot_id') AS INTEGER)
+    `).bind(input.schoolId, input.academicYearId, input.userId, input.userId, entriesJson),
+    input.db.prepare(`
+      INSERT INTO timetable_revisions (school_id, academic_year_id, revision, updated_at)
+      VALUES (?, ?, 1, unixepoch())
+      ON CONFLICT(school_id, academic_year_id) DO UPDATE SET
+        revision = revision + 1, updated_at = unixepoch()
+    `).bind(input.schoolId, input.academicYearId),
+    input.db.prepare('DELETE FROM timetable_revision_assertions WHERE token = ?').bind(assertionToken),
+  ];
+  await input.db.batch(statements);
+  const [version, revision] = await Promise.all([
+    input.db.prepare(`
+      SELECT version.*, user.full_name AS created_by_name
+      FROM timetable_schedule_versions version
+      LEFT JOIN users user ON user.id = version.created_by_user_id
+      WHERE version.version_key = ?
+    `).bind(versionKey).first<TimetableScheduleVersion>(),
+    loadCurrentTimetableRevision(input.db, input.schoolId, input.academicYearId),
+  ]);
+  return { version, revision };
 }
 
 async function validateTimetableGridReferences(
@@ -2488,6 +2783,9 @@ app.get('/api/timetable/teacher-workloads', requireSameSchoolOrAdmin(), requireR
 app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const body = await readJsonObject(c)
   if (!body) return c.json({ error: 'بيانات طلب التوليد غير صالحة' }, 400)
+  if (!hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'fixed_entries', 'use_current_locked_entries'])) {
+    return c.json({ error: 'يحتوي طلب التوليد على حقول غير معروفة' }, 400)
+  }
   const user: UserContext | null = c.get('user') || null
   const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
   if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
@@ -2497,9 +2795,14 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
   }
   const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, academicYearId)
   if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+  if (body.use_current_locked_entries != null && typeof body.use_current_locked_entries !== 'boolean') {
+    return c.json({ error: 'وضع إعادة تحسين الجدول الحالي غير صالح' }, 400)
+  }
+  const fixedValidation = parseTimetableFixedEntries(body.fixed_entries)
+  if (!fixedValidation.ok) return c.json({ error: fixedValidation.error }, 400)
 
   try {
-    const [context, placementsResult] = await Promise.all([
+    const [context, placementsResult, timetableRevision] = await Promise.all([
       loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, academicYearId),
       c.env.DB.prepare(`
         SELECT class.id AS class_id, class.name AS class_name,
@@ -2512,8 +2815,15 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
         WHERE class.school_id = ? AND class.status = 'active'
         ORDER BY class.order_index, class.id, section.id
       `).bind(targetSchool.schoolId).all<TimetablePlacement>(),
+      loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
     ])
-    const data = solveTimetable({
+    const fixedEntries = body.use_current_locked_entries === true
+      ? context.entries.filter((entry) => Number(entry.is_locked) === 1).map((entry) => ({
+        slot_id: Number(entry.slot_id),
+        teaching_load_id: Number(entry.teaching_load_id),
+      }))
+      : fixedValidation.entries
+    const solverData = solveTimetable({
       schoolId: targetSchool.schoolId,
       academicYearId,
       days: context.days,
@@ -2523,7 +2833,23 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
       currentEntries: context.entries,
       teacherAvailability: context.availability,
       teacherConstraints: context.constraints,
+      fixedEntries,
     })
+    const proposalEntries = solverData.entries.map((entry) => ({
+      slot_id: entry.slot_id,
+      teaching_load_id: entry.teaching_load_id,
+      is_locked: entry.is_locked,
+    }))
+    const data: TimetableSolverProposalWithIntegrity = {
+      ...solverData,
+      timetable_revision: timetableRevision,
+      proposal_digest: await computeTimetableProposalDigest({
+        schoolId: targetSchool.schoolId,
+        academicYearId,
+        revision: timetableRevision,
+        entries: proposalEntries,
+      }),
+    }
     return c.json({ data })
   } catch (error) {
     console.error('[timetable/solver/preview] failed', {
@@ -2531,6 +2857,262 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
       message: error instanceof Error ? error.message : String(error),
     })
     return c.json({ error: 'فشل في إنشاء اقتراح جدول صالح' }, 500)
+  }
+})
+
+app.post('/api/timetable/solver/adoption-preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, [
+    'school_id', 'academic_year_id', 'proposal_revision', 'proposal_digest', 'entries',
+  ])) return c.json({ error: 'بيانات معاينة الاعتماد غير صالحة أو تحتوي على حقول غير معروفة' }, 400)
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
+  const academicYearId = Number(body.academic_year_id)
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0) return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
+  const parsed = parseTimetableProposalPayload(body, 'proposal_revision')
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, academicYearId)
+  if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+  try {
+    const [revision, context] = await Promise.all([
+      loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
+      loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, academicYearId),
+    ])
+    if (revision !== parsed.revision) {
+      return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
+    }
+    const data = await buildTimetableAdoptionPreview({
+      schoolId: targetSchool.schoolId,
+      academicYearId,
+      revision,
+      digest: parsed.digest,
+      entries: parsed.entries,
+      context,
+    })
+    return c.json({ data })
+  } catch {
+    return c.json({ error: 'فشل في معاينة اعتماد الجدول' }, 500)
+  }
+})
+
+app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, [
+    'school_id', 'academic_year_id', 'expected_revision', 'proposal_digest', 'entries', 'confirm_apply',
+  ])) return c.json({ error: 'بيانات اعتماد الجدول غير صالحة أو تحتوي على حقول غير معروفة' }, 400)
+  if (body.confirm_apply !== true) return c.json({ error: 'يلزم تأكيد اعتماد الجدول الرسمي' }, 400)
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
+  const academicYearId = Number(body.academic_year_id)
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0) return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
+  const parsed = parseTimetableProposalPayload(body, 'expected_revision')
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, academicYearId)
+  if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+  try {
+    const [revision, context] = await Promise.all([
+      loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
+      loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, academicYearId),
+    ])
+    if (revision !== parsed.revision) {
+      return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
+    }
+    const preview = await buildTimetableAdoptionPreview({
+      schoolId: targetSchool.schoolId,
+      academicYearId,
+      revision,
+      digest: parsed.digest,
+      entries: parsed.entries,
+      context,
+    })
+    if (!preview.can_apply) {
+      const status = preview.blockers.some((blocker) => blocker.code === 'proposal_digest_mismatch') ? 409 : 400
+      return c.json({ error: 'لا يمكن اعتماد مقترح غير مكتمل أو غير صالح', code: 'invalid_timetable_proposal', data: preview }, status)
+    }
+    const applied = await replaceOfficialTimetableAtomically({
+      db: c.env.DB,
+      schoolId: targetSchool.schoolId,
+      academicYearId,
+      expectedRevision: revision,
+      digest: parsed.digest,
+      entries: parsed.entries,
+      userId: user.id,
+      source: 'automatic_adoption',
+    })
+    return c.json({
+      data: {
+        applied: true,
+        message: 'تم اعتماد الجدول بنجاح',
+        revision: applied.revision,
+        previous_version: applied.version,
+        entry_count: parsed.entries.length,
+      },
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/stale_timetable_proposal/i.test(message)) {
+      return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
+    }
+    const conflict = timetableEntryConstraintError(error)
+    if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
+    return c.json({ error: 'فشل في اعتماد الجدول ولم يتم تغيير الجدول الحالي' }, 500)
+  }
+})
+
+app.get('/api/timetable/versions', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const academicYearId = Number(c.req.query('academic_year_id'))
+  if (schoolId == null) return c.json({ error: 'يجب تحديد مدرسة لعرض إصدارات الجدول' }, 400)
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0) return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, schoolId, academicYearId)
+  if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+  try {
+    const { results } = await c.env.DB.prepare(`
+      SELECT version.*, user.full_name AS created_by_name
+      FROM timetable_schedule_versions version
+      LEFT JOIN users user ON user.id = version.created_by_user_id
+      WHERE version.school_id = ? AND version.academic_year_id = ?
+      ORDER BY version.created_at DESC, version.id DESC
+      LIMIT 100
+    `).bind(schoolId, academicYearId).all<TimetableScheduleVersion>()
+    return c.json({ data: results || [] })
+  } catch {
+    return c.json({ error: 'فشل في جلب إصدارات الجدول' }, 500)
+  }
+})
+
+app.get('/api/timetable/versions/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const academicYearId = Number(c.req.query('academic_year_id'))
+  const versionId = Number(c.req.param('id'))
+  if (schoolId == null) return c.json({ error: 'يجب تحديد مدرسة لعرض إصدار الجدول' }, 400)
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0 || !Number.isInteger(versionId) || versionId <= 0) {
+    return c.json({ error: 'معرف الإصدار أو السنة الدراسية غير صالح' }, 400)
+  }
+  try {
+    const version = await loadTimetableScheduleVersion(c.env.DB, versionId)
+    if (!version) return c.json({ error: 'إصدار الجدول غير موجود' }, 404)
+    if (Number(version.school_id) !== schoolId) return c.json({ error: 'غير مسموح: الإصدار من مدرسة أخرى' }, 403)
+    if (Number(version.academic_year_id) !== academicYearId) return c.json({ error: 'الإصدار من سنة دراسية أخرى' }, 400)
+    return c.json({ data: version })
+  } catch {
+    return c.json({ error: 'فشل في عرض إصدار الجدول' }, 500)
+  }
+})
+
+app.post('/api/timetable/versions/:id/restore-preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const versionId = Number(c.req.param('id'))
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, ['school_id', 'academic_year_id'])
+    || !Number.isInteger(versionId) || versionId <= 0) {
+    return c.json({ error: 'بيانات معاينة الاستعادة غير صالحة' }, 400)
+  }
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
+  const academicYearId = Number(body.academic_year_id)
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0) return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
+  try {
+    const version = await loadTimetableScheduleVersion(c.env.DB, versionId)
+    if (!version) return c.json({ error: 'إصدار الجدول غير موجود' }, 404)
+    if (Number(version.school_id) !== targetSchool.schoolId) return c.json({ error: 'غير مسموح: الإصدار من مدرسة أخرى' }, 403)
+    if (Number(version.academic_year_id) !== academicYearId) return c.json({ error: 'الإصدار من سنة دراسية أخرى' }, 400)
+    const [revision, context] = await Promise.all([
+      loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
+      loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, academicYearId),
+    ])
+    const entries = canonicalTimetableProposalEntries(version.entries)
+    const digest = await computeTimetableProposalDigest({
+      schoolId: targetSchool.schoolId,
+      academicYearId,
+      revision,
+      entries,
+    })
+    const preview = await buildTimetableAdoptionPreview({
+      schoolId: targetSchool.schoolId,
+      academicYearId,
+      revision,
+      digest,
+      entries,
+      context,
+    })
+    const invalidHistoricalEntryKeys = new Set(preview.blockers
+      .filter((blocker) => blocker.slot_id != null && blocker.teaching_load_id != null)
+      .map((blocker) => `${blocker.slot_id}:${blocker.teaching_load_id}`))
+    const data: TimetableRestorePreview = {
+      ...preview,
+      version,
+      restorable_entry_count: Math.max(0, entries.length - invalidHistoricalEntryKeys.size),
+      invalid_historical_entry_count: invalidHistoricalEntryKeys.size,
+    }
+    return c.json({ data })
+  } catch {
+    return c.json({ error: 'فشل في معاينة استعادة إصدار الجدول' }, 500)
+  }
+})
+
+app.post('/api/timetable/versions/:id/restore', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const versionId = Number(c.req.param('id'))
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, [
+    'school_id', 'academic_year_id', 'expected_revision', 'proposal_digest', 'confirm_restore',
+  ]) || !Number.isInteger(versionId) || versionId <= 0) {
+    return c.json({ error: 'بيانات استعادة الإصدار غير صالحة أو تحتوي على حقول غير معروفة' }, 400)
+  }
+  if (body.confirm_restore !== true) return c.json({ error: 'يلزم تأكيد استعادة إصدار الجدول' }, 400)
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
+  const academicYearId = Number(body.academic_year_id)
+  const expectedRevision = Number(body.expected_revision)
+  const digest = typeof body.proposal_digest === 'string' ? body.proposal_digest.trim().toLowerCase() : ''
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0
+    || !Number.isInteger(expectedRevision) || expectedRevision < 0
+    || !/^[a-f0-9]{64}$/.test(digest)) return c.json({ error: 'سياق الاستعادة غير صالح' }, 400)
+  try {
+    const version = await loadTimetableScheduleVersion(c.env.DB, versionId)
+    if (!version) return c.json({ error: 'إصدار الجدول غير موجود' }, 404)
+    if (Number(version.school_id) !== targetSchool.schoolId) return c.json({ error: 'غير مسموح: الإصدار من مدرسة أخرى' }, 403)
+    if (Number(version.academic_year_id) !== academicYearId) return c.json({ error: 'الإصدار من سنة دراسية أخرى' }, 400)
+    const [revision, context] = await Promise.all([
+      loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
+      loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, academicYearId),
+    ])
+    if (revision !== expectedRevision) {
+      return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
+    }
+    const entries = canonicalTimetableProposalEntries(version.entries)
+    const preview = await buildTimetableAdoptionPreview({
+      schoolId: targetSchool.schoolId,
+      academicYearId,
+      revision,
+      digest,
+      entries,
+      context,
+    })
+    if (!preview.can_apply) {
+      return c.json({ error: 'لم يعد هذا الإصدار صالحًا للاستعادة الكاملة', code: 'invalid_timetable_restore', data: preview }, 400)
+    }
+    const restored = await replaceOfficialTimetableAtomically({
+      db: c.env.DB,
+      schoolId: targetSchool.schoolId,
+      academicYearId,
+      expectedRevision,
+      digest,
+      entries,
+      userId: user.id,
+      source: 'manual_restore',
+      restoredFromVersionId: versionId,
+    })
+    return c.json({ data: { restored: true, revision: restored.revision, previous_version: restored.version } })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/stale_timetable_proposal/i.test(message)) {
+      return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
+    }
+    return c.json({ error: 'فشل في استعادة الإصدار ولم يتم تغيير الجدول الحالي' }, 500)
   }
 })
 
@@ -2838,6 +3420,64 @@ app.post('/api/timetable/entries', requireSameSchoolOrAdmin(), requireRoles(ACAD
   }
 })
 
+app.put('/api/timetable/entries/:id/lock', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  const id = Number(c.req.param('id'))
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'is_locked'])
+    || !Number.isInteger(id) || id <= 0) return c.json({ error: 'بيانات تثبيت الحصة غير صالحة' }, 400)
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
+  const academicYearId = Number(body.academic_year_id)
+  const isLocked = Number(body.is_locked)
+  if (!Number.isInteger(academicYearId) || academicYearId <= 0 || ![0, 1].includes(isLocked)) {
+    return c.json({ error: 'السنة الدراسية أو حالة التثبيت غير صالحة' }, 400)
+  }
+  try {
+    const existing = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ?')
+      .bind(id).first<TimetableEntry>()
+    if (!existing) return c.json({ error: 'الحصة المجدولة غير موجودة' }, 404)
+    if (Number(existing.school_id) !== targetSchool.schoolId) {
+      return c.json({ error: 'غير مسموح: الحصة المجدولة من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
+    }
+    if (Number(existing.academic_year_id) !== academicYearId) {
+      return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
+    }
+    if (Number(existing.is_locked) !== isLocked) {
+      if (Number(existing.is_locked) === 1) {
+        const overrideToken = crypto.randomUUID()
+        await c.env.DB.batch([
+          c.env.DB.prepare(`
+            INSERT INTO timetable_locked_entry_overrides
+              (token, entry_id, school_id, academic_year_id, action)
+            VALUES (?, ?, ?, ?, 'unlock')
+          `).bind(overrideToken, id, targetSchool.schoolId, academicYearId),
+          c.env.DB.prepare(`
+            UPDATE timetable_entries
+            SET is_locked = 0, updated_by_user_id = ?, updated_at = unixepoch()
+            WHERE id = ? AND school_id = ? AND academic_year_id = ?
+          `).bind(user.id, id, targetSchool.schoolId, academicYearId),
+          c.env.DB.prepare('DELETE FROM timetable_locked_entry_overrides WHERE token = ?').bind(overrideToken),
+        ])
+      } else {
+        await c.env.DB.prepare(`
+          UPDATE timetable_entries
+          SET is_locked = 1, updated_by_user_id = ?, updated_at = unixepoch()
+          WHERE id = ? AND school_id = ? AND academic_year_id = ?
+        `).bind(user.id, id, targetSchool.schoolId, academicYearId).run()
+      }
+    }
+    const [entry, revision] = await Promise.all([
+      c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ? AND school_id = ?')
+        .bind(id, targetSchool.schoolId).first<TimetableEntry>(),
+      loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
+    ])
+    return c.json({ data: { entry, revision } })
+  } catch {
+    return c.json({ error: 'فشل في تغيير حالة تثبيت الحصة' }, 500)
+  }
+})
+
 app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const user = c.get('user') as UserContext
   const id = Number(c.req.param('id'))
@@ -2857,6 +3497,12 @@ app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(A
     }
     if (Number(existing.academic_year_id) !== validation.value.academicYearId) {
       return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
+    }
+    if (Number(existing.is_locked) === 1 && body.confirm_unlock_locked_entry !== true) {
+      return c.json({
+        error: 'هذه الحصة مثبتة. يلزم تأكيد إلغاء التثبيت قبل نقلها.',
+        code: 'locked_entry_requires_confirmation',
+      }, 409)
     }
     if (validation.value.teachingLoadId != null
       && validation.value.teachingLoadId !== Number(existing.teaching_load_id)) {
@@ -2888,17 +3534,34 @@ app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(A
       { error: hardConflict.message, code: hardConflict.code },
       timetableEntryNoticeStatus(hardConflict),
     )
-    await c.env.DB.prepare(`
-      UPDATE timetable_entries
-      SET slot_id = ?, updated_by_user_id = ?, updated_at = unixepoch()
-      WHERE id = ? AND school_id = ? AND academic_year_id = ?
-    `).bind(
-      validation.value.slotId,
-      user.id,
-      id,
-      targetSchool.schoolId,
-      validation.value.academicYearId,
-    ).run()
+    if (Number(existing.is_locked) === 1) {
+      const overrideToken = crypto.randomUUID()
+      await c.env.DB.batch([
+        c.env.DB.prepare(`
+          INSERT INTO timetable_locked_entry_overrides
+            (token, entry_id, school_id, academic_year_id, action)
+          VALUES (?, ?, ?, ?, 'move')
+        `).bind(overrideToken, id, targetSchool.schoolId, validation.value.academicYearId),
+        c.env.DB.prepare(`
+          UPDATE timetable_entries
+          SET slot_id = ?, is_locked = 0, updated_by_user_id = ?, updated_at = unixepoch()
+          WHERE id = ? AND school_id = ? AND academic_year_id = ?
+        `).bind(validation.value.slotId, user.id, id, targetSchool.schoolId, validation.value.academicYearId),
+        c.env.DB.prepare('DELETE FROM timetable_locked_entry_overrides WHERE token = ?').bind(overrideToken),
+      ])
+    } else {
+      await c.env.DB.prepare(`
+        UPDATE timetable_entries
+        SET slot_id = ?, updated_by_user_id = ?, updated_at = unixepoch()
+        WHERE id = ? AND school_id = ? AND academic_year_id = ?
+      `).bind(
+        validation.value.slotId,
+        user.id,
+        id,
+        targetSchool.schoolId,
+        validation.value.academicYearId,
+      ).run()
+    }
     const entry = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ? AND school_id = ?')
       .bind(id, targetSchool.schoolId).first<TimetableEntry>()
     const load = context.loads.find((item) => Number(item.id) === Number(existing.teaching_load_id))!
@@ -2929,11 +3592,38 @@ app.delete('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRole
   if (Number(existing.academic_year_id) !== academicYearId) {
     return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
   }
+  if (Number(existing.is_locked) === 1 && body.confirm_unlock_locked_entry !== true) {
+    return c.json({
+      error: 'هذه الحصة مثبتة. يلزم تأكيد إلغاء التثبيت قبل حذفها.',
+      code: 'locked_entry_requires_confirmation',
+    }, 409)
+  }
   try {
-    await c.env.DB.prepare(`
-      DELETE FROM timetable_entries
-      WHERE id = ? AND school_id = ? AND academic_year_id = ?
-    `).bind(id, targetSchool.schoolId, academicYearId).run()
+    if (Number(existing.is_locked) === 1) {
+      const overrideToken = crypto.randomUUID()
+      await c.env.DB.batch([
+        c.env.DB.prepare(`
+          INSERT INTO timetable_locked_entry_overrides
+            (token, entry_id, school_id, academic_year_id, action)
+          VALUES (?, ?, ?, ?, 'delete')
+        `).bind(overrideToken, id, targetSchool.schoolId, academicYearId),
+        c.env.DB.prepare(`
+          UPDATE timetable_entries
+          SET is_locked = 0, updated_by_user_id = ?, updated_at = unixepoch()
+          WHERE id = ? AND school_id = ? AND academic_year_id = ?
+        `).bind(user.id, id, targetSchool.schoolId, academicYearId),
+        c.env.DB.prepare(`
+          DELETE FROM timetable_entries
+          WHERE id = ? AND school_id = ? AND academic_year_id = ?
+        `).bind(id, targetSchool.schoolId, academicYearId),
+        c.env.DB.prepare('DELETE FROM timetable_locked_entry_overrides WHERE token = ?').bind(overrideToken),
+      ])
+    } else {
+      await c.env.DB.prepare(`
+        DELETE FROM timetable_entries
+        WHERE id = ? AND school_id = ? AND academic_year_id = ?
+      `).bind(id, targetSchool.schoolId, academicYearId).run()
+    }
     return c.json({ data: { id } })
   } catch {
     return c.json({ error: 'فشل في حذف الحصة المجدولة' }, 500)

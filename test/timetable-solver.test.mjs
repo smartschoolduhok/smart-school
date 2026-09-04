@@ -72,7 +72,7 @@ function teachingLoad(id, overrides = {}) {
   };
 }
 
-function solverInput({ days, slots, loads, placements, availability = [], constraints = [], limits, currentEntries = [] }) {
+function solverInput({ days, slots, loads, placements, availability = [], constraints = [], limits, currentEntries = [], fixedEntries = [] }) {
   return {
     schoolId: 1,
     academicYearId: 1,
@@ -83,9 +83,153 @@ function solverInput({ days, slots, loads, placements, availability = [], constr
     teacherAvailability: availability,
     teacherConstraints: constraints,
     currentEntries,
+    fixedEntries,
     limits: limits || { time_budget_ms: 4_000, max_attempts: 200_000, max_backtracks: 10_000, max_local_improvement_attempts: 500 },
   };
 }
+
+test('fixed lesson is preserved at the exact slot and marked locked', () => {
+  const { days, slots } = week(3, 4);
+  const result = solveTimetable(solverInput({
+    days, slots, loads: [teachingLoad(1, { weekly_periods: 3 })], placements: [placement(1)],
+    fixedEntries: [{ slot_id: 4, teaching_load_id: 1 }],
+  }));
+  const fixed = result.entries.find((entry) => entry.slot_id === 4 && entry.teaching_load_id === 1);
+  assert.equal(result.status, 'complete');
+  assert.equal(fixed?.is_locked, 1);
+});
+
+test('section-specific fixed lesson remains in its exact canonical placement', () => {
+  const { days, slots } = week(3, 4);
+  const result = solveTimetable(solverInput({
+    days, slots,
+    loads: [teachingLoad(1, { class_id: 1, section_id: 9, weekly_periods: 2 })],
+    placements: [placement(1, 9)],
+    fixedEntries: [{ slot_id: 3, teaching_load_id: 1 }],
+  }));
+  assert.equal(result.status, 'complete');
+  assert.ok(result.entries.some((entry) => entry.slot_id === 3 && entry.teaching_load_id === 1 && entry.section_id === 9 && entry.is_locked === 1));
+});
+
+test('fixed entry with an invalid teaching load is rejected explicitly', () => {
+  const { days, slots } = week(2, 3);
+  const result = solveTimetable(solverInput({
+    days, slots,
+    loads: [teachingLoad(1, { employee_status: 'archived' })],
+    placements: [placement(1)],
+    fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }],
+  }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_invalid_load'));
+});
+
+test('fixed entry from another timetable scope is rejected explicitly', () => {
+  const { days, slots } = week(2, 3);
+  const result = solveTimetable(solverInput({
+    days, slots,
+    loads: [teachingLoad(1)],
+    placements: [placement(1)],
+    fixedEntries: [{ slot_id: 999, teaching_load_id: 1 }],
+  }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_invalid_scope' || item.code === 'fixed_inactive_slot'));
+});
+
+test('fixed entries consume weekly demand and only the unlocked remainder is generated', () => {
+  const { days, slots } = week(3, 4);
+  const result = solveTimetable(solverInput({
+    days, slots, loads: [teachingLoad(1, { weekly_periods: 3 })], placements: [placement(1)],
+    fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }, { slot_id: 5, teaching_load_id: 1 }],
+  }));
+  assert.equal(result.entries.length, 3);
+  assert.equal(result.entries.filter((entry) => entry.is_locked === 1).length, 2);
+  assert.equal(result.entries.filter((entry) => entry.is_locked === 0).length, 1);
+});
+
+test('same input and fixed entries produce the same deterministic proposal', () => {
+  const { days, slots } = week(4, 5);
+  const input = solverInput({
+    days, slots,
+    loads: [teachingLoad(1, { weekly_periods: 4 }), teachingLoad(2, { weekly_periods: 3 })],
+    placements: [placement(1), placement(2)], fixedEntries: [{ slot_id: 2, teaching_load_id: 1 }],
+  });
+  const first = solveTimetable(input);
+  const second = solveTimetable(input);
+  assert.deepEqual(first.entries, second.entries);
+});
+
+test('duplicate fixed entry is rejected explicitly', () => {
+  const { days, slots } = week(2, 3);
+  const result = solveTimetable(solverInput({
+    days, slots, loads: [teachingLoad(1)], placements: [placement(1)],
+    fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }, { slot_id: 1, teaching_load_id: 1 }],
+  }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_duplicate'));
+});
+
+test('fixed entry on an inactive lesson slot is rejected explicitly', () => {
+  const { days, slots } = week(2, 3);
+  slots[0].is_active = 0;
+  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1)], placements: [placement(1)], fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }] }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_inactive_slot'));
+});
+
+test('fixed teacher collision is rejected explicitly', () => {
+  const { days, slots } = week(2, 3);
+  const loads = [teachingLoad(1, { employee_id: 1 }), teachingLoad(2, { employee_id: 1 })];
+  const result = solveTimetable(solverInput({ days, slots, loads, placements: [placement(1), placement(2)], fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }, { slot_id: 1, teaching_load_id: 2 }] }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_teacher_collision'));
+});
+
+test('fixed class-wide collision with a section-specific lesson is rejected', () => {
+  const { days, slots } = week(2, 3);
+  const loads = [teachingLoad(1, { class_id: 1, section_id: null }), teachingLoad(2, { class_id: 1, section_id: 9, employee_id: 2 })];
+  const result = solveTimetable(solverInput({ days, slots, loads, placements: [placement(1, 9)], fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }, { slot_id: 1, teaching_load_id: 2 }] }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_class_collision'));
+});
+
+test('fixed unavailable teacher placement is rejected', () => {
+  const { days, slots } = week(2, 3);
+  const availability = [{ id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: 1, status: 'unavailable', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0 }];
+  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1)], placements: [placement(1)], availability, fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }] }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_teacher_unavailable'));
+});
+
+test('fixed entries respect teacher maximum periods per day', () => {
+  const { days, slots } = week(2, 3);
+  const constraints = [{ id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: 1, max_consecutive_periods: null, max_working_days: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0 }];
+  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1)], placements: [placement(1)], constraints, fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }, { slot_id: 2, teaching_load_id: 1 }] }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_daily_limit'));
+});
+
+test('fixed entries respect teacher maximum working days', () => {
+  const { days, slots } = week(2, 3);
+  const constraints = [{ id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null, max_consecutive_periods: null, max_working_days: 1, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0 }];
+  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1)], placements: [placement(1)], constraints, fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }, { slot_id: 4, teaching_load_id: 1 }] }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_working_days_limit'));
+});
+
+test('fixed entries respect teacher maximum consecutive periods', () => {
+  const { days, slots } = week(2, 3);
+  const constraints = [{ id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null, max_consecutive_periods: 1, max_working_days: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0 }];
+  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1)], placements: [placement(1)], constraints, fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }, { slot_id: 2, teaching_load_id: 1 }] }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_consecutive_limit'));
+});
+
+test('fixed entries cannot exceed the teaching load weekly count', () => {
+  const { days, slots } = week(2, 3);
+  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1, { weekly_periods: 1 })], placements: [placement(1)], fixedEntries: [{ slot_id: 1, teaching_load_id: 1 }, { slot_id: 4, teaching_load_id: 1 }] }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some((item) => item.code === 'fixed_weekly_limit'));
+});
 
 function internalEntries(result) {
   return result.entries.map((entry, index) => ({
@@ -354,6 +498,23 @@ for (const benchmark of [
     assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
   });
 }
+
+test('solver many-locked benchmark remains bounded and preserves every fixed placement', () => {
+  const input = benchmarkInput(15, 30, 36);
+  const baseline = solveTimetable(input);
+  const fixedEntries = baseline.entries
+    .filter((_, index) => index % 2 === 0)
+    .map(({ slot_id, teaching_load_id }) => ({ slot_id, teaching_load_id }));
+  const startedAt = performance.now();
+  const result = solveTimetable({ ...input, fixedEntries });
+  const runtime = Math.round(performance.now() - startedAt);
+  console.log(`SOLVER_BENCHMARK many-locked runtime_ms=${runtime} attempts=${result.statistics.attempts} backtracks=${result.statistics.backtracks} scheduled_pct=${Math.round(result.scheduled_periods / result.required_periods * 100)} locked=${fixedEntries.length} quality=${result.quality_score}`);
+  assert.equal(result.status, 'complete');
+  assert.ok(runtime < 2_500);
+  for (const fixed of fixedEntries) {
+    assert.ok(result.entries.some((entry) => entry.slot_id === fixed.slot_id && entry.teaching_load_id === fixed.teaching_load_id && entry.is_locked === 1));
+  }
+});
 
 test('an impossible overloaded class still preserves an independent feasible class proposal', () => {
   const { days, slots } = week(1, 2);

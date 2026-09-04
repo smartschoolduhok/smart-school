@@ -50,6 +50,7 @@ async function fixture() {
     '0001_initial_schema.sql', '0002_phase2_academic_tables.sql', '0010_employees.sql',
     '0016_auth_security.sql', '0023_timetable_foundation.sql',
     '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
+    '0026_timetable_adoption_locking.sql',
   ]) database.exec(migration(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
@@ -134,7 +135,7 @@ test('solver preview endpoint returns a complete school proposal and performs no
   assert.equal(Object.hasOwn(data.statistics, 'source_query_count'), false);
   const solverSourceQueryCount = context.d1.sqlLog.filter((sql) => /FROM\s+(?:timetable_days|timetable_slots|timetable_teaching_loads|timetable_entries|timetable_teacher_availability|timetable_teacher_constraints|classes\s+class)\b/i.test(sql)).length;
   assert.equal(solverSourceQueryCount, 7);
-  assert.equal(context.d1.prepareCount, 11, `expected 7 solver-source, 2 scope-validation, and 2 authentication queries; got ${context.d1.prepareCount}`);
+  assert.equal(context.d1.prepareCount, 12, `expected 7 solver-source, 1 revision, 2 scope-validation, and 2 authentication queries; got ${context.d1.prepareCount}`);
 });
 
 test('system admin requires an explicit active target school', async () => {
@@ -183,7 +184,7 @@ test('query count remains constant as teaching-load row count grows', async () =
   larger.d1.prepareCount = 0;
   assert.equal((await api(larger, larger.tokens.owner, { school_id: 1, academic_year_id: 1 })).status, 200);
   assert.equal(larger.d1.prepareCount, baseCount);
-  assert.equal(baseCount, 11);
+  assert.equal(baseCount, 12);
 });
 
 test('existing valid and later-invalid entries are reported separately without blocking proposal generation', async () => {

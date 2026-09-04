@@ -33,7 +33,14 @@ import type {
   TimetableTeacherWorkload,
   TimetableTeachingLoad,
 } from './timetable';
-import type { TimetableSolverPreview } from './timetableSolver';
+import type {
+  TimetableAdoptionPreview,
+  TimetableProposalPlacement,
+  TimetableRestorePreview,
+  TimetableScheduleVersion,
+  TimetableScheduleVersionDetails,
+  TimetableSolverProposalWithIntegrity,
+} from './timetableAdoption';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -299,11 +306,82 @@ export function getTimetableMasterGrid(schoolId: number, academicYearId: number)
   return fetchApi<TimetableMasterGridData>(`/api/timetable/master-grid?${timetableQuery(schoolId, academicYearId)}`);
 }
 
-export function previewAutomaticTimetable(schoolId: number, academicYearId: number) {
-  return fetchApi<TimetableSolverPreview>('/api/timetable/solver/preview', {
+export function previewAutomaticTimetable(
+  schoolId: number,
+  academicYearId: number,
+  options?: {
+    fixed_entries?: Array<{ slot_id: number; teaching_load_id: number }>;
+    use_current_locked_entries?: boolean;
+  },
+) {
+  return fetchApi<TimetableSolverProposalWithIntegrity>('/api/timetable/solver/preview', {
     method: 'POST',
-    body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+    body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId, ...options }),
   });
+}
+
+function proposalEntries(entries: TimetableProposalPlacement[]) {
+  return entries.map(({ slot_id, teaching_load_id, is_locked }) => ({ slot_id, teaching_load_id, is_locked }));
+}
+
+export function previewTimetableAdoption(data: {
+  school_id: number;
+  academic_year_id: number;
+  proposal_revision: number;
+  proposal_digest: string;
+  entries: TimetableProposalPlacement[];
+}) {
+  return fetchApi<TimetableAdoptionPreview>('/api/timetable/solver/adoption-preview', {
+    method: 'POST', body: JSON.stringify({ ...data, entries: proposalEntries(data.entries) }),
+  });
+}
+
+export function applyTimetableProposal(data: {
+  school_id: number;
+  academic_year_id: number;
+  expected_revision: number;
+  proposal_digest: string;
+  entries: TimetableProposalPlacement[];
+  confirm_apply: true;
+}) {
+  return fetchApi<{
+    applied: true;
+    message: string;
+    revision: number;
+    previous_version: TimetableScheduleVersion;
+    entry_count: number;
+  }>('/api/timetable/solver/apply', {
+    method: 'POST', body: JSON.stringify({ ...data, entries: proposalEntries(data.entries) }),
+  });
+}
+
+export function getTimetableVersions(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableScheduleVersion[]>(`/api/timetable/versions?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function getTimetableVersion(versionId: number, schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableScheduleVersionDetails>(
+    `/api/timetable/versions/${versionId}?${timetableQuery(schoolId, academicYearId)}`,
+  );
+}
+
+export function previewTimetableVersionRestore(versionId: number, schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableRestorePreview>(`/api/timetable/versions/${versionId}/restore-preview`, {
+    method: 'POST', body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+  });
+}
+
+export function restoreTimetableVersion(versionId: number, data: {
+  school_id: number;
+  academic_year_id: number;
+  expected_revision: number;
+  proposal_digest: string;
+  confirm_restore: true;
+}) {
+  return fetchApi<{ restored: true; revision: number; previous_version: TimetableScheduleVersion }>(
+    `/api/timetable/versions/${versionId}/restore`,
+    { method: 'POST', body: JSON.stringify(data) },
+  );
 }
 
 export function createTimetableEntry(data: {
@@ -327,6 +405,7 @@ export function moveTimetableEntry(id: number, data: {
   school_id: number;
   academic_year_id: number;
   slot_id: number;
+  confirm_unlock_locked_entry?: true;
 }) {
   return fetchApi<TimetableEntry>(`/api/timetable/entries/${id}`, {
     method: 'PUT', body: JSON.stringify(data),
@@ -339,9 +418,28 @@ export function moveTimetableEntry(id: number, data: {
   }>;
 }
 
-export function deleteTimetableEntry(id: number, schoolId: number, academicYearId: number) {
+export function deleteTimetableEntry(
+  id: number,
+  schoolId: number,
+  academicYearId: number,
+  confirmUnlockLockedEntry = false,
+) {
   return fetchApi<{ id: number }>(`/api/timetable/entries/${id}`, {
-    method: 'DELETE', body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+    method: 'DELETE', body: JSON.stringify({
+      school_id: schoolId,
+      academic_year_id: academicYearId,
+      ...(confirmUnlockLockedEntry ? { confirm_unlock_locked_entry: true } : {}),
+    }),
+  });
+}
+
+export function setTimetableEntryLock(id: number, data: {
+  school_id: number;
+  academic_year_id: number;
+  is_locked: 0 | 1;
+}) {
+  return fetchApi<{ entry: TimetableEntry; revision: number }>(`/api/timetable/entries/${id}/lock`, {
+    method: 'PUT', body: JSON.stringify(data),
   });
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, LoaderCircle, Sparkles, WandSparkles } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, GitCompareArrows, LoaderCircle, Lock, RefreshCcw, Sparkles, Unlock, WandSparkles } from 'lucide-react';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
-import { previewAutomaticTimetable } from '../../lib/api';
+import { applyTimetableProposal, previewAutomaticTimetable, previewTimetableAdoption } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
   timetablePlacementKey,
@@ -16,12 +16,18 @@ import type {
   TimetableSolverProposalEntry,
   TimetableSolverStatus,
 } from '../../lib/timetableSolver';
+import {
+  computeTimetableProposalDigest,
+  type TimetableAdoptionPreview,
+  type TimetableSolverProposalWithIntegrity,
+} from '../../lib/timetableAdoption';
 
 interface AutomaticTimetableTabProps {
   schoolId: number;
   academicYearId: number;
   dataVersion: number;
   readiness: TimetableReadinessSummary | null;
+  onAdopted: () => Promise<void>;
 }
 
 function SolverMetric({ label, value, tone = 'blue' }: {
@@ -47,6 +53,7 @@ const STATUS_PRESENTATION: Record<TimetableSolverStatus, { label: string; classe
   complete: { label: 'اقتراح مكتمل', classes: 'border-emerald-200 bg-emerald-50 text-emerald-800' },
   partial: { label: 'اقتراح جزئي', classes: 'border-amber-200 bg-amber-50 text-amber-900' },
   impossible: { label: 'غير ممكن بالقيود الحالية', classes: 'border-red-200 bg-red-50 text-red-800' },
+  fixed_conflict: { label: 'تعارض في الحصص المثبتة', classes: 'border-red-200 bg-red-50 text-red-800' },
 };
 
 const PENALTY_LABELS: Record<keyof TimetableSolverPenaltyBreakdown, string> = {
@@ -84,7 +91,12 @@ function slotLabel(slot: TimetableSlot) {
   return slot.label || `الحصة ${slot.lesson_number || slot.slot_index}`;
 }
 
-function ProposalGrid({ result, schoolId }: { result: TimetableSolverPreview; schoolId: number }) {
+function ProposalGrid({ result, schoolId, disabled, onToggleLock }: {
+  result: TimetableSolverPreview;
+  schoolId: number;
+  disabled: boolean;
+  onToggleLock: (proposalId: string) => void;
+}) {
   const days = useMemo(() => [...result.days].sort((left, right) => (
     left.order_index - right.order_index || left.day_of_week - right.day_of_week
   )), [result.days]);
@@ -131,6 +143,16 @@ function ProposalGrid({ result, schoolId }: { result: TimetableSolverPreview; sc
                               <p className="font-bold">{entry.subject_name}</p>
                               <p className={`mt-1 ${entry.employee_id == null ? 'font-bold text-amber-800' : 'opacity-80'}`}>{entry.employee_name || 'بدون مدرس'}</p>
                               {entry.soft_warnings.length > 0 && <p className="mt-1 text-[10px] opacity-75">{entry.soft_warnings.map((warning) => warning.message).join('، ')}</p>}
+                              <button
+                                type="button"
+                                disabled={disabled}
+                                onClick={() => onToggleLock(entry.proposal_id)}
+                                className="mt-2 flex items-center gap-1 rounded-md border border-current/30 bg-white/70 px-2 py-1 text-[10px] font-bold disabled:opacity-50"
+                                aria-label={entry.is_locked === 1 ? 'إلغاء تثبيت الحصة' : 'تثبيت الحصة'}
+                              >
+                                {entry.is_locked === 1 ? <Lock size={12} /> : <Unlock size={12} />}
+                                {entry.is_locked === 1 ? 'إلغاء التثبيت' : 'تثبيت الحصة'}
+                              </button>
                             </div>
                           </td>
                         );
@@ -153,31 +175,43 @@ export function AutomaticTimetableTab({
   academicYearId,
   dataVersion,
   readiness,
+  onAdopted,
 }: AutomaticTimetableTabProps) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const requestGenerationRef = useRef(0);
   const scopeRef = useRef({ schoolId, academicYearId, dataVersion });
   scopeRef.current = { schoolId, academicYearId, dataVersion };
-  const [result, setResult] = useState<TimetableSolverPreview | null>(null);
+  const [result, setResult] = useState<TimetableSolverProposalWithIntegrity | null>(null);
+  const [adoptionPreview, setAdoptionPreview] = useState<TimetableAdoptionPreview | null>(null);
   const [loading, setLoading] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   useEffect(() => {
     requestGenerationRef.current += 1;
     setResult(null);
+    setAdoptionPreview(null);
     setLoading(false);
+    setApplying(false);
     setError('');
+    setSuccess('');
     return () => { requestGenerationRef.current += 1; };
   }, [academicYearId, dataVersion, schoolId]);
 
-  async function generateProposal() {
+  async function generateProposal(options?: {
+    fixed_entries?: Array<{ slot_id: number; teaching_load_id: number }>;
+    use_current_locked_entries?: boolean;
+  }) {
     const generation = ++requestGenerationRef.current;
     const expectedScope = { schoolId, academicYearId, dataVersion };
     const isCurrentSchool = captureSchoolRequest();
     setLoading(true);
     setResult(null);
+    setAdoptionPreview(null);
     setError('');
-    const response = await previewAutomaticTimetable(schoolId, academicYearId);
+    setSuccess('');
+    const response = await previewAutomaticTimetable(schoolId, academicYearId, options);
     if (
       generation !== requestGenerationRef.current
       || !isCurrentSchool()
@@ -193,6 +227,84 @@ export function AutomaticTimetableTab({
     setResult(response.data || null);
   }
 
+  async function toggleProposalLock(proposalId: string) {
+    if (!result || loading || applying) return;
+    const generation = ++requestGenerationRef.current;
+    const nextEntries = result.entries.map((entry) => (
+      entry.proposal_id === proposalId ? { ...entry, is_locked: entry.is_locked === 1 ? 0 as const : 1 as const } : entry
+    ));
+    const digest = await computeTimetableProposalDigest({
+      schoolId,
+      academicYearId,
+      revision: result.timetable_revision,
+      entries: nextEntries,
+    });
+    if (generation !== requestGenerationRef.current) return;
+    setResult({ ...result, entries: nextEntries, proposal_digest: digest });
+    setAdoptionPreview(null);
+    setSuccess('');
+  }
+
+  async function reSolveUnlocked() {
+    if (!result) return;
+    await generateProposal({
+      fixed_entries: result.entries.filter((entry) => entry.is_locked === 1).map((entry) => ({
+        slot_id: entry.slot_id,
+        teaching_load_id: entry.teaching_load_id,
+      })),
+    });
+  }
+
+  async function previewAdoption() {
+    if (!result) return;
+    const generation = ++requestGenerationRef.current;
+    setApplying(true);
+    setError('');
+    setSuccess('');
+    const response = await previewTimetableAdoption({
+      school_id: schoolId,
+      academic_year_id: academicYearId,
+      proposal_revision: result.timetable_revision,
+      proposal_digest: result.proposal_digest,
+      entries: result.entries,
+    });
+    if (generation !== requestGenerationRef.current) return;
+    setApplying(false);
+    if (response.error) {
+      setAdoptionPreview(null);
+      setError(response.error);
+      return;
+    }
+    setAdoptionPreview(response.data || null);
+  }
+
+  async function applyProposal() {
+    if (!result || !adoptionPreview?.can_apply) return;
+    if (!window.confirm('سيصبح هذا المقترح هو الجدول الرسمي للسنة الدراسية.\nسيتم حفظ نسخة من الجدول الحالي قبل الاستبدال.\nهل تريد المتابعة؟')) return;
+    const generation = ++requestGenerationRef.current;
+    setApplying(true);
+    setError('');
+    const response = await applyTimetableProposal({
+      school_id: schoolId,
+      academic_year_id: academicYearId,
+      expected_revision: result.timetable_revision,
+      proposal_digest: result.proposal_digest,
+      entries: result.entries,
+      confirm_apply: true,
+    });
+    if (generation !== requestGenerationRef.current) return;
+    setApplying(false);
+    if (response.error) {
+      setError(response.error);
+      setAdoptionPreview(null);
+      return;
+    }
+    setResult(null);
+    setAdoptionPreview(null);
+    setSuccess('تم اعتماد الجدول بنجاح');
+    await onAdopted();
+  }
+
   return (
     <div className="space-y-5">
       <section className="rounded-xl border border-indigo-200 bg-gradient-to-l from-indigo-50 to-white p-5">
@@ -202,15 +314,25 @@ export function AutomaticTimetableTab({
             <p className="mt-1 max-w-3xl text-sm text-indigo-800">يحلل النظام السعة والأنصبة وتوفر المدرسين وقيودهم، ثم ينشئ اقتراحًا حتميًا للمدرسة كاملة.</p>
             <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-amber-800"><AlertTriangle size={17} />هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.</p>
           </div>
-          <button
-            type="button"
-            disabled={loading}
-            onClick={() => void generateProposal()}
-            className="flex items-center gap-2 rounded-lg bg-indigo-700 px-5 py-3 font-bold text-white shadow-sm hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {loading ? <LoaderCircle size={19} className="animate-spin" /> : <Sparkles size={19} />}
-            {loading ? 'جاري بناء الاقتراح...' : 'إنشاء جدول تلقائي'}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={loading || applying}
+              onClick={() => void generateProposal()}
+              className="flex items-center gap-2 rounded-lg bg-indigo-700 px-5 py-3 font-bold text-white shadow-sm hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {loading ? <LoaderCircle size={19} className="animate-spin" /> : <Sparkles size={19} />}
+              {loading ? 'جاري بناء الاقتراح...' : 'إنشاء جدول تلقائي'}
+            </button>
+            <button
+              type="button"
+              disabled={loading || applying}
+              onClick={() => void generateProposal({ use_current_locked_entries: true })}
+              className="flex items-center gap-2 rounded-lg border border-indigo-300 bg-white px-4 py-3 font-bold text-indigo-800 disabled:opacity-50"
+            >
+              <RefreshCcw size={18} />إعادة تحسين الجدول الحالي
+            </button>
+          </div>
         </div>
       </section>
 
@@ -225,6 +347,7 @@ export function AutomaticTimetableTab({
       </section>
 
       {error && <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800"><AlertTriangle size={19} />{error}</div>}
+      {success && <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800"><CheckCircle2 size={19} />{success}</div>}
 
       {result && (
         <>
@@ -234,6 +357,19 @@ export function AutomaticTimetableTab({
               <span className="rounded-full border border-current px-3 py-1 text-xs font-bold">معاينة — غير معتمدة</span>
             </div>
           </section>
+
+          {result.fixed_conflicts.length > 0 && (
+            <section className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+              <h3 className="font-bold">الحصص المثبتة تمنع إنشاء جدول صالح</h3>
+              <ul className="mt-2 list-inside list-disc space-y-1">
+                {result.fixed_conflicts.map((conflict, index) => (
+                  <li key={`${conflict.code}:${conflict.slot_id}:${conflict.teaching_load_id}:${index}`}>
+                    {conflict.message} <bdi dir="ltr">({conflict.code})</bdi>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <SolverMetric label="درجة الجودة المقارنة" value={result.quality_score} tone={result.quality_score >= 80 ? 'green' : result.quality_score >= 60 ? 'amber' : 'red'} />
@@ -260,7 +396,38 @@ export function AutomaticTimetableTab({
             <p className="mt-3 text-xs text-gray-500">المحاولات: <bdi dir="ltr">{result.statistics.attempts}</bdi> — الرجوعات: <bdi dir="ltr">{result.statistics.backtracks}</bdi> — الزمن: <bdi dir="ltr">{result.statistics.elapsed_ms} ms</bdi></p>
           </section>
 
-          <ProposalGrid result={result} schoolId={schoolId} />
+          <ProposalGrid result={result} schoolId={schoolId} disabled={loading || applying} onToggleLock={(proposalId) => void toggleProposalLock(proposalId)} />
+
+          {result.status === 'complete' && (
+            <section className="rounded-xl border border-indigo-200 bg-white p-4">
+              <div className="flex flex-wrap gap-2">
+                <button type="button" disabled={loading || applying} onClick={() => void reSolveUnlocked()} className="flex items-center gap-2 rounded-lg border border-indigo-300 px-4 py-2 font-bold text-indigo-800 disabled:opacity-50"><RefreshCcw size={18} />إعادة توليد غير المثبت</button>
+                <button type="button" disabled={loading || applying} onClick={() => void previewAdoption()} className="flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2 font-bold text-white disabled:opacity-50"><GitCompareArrows size={18} />مقارنة مع الجدول الحالي / معاينة الاعتماد</button>
+              </div>
+              <p className="mt-2 text-xs text-gray-500">نسخة البيانات: <bdi dir="ltr">{result.timetable_revision}</bdi> — البصمة: <bdi dir="ltr" className="break-all">{result.proposal_digest}</bdi></p>
+            </section>
+          )}
+
+          {adoptionPreview && (
+            <section className={`rounded-xl border p-4 ${adoptionPreview.can_apply ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
+              <h3 className="font-bold text-gray-900">مقارنة مع الجدول الحالي</h3>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                <SolverMetric label="بلا تغيير" value={adoptionPreview.comparison.unchanged} tone="green" />
+                <SolverMetric label="منقولة" value={adoptionPreview.comparison.moved} tone="amber" />
+                <SolverMetric label="مضافة" value={adoptionPreview.comparison.added} />
+                <SolverMetric label="محذوفة" value={adoptionPreview.comparison.removed} tone="red" />
+                <SolverMetric label="مثبتة محفوظة" value={adoptionPreview.comparison.locked_preserved} tone="green" />
+                <SolverMetric label="حالـية غير صالحة/تاريخية" value={adoptionPreview.current_invalid_entry_count} tone={adoptionPreview.current_invalid_entry_count ? 'amber' : 'green'} />
+              </div>
+              {adoptionPreview.warnings.map((warning) => <p key={warning} className="mt-2 text-sm text-amber-800">{warning}</p>)}
+              {adoptionPreview.blockers.length > 0 && <ul className="mt-3 list-inside list-disc text-sm text-red-800">{adoptionPreview.blockers.map((blocker, index) => <li key={`${blocker.code}:${index}`}>{blocker.message}</li>)}</ul>}
+              {adoptionPreview.can_apply && (
+                <button type="button" disabled={applying} onClick={() => void applyProposal()} className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-700 px-5 py-3 font-bold text-white disabled:opacity-50">
+                  {applying ? <LoaderCircle size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}اعتماد هذا الجدول
+                </button>
+              )}
+            </section>
+          )}
 
           {result.unscheduled.length > 0 && (
             <section className="rounded-xl border border-red-200 bg-red-50 p-4">
