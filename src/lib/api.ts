@@ -628,6 +628,49 @@ export function archiveStudent(id: number | string, schoolId: number) {
 // ===========================================
 // Subjects
 // ===========================================
+export interface BulkSubjectRequest {
+  school_id: number;
+  class_ids: number[];
+  name: string;
+  subject_type: 'أساسية' | 'اختيارية';
+  religious_track: 'islamic' | 'christian' | 'other' | null;
+  counts_in_average: boolean;
+  appears_in_report_card: boolean;
+  passing_grade: number;
+  exemption_grade: number;
+}
+
+export interface BulkSubjectPreviewItem {
+  class_id: number;
+  class_name: string | null;
+  status: 'create' | 'already_exists' | 'invalid';
+  existing_subject_id?: number;
+  reason?: 'missing_or_not_in_scope' | 'inactive';
+}
+
+export interface BulkSubjectPreviewData {
+  school_id: number;
+  subject: Omit<BulkSubjectRequest, 'school_id' | 'class_ids'>;
+  items: BulkSubjectPreviewItem[];
+  counts: { selected: number; create: number; already_exists: number; invalid: number };
+  can_create: boolean;
+}
+
+export interface BulkSubjectCreateData {
+  school_id: number;
+  created: Array<{ class_id: number; class_name: string | null; subject_id: number }>;
+  skipped_existing: Array<{ class_id: number; class_name: string | null; existing_subject_id: number | null }>;
+  created_count: number;
+  skipped_count: number;
+  items: Array<{
+    class_id: number;
+    class_name: string | null;
+    status: 'created' | 'already_exists';
+    subject_id: number | null;
+  }>;
+  counts: { selected: number; created: number; already_exists: number };
+}
+
 export function getSubjects(schoolId?: number | null, classId?: number | null, sectionId?: number | null) {
   const params = new URLSearchParams();
   if (schoolId != null) params.append('school_id', String(schoolId));
@@ -639,6 +682,20 @@ export function getSubjects(schoolId?: number | null, classId?: number | null, s
 
 export function createSubject(data: Record<string, any>) {
   return fetchApi<Record<string, any>>('/api/subjects', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function previewBulkSubjects(data: BulkSubjectRequest) {
+  return fetchApi<BulkSubjectPreviewData>('/api/subjects/bulk-preview', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function createBulkSubjects(data: BulkSubjectRequest & { confirm_create: true }) {
+  return fetchApi<BulkSubjectCreateData>('/api/subjects/bulk', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 }
 
 export function updateSubject(id: number | string, data: Record<string, any>) {
