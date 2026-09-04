@@ -157,6 +157,7 @@ export interface TimetableEntry {
   academic_year_id: number;
   slot_id: number;
   teaching_load_id: number;
+  is_locked: 0 | 1;
   created_by_user_id: number | null;
   updated_by_user_id: number | null;
   created_at: number;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { AlertTriangle, BookOpen, GraduationCap, LayoutGrid, Printer, UserRound } from 'lucide-react';
+import { AlertTriangle, BookOpen, GraduationCap, LayoutGrid, Lock, Printer, UserRound } from 'lucide-react';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { getTimetableMasterGrid } from '../../lib/api';
 import {
@@ -59,6 +59,7 @@ function SubjectCell({ entry, extra }: { entry: TimetableGridEntry | null; extra
     >
       <strong>{entry.subject_name}</strong>
       <span>{entry.employee_name || 'بدون مدرس'}</span>
+      {entry.is_locked === 1 && <span className="no-print inline-flex items-center gap-1 text-[10px] font-bold" title="حصة مثبتة"><Lock size={11} />مثبتة</span>}
       {extra}
     </div>
   );

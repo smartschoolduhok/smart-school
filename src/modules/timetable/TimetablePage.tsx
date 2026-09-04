@@ -5,6 +5,7 @@ import {
   CalendarDays,
   CheckCircle2,
   Clock3,
+  History,
   LayoutGrid,
   Pencil,
   Plus,
@@ -49,8 +50,9 @@ import { TeacherAvailabilityTab } from './TeacherAvailabilityTab';
 import { AutomaticTimetableTab } from './AutomaticTimetableTab';
 import { MasterTimetableTab } from './MasterTimetableTab';
 import { TimetableGridTab } from './TimetableGridTab';
+import { TimetableVersionsTab } from './TimetableVersionsTab';
 
-type TabKey = 'grid' | 'master' | 'automatic' | 'week' | 'loads' | 'availability' | 'readiness';
+type TabKey = 'grid' | 'master' | 'automatic' | 'versions' | 'week' | 'loads' | 'availability' | 'readiness';
 
 interface SubjectOption {
   id: number;
@@ -469,6 +471,7 @@ export default function TimetablePage() {
                   ['grid', 'الجدول الأسبوعي', CalendarDays],
                   ['master', 'الجدول الكامل', LayoutGrid],
                   ['automatic', 'التوليد التلقائي', Sparkles],
+                  ['versions', 'إصدارات الجدول', History],
                   ['week', 'إعداد الأسبوع', Clock3],
                   ['loads', 'نصاب المواد والمدرسين', BookOpenCheck],
                   ['availability', 'توفر المدرسين والقيود', UserRoundCheck],
@@ -546,6 +549,16 @@ export default function TimetablePage() {
                   academicYearId={academicYearId}
                   dataVersion={yearDataVersion}
                   readiness={readiness}
+                  onAdopted={reloadYearData}
+                />
+              )}
+
+              {!loading && tab === 'versions' && schoolId != null && academicYearId != null && (
+                <TimetableVersionsTab
+                  schoolId={schoolId}
+                  academicYearId={academicYearId}
+                  dataVersion={yearDataVersion}
+                  onRestored={reloadYearData}
                 />
               )}
 

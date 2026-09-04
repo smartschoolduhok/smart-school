@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeftRight, CalendarRange, Plus, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeftRight, CalendarRange, Lock, Plus, Trash2, Unlock, X } from 'lucide-react';
 import {
   createTimetableEntry,
   deleteTimetableEntry,
   getTimetableGrid,
   moveTimetableEntry,
+  setTimetableEntryLock,
 } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
@@ -189,6 +190,8 @@ export function TimetableGridTab({
 
   async function moveEntry(slotId: number) {
     if (!moveDialog) return;
+    const unlockConfirmed = moveDialog.entry.is_locked !== 1 || window.confirm('هذه الحصة مثبتة. هل تريد إلغاء التثبيت ونقلها؟');
+    if (!unlockConfirmed) return;
     const expectedScope = currentScopeRef.current;
     const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
@@ -197,6 +200,7 @@ export function TimetableGridTab({
       school_id: schoolId,
       academic_year_id: academicYearId,
       slot_id: slotId,
+      ...(moveDialog.entry.is_locked === 1 ? { confirm_unlock_locked_entry: true as const } : {}),
     });
     if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setSaving(false);
@@ -209,12 +213,34 @@ export function TimetableGridTab({
   }
 
   async function removeEntry(entry: TimetableGridEntry) {
-    if (!window.confirm(`هل تريد حذف حصة ${entry.subject_name} من الجدول؟`)) return;
+    const message = entry.is_locked === 1
+      ? `هذه الحصة مثبتة. هل تريد إلغاء التثبيت وحذف حصة ${entry.subject_name}؟`
+      : `هل تريد حذف حصة ${entry.subject_name} من الجدول؟`;
+    if (!window.confirm(message)) return;
     const expectedScope = currentScopeRef.current;
     const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
     setError('');
-    const response = await deleteTimetableEntry(entry.id, schoolId, academicYearId);
+    const response = await deleteTimetableEntry(entry.id, schoolId, academicYearId, entry.is_locked === 1);
+    if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
+    setSaving(false);
+    if (response.error) {
+      setError(response.error);
+      return;
+    }
+    await refreshAfterMutation(expectedScope, expectedGeneration);
+  }
+
+  async function toggleEntryLock(entry: TimetableGridEntry) {
+    const expectedScope = currentScopeRef.current;
+    const expectedGeneration = requestGenerationRef.current;
+    setSaving(true);
+    setError('');
+    const response = await setTimetableEntryLock(entry.id, {
+      school_id: schoolId,
+      academic_year_id: academicYearId,
+      is_locked: entry.is_locked === 1 ? 0 : 1,
+    });
     if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setSaving(false);
     if (response.error) {
@@ -329,6 +355,7 @@ export function TimetableGridTab({
                                     </div>
                                   )}
                                   <div className="mt-2 flex gap-1">
+                                    <button type="button" onClick={() => void toggleEntryLock(entry)} className="rounded p-1.5 text-slate-700 hover:bg-slate-100" aria-label={entry.is_locked === 1 ? 'إلغاء تثبيت الحصة' : 'تثبيت الحصة'} title={entry.is_locked === 1 ? 'حصة مثبتة' : 'تثبيت الحصة'}>{entry.is_locked === 1 ? <Lock size={15} /> : <Unlock size={15} />}</button>
                                     <button type="button" onClick={() => setMoveDialog({ entry })} className="rounded p-1.5 text-blue-700 hover:bg-blue-100" aria-label="نقل الحصة"><ArrowLeftRight size={15} /></button>
                                     <button type="button" onClick={() => void removeEntry(entry)} className="rounded p-1.5 text-red-700 hover:bg-red-100" aria-label="حذف الحصة"><Trash2 size={15} /></button>
                                   </div>
@@ -360,6 +387,7 @@ export function TimetableGridTab({
                     ) : <p className="mt-2 text-sm text-gray-600">الفترة الأصلية غير متاحة</p>}
                     <HardConflictNotice conflicts={entry.hard_conflicts} />
                     <div className="mt-3 flex gap-2">
+                      <button type="button" onClick={() => void toggleEntryLock(entry)} className="flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-200">{entry.is_locked === 1 ? <Lock size={14} /> : <Unlock size={14} />}{entry.is_locked === 1 ? 'إلغاء التثبيت' : 'تثبيت'}</button>
                       <button type="button" onClick={() => setMoveDialog({ entry })} className="flex items-center gap-1 rounded-md bg-blue-50 px-2 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"><ArrowLeftRight size={14} />نقل إلى فترة فعالة</button>
                       <button type="button" onClick={() => void removeEntry(entry)} className="flex items-center gap-1 rounded-md bg-red-100 px-2 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-200"><Trash2 size={14} />حذف</button>
                     </div>

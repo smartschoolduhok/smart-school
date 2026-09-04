@@ -507,7 +507,7 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.get('/api/timetable/teacher-availability-summary'",
   ]) assert.ok(workerSource.includes(route), route);
   const routeGuards = timetableWorkerSource.match(/app\.(?:get|post|put|delete)\('\/api\/timetable[^\n]*requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/g) || [];
-  assert.equal(routeGuards.length, 26);
+  assert.equal(routeGuards.length, 33);
   assert.match(workerSource, /resolveActiveWriteSchool\(c\.env\.DB, user, body\.school_id\)/);
   assert.doesNotMatch(timetableWorkerSource, /school_id\s*(?:\?\?|\|\|)\s*1/);
   assert.doesNotMatch(timetableWorkerSource, /students\.class_id|students\.section_id/);
@@ -519,7 +519,7 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
   );
   const schedulingContext = workerSource.slice(
     workerSource.indexOf('async function loadTimetableSchedulingContext'),
-    workerSource.indexOf('async function validateTimetableGridReferences'),
+    workerSource.indexOf('type TimetableProposalPayloadValidation'),
   );
   assert.equal((schedulingContext.match(/db\.prepare\(/g) || []).length, 6, 'scheduling context uses six set-based queries');
   assert.equal((readinessHelper.match(/db\.prepare\(/g) || []).length, 2, 'readiness adds only placement and subject queries');
