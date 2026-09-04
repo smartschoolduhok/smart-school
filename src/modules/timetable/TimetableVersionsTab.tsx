@@ -142,6 +142,8 @@ export function TimetableVersionsTab({
         <div className={`rounded-xl border p-4 ${restorePreview.can_apply ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
           <h3 className="font-bold">معاينة الاستعادة</h3>
           <p className="mt-2 text-sm">قابل للاستعادة: <bdi dir="ltr">{restorePreview.restorable_entry_count}</bdi> — غير صالح تاريخيًا: <bdi dir="ltr">{restorePreview.invalid_historical_entry_count}</bdi></p>
+          <p className="mt-1 text-sm">تغطية الأنصبة الحالية: <bdi dir="ltr">{restorePreview.weekly_demand.scheduled_periods}</bdi> / <bdi dir="ltr">{restorePreview.weekly_demand.required_periods}</bdi></p>
+          {restorePreview.warnings.length > 0 && <ul className="mt-2 list-inside list-disc text-sm text-amber-800">{restorePreview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
           {restorePreview.blockers.length > 0 && <ul className="mt-2 list-inside list-disc text-sm text-red-800">{restorePreview.blockers.map((blocker, index) => <li key={`${blocker.code}:${index}`}>{blocker.message}</li>)}</ul>}
           {restorePreview.can_apply && <button type="button" onClick={() => void restoreVersion()} className="mt-3 flex items-center gap-2 rounded-lg bg-amber-700 px-4 py-2 font-bold text-white"><RotateCcw size={17} />استعادة هذا الإصدار</button>}
         </div>

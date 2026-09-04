@@ -192,6 +192,7 @@ import {
   compareTimetableSchedules,
   computeTimetableProposalDigest,
   validateCompleteTimetableSchedule,
+  validateRestorableTimetableSchedule,
   type TimetableAdoptionPreview,
   type TimetableProposalPlacement,
   type TimetableRestorePreview,
@@ -897,6 +898,9 @@ async function buildTimetableAdoptionPreview(input: {
   digest: string;
   entries: TimetableProposalPlacement[];
   context: TimetableSchedulingContext;
+  options:
+    | { validationMode: 'complete'; preserveCurrentLocks: true }
+    | { validationMode: 'restore'; preserveCurrentLocks: false };
 }): Promise<TimetableAdoptionPreview> {
   const recomputedDigest = await computeTimetableProposalDigest({
     schoolId: input.schoolId,
@@ -904,7 +908,7 @@ async function buildTimetableAdoptionPreview(input: {
     revision: input.revision,
     entries: input.entries,
   });
-  const validation = validateCompleteTimetableSchedule({
+  const validationContext = {
     schoolId: input.schoolId,
     academicYearId: input.academicYearId,
     days: input.context.days,
@@ -912,24 +916,43 @@ async function buildTimetableAdoptionPreview(input: {
     loads: input.context.loads,
     availability: input.context.availability,
     constraints: input.context.constraints,
-  }, input.entries);
+  };
+  const validation = input.options.validationMode === 'complete'
+    ? (() => {
+      const result = validateCompleteTimetableSchedule(validationContext, input.entries);
+      return { allowsApply: result.complete, blockers: result.blockers, weeklyDemand: result.weekly_demand };
+    })()
+    : (() => {
+      const result = validateRestorableTimetableSchedule(validationContext, input.entries);
+      return { allowsApply: result.structurally_valid, blockers: result.blockers, weeklyDemand: result.weekly_demand };
+    })();
+  const currentInvalidEntryCount = countInvalidCurrentTimetableEntries(input.context);
+  const warnings = [
+    ...(currentInvalidEntryCount > 0
+      ? ['سيتم حفظ السجلات الحالية غير الصالحة أو التاريخية كاملة في إصدار سابق قبل الاستبدال.']
+      : []),
+    ...(input.options.validationMode === 'restore' && !validation.weeklyDemand.current_demand_complete
+      ? ['هذا الإصدار لا يغطي جميع الأنصبة الأسبوعية الحالية.']
+      : []),
+  ];
   const blockers = [
     ...(recomputedDigest === input.digest ? [] : [{ code: 'proposal_digest_mismatch', message: 'بصمة المقترح لا تطابق محتواه الحالي.' }]),
     ...validation.blockers,
-    ...currentLockedEntriesArePreserved(input.context.entries, input.entries),
+    ...(input.options.preserveCurrentLocks
+      ? currentLockedEntriesArePreserved(input.context.entries, input.entries)
+      : []),
   ];
   return {
-    can_apply: blockers.length === 0 && validation.complete,
+    can_apply: blockers.length === 0 && validation.allowsApply,
     comparison: compareTimetableSchedules(input.context.entries, input.entries),
     current_entry_count: input.context.entries.length,
     proposed_entry_count: input.entries.length,
     locked_count: input.entries.filter((entry) => entry.is_locked === 1).length,
-    current_invalid_entry_count: countInvalidCurrentTimetableEntries(input.context),
+    current_invalid_entry_count: currentInvalidEntryCount,
     revision: input.revision,
     proposal_digest: recomputedDigest,
-    warnings: countInvalidCurrentTimetableEntries(input.context) > 0
-      ? ['سيتم حفظ السجلات الحالية غير الصالحة أو التاريخية كاملة في إصدار سابق قبل الاستبدال.']
-      : [],
+    weekly_demand: validation.weeklyDemand,
+    warnings,
     blockers,
   };
 }
@@ -2889,6 +2912,7 @@ app.post('/api/timetable/solver/adoption-preview', requireSameSchoolOrAdmin(), r
       digest: parsed.digest,
       entries: parsed.entries,
       context,
+      options: { validationMode: 'complete', preserveCurrentLocks: true },
     })
     return c.json({ data })
   } catch {
@@ -2926,6 +2950,7 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
       digest: parsed.digest,
       entries: parsed.entries,
       context,
+      options: { validationMode: 'complete', preserveCurrentLocks: true },
     })
     if (!preview.can_apply) {
       const status = preview.blockers.some((blocker) => blocker.code === 'proposal_digest_mismatch') ? 409 : 400
@@ -3037,6 +3062,7 @@ app.post('/api/timetable/versions/:id/restore-preview', requireSameSchoolOrAdmin
       digest,
       entries,
       context,
+      options: { validationMode: 'restore', preserveCurrentLocks: false },
     })
     const invalidHistoricalEntryKeys = new Set(preview.blockers
       .filter((blocker) => blocker.slot_id != null && blocker.teaching_load_id != null)
@@ -3091,6 +3117,7 @@ app.post('/api/timetable/versions/:id/restore', requireSameSchoolOrAdmin(), requ
       digest,
       entries,
       context,
+      options: { validationMode: 'restore', preserveCurrentLocks: false },
     })
     if (!preview.can_apply) {
       return c.json({ error: 'لم يعد هذا الإصدار صالحًا للاستعادة الكاملة', code: 'invalid_timetable_restore', data: preview }, 400)

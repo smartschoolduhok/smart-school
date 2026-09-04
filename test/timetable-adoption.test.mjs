@@ -10,6 +10,7 @@ import {
   computeTimetableProposalDigest,
   timetableProposalDigestSource,
   validateCompleteTimetableSchedule,
+  validateRestorableTimetableSchedule,
 } from '../src/lib/timetableAdoption.ts';
 
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -250,6 +251,52 @@ test('partial proposal cannot become an official schedule', () => {
   const result = validateCompleteTimetableSchedule(validationContext(), [{ slot_id: 1, teaching_load_id: 1, is_locked: 0 }]);
   assert.equal(result.complete, false);
   assert.ok(result.blockers.some((item) => item.code === 'incomplete_weekly_demand'));
+});
+
+test('structurally valid historical snapshot may be restored below current weekly demand', () => {
+  const result = validateRestorableTimetableSchedule(validationContext(), [
+    { slot_id: 1, teaching_load_id: 1, is_locked: 1 },
+    { slot_id: 2, teaching_load_id: 2, is_locked: 0 },
+  ]);
+  assert.equal(result.structurally_valid, true);
+  assert.equal(result.blockers.length, 0);
+  assert.deepEqual(result.weekly_demand, {
+    current_demand_complete: false,
+    required_periods: 4,
+    scheduled_periods: 2,
+    missing_periods: 2,
+    incomplete_load_count: 2,
+  });
+});
+
+test('historical snapshot exceeding a current weekly load remains structurally invalid', () => {
+  const result = validateRestorableTimetableSchedule(validationContext(), [
+    { slot_id: 1, teaching_load_id: 1, is_locked: 0 },
+    { slot_id: 2, teaching_load_id: 1, is_locked: 0 },
+    { slot_id: 3, teaching_load_id: 1, is_locked: 0 },
+  ]);
+  assert.equal(result.structurally_valid, false);
+  assert.ok(result.blockers.some((item) => item.code === 'weekly_periods_exceeded'));
+});
+
+test('historical restore validation keeps every current hard scheduling constraint', () => {
+  const collision = validateRestorableTimetableSchedule(validationContext({
+    loads: [load(1), load(2, { class_id: 1, class_name: 'Class 1', subject_class_id: 1 })],
+  }), [
+    { slot_id: 1, teaching_load_id: 1, is_locked: 0 },
+    { slot_id: 1, teaching_load_id: 2, is_locked: 0 },
+  ]);
+  const unavailable = validateRestorableTimetableSchedule(validationContext({
+    availability: [{ id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: 1, status: 'unavailable', created_at: 0, updated_at: 0 }],
+  }), [{ slot_id: 1, teaching_load_id: 1, is_locked: 0 }]);
+  const inactiveSlotContext = validationContext();
+  inactiveSlotContext.slots[0].is_active = 0;
+  const inactiveSlot = validateRestorableTimetableSchedule(inactiveSlotContext, [
+    { slot_id: 1, teaching_load_id: 1, is_locked: 0 },
+  ]);
+  assert.ok(collision.blockers.some((item) => item.code === 'class_section_collision'));
+  assert.ok(unavailable.blockers.some((item) => item.code === 'teacher_unavailable'));
+  assert.ok(inactiveSlot.blockers.some((item) => item.code === 'inactive_slot'));
 });
 
 test('duplicate proposal pair is rejected', () => {

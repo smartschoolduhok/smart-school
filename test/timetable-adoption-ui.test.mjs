@@ -77,3 +77,11 @@ test('version restore uses stale request protection, preview and confirmation be
   assert.match(versionsSource, /confirm_restore: true/);
   assert.match(pageSource, /onRestored=\{reloadYearData\}/);
 });
+
+test('restore preview separates structural blockers from current weekly-demand warnings', () => {
+  assert.match(versionsSource, /تغطية الأنصبة الحالية/);
+  assert.match(versionsSource, /restorePreview\.weekly_demand\.scheduled_periods/);
+  assert.match(versionsSource, /restorePreview\.weekly_demand\.required_periods/);
+  assert.match(versionsSource, /restorePreview\.warnings\.map/);
+  assert.match(versionsSource, /restorePreview\.blockers\.map/);
+});

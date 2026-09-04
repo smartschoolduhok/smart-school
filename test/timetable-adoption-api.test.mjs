@@ -160,6 +160,50 @@ function seedCurrent(context, locked = false) {
   context.database.prepare('INSERT INTO timetable_entries (school_id, academic_year_id, slot_id, teaching_load_id, is_locked, created_by_user_id, updated_by_user_id) VALUES (1,1,2,2,0,1,1)').run();
 }
 
+function createHistoricalVersion(context, entries, versionKey = 'qa-historical-version') {
+  const result = context.database.prepare(`
+    INSERT INTO timetable_schedule_versions (
+      version_key, school_id, academic_year_id, source, previous_revision,
+      created_by_user_id, old_entry_count, new_entry_count, locked_entry_count, proposal_digest
+    ) VALUES (?,1,1,'automatic_adoption',0,1,?,?,?,?)
+  `).run(
+    versionKey,
+    entries.length,
+    entries.length,
+    entries.filter((entry) => entry.is_locked === 1).length,
+    'qa-historical-digest',
+  );
+  const versionId = Number(result.lastInsertRowid);
+  const insertEntry = context.database.prepare(`
+    INSERT INTO timetable_schedule_version_entries (
+      version_id, school_id, academic_year_id, slot_id, teaching_load_id, is_locked
+    ) VALUES (?,1,1,?,?,?)
+  `);
+  for (const entry of entries) {
+    insertEntry.run(versionId, entry.slot_id, entry.teaching_load_id, entry.is_locked);
+  }
+  return context.database.prepare('SELECT * FROM timetable_schedule_versions WHERE id = ?').get(versionId);
+}
+
+async function previewHistoricalRestore(context, versionId) {
+  const response = await call(context, context.tokens.owner, 'POST', `/api/timetable/versions/${versionId}/restore-preview`, {
+    school_id: 1,
+    academic_year_id: 1,
+  });
+  assert.equal(response.status, 200);
+  return (await response.json()).data;
+}
+
+async function applyHistoricalRestore(context, versionId, preview) {
+  return call(context, context.tokens.owner, 'POST', `/api/timetable/versions/${versionId}/restore`, {
+    school_id: 1,
+    academic_year_id: 1,
+    expected_revision: preview.revision,
+    proposal_digest: preview.proposal_digest,
+    confirm_restore: true,
+  });
+}
+
 test('solver proposal includes authoritative revision and SHA-256 digest', async () => {
   const context = await fixture();
   const proposal = await generate(context);
@@ -235,6 +279,20 @@ test('partial proposal cannot be adopted even with its correctly recomputed dige
   });
   assert.equal(response.status, 400);
   assert.equal(officialRows(context.database).length, 0);
+});
+
+test('automatic adoption still requires every current persisted lock to be preserved', async () => {
+  const context = await fixture();
+  seedCurrent(context, true);
+  const before = officialRows(context.database);
+  const proposal = await generate(context, context.tokens.owner, { use_current_locked_entries: false });
+  const previewResponse = await adoptionPreview(context, proposal);
+  const preview = (await previewResponse.json()).data;
+  assert.equal(preview.can_apply, false);
+  assert.ok(preview.blockers.some((blocker) => blocker.code === 'locked_entry_not_preserved'));
+  const applyResponse = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+  assert.equal(applyResponse.status, 400);
+  assert.deepEqual(officialRows(context.database), before);
 });
 
 test('apply requires an explicit confirmation marker', async () => {
@@ -422,14 +480,67 @@ test('version detail endpoint returns immutable snapshot entries', async () => {
   assert.equal((await response.json()).data.entries.length, 2);
 });
 
-test('restore preview validates history without writes', async () => {
+test('restore preview allows structurally valid history below current demand without writes', async () => {
   const { context, version } = await adoptedFixture();
   const before = officialRows(context.database);
   const response = await call(context, context.tokens.owner, 'POST', `/api/timetable/versions/${version.id}/restore-preview`, { school_id: 1, academic_year_id: 1 });
   assert.equal(response.status, 200);
   const data = (await response.json()).data;
-  assert.equal(data.can_apply, false, 'the deliberately partial historical schedule must not be restorable as official');
+  assert.equal(data.can_apply, true);
+  assert.equal(data.restorable_entry_count, 2);
+  assert.equal(data.invalid_historical_entry_count, 0);
+  assert.equal(data.weekly_demand.current_demand_complete, false);
+  assert.equal(data.weekly_demand.missing_periods, 2);
+  assert.ok(data.warnings.includes('هذا الإصدار لا يغطي جميع الأنصبة الأسبوعية الحالية.'));
   assert.deepEqual(officialRows(context.database), before);
+});
+
+test('exact structurally valid incomplete history restores without inventing missing periods', async () => {
+  const { context, version } = await adoptedFixture();
+  const historical = context.database.prepare(`
+    SELECT slot_id, teaching_load_id, is_locked
+    FROM timetable_schedule_version_entries
+    WHERE version_id = ? ORDER BY teaching_load_id, slot_id
+  `).all(version.id).map((entry) => ({ ...entry }));
+  const preview = await previewHistoricalRestore(context, version.id);
+  const response = await applyHistoricalRestore(context, version.id, preview);
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    officialRows(context.database).map(({ slot_id, teaching_load_id, is_locked }) => ({ slot_id, teaching_load_id, is_locked })),
+    historical,
+  );
+});
+
+test('confirmed restore replaces current locks with the historical snapshot lock state', async () => {
+  const context = await fixture();
+  seedCurrent(context, true);
+  const currentBefore = officialRows(context.database);
+  const historicalEntries = [
+    { slot_id: 2, teaching_load_id: 1, is_locked: 1 },
+    { slot_id: 4, teaching_load_id: 1, is_locked: 0 },
+    { slot_id: 1, teaching_load_id: 2, is_locked: 0 },
+    { slot_id: 3, teaching_load_id: 2, is_locked: 1 },
+  ];
+  const version = createHistoricalVersion(context, historicalEntries);
+  const preview = await previewHistoricalRestore(context, version.id);
+  assert.equal(preview.can_apply, true);
+  assert.ok(!preview.blockers.some((blocker) => blocker.code === 'locked_entry_not_preserved'));
+  const response = await applyHistoricalRestore(context, version.id, preview);
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    officialRows(context.database).map(({ slot_id, teaching_load_id, is_locked }) => ({ slot_id, teaching_load_id, is_locked })),
+    historicalEntries.sort((left, right) => left.teaching_load_id - right.teaching_load_id || left.slot_id - right.slot_id),
+  );
+  const currentSnapshot = context.database.prepare("SELECT * FROM timetable_schedule_versions WHERE source = 'manual_restore' ORDER BY id DESC LIMIT 1").get();
+  const snapshottedEntries = context.database.prepare(`
+    SELECT slot_id, teaching_load_id, is_locked
+    FROM timetable_schedule_version_entries
+    WHERE version_id = ? ORDER BY teaching_load_id, slot_id
+  `).all(currentSnapshot.id).map((entry) => ({ ...entry }));
+  assert.deepEqual(
+    snapshottedEntries,
+    currentBefore.map(({ slot_id, teaching_load_id, is_locked }) => ({ slot_id, teaching_load_id, is_locked })),
+  );
 });
 
 test('valid complete historical version restores and snapshots current schedule', async () => {
@@ -490,14 +601,101 @@ test('injected restore insertion failure rolls back current schedule and restore
   assert.equal(context.database.prepare('SELECT revision FROM timetable_revisions WHERE school_id = 1 AND academic_year_id = 1').get().revision, beforeRevision);
 });
 
+for (const [label, configure, entries, expectedCode] of [
+  [
+    'weekly-period excess',
+    () => {},
+    [
+      { slot_id: 1, teaching_load_id: 1, is_locked: 0 },
+      { slot_id: 2, teaching_load_id: 1, is_locked: 0 },
+      { slot_id: 3, teaching_load_id: 1, is_locked: 0 },
+    ],
+    'weekly_periods_exceeded',
+  ],
+  [
+    'hard class collision',
+    (context) => context.database.exec(`
+      INSERT INTO subjects (id, school_id, class_id, name, status) VALUES (4,1,1,'Science A','active');
+      INSERT INTO timetable_teaching_loads
+        (id, school_id, academic_year_id, class_id, subject_id, employee_id, weekly_periods, status)
+      VALUES (5,1,1,1,4,2,1,'active');
+    `),
+    [
+      { slot_id: 1, teaching_load_id: 1, is_locked: 0 },
+      { slot_id: 1, teaching_load_id: 5, is_locked: 0 },
+    ],
+    'class_section_collision',
+  ],
+  [
+    'teacher collision',
+    (context) => context.database.prepare('UPDATE timetable_teaching_loads SET employee_id = 1 WHERE id = 2').run(),
+    [
+      { slot_id: 1, teaching_load_id: 1, is_locked: 0 },
+      { slot_id: 1, teaching_load_id: 2, is_locked: 0 },
+    ],
+    'teacher_collision',
+  ],
+  [
+    'unavailable teacher',
+    (context) => context.database.prepare(`
+      INSERT INTO timetable_teacher_availability
+        (school_id, academic_year_id, employee_id, slot_id, status)
+      VALUES (1,1,1,1,'unavailable')
+    `).run(),
+    [{ slot_id: 1, teaching_load_id: 1, is_locked: 0 }],
+    'teacher_unavailable',
+  ],
+  [
+    'inactive slot',
+    (context) => context.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run(),
+    [{ slot_id: 1, teaching_load_id: 1, is_locked: 0 }],
+    'inactive_slot',
+  ],
+  [
+    'invalid teaching load',
+    (context) => context.database.prepare("UPDATE timetable_teaching_loads SET status = 'inactive' WHERE id = 1").run(),
+    [{ slot_id: 1, teaching_load_id: 1, is_locked: 0 }],
+    'invalid_teaching_load',
+  ],
+]) test(`restore rejects ${label}`, async () => {
+  const context = await fixture();
+  configure(context);
+  const version = createHistoricalVersion(context, entries);
+  const preview = await previewHistoricalRestore(context, version.id);
+  assert.equal(preview.can_apply, false);
+  assert.ok(preview.blockers.some((blocker) => blocker.code === expectedCode), expectedCode);
+});
+
+test('one invalid historical entry rejects the whole restore without subset writes', async () => {
+  const context = await fixture();
+  seedCurrent(context);
+  const version = createHistoricalVersion(context, [
+    { slot_id: 1, teaching_load_id: 1, is_locked: 0 },
+    { slot_id: 2, teaching_load_id: 2, is_locked: 1 },
+  ]);
+  context.database.prepare('UPDATE timetable_slots SET is_active = 0 WHERE id = 1').run();
+  const before = officialRows(context.database);
+  const preview = await previewHistoricalRestore(context, version.id);
+  assert.equal(preview.can_apply, false);
+  assert.equal(preview.invalid_historical_entry_count, 1);
+  assert.equal(preview.restorable_entry_count, 1);
+  const response = await applyHistoricalRestore(context, version.id, preview);
+  assert.equal(response.status, 400);
+  assert.deepEqual(officialRows(context.database), before);
+  assert.equal(context.database.prepare("SELECT COUNT(*) count FROM timetable_schedule_versions WHERE source = 'manual_restore'").get().count, 0);
+});
+
 test('restore with a now-invalid historical teaching load is rejected', async () => {
-  const context = await fixture(); const proposal = await generate(context);
-  assert.equal((await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal))).status, 200);
-  const version = context.database.prepare('SELECT * FROM timetable_schedule_versions ORDER BY id DESC LIMIT 1').get();
+  const context = await fixture();
+  const version = createHistoricalVersion(context, [
+    { slot_id: 1, teaching_load_id: 1, is_locked: 0 },
+  ], 'qa-now-invalid-load');
   context.database.prepare("UPDATE timetable_teaching_loads SET status = 'inactive' WHERE id = 1").run();
   const response = await call(context, context.tokens.owner, 'POST', `/api/timetable/versions/${version.id}/restore-preview`, { school_id: 1, academic_year_id: 1 });
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).data.can_apply, false);
+  const preview = (await response.json()).data;
+  assert.equal(preview.can_apply, false);
+  assert.ok(preview.blockers.some((blocker) => blocker.code === 'invalid_teaching_load'));
 });
 
 test('cross-school and cross-year version access is rejected', async () => {

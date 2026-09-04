@@ -49,6 +49,21 @@ export interface TimetableScheduleValidation {
   complete: boolean;
   required_periods: number;
   scheduled_periods: number;
+  weekly_demand: TimetableWeeklyDemandDiagnostic;
+  blockers: TimetableScheduleValidationBlocker[];
+}
+
+export interface TimetableWeeklyDemandDiagnostic {
+  current_demand_complete: boolean;
+  required_periods: number;
+  scheduled_periods: number;
+  missing_periods: number;
+  incomplete_load_count: number;
+}
+
+export interface TimetableRestoreScheduleValidation {
+  structurally_valid: boolean;
+  weekly_demand: TimetableWeeklyDemandDiagnostic;
   blockers: TimetableScheduleValidationBlocker[];
 }
 
@@ -66,6 +81,7 @@ export interface TimetableAdoptionPreview {
   current_invalid_entry_count: number;
   revision: number;
   proposal_digest: string;
+  weekly_demand: TimetableWeeklyDemandDiagnostic;
   warnings: string[];
   blockers: TimetableScheduleValidationBlocker[];
 }
@@ -261,10 +277,41 @@ function loadIsValid(load: TimetableTeachingLoad, context: TimetableValidationCo
     && !loadHasInvalidTeacherReference(load);
 }
 
-export function validateCompleteTimetableSchedule(
+function weeklyDemandDiagnostic(
+  context: TimetableValidationContext,
+  entries: TimetableProposalPlacement[],
+): TimetableWeeklyDemandDiagnostic {
+  const activeLoads = context.loads.filter((load) => load.status === 'active');
+  let missingPeriods = 0;
+  let incompleteLoadCount = 0;
+  let hasExcess = false;
+  for (const load of activeLoads) {
+    const scheduled = entries.filter((entry) => entry.teaching_load_id === Number(load.id)).length;
+    const required = Number(load.weekly_periods);
+    if (scheduled < required) {
+      missingPeriods += required - scheduled;
+      incompleteLoadCount += 1;
+    } else if (scheduled > required) {
+      hasExcess = true;
+    }
+  }
+  const requiredPeriods = activeLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0);
+  return {
+    current_demand_complete: activeLoads.every((load) => loadIsValid(load, context))
+      && missingPeriods === 0
+      && !hasExcess
+      && entries.length === requiredPeriods,
+    required_periods: requiredPeriods,
+    scheduled_periods: entries.length,
+    missing_periods: missingPeriods,
+    incomplete_load_count: incompleteLoadCount,
+  };
+}
+
+function validateTimetableScheduleEntries(
   context: TimetableValidationContext,
   proposedEntries: TimetableProposalPlacement[],
-): TimetableScheduleValidation {
+) {
   const entries = canonicalTimetableProposalEntries(proposedEntries);
   const blockers: TimetableScheduleValidationBlocker[] = [];
   const uniquePairs = new Set<string>();
@@ -282,23 +329,20 @@ export function validateCompleteTimetableSchedule(
     updated_at: 0,
   }));
 
-  for (const entry of entries) {
+  entries.forEach((entry, index) => {
     const pair = `${entry.slot_id}:${entry.teaching_load_id}`;
     if (uniquePairs.has(pair)) {
       blockers.push({ code: 'duplicate_proposal_entry', message: 'يحتوي المقترح على حصة مكررة', ...entry });
-      continue;
+      return;
     }
     uniquePairs.add(pair);
     const load = loadsById.get(entry.teaching_load_id);
     if (!load || !loadIsValid(load, context)) {
       blockers.push({ code: 'invalid_teaching_load', message: 'يحتوي المقترح على نصاب غير صالح', ...entry });
-      continue;
+      return;
     }
-    const internal = internalEntries.find((item) => (
-      item.slot_id === entry.slot_id && item.teaching_load_id === entry.teaching_load_id
-    ))!;
     const evaluation = evaluateTimetableEntryPlacement({
-      candidate: internal,
+      candidate: internalEntries[index],
       days: context.days,
       slots: context.slots,
       loads: context.loads,
@@ -307,8 +351,20 @@ export function validateCompleteTimetableSchedule(
       teacherConstraints: context.constraints,
     });
     blockers.push(...evaluation.hard_conflicts.map((notice) => blockerFromNotice(notice, entry)));
-  }
+  });
 
+  return {
+    entries,
+    blockers,
+    weeklyDemand: weeklyDemandDiagnostic(context, entries),
+  };
+}
+
+export function validateCompleteTimetableSchedule(
+  context: TimetableValidationContext,
+  proposedEntries: TimetableProposalPlacement[],
+): TimetableScheduleValidation {
+  const { entries, blockers, weeklyDemand } = validateTimetableScheduleEntries(context, proposedEntries);
   const activeLoads = context.loads.filter((load) => load.status === 'active');
   for (const load of activeLoads) {
     const count = entries.filter((entry) => entry.teaching_load_id === Number(load.id)).length;
@@ -326,14 +382,23 @@ export function validateCompleteTimetableSchedule(
       });
     }
   }
-
-  const requiredPeriods = activeLoads
-    .filter((load) => loadIsValid(load, context))
-    .reduce((sum, load) => sum + Number(load.weekly_periods), 0);
   return {
-    complete: blockers.length === 0 && entries.length === requiredPeriods,
-    required_periods: requiredPeriods,
-    scheduled_periods: entries.length,
+    complete: blockers.length === 0 && weeklyDemand.current_demand_complete,
+    required_periods: weeklyDemand.required_periods,
+    scheduled_periods: weeklyDemand.scheduled_periods,
+    weekly_demand: weeklyDemand,
+    blockers,
+  };
+}
+
+export function validateRestorableTimetableSchedule(
+  context: TimetableValidationContext,
+  historicalEntries: TimetableProposalPlacement[],
+): TimetableRestoreScheduleValidation {
+  const { blockers, weeklyDemand } = validateTimetableScheduleEntries(context, historicalEntries);
+  return {
+    structurally_valid: blockers.length === 0,
+    weekly_demand: weeklyDemand,
     blockers,
   };
 }
