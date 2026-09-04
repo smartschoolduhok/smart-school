@@ -103,6 +103,15 @@ import {
   type SubjectOrderRecord,
 } from './lib/subjectOrdering'
 import {
+  buildBulkSubjectPlan,
+  validateBulkSubjectPayload,
+  type BulkSubjectClassRecord,
+  type BulkSubjectExistingRecord,
+  type BulkSubjectPlan,
+  type BulkSubjectValidationCode,
+  type BulkSubjectValues,
+} from './lib/subjectBulk'
+import {
   buildGeneratedStudentNumber,
   findStudentDuplicate,
   normalizeStudentIdentity,
@@ -4278,6 +4287,62 @@ app.put('/api/students/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
 // ===========================================
 // API ROUTES: Subjects (with RBAC + school_id filtering)
 // ===========================================
+const BULK_SUBJECT_VALIDATION_MESSAGES: Record<BulkSubjectValidationCode, string> = {
+  not_object: 'بيانات الإنشاء الجماعي غير صالحة',
+  unknown_field: 'تحتوي البيانات على حقل غير مدعوم',
+  invalid_classes: 'يجب اختيار صف واحد صالح على الأقل',
+  too_many_classes: 'لا يمكن اختيار أكثر من 50 صفًا في العملية الواحدة',
+  duplicate_class: 'لا يمكن تكرار الصف في القائمة',
+  invalid_name: 'اسم المادة مطلوب ويجب أن يكون صالحًا',
+  invalid_type: 'نوع المادة غير صالح',
+  invalid_religious_track: 'نوع مادة الديانة غير صالح',
+  invalid_boolean: 'إعدادات ظهور المادة واحتسابها غير صالحة',
+  invalid_grade: 'درجات النجاح والإعفاء يجب أن تكون بين 0 و100',
+  confirmation_required: 'يجب تأكيد الإنشاء الجماعي صراحةً',
+}
+
+async function loadBulkSubjectPlan(
+  db: D1Database,
+  schoolId: number,
+  values: BulkSubjectValues,
+): Promise<BulkSubjectPlan> {
+  const placeholders = values.class_ids.map(() => '?').join(', ')
+  const [classRows, existingRows] = await Promise.all([
+    db.prepare(`
+      SELECT id, school_id, name, status, order_index
+      FROM classes
+      WHERE id IN (${placeholders})
+    `).bind(...values.class_ids).all<BulkSubjectClassRecord>(),
+    db.prepare(`
+      SELECT id, class_id, name, status
+      FROM subjects
+      WHERE school_id = ?
+        AND class_id IN (${placeholders})
+        AND section_id IS NULL
+        AND status = 'active'
+      ORDER BY class_id, order_index, id
+    `).bind(schoolId, ...values.class_ids).all<BulkSubjectExistingRecord>(),
+  ])
+  return buildBulkSubjectPlan(
+    values.class_ids,
+    schoolId,
+    values.normalized_name,
+    classRows.results || [],
+    existingRows.results || [],
+  )
+}
+
+function bulkSubjectInvalidResponse(c: any, plan: BulkSubjectPlan) {
+  const invalid = plan.items.filter((item) => item.status === 'invalid')
+  if (invalid.some((item) => item.reason === 'cross_school')) {
+    return c.json({ error: 'غير مسموح: أحد الصفوف ينتمي إلى مدرسة أخرى', data: plan }, 403)
+  }
+  if (invalid.some((item) => item.reason === 'missing')) {
+    return c.json({ error: 'أحد الصفوف المحددة غير موجود', data: plan }, 404)
+  }
+  return c.json({ error: 'يجب أن تكون جميع الصفوف المحددة فعالة', data: plan }, 400)
+}
+
 app.get('/api/subjects', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
@@ -4304,6 +4369,173 @@ app.get('/api/subjects', requireSameSchoolOrAdmin(), async (c) => {
     return c.json({ data: results || [] })
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب المواد', detail: err.message }, 500)
+  }
+})
+
+app.post('/api/subjects/bulk-preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user: UserContext | null = c.get('user') || null
+  try {
+    const body = await c.req.json().catch(() => null)
+    const validation = validateBulkSubjectPayload(body)
+    if (!validation.ok) {
+      return c.json({ error: BULK_SUBJECT_VALIDATION_MESSAGES[validation.code] }, 400)
+    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, validation.value.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+
+    const plan = await loadBulkSubjectPlan(db, targetSchool.schoolId, validation.value)
+    return c.json({
+      data: {
+        school_id: targetSchool.schoolId,
+        subject: {
+          name: validation.value.name,
+          subject_type: validation.value.subject_type,
+          religious_track: validation.value.religious_track,
+          counts_in_average: validation.value.counts_in_average,
+          appears_in_report_card: validation.value.appears_in_report_card,
+          passing_grade: validation.value.passing_grade,
+          exemption_grade: validation.value.exemption_grade,
+        },
+        ...plan,
+      },
+    })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في معاينة الإنشاء الجماعي للمواد', detail: err.message }, 500)
+  }
+})
+
+app.post('/api/subjects/bulk', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user: UserContext | null = c.get('user') || null
+  try {
+    const body = await c.req.json().catch(() => null)
+    const validation = validateBulkSubjectPayload(body, { requireConfirmation: true })
+    if (!validation.ok) {
+      return c.json({ error: BULK_SUBJECT_VALIDATION_MESSAGES[validation.code] }, 400)
+    }
+    const targetSchool = await resolveActiveWriteSchool(db, user, validation.value.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+
+    // Re-read all scope and duplicate inputs immediately before constructing the
+    // atomic insert. Invalid classes reject the entire operation; active
+    // equivalents are intentional no-op skips.
+    const plan = await loadBulkSubjectPlan(db, targetSchool.schoolId, validation.value)
+    if (!plan.can_create) return bulkSubjectInvalidResponse(c, plan)
+
+    const createClassIds = new Set(
+      plan.items.filter((item) => item.status === 'create').map((item) => item.class_id),
+    )
+    let inserted: Array<{ id: number; class_id: number }> = []
+    if (createClassIds.size > 0) {
+      const selectedValues = validation.value.class_ids
+        .map((classId) => `(?, ${createClassIds.has(classId) ? 1 : 0})`)
+        .join(', ')
+      const insertStatement = db.prepare(`
+        WITH selected(class_id, should_create) AS (
+          VALUES ${selectedValues}
+        ), valid AS (
+          SELECT selected.class_id, selected.should_create
+          FROM selected
+          JOIN classes class_record ON class_record.id = selected.class_id
+          WHERE class_record.school_id = ? AND class_record.status = 'active'
+        ), eligible AS (
+          SELECT valid.class_id
+          FROM valid
+          WHERE valid.should_create = 1
+            AND NOT EXISTS (
+              SELECT 1
+              FROM subjects existing
+              WHERE existing.school_id = ?
+                AND existing.class_id = valid.class_id
+                AND existing.section_id IS NULL
+                AND existing.status = 'active'
+                AND lower(trim(existing.name)) = ?
+            )
+        )
+        INSERT INTO subjects (
+          school_id, class_id, section_id, name, subject_type, religious_track,
+          counts_in_average, appears_in_report_card, passing_grade, exemption_grade,
+          order_index, status, created_at, updated_at
+        )
+        SELECT
+          ?, eligible.class_id, NULL, ?, ?, ?, ?, ?, ?, ?,
+          (
+            SELECT COALESCE(MAX(subject_order.order_index), 0) + 1
+            FROM subjects subject_order
+            WHERE subject_order.school_id = ?
+              AND subject_order.class_id = eligible.class_id
+              AND subject_order.status = 'active'
+          ),
+          'active', unixepoch(), unixepoch()
+        FROM eligible
+        WHERE (SELECT COUNT(*) FROM valid) = (SELECT COUNT(*) FROM selected)
+        RETURNING id, class_id
+      `).bind(
+        ...validation.value.class_ids,
+        targetSchool.schoolId,
+        targetSchool.schoolId,
+        validation.value.normalized_name,
+        targetSchool.schoolId,
+        validation.value.name,
+        validation.value.subject_type,
+        validation.value.religious_track,
+        validation.value.counts_in_average ? 1 : 0,
+        validation.value.appears_in_report_card ? 1 : 0,
+        validation.value.passing_grade,
+        validation.value.exemption_grade,
+        targetSchool.schoolId,
+      )
+      const batchResults = await db.batch<{ id: number; class_id: number }>([insertStatement])
+      inserted = batchResults[0]?.results || []
+    }
+
+    // A scope change between preflight and INSERT makes the INSERT a zero-write
+    // operation. Re-read to distinguish that race from legitimate duplicate skips.
+    const finalPlan = await loadBulkSubjectPlan(db, targetSchool.schoolId, validation.value)
+    if (!finalPlan.can_create || finalPlan.counts.create > 0) {
+      return c.json({ error: 'تغيرت حالة أحد الصفوف أثناء الحفظ؛ لم يتم إنشاء أي مادة' }, 409)
+    }
+    const insertedByClass = new Map(inserted.map((row) => [Number(row.class_id), Number(row.id)]))
+    const finalExisting = new Map(
+      finalPlan.items
+        .filter((item) => item.existing_subject_id != null)
+        .map((item) => [item.class_id, Number(item.existing_subject_id)]),
+    )
+    const items = validation.value.class_ids.map((classId) => {
+      const className = finalPlan.items.find((item) => item.class_id === classId)?.class_name || null
+      const insertedId = insertedByClass.get(classId)
+      return insertedId != null
+        ? { class_id: classId, class_name: className, status: 'created', subject_id: insertedId }
+        : { class_id: classId, class_name: className, status: 'already_exists', subject_id: finalExisting.get(classId) || null }
+    })
+    const created = items
+      .filter((item): item is typeof item & { subject_id: number } => item.status === 'created' && item.subject_id != null)
+      .map((item) => ({ class_id: item.class_id, class_name: item.class_name, subject_id: item.subject_id }))
+    const skippedExisting = items
+      .filter((item) => item.status === 'already_exists')
+      .map((item) => ({
+        class_id: item.class_id,
+        class_name: item.class_name,
+        existing_subject_id: item.subject_id,
+      }))
+    return c.json({
+      data: {
+        school_id: targetSchool.schoolId,
+        created,
+        skipped_existing: skippedExisting,
+        created_count: created.length,
+        skipped_count: skippedExisting.length,
+        items,
+        counts: {
+          selected: items.length,
+          created: created.length,
+          already_exists: skippedExisting.length,
+        },
+      },
+    }, created.length > 0 ? 201 : 200)
+  } catch (err: any) {
+    return c.json({ error: 'فشل في الإنشاء الجماعي للمواد', detail: err.message }, 500)
   }
 })
 

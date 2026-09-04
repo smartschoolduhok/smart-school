@@ -3,12 +3,24 @@ import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
-import { getSubjects, getClasses, getSections, createSubject, updateSubject, archiveSubject, reorderSubjects } from '../../lib/api';
+import {
+  getSubjects,
+  getClasses,
+  getSections,
+  createSubject,
+  updateSubject,
+  archiveSubject,
+  reorderSubjects,
+  previewBulkSubjects,
+  createBulkSubjects,
+  type BulkSubjectPreviewData,
+  type BulkSubjectRequest,
+} from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import { mergeReturnedSubjectOrder, moveOrderedItem } from '../../lib/subjectOrdering';
 import { religiousTrackLabel, type ReligiousTrack } from '../../lib/religiousSubjects';
-import { Search, Plus, Filter, Archive, Edit2, X, Check, BookOpen, ListOrdered, Tag, Users, GripVertical, ArrowUp, ArrowDown } from 'lucide-react';
+import { Search, Plus, Filter, Archive, Edit2, X, Check, ListOrdered, GripVertical, ArrowUp, ArrowDown, ArrowRight, Layers } from 'lucide-react';
 
 interface SubjectRecord {
   id: number;
@@ -55,6 +67,16 @@ const emptyForm = {
   exemption_grade: 25,
 };
 
+const emptyBulkForm: Omit<BulkSubjectRequest, 'school_id' | 'class_ids'> = {
+  name: '',
+  subject_type: 'أساسية',
+  religious_track: null,
+  counts_in_average: true,
+  appears_in_report_card: true,
+  passing_grade: 50,
+  exemption_grade: 25,
+};
+
 export default function SubjectsPage() {
   const { user } = useAuth();
   const schoolScope = useTenantSchool();
@@ -68,6 +90,7 @@ export default function SubjectsPage() {
   const [sections, setSections] = useState<SectionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
 
   const [search, setSearch] = useState('');
   const [filterClass, setFilterClass] = useState<string>('');
@@ -90,12 +113,28 @@ export default function SubjectsPage() {
   const [reorderSaving, setReorderSaving] = useState(false);
   const [reorderError, setReorderError] = useState('');
 
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkForm, setBulkForm] = useState(emptyBulkForm);
+  const [bulkClassIds, setBulkClassIds] = useState<number[]>([]);
+  const [bulkPreview, setBulkPreview] = useState<BulkSubjectPreviewData | null>(null);
+  const [bulkError, setBulkError] = useState('');
+  const [bulkSuccess, setBulkSuccess] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
+
   useEffect(() => {
     setSubjects([]);
     setClasses([]);
     setSections([]);
     setFilterClass('');
+    setSelectedClassId(null);
     setModalOpen(false);
+    setBulkOpen(false);
+    setBulkForm(emptyBulkForm);
+    setBulkClassIds([]);
+    setBulkPreview(null);
+    setBulkError('');
+    setBulkSuccess('');
+    setBulkSaving(false);
     setReorderOpen(false);
     setReorderClassId('');
     setOrderedSubjects([]);
@@ -134,7 +173,8 @@ export default function SubjectsPage() {
   const filteredSubjects = useMemo(() => {
     let list = subjects;
     if (filterStatus) list = list.filter((s) => s.status === filterStatus);
-    if (filterClass) list = list.filter((s) => String(s.class_id) === filterClass);
+    if (selectedClassId != null) list = list.filter((s) => s.class_id === selectedClassId);
+    else if (filterClass) list = list.filter((s) => String(s.class_id) === filterClass);
     if (filterType) list = list.filter((s) => s.subject_type === filterType);
     if (filterReligion === 'ordinary') list = list.filter((s) => s.religious_track == null);
     if (filterReligion === 'religious') list = list.filter((s) => s.religious_track != null);
@@ -149,11 +189,43 @@ export default function SubjectsPage() {
       || (a.order_index - b.order_index)
       || (a.id - b.id)
     );
-  }, [subjects, classes, search, filterClass, filterType, filterReligion, filterStatus]);
+  }, [subjects, classes, search, filterClass, filterType, filterReligion, filterStatus, selectedClassId]);
+
+  const activeClasses = useMemo(() => classes
+    .filter((item) => item.status === 'active')
+    .sort((a, b) => (a.order_index - b.order_index) || (a.id - b.id)), [classes]);
+
+  const selectedClass = useMemo(
+    () => activeClasses.find((item) => item.id === selectedClassId) || null,
+    [activeClasses, selectedClassId],
+  );
+
+  const visibleClasses = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return query ? activeClasses.filter((item) => item.name.toLowerCase().includes(query)) : activeClasses;
+  }, [activeClasses, search]);
+
+  function selectClass(classRecord: ClassRecord) {
+    setSelectedClassId(classRecord.id);
+    setFilterClass(String(classRecord.id));
+    setSearch('');
+    setFilterStatus('active');
+    setFilterType('');
+    setFilterReligion('');
+    setShowFilters(false);
+  }
+
+  function leaveClass() {
+    setSelectedClassId(null);
+    setFilterClass('');
+    setSearch('');
+    setModalOpen(false);
+    setReorderOpen(false);
+  }
 
   function openCreate() {
     if (schoolId == null) return;
-    setForm(emptyForm);
+    setForm(selectedClassId == null ? emptyForm : { ...emptyForm, class_id: selectedClassId });
     setFormError('');
     setModalMode('create');
     setEditingId(null);
@@ -230,9 +302,9 @@ export default function SubjectsPage() {
 
   function openReorder() {
     if (schoolId == null) return;
-    const initialClassId = filterClass && classes.some((item) =>
-      String(item.id) === filterClass && item.status === 'active'
-    ) ? filterClass : '';
+    const initialClassId = selectedClassId != null && classes.some((item) =>
+      item.id === selectedClassId && item.status === 'active'
+    ) ? String(selectedClassId) : '';
     setReorderClassId(initialClassId);
     setOrderedSubjects(subjectsForReorder(initialClassId));
     setDraggedSubjectId(null);
@@ -294,23 +366,124 @@ export default function SubjectsPage() {
     return sections.filter((sec) => String(sec.class_id) === String(form.class_id));
   }, [form.class_id, sections]);
 
+  function openBulkCreate() {
+    if (schoolId == null) return;
+    setBulkForm(emptyBulkForm);
+    setBulkClassIds([]);
+    setBulkPreview(null);
+    setBulkError('');
+    setBulkSuccess('');
+    setBulkSaving(false);
+    setBulkOpen(true);
+  }
+
+  function resetBulkPreview() {
+    setBulkPreview(null);
+    setBulkError('');
+    setBulkSuccess('');
+  }
+
+  function updateBulkForm<K extends keyof typeof emptyBulkForm>(key: K, value: (typeof emptyBulkForm)[K]) {
+    setBulkForm((current) => ({ ...current, [key]: value }));
+    resetBulkPreview();
+  }
+
+  function toggleBulkClass(classId: number) {
+    setBulkClassIds((current) => current.includes(classId)
+      ? current.filter((id) => id !== classId)
+      : [...current, classId]);
+    resetBulkPreview();
+  }
+
+  function bulkPayload(): BulkSubjectRequest | null {
+    if (schoolId == null) return null;
+    return { school_id: schoolId, class_ids: bulkClassIds, ...bulkForm };
+  }
+
+  async function handleBulkPreview() {
+    const payload = bulkPayload();
+    if (!payload) { setBulkError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
+    if (!payload.name.trim() || payload.class_ids.length === 0) {
+      setBulkError('اسم المادة واختيار صف واحد على الأقل مطلوبان');
+      return;
+    }
+    const isCurrentRequest = captureSchoolRequest();
+    setBulkSaving(true);
+    setBulkError('');
+    setBulkSuccess('');
+    const response = await previewBulkSubjects(payload);
+    if (!isCurrentRequest()) return;
+    setBulkSaving(false);
+    if (response.error || !response.data) {
+      setBulkError(response.error || 'تعذر تحميل المعاينة');
+      return;
+    }
+    setBulkPreview(response.data);
+  }
+
+  async function handleBulkConfirm() {
+    const payload = bulkPayload();
+    if (!payload || !bulkPreview?.can_create) return;
+    const isCurrentRequest = captureSchoolRequest();
+    setBulkSaving(true);
+    setBulkError('');
+    const response = await createBulkSubjects({ ...payload, confirm_create: true });
+    if (!isCurrentRequest()) return;
+    setBulkSaving(false);
+    if (response.error || !response.data) {
+      setBulkError(response.error || 'تعذر إنشاء المواد');
+      setBulkPreview(null);
+      return;
+    }
+    const created = response.data.counts.created;
+    const skipped = response.data.counts.already_exists;
+    setBulkSuccess(`تم إنشاء ${toArabicDigits(created)} مادة وتخطي ${toArabicDigits(skipped)} مادة موجودة مسبقًا.`);
+    setBulkPreview(null);
+    await loadData();
+    setBulkOpen(false);
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">المواد الدراسية</h1>
-          <p className="text-sm text-gray-500 mt-1">إدارة المواد وإعدادات الدرجات والكشوف</p>
+          {selectedClass ? (
+            <div className="flex items-center gap-3">
+              <button onClick={leaveClass} aria-label="العودة إلى الصفوف" className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 text-sm font-medium">
+                <ArrowRight size={20} />
+                <span>العودة إلى الصفوف</span>
+              </button>
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">مواد {selectedClass.name}</h1>
+                <p className="text-sm text-gray-500 mt-1">إدارة مواد الصف وإعدادات الدرجات والكشوف</p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <h1 className="text-2xl font-bold text-gray-900">المواد الدراسية</h1>
+              <p className="text-sm text-gray-500 mt-1">اختر صفًا لعرض مواده أو أضف مادة لعدة صفوف</p>
+            </>
+          )}
         </div>
         {canManageSelectedSchool && (
           <div className="flex items-center gap-2">
-            <button onClick={openReorder} className="flex items-center gap-2 px-4 py-2.5 border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-sm font-medium transition-colors">
-              <ListOrdered size={18} />
-              <span>ترتيب المواد</span>
-            </button>
-            <button onClick={openCreate} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
-              <Plus size={18} />
-              <span>إضافة مادة</span>
-            </button>
+            {selectedClass ? (
+              <>
+                <button onClick={openReorder} className="flex items-center gap-2 px-4 py-2.5 border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-sm font-medium transition-colors">
+                  <ListOrdered size={18} />
+                  <span>ترتيب المواد</span>
+                </button>
+                <button onClick={openCreate} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
+                  <Plus size={18} />
+                  <span>إضافة مادة لهذا الصف</span>
+                </button>
+              </>
+            ) : (
+              <button onClick={openBulkCreate} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors">
+                <Plus size={18} />
+                <span>إضافة مادة لعدة صفوف</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -319,29 +492,31 @@ export default function SubjectsPage() {
         <SystemAdminSchoolSelector {...schoolScope} />
       </div>
 
-      {/* Filters */}
+      {bulkSuccess && !bulkOpen && (
+        <div className="mb-6 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700">{bulkSuccess}</div>
+      )}
+
+      {/* Class search / subject filters */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[200px]">
             <Search size={18} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="البحث باسم المادة أو الصف..." className="w-full pr-10 pl-4 py-2.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={selectedClass ? 'البحث باسم المادة...' : 'البحث باسم الصف...'} className="w-full pr-10 pl-4 py-2.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
-          <button onClick={() => setShowFilters(!showFilters)} className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
-            <Filter size={18} />
-            <span>التصفية</span>
-          </button>
+          {selectedClass && (
+            <button onClick={() => setShowFilters(!showFilters)} className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+              <Filter size={18} />
+              <span>التصفية</span>
+            </button>
+          )}
         </div>
-        {showFilters && (
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-3 pt-3 border-t border-gray-100">
+        {selectedClass && showFilters && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 pt-3 border-t border-gray-100">
             <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="active">نشطة</option>
               <option value="inactive">غير نشطة</option>
               <option value="archived">مؤرشفة</option>
               <option value="">الكل</option>
-            </select>
-            <select value={filterClass} onChange={(e) => setFilterClass(e.target.value)} className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option value="">كل الصفوف</option>
-              {classes.map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
             </select>
             <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
               <option value="">كل الأنواع</option>
@@ -357,57 +532,62 @@ export default function SubjectsPage() {
         )}
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center text-blue-600"><BookOpen size={20} /></div>
-          <div>
-            <p className="text-xs text-gray-500">إجمالي المواد</p>
-            <p className="text-lg font-bold text-gray-900">{toArabicDigits(subjects.length)}</p>
-          </div>
+      {loading ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+          <div className="w-10 h-10 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-gray-500">جاري التحميل...</p>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-3">
-          <div className="w-10 h-10 bg-green-50 rounded-lg flex items-center justify-center text-green-600"><ListOrdered size={20} /></div>
-          <div>
-            <p className="text-xs text-gray-500">المواد الأساسية</p>
-            <p className="text-lg font-bold text-gray-900">{toArabicDigits(subjects.filter((s) => s.subject_type === 'أساسية').length)}</p>
-          </div>
+      ) : error ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-red-600">
+          <p className="font-medium">{error}</p>
+          <button onClick={loadData} className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">إعادة المحاولة</button>
         </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-3">
-          <div className="w-10 h-10 bg-purple-50 rounded-lg flex items-center justify-center text-purple-600"><Tag size={20} /></div>
-          <div>
-            <p className="text-xs text-gray-500">الاختيارية</p>
-            <p className="text-lg font-bold text-gray-900">{toArabicDigits(subjects.filter((s) => s.subject_type === 'اختيارية').length)}</p>
-          </div>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-3">
-          <div className="w-10 h-10 bg-amber-50 rounded-lg flex items-center justify-center text-amber-600"><Users size={20} /></div>
-          <div>
-            <p className="text-xs text-gray-500">المؤرشفة</p>
-            <p className="text-lg font-bold text-gray-900">{toArabicDigits(subjects.filter((s) => s.status === 'archived').length)}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        {loading ? (
-          <div className="p-12 text-center">
-            <div className="w-10 h-10 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-            <p className="text-gray-500">جاري التحميل...</p>
-          </div>
-        ) : error ? (
-          <div className="p-8 text-center text-red-600">
-            <p className="font-medium">{error}</p>
-            <button onClick={loadData} className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">إعادة المحاولة</button>
-          </div>
-        ) : filteredSubjects.length === 0 ? (
+      ) : schoolId == null ? (
+        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center text-gray-500">اختر المدرسة المستهدفة لعرض صفوفها وموادها.</div>
+      ) : !selectedClass ? (
+        visibleClasses.length === 0 ? (
           <div className="p-12 text-center">
             <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4"><Search size={24} className="text-gray-400" /></div>
-            <h3 className="text-lg font-bold text-gray-900 mb-1">لا توجد نتائج</h3>
-            <p className="text-sm text-gray-500">جرب تغيير معايير البحث أو أضف مادة جديدة</p>
+            <h3 className="text-lg font-bold text-gray-900 mb-1">لا توجد صفوف فعالة</h3>
+            <p className="text-sm text-gray-500">غيّر البحث أو أضف صفًا فعالًا أولًا.</p>
           </div>
         ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5" aria-label="الصفوف الدراسية">
+            {visibleClasses.map((classRecord) => {
+              const classSubjects = subjects.filter((subject) => subject.class_id === classRecord.id);
+              const activeCount = classSubjects.filter((subject) => subject.status === 'active').length;
+              const basicCount = classSubjects.filter((subject) => subject.status === 'active' && subject.subject_type === 'أساسية').length;
+              const optionalCount = classSubjects.filter((subject) => subject.status === 'active' && subject.subject_type === 'اختيارية').length;
+              const archivedCount = classSubjects.filter((subject) => subject.status === 'archived').length;
+              return (
+                <button key={classRecord.id} type="button" onClick={() => selectClass(classRecord)} className="text-right bg-white rounded-2xl border border-gray-200 p-5 hover:border-blue-300 hover:shadow-md transition-all focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <div className="flex items-start justify-between gap-4 mb-5">
+                    <div>
+                      <h2 className="text-lg font-bold text-gray-900">{classRecord.name}</h2>
+                      <p className="text-xs text-gray-500 mt-1">اضغط لعرض مواد الصف</p>
+                    </div>
+                    <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center"><Layers size={21} /></div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <span className="rounded-lg bg-green-50 px-3 py-2 text-green-700">نشطة: <b>{toArabicDigits(activeCount)}</b></span>
+                    <span className="rounded-lg bg-blue-50 px-3 py-2 text-blue-700">أساسية: <b>{toArabicDigits(basicCount)}</b></span>
+                    <span className="rounded-lg bg-purple-50 px-3 py-2 text-purple-700">اختيارية: <b>{toArabicDigits(optionalCount)}</b></span>
+                    {archivedCount > 0 && <span className="rounded-lg bg-amber-50 px-3 py-2 text-amber-700">مؤرشفة: <b>{toArabicDigits(archivedCount)}</b></span>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          {filteredSubjects.length === 0 ? (
+            <div className="p-12 text-center">
+              <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4"><Search size={24} className="text-gray-400" /></div>
+              <h3 className="text-lg font-bold text-gray-900 mb-1">لا توجد نتائج</h3>
+              <p className="text-sm text-gray-500">جرب تغيير معايير البحث أو أضف مادة لهذا الصف</p>
+            </div>
+          ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-right">
               <thead className="bg-gray-50 border-b border-gray-200">
@@ -477,8 +657,130 @@ export default function SubjectsPage() {
               </tbody>
             </table>
           </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
+
+      {bulkOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" role="dialog" aria-modal="true" aria-labelledby="bulk-subject-title">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-gray-100">
+              <div>
+                <h2 id="bulk-subject-title" className="text-xl font-bold text-gray-900">إضافة مادة لعدة صفوف</h2>
+                <p className="text-sm text-gray-500 mt-1">ستُنشأ مادة مستقلة لكل صف، لجميع الشعب، بعد مراجعة المعاينة.</p>
+              </div>
+              <button onClick={() => setBulkOpen(false)} disabled={bulkSaving} aria-label="إغلاق الإنشاء الجماعي" className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-50"><X size={20} /></button>
+            </div>
+
+            <div className="p-6 space-y-5 overflow-y-auto">
+              {bulkError && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{bulkError}</div>}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">اسم المادة <span className="text-red-500">*</span></label>
+                  <input value={bulkForm.name} onChange={(event) => updateBulkForm('name', event.target.value)} disabled={bulkSaving} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">النوع</label>
+                  <select value={bulkForm.subject_type} onChange={(event) => updateBulkForm('subject_type', event.target.value as 'أساسية' | 'اختيارية')} disabled={bulkSaving} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="أساسية">أساسية</option>
+                    <option value="اختيارية">اختيارية</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">نوع مادة الديانة</label>
+                  <select value={bulkForm.religious_track || ''} onChange={(event) => updateBulkForm('religious_track', (event.target.value || null) as ReligiousTrack | null)} disabled={bulkSaving} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">ليست مادة ديانة</option>
+                    <option value="islamic">إسلامية</option>
+                    <option value="christian">مسيحية</option>
+                    <option value="other">أخرى</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">درجة النجاح</label>
+                  <input type="number" min="0" max="100" value={bulkForm.passing_grade} onChange={(event) => updateBulkForm('passing_grade', Number(event.target.value))} disabled={bulkSaving} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">درجة الإعفاء</label>
+                  <input type="number" min="0" max="100" value={bulkForm.exemption_grade} onChange={(event) => updateBulkForm('exemption_grade', Number(event.target.value))} disabled={bulkSaving} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div className="sm:col-span-2 flex flex-wrap items-center gap-5 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={bulkForm.counts_in_average} onChange={(event) => updateBulkForm('counts_in_average', event.target.checked)} disabled={bulkSaving} className="w-4 h-4 rounded border-gray-300 text-blue-600" />
+                    <span className="text-sm text-gray-700">يدخل في حساب المعدل</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked={bulkForm.appears_in_report_card} onChange={(event) => updateBulkForm('appears_in_report_card', event.target.checked)} disabled={bulkSaving} className="w-4 h-4 rounded border-gray-300 text-blue-600" />
+                    <span className="text-sm text-gray-700">يظهر في كارت النتيجة</span>
+                  </label>
+                </div>
+              </div>
+
+              <section aria-labelledby="bulk-class-selection-title">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                  <div>
+                    <h3 id="bulk-class-selection-title" className="font-semibold text-gray-900">الصفوف المستهدفة</h3>
+                    <p className="text-xs text-gray-500 mt-1">تم اختيار {toArabicDigits(bulkClassIds.length)} من {toArabicDigits(activeClasses.length)}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => { setBulkClassIds(activeClasses.map((item) => item.id)); resetBulkPreview(); }} disabled={bulkSaving || activeClasses.length === 0} className="px-3 py-1.5 rounded-lg border border-blue-200 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50">تحديد الكل</button>
+                    <button type="button" onClick={() => { setBulkClassIds([]); resetBulkPreview(); }} disabled={bulkSaving || bulkClassIds.length === 0} className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50">إلغاء تحديد الكل</button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {activeClasses.map((classRecord) => {
+                    const selected = bulkClassIds.includes(classRecord.id);
+                    return (
+                      <label key={classRecord.id} className={`flex items-center gap-3 rounded-xl border p-3 cursor-pointer transition-colors ${selected ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                        <input type="checkbox" checked={selected} onChange={() => toggleBulkClass(classRecord.id)} disabled={bulkSaving} className="w-4 h-4 rounded border-gray-300 text-blue-600" />
+                        <span className="font-medium text-gray-800">{classRecord.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {bulkPreview && (
+                <section className="rounded-xl border border-gray-200 overflow-hidden" aria-labelledby="bulk-preview-title">
+                  <div className="bg-gray-50 border-b border-gray-200 p-4">
+                    <h3 id="bulk-preview-title" className="font-semibold text-gray-900">معاينة الإنشاء</h3>
+                    <p className="text-xs text-gray-500 mt-1">
+                      إنشاء {toArabicDigits(bulkPreview.counts.create)} · موجود مسبقًا {toArabicDigits(bulkPreview.counts.already_exists)} · غير صالح {toArabicDigits(bulkPreview.counts.invalid)}
+                    </p>
+                  </div>
+                  <div className="divide-y divide-gray-100">
+                    {bulkPreview.items.map((item) => (
+                      <div key={item.class_id} className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
+                        <span className="font-medium text-gray-800">{item.class_name || `صف #${item.class_id}`}</span>
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${item.status === 'create' ? 'bg-green-50 text-green-700' : item.status === 'already_exists' ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'}`}>
+                          {item.status === 'create' ? 'سيتم الإنشاء' : item.status === 'already_exists' ? 'موجود مسبقًا — تخطي' : 'صف غير صالح'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-100">
+              <button onClick={() => setBulkOpen(false)} disabled={bulkSaving} className="px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg disabled:opacity-50">إلغاء</button>
+              {!bulkPreview ? (
+                <button onClick={handleBulkPreview} disabled={bulkSaving || bulkClassIds.length === 0 || !bulkForm.name.trim()} className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-lg text-sm font-medium">
+                  {bulkSaving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Search size={18} />}
+                  <span>معاينة</span>
+                </button>
+              ) : (
+                <>
+                  <button onClick={() => setBulkPreview(null)} disabled={bulkSaving} className="px-4 py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-50 rounded-lg">تعديل البيانات</button>
+                  <button onClick={handleBulkConfirm} disabled={bulkSaving || !bulkPreview.can_create} className="flex items-center gap-2 px-6 py-2.5 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white rounded-lg text-sm font-medium">
+                    {bulkSaving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Check size={18} />}
+                    <span>تأكيد إضافة المادة إلى {toArabicDigits(bulkClassIds.length)} صفوف</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {reorderOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" role="dialog" aria-modal="true" aria-labelledby="subject-order-title">
@@ -561,7 +863,7 @@ export default function SubjectsPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">الصف <span className="text-red-500">*</span></label>
-                  <select value={String(form.class_id)} onChange={(e) => setForm({ ...form, class_id: e.target.value, section_id: '' })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  <select value={String(form.class_id)} onChange={(e) => setForm({ ...form, class_id: e.target.value, section_id: '' })} disabled={modalMode === 'create' && selectedClassId != null} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100">
                     <option value="">اختر الصف</option>
                     {classes.filter((c) => (c as any).status === 'active').map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
                   </select>

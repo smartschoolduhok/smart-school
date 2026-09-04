@@ -27,6 +27,7 @@
     "test:result-cards": "node --experimental-strip-types --test test/result-card.test.mjs",
     "test:settings": "node --experimental-strip-types --test test/settings-permissions.test.mjs",
     "test:subject-order": "node --experimental-strip-types --test test/subject-order.test.mjs",
+    "test:subject-management": "node --experimental-strip-types --test test/subject-management.test.mjs test/subject-order.test.mjs",
     "test:religious-subjects": "node --experimental-strip-types --test test/religious-subjects.test.mjs",
     "test:subject-applicability": "node --experimental-strip-types --test test/subject-applicability.test.mjs",
     "test:timetable": "node --experimental-strip-types --test test/timetable-foundation.test.mjs test/timetable-availability.test.mjs test/timetable-grid.test.mjs test/timetable-api.test.mjs test/timetable-grid-api.test.mjs test/timetable-ui.test.mjs test/timetable-master-views.test.mjs test/timetable-solver.test.mjs test/timetable-solver-api.test.mjs test/timetable-solver-ui.test.mjs test/timetable-adoption.test.mjs test/timetable-adoption-api.test.mjs test/timetable-adoption-ui.test.mjs",
