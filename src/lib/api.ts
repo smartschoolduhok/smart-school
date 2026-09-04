@@ -645,7 +645,7 @@ export interface BulkSubjectPreviewItem {
   class_name: string | null;
   status: 'create' | 'already_exists' | 'invalid';
   existing_subject_id?: number;
-  reason?: 'missing' | 'cross_school' | 'inactive';
+  reason?: 'missing_or_not_in_scope' | 'inactive';
 }
 
 export interface BulkSubjectPreviewData {

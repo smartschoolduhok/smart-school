@@ -37,7 +37,6 @@ export type BulkSubjectValidation =
 
 export interface BulkSubjectClassRecord {
   id: number;
-  school_id: number;
   name: string;
   status: string;
   order_index: number;
@@ -50,7 +49,7 @@ export interface BulkSubjectExistingRecord {
   status: string;
 }
 
-export type BulkSubjectInvalidReason = 'missing' | 'cross_school' | 'inactive';
+export type BulkSubjectInvalidReason = 'missing_or_not_in_scope' | 'inactive';
 
 export interface BulkSubjectPlanItem {
   class_id: number;
@@ -84,9 +83,33 @@ const ALLOWED_KEYS = new Set([
   'confirm_create',
 ]);
 
-export function normalizeBulkSubjectName(value: string): string {
-  return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US');
+const SUBJECT_NAME_WHITESPACE = /\s+/gu;
+
+export function canonicalizeSubjectDisplayName(value: string): string {
+  return value.trim().replace(SUBJECT_NAME_WHITESPACE, ' ');
 }
+
+export function normalizeBulkSubjectName(value: string): string {
+  return canonicalizeSubjectDisplayName(value).toLocaleLowerCase('en-US');
+}
+
+// ECMAScript's \s set, excluding ordinary space because SQLite trim() already
+// handles it. Mapping the same code points keeps write-time SQL duplicate
+// detection aligned with canonicalizeSubjectDisplayName().
+const SUBJECT_NAME_SQL_WHITESPACE_CODE_POINTS = [
+  9, 10, 11, 12, 13, 160, 5760,
+  8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202,
+  8232, 8233, 8239, 8287, 12288, 65279,
+];
+
+const subjectNameSqlWhitespaceMapped = SUBJECT_NAME_SQL_WHITESPACE_CODE_POINTS.reduce(
+  (expression, codePoint) => `replace(${expression}, char(${codePoint}), ' ')`,
+  'existing.name',
+);
+
+// The recursive CTE in the authoritative bulk INSERT collapses repeated spaces
+// after this seed expression normalizes every supported whitespace character.
+export const SUBJECT_NAME_SQL_NORMALIZATION_SEED = `lower(trim(${subjectNameSqlWhitespaceMapped}))`;
 
 function readBoolean(value: unknown, fallback: boolean): boolean | null {
   if (value === undefined) return fallback;
@@ -156,7 +179,7 @@ export function validateBulkSubjectPayload(
     value: {
       school_id: body.school_id,
       class_ids: body.class_ids,
-      name: body.name.trim().replace(/\s+/gu, ' '),
+      name: canonicalizeSubjectDisplayName(body.name),
       normalized_name: normalizedName,
       subject_type: subjectType,
       religious_track: religiousTrack.value,
@@ -171,7 +194,6 @@ export function validateBulkSubjectPayload(
 
 export function buildBulkSubjectPlan(
   classIds: number[],
-  targetSchoolId: number,
   normalizedName: string,
   classes: BulkSubjectClassRecord[],
   existingSubjects: BulkSubjectExistingRecord[],
@@ -189,10 +211,7 @@ export function buildBulkSubjectPlan(
   const items = classIds.map<BulkSubjectPlanItem>((classId) => {
     const classRecord = classById.get(classId);
     if (!classRecord) {
-      return { class_id: classId, class_name: null, status: 'invalid', reason: 'missing' };
-    }
-    if (classRecord.school_id !== targetSchoolId) {
-      return { class_id: classId, class_name: null, status: 'invalid', reason: 'cross_school' };
+      return { class_id: classId, class_name: null, status: 'invalid', reason: 'missing_or_not_in_scope' };
     }
     if (classRecord.status !== 'active') {
       return {

@@ -49,14 +49,19 @@ class LocalStatement {
 }
 
 class LocalD1 {
-  constructor(database) { this.database = database; }
+  constructor(database, hooks = {}) {
+    this.database = database;
+    this.hooks = hooks;
+  }
   prepare(sql) { return new LocalStatement(this.database, sql); }
   async batch(statements) {
+    await this.hooks.beforeBatch?.(this.database);
     this.database.exec('BEGIN IMMEDIATE');
     try {
       const results = [];
       for (const statement of statements) results.push(await statement.run());
       this.database.exec('COMMIT');
+      await this.hooks.afterBatch?.(this.database);
       return results;
     } catch (error) {
       this.database.exec('ROLLBACK');
@@ -65,7 +70,7 @@ class LocalD1 {
   }
 }
 
-async function createFixture() {
+async function createFixture(hooks = {}) {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys = ON');
   for (const name of [
@@ -95,7 +100,7 @@ async function createFixture() {
     admin: await signJWT({ email: 'admin@example.test', auth_version: 1 }, secret),
     teacher: await signJWT({ email: 'teacher-a@example.test', auth_version: 1 }, secret),
   };
-  return { database, env: { DB: new LocalD1(database), JWT_SECRET: secret, APP_ENV: 'test' }, tokens };
+  return { database, env: { DB: new LocalD1(database, hooks), JWT_SECRET: secret, APP_ENV: 'test' }, tokens };
 }
 
 async function request(fixture, token, endpoint, body) {
@@ -155,20 +160,20 @@ test('final bulk validation requires explicit true confirmation', () => {
   assert.equal(validateBulkSubjectPayload({ ...payload(), confirm_create: true }, { requireConfirmation: true }).ok, true);
 });
 
-test('pure planner classifies create, active duplicate, missing, inactive and cross-school safely', () => {
+test('pure planner classifies create, active duplicate, inactive and missing-or-out-of-scope safely', () => {
   const plan = buildBulkSubjectPlan(
     [1, 2, 3, 4, 5],
-    1,
     normalizeBulkSubjectName('English'),
     [
-      { id: 1, school_id: 1, name: 'One', status: 'active', order_index: 1 },
-      { id: 2, school_id: 1, name: 'Two', status: 'active', order_index: 2 },
-      { id: 4, school_id: 1, name: 'Four', status: 'archived', order_index: 4 },
-      { id: 5, school_id: 2, name: 'Secret', status: 'active', order_index: 1 },
+      { id: 1, name: 'One', status: 'active', order_index: 1 },
+      { id: 2, name: 'Two', status: 'active', order_index: 2 },
+      { id: 4, name: 'Four', status: 'archived', order_index: 4 },
     ],
     [{ id: 9, class_id: 2, name: ' english ', status: 'active' }],
   );
   assert.deepEqual(plan.items.map((item) => item.status), ['create', 'already_exists', 'invalid', 'invalid', 'invalid']);
+  assert.equal(plan.items[2].reason, 'missing_or_not_in_scope');
+  assert.equal(plan.items[4].reason, 'missing_or_not_in_scope');
   assert.equal(plan.items[4].class_name, null);
   assert.equal(plan.can_create, false);
 });
@@ -214,9 +219,9 @@ test('trimmed and repeated-whitespace duplicate names are skipped', async () => 
 
 test('English duplicate names are compared case-insensitively', async () => {
   const fixture = await createFixture();
-  fixture.database.prepare("INSERT INTO subjects (school_id, class_id, name, status) VALUES (1, 1, 'ENGLISH', 'active')").run();
+  fixture.database.prepare("INSERT INTO subjects (school_id, class_id, name, status) VALUES (1, 1, 'ENGLISH   LANGUAGE', 'active')").run();
   const response = await request(fixture, fixture.tokens.owner, '/api/subjects/bulk', {
-    ...payload({ class_ids: [1], name: 'english' }), confirm_create: true,
+    ...payload({ class_ids: [1], name: 'english language' }), confirm_create: true,
   });
   assert.equal(response.status, 200);
   assert.equal(subjectCount(fixture.database), 1);
@@ -235,8 +240,8 @@ test('all-active-duplicate submission succeeds with zero new rows', async () => 
 for (const [label, classIds, expectedStatus] of [
   ['inactive class', [1, 4], 400],
   ['nonexistent class', [1, 999], 404],
-  ['cross-school class', [5], 403],
-  ['mixed valid and cross-school classes', [1, 5], 403],
+  ['cross-school class', [5], 404],
+  ['mixed valid and cross-school classes', [1, 5], 404],
 ]) {
   test(`${label} rejects the whole write with zero inserts`, async () => {
     const fixture = await createFixture();
@@ -247,6 +252,34 @@ for (const [label, classIds, expectedStatus] of [
     assert.equal(subjectCount(fixture.database), 0);
   });
 }
+
+test('nonexistent and cross-school class IDs are indistinguishable to the tenant', async () => {
+  const fixture = await createFixture();
+  const nonexistent = await request(fixture, fixture.tokens.owner, '/api/subjects/bulk-preview', payload({ class_ids: [999] }));
+  const crossSchool = await request(fixture, fixture.tokens.owner, '/api/subjects/bulk-preview', payload({ class_ids: [5] }));
+  const nonexistentBody = await nonexistent.json();
+  const crossSchoolBody = await crossSchool.json();
+  assert.equal(nonexistent.status, 200);
+  assert.equal(crossSchool.status, 200);
+  assert.equal(nonexistentBody.data.items[0].reason, 'missing_or_not_in_scope');
+  assert.equal(crossSchoolBody.data.items[0].reason, 'missing_or_not_in_scope');
+  assert.equal(nonexistentBody.data.items[0].class_name, null);
+  assert.equal(crossSchoolBody.data.items[0].class_name, null);
+  assert.doesNotMatch(JSON.stringify(crossSchoolBody), /مدرسة أخرى/);
+
+  const nonexistentCreate = await request(fixture, fixture.tokens.owner, '/api/subjects/bulk', {
+    ...payload({ class_ids: [999] }), confirm_create: true,
+  });
+  const crossSchoolCreate = await request(fixture, fixture.tokens.owner, '/api/subjects/bulk', {
+    ...payload({ class_ids: [5] }), confirm_create: true,
+  });
+  const nonexistentCreateBody = await nonexistentCreate.json();
+  const crossSchoolCreateBody = await crossSchoolCreate.json();
+  assert.equal(nonexistentCreate.status, 404);
+  assert.equal(crossSchoolCreate.status, 404);
+  assert.equal(nonexistentCreateBody.error, crossSchoolCreateBody.error);
+  assert.equal(subjectCount(fixture.database), 0);
+});
 
 test('system administrator must supply an explicit active target school', async () => {
   const fixture = await createFixture();
@@ -353,6 +386,54 @@ test('final create rejects a class that became inactive after preview with zero 
   assert.equal(subjectCount(fixture.database), 0);
 });
 
+test('authoritative insert skips an equivalent subject introduced after route preflight', async () => {
+  let injected = false;
+  const fixture = await createFixture({
+    beforeBatch(database) {
+      assert.equal(injected, false);
+      injected = true;
+      database.prepare("INSERT INTO subjects (school_id, class_id, name, status) VALUES (1, 1, '  اللغة   العربية ', 'active')").run();
+    },
+  });
+  const response = await request(fixture, fixture.tokens.owner, '/api/subjects/bulk', {
+    ...payload({ class_ids: [1] }), confirm_create: true,
+  });
+  const result = (await response.json()).data;
+  assert.equal(response.status, 200);
+  assert.equal(result.counts.created, 0);
+  assert.equal(result.counts.already_exists, 1);
+  assert.equal(subjectCount(fixture.database), 1);
+});
+
+test('class becoming inactive at the authoritative insert boundary rejects all writes', async () => {
+  const fixture = await createFixture({
+    beforeBatch(database) {
+      database.prepare("UPDATE classes SET status = 'archived' WHERE id = 2").run();
+    },
+  });
+  const response = await request(fixture, fixture.tokens.owner, '/api/subjects/bulk', {
+    ...payload({ class_ids: [1, 2] }), confirm_create: true,
+  });
+  assert.equal(response.status, 409);
+  assert.equal(subjectCount(fixture.database), 0);
+});
+
+test('a post-commit class change cannot turn successful inserts into a zero-write response', async () => {
+  const fixture = await createFixture({
+    afterBatch(database) {
+      database.prepare("UPDATE classes SET status = 'archived' WHERE id = 1").run();
+    },
+  });
+  const response = await request(fixture, fixture.tokens.owner, '/api/subjects/bulk', {
+    ...payload({ class_ids: [1] }), confirm_create: true,
+  });
+  const result = (await response.json()).data;
+  assert.equal(response.status, 201);
+  assert.equal(result.counts.created, 1);
+  assert.equal(result.items[0].status, 'created');
+  assert.equal(subjectCount(fixture.database), 1);
+});
+
 test('repeated confirmed submission creates no second active equivalent', async () => {
   const fixture = await createFixture();
   const input = { ...payload({ class_ids: [1] }), confirm_create: true };
@@ -377,14 +458,16 @@ test('existing individual create, edit and archive endpoints remain operational'
   const fixture = await createFixture();
   const headers = { Authorization: `Bearer ${fixture.tokens.owner}`, 'Content-Type': 'application/json' };
   const create = await app.request('http://localhost/api/subjects', {
-    method: 'POST', headers, body: JSON.stringify({ ...payload({ class_ids: undefined }), class_id: 1 }),
+    method: 'POST', headers, body: JSON.stringify({ ...payload({ class_ids: undefined, name: '  English   Language  ' }), class_id: 1 }),
   }, fixture.env);
   assert.equal(create.status, 201);
   const id = (await create.json()).data.id;
+  assert.equal(fixture.database.prepare('SELECT name FROM subjects WHERE id = ?').get(id).name, 'English Language');
   const update = await app.request(`http://localhost/api/subjects/${id}`, {
-    method: 'PUT', headers, body: JSON.stringify({ ...payload({ class_ids: undefined, name: 'العربية' }), class_id: 1, status: 'active' }),
+    method: 'PUT', headers, body: JSON.stringify({ ...payload({ class_ids: undefined, name: '  اللغة   العربية  ' }), class_id: 1, status: 'active' }),
   }, fixture.env);
   assert.equal(update.status, 200);
+  assert.equal(fixture.database.prepare('SELECT name FROM subjects WHERE id = ?').get(id).name, 'اللغة العربية');
   const archive = await app.request(`http://localhost/api/subjects/${id}/archive`, {
     method: 'PUT', headers, body: JSON.stringify({ school_id: 1 }),
   }, fixture.env);
@@ -400,6 +483,23 @@ test('bulk endpoints use bounded queries and one D1 batch insert without N+1 wri
   assert.equal((route.match(/db\.batch/g) || []).length, 1);
   assert.match(route, /MAX\(subject_order\.order_index\)/);
   assert.match(route, /section_id IS NULL/);
+  assert.match(route, /WITH RECURSIVE/);
+  assert.doesNotMatch(route, /detail:\s*err\.message/);
+});
+
+test('bulk class discovery is strictly target-school scoped and errors do not expose details', () => {
+  const loadStart = workerSource.indexOf('async function loadBulkSubjectPlan');
+  const loadEnd = workerSource.indexOf('function bulkSubjectInvalidResponse', loadStart);
+  const loader = workerSource.slice(loadStart, loadEnd);
+  assert.match(loader, /FROM classes[\s\S]*WHERE school_id = \? AND id IN/);
+  assert.doesNotMatch(loader, /SELECT id, school_id, name, status, order_index/);
+
+  const previewStart = workerSource.indexOf("app.post('/api/subjects/bulk-preview'");
+  const previewEnd = workerSource.indexOf("app.post('/api/subjects/bulk'", previewStart);
+  const createStart = previewEnd;
+  const createEnd = workerSource.indexOf("app.post('/api/subjects'", createStart);
+  assert.doesNotMatch(workerSource.slice(previewStart, previewEnd), /detail\s*:/);
+  assert.doesNotMatch(workerSource.slice(createStart, createEnd), /detail\s*:/);
 });
 
 test('typed API client exposes preview and confirmed-create helpers', () => {

@@ -104,6 +104,8 @@ import {
 } from './lib/subjectOrdering'
 import {
   buildBulkSubjectPlan,
+  canonicalizeSubjectDisplayName,
+  SUBJECT_NAME_SQL_NORMALIZATION_SEED,
   validateBulkSubjectPayload,
   type BulkSubjectClassRecord,
   type BulkSubjectExistingRecord,
@@ -4309,10 +4311,10 @@ async function loadBulkSubjectPlan(
   const placeholders = values.class_ids.map(() => '?').join(', ')
   const [classRows, existingRows] = await Promise.all([
     db.prepare(`
-      SELECT id, school_id, name, status, order_index
+      SELECT id, name, status, order_index
       FROM classes
-      WHERE id IN (${placeholders})
-    `).bind(...values.class_ids).all<BulkSubjectClassRecord>(),
+      WHERE school_id = ? AND id IN (${placeholders})
+    `).bind(schoolId, ...values.class_ids).all<BulkSubjectClassRecord>(),
     db.prepare(`
       SELECT id, class_id, name, status
       FROM subjects
@@ -4325,7 +4327,6 @@ async function loadBulkSubjectPlan(
   ])
   return buildBulkSubjectPlan(
     values.class_ids,
-    schoolId,
     values.normalized_name,
     classRows.results || [],
     existingRows.results || [],
@@ -4334,11 +4335,8 @@ async function loadBulkSubjectPlan(
 
 function bulkSubjectInvalidResponse(c: any, plan: BulkSubjectPlan) {
   const invalid = plan.items.filter((item) => item.status === 'invalid')
-  if (invalid.some((item) => item.reason === 'cross_school')) {
-    return c.json({ error: 'غير مسموح: أحد الصفوف ينتمي إلى مدرسة أخرى', data: plan }, 403)
-  }
-  if (invalid.some((item) => item.reason === 'missing')) {
-    return c.json({ error: 'أحد الصفوف المحددة غير موجود', data: plan }, 404)
+  if (invalid.some((item) => item.reason === 'missing_or_not_in_scope')) {
+    return c.json({ error: 'أحد الصفوف المحددة غير موجود أو غير متاح ضمن المدرسة المستهدفة', data: plan }, 404)
   }
   return c.json({ error: 'يجب أن تكون جميع الصفوف المحددة فعالة', data: plan }, 400)
 }
@@ -4400,8 +4398,12 @@ app.post('/api/subjects/bulk-preview', requireSameSchoolOrAdmin(), requireRoles(
         ...plan,
       },
     })
-  } catch (err: any) {
-    return c.json({ error: 'فشل في معاينة الإنشاء الجماعي للمواد', detail: err.message }, 500)
+  } catch (error) {
+    console.error('[subjects/bulk-preview] unexpected failure', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return c.json({ error: 'فشل في معاينة الإنشاء الجماعي للمواد' }, 500)
   }
 })
 
@@ -4432,25 +4434,37 @@ app.post('/api/subjects/bulk', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
         .map((classId) => `(?, ${createClassIds.has(classId) ? 1 : 0})`)
         .join(', ')
       const insertStatement = db.prepare(`
-        WITH selected(class_id, should_create) AS (
+        WITH RECURSIVE selected(class_id, should_create) AS (
           VALUES ${selectedValues}
         ), valid AS (
           SELECT selected.class_id, selected.should_create
           FROM selected
           JOIN classes class_record ON class_record.id = selected.class_id
           WHERE class_record.school_id = ? AND class_record.status = 'active'
+        ), normalized_existing(id, class_id, normalized_name) AS (
+          SELECT existing.id, existing.class_id, ${SUBJECT_NAME_SQL_NORMALIZATION_SEED}
+          FROM subjects existing
+          JOIN selected ON selected.class_id = existing.class_id
+          WHERE existing.school_id = ?
+            AND existing.section_id IS NULL
+            AND existing.status = 'active'
+          UNION ALL
+          SELECT id, class_id, replace(normalized_name, '  ', ' ')
+          FROM normalized_existing
+          WHERE instr(normalized_name, '  ') > 0
+        ), existing_equivalent AS (
+          SELECT id, class_id
+          FROM normalized_existing
+          WHERE instr(normalized_name, '  ') = 0
+            AND normalized_name = ?
         ), eligible AS (
           SELECT valid.class_id
           FROM valid
           WHERE valid.should_create = 1
             AND NOT EXISTS (
               SELECT 1
-              FROM subjects existing
-              WHERE existing.school_id = ?
-                AND existing.class_id = valid.class_id
-                AND existing.section_id IS NULL
-                AND existing.status = 'active'
-                AND lower(trim(existing.name)) = ?
+              FROM existing_equivalent
+              WHERE existing_equivalent.class_id = valid.class_id
             )
         )
         INSERT INTO subjects (
@@ -4490,24 +4504,30 @@ app.post('/api/subjects/bulk', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
       inserted = batchResults[0]?.results || []
     }
 
-    // A scope change between preflight and INSERT makes the INSERT a zero-write
-    // operation. Re-read to distinguish that race from legitimate duplicate skips.
-    const finalPlan = await loadBulkSubjectPlan(db, targetSchool.schoolId, validation.value)
-    if (!finalPlan.can_create || finalPlan.counts.create > 0) {
-      return c.json({ error: 'تغيرت حالة أحد الصفوف أثناء الحفظ؛ لم يتم إنشاء أي مادة' }, 409)
+    // Only a zero-row authoritative INSERT needs a post-read: it distinguishes
+    // a legitimate concurrent duplicate from an invalid class at write time.
+    // Once INSERT returns rows, never let later state changes misreport that
+    // committed work as a zero-write failure.
+    let reportingPlan = plan
+    if (inserted.length === 0 && createClassIds.size > 0) {
+      const finalPlan = await loadBulkSubjectPlan(db, targetSchool.schoolId, validation.value)
+      if (!finalPlan.can_create || finalPlan.counts.create > 0) {
+        return c.json({ error: 'تغيرت حالة أحد الصفوف أثناء الحفظ؛ لم يتم إنشاء أي مادة' }, 409)
+      }
+      reportingPlan = finalPlan
     }
     const insertedByClass = new Map(inserted.map((row) => [Number(row.class_id), Number(row.id)]))
-    const finalExisting = new Map(
-      finalPlan.items
+    const existingByClass = new Map(
+      reportingPlan.items
         .filter((item) => item.existing_subject_id != null)
         .map((item) => [item.class_id, Number(item.existing_subject_id)]),
     )
     const items = validation.value.class_ids.map((classId) => {
-      const className = finalPlan.items.find((item) => item.class_id === classId)?.class_name || null
+      const className = reportingPlan.items.find((item) => item.class_id === classId)?.class_name || null
       const insertedId = insertedByClass.get(classId)
       return insertedId != null
         ? { class_id: classId, class_name: className, status: 'created', subject_id: insertedId }
-        : { class_id: classId, class_name: className, status: 'already_exists', subject_id: finalExisting.get(classId) || null }
+        : { class_id: classId, class_name: className, status: 'already_exists', subject_id: existingByClass.get(classId) || null }
     })
     const created = items
       .filter((item): item is typeof item & { subject_id: number } => item.status === 'created' && item.subject_id != null)
@@ -4534,8 +4554,12 @@ app.post('/api/subjects/bulk', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
         },
       },
     }, created.length > 0 ? 201 : 200)
-  } catch (err: any) {
-    return c.json({ error: 'فشل في الإنشاء الجماعي للمواد', detail: err.message }, 500)
+  } catch (error) {
+    console.error('[subjects/bulk-create] unexpected failure', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return c.json({ error: 'فشل في الإنشاء الجماعي للمواد' }, 500)
   }
 })
 
@@ -4556,9 +4580,11 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
     school_id = targetSchool.schoolId
 
-    if (!school_id || !class_id || !name) {
+    const canonicalName = typeof name === 'string' ? canonicalizeSubjectDisplayName(name) : ''
+    if (!school_id || !class_id || !canonicalName || canonicalName.length > 200) {
       return c.json({ error: 'المدرسة والصف واسم المادة مطلوبة' }, 400)
     }
+    name = canonicalName
     const religiousTrackValidation = validateReligiousTrack(religious_track)
     if (!religiousTrackValidation.ok) {
       return c.json({ error: 'نوع مادة الديانة غير صالح' }, 400)
@@ -4600,8 +4626,12 @@ app.post('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       explicitOrderIndex, school_id, class_id,
     ).run()
     return c.json({ data: { id: result.meta.last_row_id, school_id, class_id, name, religious_track: religiousTrackValidation.value, status: 'active' } }, 201)
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء المادة', detail: err.message }, 500)
+  } catch (error) {
+    console.error('[subjects/create] unexpected failure', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return c.json({ error: 'فشل في إنشاء المادة' }, 500)
   }
 })
 
@@ -4725,6 +4755,11 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل مادة في مدرسة أخرى' }, 403)
     }
 
+    const canonicalName = typeof name === 'string' ? canonicalizeSubjectDisplayName(name) : ''
+    if (!canonicalName || canonicalName.length > 200) {
+      return c.json({ error: 'اسم المادة مطلوب ويجب أن يكون صالحًا' }, 400)
+    }
+
     const hasReligiousTrack = Object.prototype.hasOwnProperty.call(body, 'religious_track')
     const religiousTrackValidation = hasReligiousTrack
       ? validateReligiousTrack(religious_track)
@@ -4782,14 +4817,18 @@ app.put('/api/subjects/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
         updated_at = unixepoch()
       WHERE id = ? AND school_id = ?
     `).bind(
-      nextClassId, nextSectionId, name, subject_type || 'أساسية', religiousTrackValidation.value,
+      nextClassId, nextSectionId, canonicalName, subject_type || 'أساسية', religiousTrackValidation.value,
       counts_in_average !== undefined ? (counts_in_average ? 1 : 0) : 1,
       appears_in_report_card !== undefined ? (appears_in_report_card ? 1 : 0) : 1,
       passing_grade || 50, exemption_grade || 25, nextOrderIndex, nextStatus, id, targetSchool.schoolId
     ).run()
-    return c.json({ data: { id, name, religious_track: religiousTrackValidation.value, status: nextStatus, order_index: nextOrderIndex } })
-  } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث المادة', detail: err.message }, 500)
+    return c.json({ data: { id, name: canonicalName, religious_track: religiousTrackValidation.value, status: nextStatus, order_index: nextOrderIndex } })
+  } catch (error) {
+    console.error('[subjects/update] unexpected failure', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+      message: error instanceof Error ? error.message : String(error),
+    })
+    return c.json({ error: 'فشل في تحديث المادة' }, 500)
   }
 })
 
