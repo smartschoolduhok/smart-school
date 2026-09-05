@@ -33,7 +33,7 @@ export interface MatrixPlanItem {
   locked_entry_count: number; warnings: MatrixNotice[]; blockers: MatrixNotice[];
 }
 export interface MatrixSummary {
-  expected: number; configured: number; missing: number; without_teacher: number;
+  expected: number; configured: number; missing: number; without_teacher: number; invalid_teacher: number;
   weekly_periods: number; completion_percent: number; section_count: number; subject_count: number;
 }
 export interface TeachingLoadMatrixData {
@@ -46,7 +46,8 @@ export interface MatrixContext extends Omit<TeachingLoadMatrixData, 'summary'> {
 }
 export interface MatrixPlan {
   can_apply: boolean; revision: number; counts: Record<MatrixPlanItem['action'], number>;
-  without_teacher_after: number; total_weekly_periods_before: number; total_weekly_periods_after: number;
+  without_teacher_after: number; invalid_teacher_after: number; summary_after: MatrixSummary;
+  total_weekly_periods_before: number; total_weekly_periods_after: number;
   items: MatrixPlanItem[];
 }
 export interface MatrixCopyPlan { changes: MatrixChange[]; plan: MatrixPlan; warnings: MatrixNotice[]; unavailable: Array<{ subject_id: number; section_id: number | null; code: string; message: string }> }
@@ -98,14 +99,35 @@ export function matrixCells(classId: number, sections: MatrixSection[], subjects
       .map(section_id => ({ subject_id: subject.id, section_id })));
 }
 
+export function isMatrixTeacherEligible(teacher: { school_id?: number | null; status?: string | null; role?: string | null } | undefined, schoolId: number) {
+  return teacher?.school_id === schoolId && teacher.status === 'active' && teacher.role === 'teacher';
+}
+
+// Joined metadata is scoped to the load's school in BOTH list and matrix APIs.
+// Missing metadata is invalid, never equivalent to deliberate NULL assignment.
+export function matrixLoadTeacherState(load: TimetableTeachingLoad): 'valid' | 'without_teacher' | 'invalid_teacher' {
+  if (load.employee_id == null) return 'without_teacher';
+  return isMatrixTeacherEligible({ school_id: load.employee_school_id, status: load.employee_status, role: load.employee_role }, load.school_id)
+    ? 'valid' : 'invalid_teacher';
+}
+
+export function matrixCellPresentation(load: TimetableTeachingLoad | undefined, employeeId: number | null, teachers: MatrixTeacher[], schoolId: number) {
+  if (employeeId != null && !teachers.some(t => t.id === employeeId && isMatrixTeacherEligible(t, schoolId)))
+    return { state: 'invalid_teacher', tone: 'bg-red-50', label: 'مدرس غير متاح — اختر بديلًا' } as const;
+  if (!load) return { state: 'missing', tone: 'bg-gray-50', label: 'لا يوجد نصاب بعد' } as const;
+  if (employeeId == null) return { state: 'without_teacher', tone: 'bg-amber-50', label: 'بدون مدرس' } as const;
+  return { state: 'valid', tone: 'bg-emerald-50', label: 'مكتمل' } as const;
+}
+
 export function summarizeMatrix(classId: number, sections: MatrixSection[], subjects: MatrixSubject[], loads: TimetableTeachingLoad[]): MatrixSummary {
   const cells = matrixCells(classId, sections, subjects);
   const expected = new Set(cells.map(c => matrixKey(c.subject_id, c.section_id)));
   const configured = loads.filter(l => l.class_id === classId && l.status === 'active' && expected.has(matrixKey(l.subject_id, l.section_id)));
   return { expected: cells.length, configured: configured.length, missing: cells.length - configured.length,
     without_teacher: configured.filter(l => l.employee_id == null).length,
+    invalid_teacher: configured.filter(l => matrixLoadTeacherState(l) === 'invalid_teacher').length,
     weekly_periods: configured.reduce((sum, l) => sum + l.weekly_periods, 0),
-    completion_percent: cells.length ? Math.round(100 * configured.filter(l => l.employee_id != null).length / cells.length) : 0,
+    completion_percent: cells.length ? Math.round(100 * configured.filter(l => matrixLoadTeacherState(l) === 'valid').length / cells.length) : 0,
     section_count: sections.filter(s => s.class_id === classId && s.status === 'active').length,
     subject_count: subjects.filter(s => s.class_id === classId && s.status === 'active').length };
 }
@@ -156,7 +178,7 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
   const items = [...changes].sort((a, b) => a.subject_id - b.subject_id || (a.section_id ?? 0) - (b.section_id ?? 0)).map<MatrixPlanItem>(change => {
     const existing = activeLoads.get(matrixKey(change.subject_id, change.section_id));
     const subject = context.subjects.find(s => s.id === change.subject_id);
-    const teacher = change.action === 'upsert' ? context.teachers.find(t => t.id === change.employee_id && t.role === 'teacher' && t.status === 'active' && t.school_id === context.class.school_id) : null;
+    const teacher = change.action === 'upsert' ? context.teachers.find(t => t.id === change.employee_id && isMatrixTeacherEligible(t, context.class.school_id)) : null;
     const item: MatrixPlanItem = {
       class_id: context.class.id, section_id: change.section_id,
       section_name: context.sections.find(s => s.id === change.section_id)?.name ?? null,
@@ -209,8 +231,27 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
     if (i.existing_load_id != null) { periods -= i.old_weekly_periods!; if (i.old_employee_id == null) missingTeacher--; }
     if (i.action !== 'deactivate') { periods += i.new_weekly_periods!; if (i.new_employee_id == null) missingTeacher++; }
   }
+  // Project only accepted items. Invalid/blocked cells retain stored references;
+  // summary/read paths never repair, clear, deactivate or hide academic demand.
+  const projected = before.map(l => ({ ...l }));
+  for (const i of items) {
+    if (!['create', 'update', 'deactivate'].includes(i.action)) continue;
+    const teacher = context.teachers.find(t => t.id === i.new_employee_id && isMatrixTeacherEligible(t, context.class.school_id));
+    const values = { employee_id: i.new_employee_id, weekly_periods: i.new_weekly_periods!,
+      employee_school_id: teacher?.school_id ?? null, employee_status: teacher?.status ?? null, employee_role: teacher?.role ?? null };
+    if (i.action === 'create') projected.push({ ...values, id: -1 - projected.length, school_id: context.class.school_id,
+      academic_year_id: context.academic_year_id, class_id: context.class.id, subject_id: i.subject_id, section_id: i.section_id,
+      status: 'active', created_at: 0, updated_at: 0 });
+    else {
+      const load = projected.find(l => l.id === i.existing_load_id)!;
+      if (i.action === 'deactivate') load.status = 'inactive';
+      else Object.assign(load, values);
+    }
+  }
+  const summaryAfter = summarizeMatrix(context.class.id, context.sections, context.subjects, projected);
   return { can_apply: counts.blocked === 0, revision: context.timetable_revision, counts,
-    without_teacher_after: missingTeacher, total_weekly_periods_before: before.reduce((sum, l) => sum + l.weekly_periods, 0),
+    without_teacher_after: missingTeacher, invalid_teacher_after: projected.filter(l => l.status === 'active' && matrixLoadTeacherState(l) === 'invalid_teacher').length,
+    summary_after: summaryAfter, total_weekly_periods_before: before.reduce((sum, l) => sum + l.weekly_periods, 0),
     total_weekly_periods_after: periods, items };
 }
 
@@ -225,7 +266,7 @@ export function planTeachingLoadCopy(context: MatrixContext, source: TimetableTe
     }
     const target = context.loads.find(l => l.class_id === context.class.id && l.status === 'active' && l.subject_id === load.subject_id && l.section_id === load.section_id);
     let employeeId = mode === 'periods_only' ? target?.employee_id ?? null : load.employee_id;
-    if (mode === 'periods_and_teachers' && employeeId != null && !context.teachers.some(t => t.id === employeeId)) {
+    if (mode === 'periods_and_teachers' && employeeId != null && !context.teachers.some(t => t.id === employeeId && isMatrixTeacherEligible(t, context.class.school_id))) {
       employeeId = null;
       warnings.push({ code: 'source_teacher_removed', message: 'لم يعد المدرس متاحًا، وسيُحفظ النصاب بدون مدرس.' });
     }

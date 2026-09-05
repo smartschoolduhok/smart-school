@@ -2,11 +2,13 @@
 
 Branch: `feature/teaching-load-matrix-bulk-phase-19b`
 Base: `d5b0c19cd38f5add08273e0c88efe7da0c54e9cd`
+Review-fix baseline: `41bbdc63554eefc54757843351dc15db600c0b08`.
+Delivery HEAD and Preview are recorded in [Draft PR #35](https://github.com/smartschoolduhok/smart-school/pull/35)'s delivery status (avoids a self-referential commit hash in this file).
 
 ## Delivered workflow
 
 - Normal loads view starts with active class cards sorted by order_index then ID.
-- Cards distinguish active subject/section counts from expected **applicable** cells. Disabled cells do not count as missing. Loads without teachers remain configured; completion = configured cells with a teacher / expected cells.
+- Cards distinguish active subject/section counts from expected **applicable** cells. Disabled cells do not count as missing. Completion counts only active, same-school employees with canonical `role = 'teacher'`; a non-NULL ID alone is insufficient.
 - Separate `TeachingLoadMatrixTab`: canonical subject rows and section columns; section-specific subjects are disabled elsewhere. No-section classes use “الصف بالكامل” / NULL.
 - Explicit periods/teacher apply-all, individual overrides, teacher clearing, explicit deactivation, row/whole-draft reset, search and missing/no-teacher/changed filters.
 - Empty periods retain existing values or do not create missing loads. NULL teacher does not deactivate.
@@ -58,13 +60,28 @@ Preview checks the COMBINED final state, not independent updates against old ass
 One D1 batch contains:
 
 1. Existing revision assertion, before any load writes.
-2. Temporarily clear only changing, previously non-NULL teachers, grouped into at most 90 IDs per statement.
-3. Final creates/updates/explicit deactivations.
+2. One conditional set-based UPDATE temporarily clears only changing, previously non-NULL teachers, using exact affected IDs from a bound JSON array.
+3. Separate non-empty groups: one INSERT ... SELECT FROM json_each for creates; one UPDATE ... FROM json_each for final updates; one UPDATE with JSON ID membership for explicit deactivations. Unchanged cells are excluded. No existing load is recreated.
 4. Advance revision (including all-unchanged confirmed requests), remove assertion, return revision from the same batch.
 
 This supports coupled swaps without transient collisions. No trigger disabling, general bypass, entry deletion or unaffected-load mutation. Any failure rolls back temporary NULLs, final writes, audit and revision. Two clients cannot apply the same revision. Old solver proposals fail the existing assertion.
 
-500 teacher changes use 510 write-batch statements, at most 94 parameters each. Read/auth preflight is additional. This fits the paid D1 1000-query invocation budget and 100-parameter limit. **Large per-item batches need an adequate Workers query budget; D1 Free's 50-query limit is insufficient for larger batches.** The remote account plan was not queried/changed. Sources: [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [atomic batch behavior](https://developers.cloudflare.com/d1/worker-api/d1-database/).
+The entire write batch is **4–8 statements**, independent of changed-cell count, up to the unchanged supported maximum of 500. The expected-revision assertion is always first. All triggers remain enabled and run per affected row. Five bound parameters at most per statement (one JSON value plus school/year/class/user); SQL text is fixed and contains no interpolated cell values. Null JSON values remain SQL NULL.
+
+The complete successful HTTP apply request executes **19–23 D1 statements**, including 2 authentication reads, 1 active-school validation read, 12 canonical reads and 4–8 batch members. This leaves at least **27 statements of headroom** below D1 Free's 50-query limit. No subscription assumption/change. Sources: [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [atomic batch behavior](https://developers.cloudflare.com/d1/worker-api/d1-database/), [D1 JSON table expressions](https://developers.cloudflare.com/d1/sql-api/query-json/), [SQLite UPDATE FROM](https://www.sqlite.org/lang_update.html).
+
+The test adapter counts **executed statements**, not prepare() or batch() calls. It throws if a request exceeds 50; every real Worker API test resets/enforces this budget per request. A separate guard test reuses one prepared statement 51 times in a batch and proves the limit is enforced.
+
+| Apply case | Changes | Write-batch statements | Complete HTTP statements | Max bound parameters |
+| --- | ---: | ---: | ---: | ---: |
+| Small creates, 3 × 2 | 6 | 5 | 20 | 5 |
+| Medium creates, 12 × 4 | 48 | 5 | 20 | 5 |
+| Large creates, 20 × 8 | 160 | 5 | 20 | 5 |
+| Maximum creates, 50 × 10 | 500 | 5 | 20 | 5 |
+| Maximum teacher changes, 50 × 10 | 500 | 6 | 21 | 5 |
+| Mixed create/update/deactivate/unchanged + coupled swap | 5 | 8 | 23 | 5 |
+
+For the mixed case, an injected failure at the final response SELECT (after all writes, audit, revision advance and assertion cleanup) restores every table, including temporary NULLs. Retained middle-failure, revision-race and stale-solver tests also pass. Successful swaps preserve entries, lock flags and unrelated loads; unchanged cells retain timestamps/audit exactly.
 
 Representative EXPLAIN QUERY PLAN uses `idx_timetable_entries_scope_load` and load primary-key lookups. No reference query is issued per cell.
 
@@ -99,11 +116,35 @@ node <repo>/node_modules/wrangler/bin/wrangler.js d1 execute phase19b-local-only
 
 Fixtures populate only the authorized disposable LOCAL database; they are not seed.sql.
 
-Run evidence: `%TEMP%/smart-school-phase19b-local-YR0waq/report.json` plus fresh/upgrade command logs. During development, the harness was corrected to locate the actual D1 file rather than workerd's cache and compare application data separately from workerd's commit counter. Internal `_cf_METADATA` changed 29 → 32 for the schema migration; application rows did not change.
+Run evidence: `%TEMP%/smart-school-phase19b-local-rN6tGw/report.json` plus fresh/upgrade command logs. Internal `_cf_METADATA` changed 29 → 32 for the schema migration; application rows did not change.
+
+After the unchanged migration checks, the script opens that same disposable database through Wrangler `getPlatformProxy` with an explicit temporary config, persisted LOCAL state, `remoteBindings: false` and `envFiles: []`. It runs the **production statement builder and bound JSON** against actual workerd/D1:
+
+- Mixed apply: 8 statements, 1 create / 2 updates / 1 deactivate / 1 unchanged, coupled teacher swap succeeds.
+- Append a deliberately failing SELECT at the end: D1 rolls back ALL application data and revisions; no temporary NULL remains.
+- Entries, locks and immutable version rows remain unchanged. No schema or trigger bypass.
+- 500 creates: 5 statements, 73.21ms in this local sample.
+- 500 teacher updates: 6 statements, 335.34ms; same 500 load IDs retained.
+- Final foreign_key_check returns zero rows.
+
+These fixture mutations are disposable LOCAL tests only, not staging operations.
+
+## Review fix: teacher eligibility and completion
+
+`isMatrixTeacherEligible` and `matrixLoadTeacherState` distinguish valid active same-school teachers, NULL teachers and invalid non-NULL references. The two load read endpoints expose the same scoped employee school/status/role metadata. The old list endpoint's employee JOIN is now school-scoped too, preventing a moved employee's other-school name from leaking into card data.
+
+- `without_teacher` still means NULL only; new `invalid_teacher` means a non-NULL reference requiring repair.
+- Invalid references remain configured and contribute their full weekly periods/demand, but never contribute to completion. IDs/references are untouched on read.
+- Cards and selected-class headers share the actual `MatrixSummaryDetails` component. Invalid-teacher cards explicitly need repair.
+- Invalid cells show red and “مدرس غير متاح — اختر بديلًا”, not green/complete. A separate invalid-teacher filter is distinct from NULL-teacher filtering.
+- Preview/apply expose `invalid_teacher_after` and `summary_after`; accepted explicit replacement restores completion. Blocked/omitted cells keep their stored state.
+- No global timetable-readiness redefinition and no automatic teacher clearing.
+
+Domain/API/UI tests cover teacher archival, non-teacher role change, school move, defensive missing employee, inactive eligibility, NULL distinction, unchanged demand, no leaked foreign names, read-only previews and explicit repair. Missing-reference fixtures disable FK enforcement only for a disposable corrupt-read fixture; they do not alter production schema/triggers.
 
 ## Automated tests
 
-New suite: **100 passed** — 67 domain/SQL, 26 API/benchmark, 7 UI/SSR/source-contract tests.
+Matrix suite: **117 passed** — 73 domain/SQL, 33 API/benchmark, 11 UI/SSR/source-contract tests. **17 new regression cases** in this review fix; all 100 previous matrix cases retained.
 
 Covers strict parsing, tenant/RBAC, null-section/applicability, blank/no-op behavior, inactive history, audit, deterministic plans, stale revisions/two-tab race, all-unchanged revision consumption, injected middle create and swap failures, complete rollback, all teacher hard limits, aggregate loads, historical/break semantics, soft warnings, locks, direct SQL scope/weekly defenses, combined conflicts, safe swaps, stale solver assertions, copies, source omissions and max-500 bounds.
 
@@ -113,7 +154,7 @@ Old absolute-ban assertions became safe-reassignment PLUS unsafe-collision asser
 
 | Command | Pass | Fail |
 | --- | ---: | ---: |
-| test:teaching-load-matrix | 100 | 0 |
+| test:teaching-load-matrix | 117 | 0 |
 | test:timetable | 319 | 0 |
 | test:subject-management | 59 | 0 |
 | test:subject-order | 21 | 0 |
@@ -130,15 +171,15 @@ Old absolute-ban assertions became safe-reassignment PLUS unsafe-collision asser
 | test:academic-years | 30 | 0 |
 | test:student-profile | 24 | 0 |
 | test:settings | 5 | 0 |
-| Total executions | **1096** | **0** |
+| Total executions | **1113** | **0** |
 
-**1004 unique tests**: subject-order repeats 21 already in subject-management; RBAC repeats 66 result-card and 5 settings cases. On the same grouping as the 975 baseline: **1075 = 975 + 100**, plus the separately requested 21 subject-order executions.
+**1021 unique tests**: subject-order repeats 21 already in subject-management; RBAC repeats 66 result-card and 5 settings cases. On the same grouping as the 975 baseline: **1092 = 975 + 117**, plus the separately requested 21 subject-order executions. These totals count one final run per listed command, not repeated development runs. Logs: `%TEMP%/smart-school-phase19b-review-def45c8c34964afebf02e70ab971ffb8/`.
 
 `pnpm run typecheck`, `pnpm run build:fe`, `pnpm run build:api` passed. Only the existing Vite >500kB chunk warning remains in builds. Validation scripts return nonzero on failure.
 
 ## Browser UX verification
 
-Real browser used actual React component at local `/test/fixtures/teaching-load-matrix.html`. The in-memory fixture refuses non-matrix network requests, cannot contact D1/staging and is not a production Rollup input.
+The initial Phase 19B delivery used the real browser/React component at local `/test/fixtures/teaching-load-matrix.html`. The in-memory fixture refuses non-matrix network requests, cannot contact D1/staging and is not a production Rollup input. This review patch adds real component SSR and domain/API coverage for the new eligibility labels; it does not claim a new authenticated browser staging test.
 
 Verified class cards, exact applicability, preserved mixed saved values, apply-all periods/teacher, individual override, dirty count, preview old/new values, immediate invalidation on edits, leave warning, whole-class NULL column, explicit save/success/reload retaining class, copy into unsaved draft and responsive scrolling at 390px. Actual client/body width was 382px; table content scrolled inside a 333px container without page overflow.
 
@@ -148,13 +189,13 @@ Automated coverage uses real component SSR, shared draft reducer behavior and fo
 
 Local SQLite / real Worker adapter, diagnostic milliseconds, not remote latency guarantees. Empty-target / populated-source workloads.
 
-| Size | Core read / preview / copy queries | HTTP queries including auth/school | Apply statements | Core read / preview / copy ms | Apply ms | GET / preview / copy bytes |
+| Size | Core read / preview / copy queries | HTTP read / preview / copy queries | Apply statements | Core read / preview / copy ms | HTTP apply ms | GET / preview / copy bytes |
 | --- | --- | --- | ---: | --- | ---: | --- |
-| 3 × 2 | 12 / 12 / 14 | 14 / 15 / 17 | 10 | 1.17 / 1.51 / 1.25 | 1.19 | 1039 / 2282 / 2862 |
-| 12 × 4 | 12 / 12 / 14 | 14 / 15 / 17 | 52 | 1.03 / 0.90 / 1.21 | 5.53 | 2188 / 16824 / 21101 |
-| 20 × 8 | 12 / 12 / 14 | 14 / 15 / 17 | 164 | 0.87 / 0.97 / 1.60 | 16.43 | 3390 / 55649 / 69783 |
+| 3 × 2 | 12 / 12 / 14 | 14 / 15 / 17 | 5 | 1.82 / 2.52 / 2.08 | 3.45 | 1059 / 2487 / 3065 |
+| 12 × 4 | 12 / 12 / 14 | 14 / 15 / 17 | 5 | 1.42 / 1.82 / 2.34 | 4.61 | 2208 / 17033 / 21309 |
+| 20 × 8 | 12 / 12 / 14 | 14 / 15 / 17 | 5 | 0.97 / 1.44 / 2.11 | 4.87 | 3410 / 55860 / 69994 |
 
-Measured HTTP read/preview/copy: 2.34/1.94/1.88ms; 1.81/1.55/1.71ms; 2.00/2.10/28.82ms. Teacher changes additionally check existing schedules and add at most ceil(changing assigned teachers / 90) clearing statements. No N+1.
+Measured HTTP read/preview/copy: 2.51/2.51/2.58ms; 2.96/2.74/2.27ms; 3.02/2.91/5.44ms. Complete HTTP 500-create/update samples: 34.65/230.24ms; payloads 44,606/44,607 bytes. Teacher changes add at most ONE clearing statement. No N+1; query count is bounded independently of cell count. Trigger/validator runtime still scales with data size and schedule density, so local timings are not remote CPU/latency guarantees.
 
 ## Files and reasons
 
@@ -184,3 +225,19 @@ Measured HTTP read/preview/copy: 2.34/1.94/1.88ms; 1.81/1.55/1.71ms; 2.00/2.10/2
 0027 needs separate authorization before remote migration and authenticated staging matrix/reassignment QA. Pages Preview deployment success alone does not prove the remote DB has this trigger.
 
 No remote D1 command, staging data access/mutation, production access/mutation, remote seed/reset or merge was performed. The Cloudflare/Workers workflow informed the local workerd checks and bounded D1 parameter/query handling.
+
+## Files changed by this review patch
+
+1. `src/lib/teachingLoadMatrixDb.ts` — set-based atomic JSON SQL, max 8 batch statements / 5 parameters.
+2. `src/lib/teachingLoadMatrix.ts` — shared eligibility, invalid-reference diagnosis, completion and projected summaries/cell presentation.
+3. `src/modules/timetable/TeachingLoadMatrixTab.tsx` — shared summary rendering, red invalid cells, explicit repair filter and preview diagnostics.
+4. `src/worker.ts` — school-scoped employee JOIN for existing class-card load source.
+5. `test/helpers/teaching-load-matrix-fixture.mjs` — executed-query budget guard, genuine-schema benchmark/defensive fixtures.
+6. `test/teaching-load-matrix-api.test.mjs` — full HTTP budgets, max 500, mixed/swap late rollback, eligibility API consistency.
+7. `test/teaching-load-matrix.test.mjs` — budget enforcement and domain eligibility regressions; updated max-size assertion.
+8. `test/teaching-load-matrix-ui.test.mjs` — rendered card/header/preview agreement and cell/filter contracts.
+9. `scripts/validate-teaching-load-matrix-local.mjs` — actual local bound-JSON D1 apply/swap/rollback/500-cell verification.
+10. `test/fixtures/teaching-load-matrix.tsx` — local fixture supplies the same scoped eligibility metadata as APIs.
+11. `docs/PHASE_19B_QA_REPORT.md` — revised evidence, counts and deployment limitations.
+
+No migration changed (including 0027); no new migration, dependency or subscription change. The former paid-query-budget requirement has been removed. Remaining remote validation boundary: separate authorization for 0027 and authenticated staging QA; no account plan was inspected or assumed.

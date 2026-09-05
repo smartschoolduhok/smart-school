@@ -14,7 +14,8 @@ const teachers=[{id:1,school_id:1,full_name:'أحمد علي',status:'active',ro
 let loads:TimetableTeachingLoad[]=[{id:1,school_id:1,academic_year_id:1,class_id:1,section_id:1,subject_id:1,employee_id:1,employee_name:'أحمد علي',weekly_periods:4,status:'active'},{id:2,school_id:1,academic_year_id:1,class_id:1,section_id:2,subject_id:1,employee_id:null,weekly_periods:5,status:'active'}];
 let revision=0, nextId=10;
 const years=[{id:1,school_id:1,name:'2026-2027',starts_at:'2026-09-01',ends_at:'2027-06-01',is_active:1},{id:2,school_id:1,name:'2025-2026',starts_at:'2025-09-01',ends_at:'2026-06-01',is_active:0}];
-const context=(classId:number,year:number):MatrixContext=>({class:classes.find(c=>c.id===classId)!,academic_year_id:year,sections:sections.filter(s=>s.class_id===classId),subjects:subjects.filter(s=>s.class_id===classId),teachers,loads:loads.filter(l=>l.academic_year_id===year),timetable_revision:revision,days:[],slots:[],entries:[],availability:[],constraints:[]});
+const joinedLoad=(load:TimetableTeachingLoad)=>{const t=teachers.find(t=>t.id===load.employee_id&&t.school_id===load.school_id);return {...load,employee_name:t?.full_name??null,employee_role:t?.role??null,employee_status:t?.status??null,employee_school_id:t?.school_id??null};};
+const context=(classId:number,year:number):MatrixContext=>({class:classes.find(c=>c.id===classId)!,academic_year_id:year,sections:sections.filter(s=>s.class_id===classId),subjects:subjects.filter(s=>s.class_id===classId),teachers,loads:loads.filter(l=>l.academic_year_id===year).map(joinedLoad),timetable_revision:revision,days:[],slots:[],entries:[],availability:[],constraints:[]});
 window.fetch=async(input,init)=>{
  const url=new URL(String(input),location.origin);
  // Deliberately refuse every URL outside the four mocked matrix endpoints.
@@ -42,7 +43,7 @@ function Harness(){
  const [version,setVersion]=useState(0),[year,setYear]=useState(1),[dirty,setDirty]=useState(false);
  return <main className="mx-auto max-w-7xl space-y-5 p-6"><p className="bg-amber-50 p-3 font-bold">اختبار محلي فقط — بيانات في الذاكرة، لا اتصال بالخادم</p>
   <select aria-label="سنة الاختبار" value={year} onChange={e=>{if(!dirty||confirm(MATRIX_LEAVE_MESSAGE))setYear(Number(e.target.value));}}>{years.map(y=><option key={y.id} value={y.id}>{y.name}</option>)}</select>
-  <TeachingLoadMatrixTab key={year} schoolId={1} academicYearId={year} years={years} classes={classes} sections={sections} subjects={subjects} loads={loads.filter(l=>l.academic_year_id===year)}
+  <TeachingLoadMatrixTab key={year} schoolId={1} academicYearId={year} years={years} classes={classes} sections={sections} subjects={subjects} loads={loads.filter(l=>l.academic_year_id===year).map(joinedLoad)}
    dataVersion={version} onDirtyChange={setDirty} onChanged={async()=>setVersion(v=>v+1)} onAdvanced={()=>alert('التعديل المتقدم متاح من TimetablePage')} />
  </main>;
 }

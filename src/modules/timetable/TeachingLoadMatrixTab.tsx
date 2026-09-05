@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { getTeachingLoadMatrix, previewTeachingLoadMatrix, applyTeachingLoadMatrix, previewTeachingLoadCopy } from '../../lib/api';
 import {
   type MatrixClass, type MatrixSection, type MatrixSubject, type TeachingLoadMatrixData,
-  type MatrixPlan, type MatrixCopyPlan, type MatrixCopyMode, type MatrixDraft,
+  type MatrixPlan, type MatrixCopyPlan, type MatrixCopyMode, type MatrixDraft, type MatrixSummary,
   matrixClassCards, matrixCells, matrixKey, matrixDraftChanges, applyMatrixRow,
   createMatrixRequestGuard, parseMatrixRequest, MATRIX_LEAVE_MESSAGE, MAX_MATRIX_WEEKLY_PERIODS,
+  matrixLoadTeacherState, matrixCellPresentation, isMatrixTeacherEligible,
 } from '../../lib/teachingLoadMatrix';
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import type { TimetableTeachingLoad } from '../../lib/timetable';
@@ -14,14 +15,22 @@ const button = 'rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dis
 const actionLabels = { create: 'إنشاء', update: 'تحديث', deactivate: 'تعطيل', unchanged: 'بلا تغيير', blocked: 'تعارض' };
 const withoutTeacher = 'بدون مدرس — يحدد لاحقًا';
 
+export function MatrixSummaryDetails({ summary }: { summary: MatrixSummary }) {
+  return <div className="text-sm">
+    <p>{summary.configured} من {summary.expected} نصابًا · {summary.missing} ناقص · {summary.without_teacher} بدون مدرس · {summary.invalid_teacher} مدرس غير متاح</p>
+    <p>إجمالي الحصص: {summary.weekly_periods} · الاكتمال: {summary.completion_percent}%</p>
+  </div>;
+}
+
 export function MatrixPlanSummary({ plan }: { plan: MatrixPlan }) {
   return <div className="space-y-3 text-sm">
     <p>سيتم إنشاء: {plan.counts.create} · تحديث: {plan.counts.update} · تعطيل: {plan.counts.deactivate} · بلا تغيير: {plan.counts.unchanged} · تعارضات: {plan.counts.blocked}</p>
-    <p>بدون مدرس بعد الحفظ: {plan.without_teacher_after} · إجمالي الحصص: {plan.total_weekly_periods_before} ← {plan.total_weekly_periods_after}</p>
+    <p>بدون مدرس بعد الحفظ: {plan.without_teacher_after} · مدرس غير متاح بعد الحفظ: {plan.invalid_teacher_after} · إجمالي الحصص: {plan.total_weekly_periods_before} ← {plan.total_weekly_periods_after}</p>
+    <MatrixSummaryDetails summary={plan.summary_after} />
     <div className="max-h-80 overflow-auto">
       {plan.items.map(item => <div key={matrixKey(item.subject_id, item.section_id)} className="border-t py-2">
         <b>{item.subject_name ?? 'مادة غير متاحة'} / {item.section_name ?? 'الصف بالكامل'}: {actionLabels[item.action]}</b>
-        <p>الحصص: {item.old_weekly_periods ?? '—'} ← {item.new_weekly_periods ?? '—'}؛ المدرس: {item.old_employee_name ?? 'بدون مدرس'} ← {item.new_employee_name ?? 'بدون مدرس'}</p>
+        <p>الحصص: {item.old_weekly_periods ?? '—'} ← {item.new_weekly_periods ?? '—'}؛ المدرس: {item.old_employee_name ?? (item.old_employee_id == null ? 'بدون مدرس' : 'مدرس غير متاح')} ← {item.new_employee_name ?? (item.new_employee_id == null ? 'بدون مدرس' : 'مدرس غير متاح')}</p>
         {item.locked_entry_count > 0 && <p>حصص مقفلة مرتبطة: {item.locked_entry_count} — تبقى مواقعها وأقفالها كما هي.</p>}
         {item.warnings.map(n => <p key={n.code} className="text-amber-800">{n.message}</p>)}
         {item.blockers.map(n => <p key={n.code} className="text-red-700">{n.message}</p>)}
@@ -118,7 +127,7 @@ export function TeachingLoadMatrixTab(props: Props) {
     if (response.error || !response.data?.applied) { setError(response.error ?? 'تعذر حفظ المصفوفة.'); return; }
     const result = response.data;
     setDraft({}); setRowInputs({}); setCopy(null); dirtyRef.current = false; callbackRef.current(false);
-    setSuccess(`تم حفظ مصفوفة النصاب بنجاح. تم إنشاء: ${result.counts.create} · تم تحديث: ${result.counts.update} · تم تعطيل: ${result.counts.deactivate} · بلا تغيير: ${result.counts.unchanged} · بدون مدرس: ${result.without_teacher_after}`);
+    setSuccess(`تم حفظ مصفوفة النصاب بنجاح. تم إنشاء: ${result.counts.create} · تم تحديث: ${result.counts.update} · تم تعطيل: ${result.counts.deactivate} · بلا تغيير: ${result.counts.unchanged} · بدون مدرس: ${result.without_teacher_after} · مدرس غير متاح: ${result.invalid_teacher_after}`);
     setReload(v => v + 1);
     await props.onChanged();
   }
@@ -153,10 +162,11 @@ export function TeachingLoadMatrixTab(props: Props) {
     if (filter === 'changed') return dirtyRows.has(subject.id);
     if (filter === 'missing') return cells.some(s => !loadMap.has(matrixKey(subject.id, s.id)));
     if (filter === 'no-teacher') return cells.some(s => { const l = loadMap.get(matrixKey(subject.id, s.id)); return l && l.employee_id == null; });
+    if (filter === 'invalid-teacher') return cells.some(s => { const l = loadMap.get(matrixKey(subject.id, s.id)); return l && matrixLoadTeacherState(l) === 'invalid_teacher'; });
     return true;
   });
   function teacherOptions() {
-    return <><option value="">{withoutTeacher}</option>{data?.teachers.map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}</>;
+    return <><option value="">{withoutTeacher}</option>{data?.teachers.filter(t => isMatrixTeacherEligible(t, schoolId)).map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}</>;
   }
 
   return <section className="min-w-0 space-y-4" aria-label="مصفوفة نصاب المواد والمدرسين" dir="rtl">
@@ -168,9 +178,8 @@ export function TeachingLoadMatrixTab(props: Props) {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{cards.map(c => <article key={c.id} className="space-y-2 rounded-xl border bg-white p-5">
         <h3 className="text-lg font-bold">{c.name}</h3>
         <p>{c.summary.section_count ? `${c.summary.section_count} شعب` : 'لا توجد شعب — الصف بالكامل'} · {c.summary.subject_count} مواد</p>
-        <p>{c.summary.configured} من {c.summary.expected} نصابًا · {c.summary.missing} ناقص · {c.summary.without_teacher} بدون مدرس</p>
-        <p>إجمالي الحصص: {c.summary.weekly_periods} · الاكتمال: {c.summary.completion_percent}%</p>
-        <p className="text-sm text-gray-600">{!c.summary.subject_count ? 'لا توجد مواد' : c.summary.missing ? 'أنصبة غير مكتملة' : c.summary.without_teacher ? 'يحتاج تحديد مدرسين' : 'مكتمل'}</p>
+        <MatrixSummaryDetails summary={c.summary} />
+        <p className="text-sm text-gray-600">{!c.summary.subject_count ? 'لا توجد مواد' : c.summary.invalid_teacher ? 'يحتاج إصلاح تعيين المدرسين' : c.summary.missing ? 'أنصبة غير مكتملة' : c.summary.without_teacher ? 'يحتاج تحديد مدرسين' : 'مكتمل'}</p>
         <button className={button} onClick={() => { guard.invalidate(); setData(null); setClassId(c.id); setSuccess(''); }}>فتح مصفوفة النصاب — {c.name}</button>
       </article>)}</div>
     </> : <>
@@ -178,11 +187,11 @@ export function TeachingLoadMatrixTab(props: Props) {
       {busy && <p role="status">جاري المعالجة...</p>}
       {data && <>
         <h2 className="text-xl font-bold">مصفوفة نصاب {data.class.name}</h2>
-        <p className="text-sm">القيم المحفوظة: {data.summary.configured}/{data.summary.expected} نصاب · ناقص: {data.summary.missing} · بدون مدرس: {data.summary.without_teacher} · مجموع الحصص: {data.summary.weekly_periods} · الاكتمال: {data.summary.completion_percent}%</p>
-        <p className="text-xs text-gray-500">الاكتمال = الأنصبة التي لها مدرس ÷ الخلايا القابلة للتطبيق. ترك الحصص فارغة لا يغير النصاب ولا يعطله.</p>
+        <div><p>القيم المحفوظة:</p><MatrixSummaryDetails summary={data.summary} /></div>
+        <p className="text-xs text-gray-500">الاكتمال = الأنصبة التي لها مدرس نشط مؤهل في المدرسة ÷ الخلايا القابلة للتطبيق. ترك الحصص فارغة لا يغير النصاب ولا يعطله.</p>
         <div className="flex flex-wrap gap-2">
           <input className={field + ' md:!w-64'} aria-label="البحث باسم المادة" placeholder="البحث باسم المادة" value={search} onChange={e => setSearch(e.target.value)} />
-          <select className={field + ' md:!w-60'} aria-label="تصفية المصفوفة" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">إظهار جميع المواد</option><option value="missing">إظهار الأنصبة الناقصة فقط</option><option value="no-teacher">إظهار بدون مدرس فقط</option><option value="changed">إظهار التغييرات فقط</option></select>
+          <select className={field + ' md:!w-60'} aria-label="تصفية المصفوفة" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">إظهار جميع المواد</option><option value="missing">إظهار الأنصبة الناقصة فقط</option><option value="no-teacher">إظهار بدون مدرس فقط</option><option value="invalid-teacher">إظهار المدرس غير المتاح فقط</option><option value="changed">إظهار التغييرات فقط</option></select>
           <button className={button} disabled={busy} onClick={() => { guard.invalidate(); setCopy(null); setCopyOpen(true); }}>نسخ النصاب من سنة سابقة</button>
           <button className={button} disabled={busy || !dirty} onClick={reset}>إلغاء جميع التغييرات غير المحفوظة</button>
           <button className={button + ' !bg-primary-600 text-white'} disabled={busy || changes.length === 0} onClick={() => void showPreview()}>معاينة التغييرات</button>
@@ -209,12 +218,13 @@ export function TeachingLoadMatrixTab(props: Props) {
                   const teacher = edit.employeeId === undefined ? load?.employee_id ?? null : edit.employeeId;
                   const invalid = value.trim() && (!Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > MAX_MATRIX_WEEKLY_PERIODS);
                   const conflict = preview?.items.find(i => matrixKey(i.subject_id, i.section_id) === key)?.blockers.length;
-                  const tone = invalid || conflict ? 'bg-red-50' : change ? 'bg-blue-50' : !load ? 'bg-gray-50' : teacher == null ? 'bg-amber-50' : 'bg-emerald-50';
+                  const presentation = matrixCellPresentation(load, teacher, data.teachers, schoolId);
+                  const tone = invalid || conflict || presentation.state === 'invalid_teacher' ? 'bg-red-50' : change ? 'bg-blue-50' : presentation.tone;
                   const update = (patch: MatrixDraft[string]) => changeDraft({ ...draft, [key]: { ...edit, ...patch } });
                   return <td key={key} className={`space-y-2 p-3 ${tone}`}>
-                    <select className={field} aria-label={`مدرس ${subject.name} / ${section.name}`} value={teacher ?? ''} onChange={e => update({ employeeId: e.target.value ? Number(e.target.value) : null, deactivate: false })}>{teacher != null && !data.teachers.some(t => t.id === teacher) && <option value={teacher}>مدرس غير متاح — اختر بديلًا</option>}{teacherOptions()}</select>
+                    <select className={field} aria-label={`مدرس ${subject.name} / ${section.name}`} value={teacher ?? ''} onChange={e => update({ employeeId: e.target.value ? Number(e.target.value) : null, deactivate: false })}>{presentation.state === 'invalid_teacher' && <option value={teacher!}>مدرس غير متاح — اختر بديلًا</option>}{teacherOptions()}</select>
                     <input className={field} type="number" min="1" max={MAX_MATRIX_WEEKLY_PERIODS} aria-label={`حصص ${subject.name} / ${section.name}`} value={value} onChange={e => update({ periods: e.target.value, deactivate: false })} />
-                    <p className="text-xs">{invalid ? 'عدد الحصص غير صالح' : change ? `${actionLabels[change.action === 'upsert' ? load ? 'update' : 'create' : 'deactivate']} غير محفوظ` : !load ? 'لا يوجد نصاب بعد' : teacher == null ? 'بدون مدرس' : 'مكتمل'}{load && ` · #${load.id}`}</p>
+                    <p className="text-xs">{invalid ? 'عدد الحصص غير صالح' : presentation.state === 'invalid_teacher' ? presentation.label : change ? `${actionLabels[change.action === 'upsert' ? load ? 'update' : 'create' : 'deactivate']} غير محفوظ` : presentation.label}{load && ` · #${load.id}`}</p>
                     {load && <div className="flex flex-wrap gap-1"><button className={button} onClick={() => update({ deactivate: !edit.deactivate })}>{edit.deactivate ? 'إلغاء التعطيل' : 'تعطيل هذا النصاب'}</button><button className={button} onClick={() => { if (allowLeave()) props.onAdvanced(load); }}>تعديل متقدم</button></div>}
                   </td>;
                 })}

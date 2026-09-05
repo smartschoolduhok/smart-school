@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { createServer } from 'vite';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { fixture,root } from './helpers/teaching-load-matrix-fixture.mjs';
+import { fixture,root,invalidateAssignedTeacher } from './helpers/teaching-load-matrix-fixture.mjs';
 import { loadTeachingLoadMatrix,publicTeachingLoadMatrix } from '../src/lib/teachingLoadMatrixDb.ts';
-import { planTeachingLoadMatrix,applyMatrixRow,matrixDraftChanges } from '../src/lib/teachingLoadMatrix.ts';
+import { planTeachingLoadMatrix,applyMatrixRow,matrixDraftChanges,matrixCellPresentation } from '../src/lib/teachingLoadMatrix.ts';
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
-const {TeachingLoadMatrixTab,MatrixPlanSummary}=await vite.ssrLoadModule('/src/modules/timetable/TeachingLoadMatrixTab.tsx');
+const {TeachingLoadMatrixTab,MatrixPlanSummary,MatrixSummaryDetails}=await vite.ssrLoadModule('/src/modules/timetable/TeachingLoadMatrixTab.tsx');
 after(()=>vite.close());
 const source=readFileSync(join(root,'src/modules/timetable/TeachingLoadMatrixTab.tsx'),'utf8');
 const page=readFileSync(join(root,'src/modules/timetable/TimetablePage.tsx'),'utf8');
@@ -68,4 +68,19 @@ test('matrix layout keeps accessible applicable cells, sticky RTL subject and bo
  assert.match(source,/max-w-full overflow-x-auto/);assert.match(source,/sticky right-0/);assert.match(source,/aria-disabled="true"/);
  assert.match(source,/aria-label=\{\`مدرس/);assert.match(source,/aria-label=\{\`حصص/);
  assert.doesNotMatch(source,/\bfetch\(/);
+});
+
+for(const kind of ['archived','nonteacher','other-school','missing'])test(`rendered ${kind} teacher summary agrees on class card, header and projected preview`,async()=>{
+ const f=fixture();invalidateAssignedTeacher(f.db,kind);const c=await loadTeachingLoadMatrix(f.d1,1,1,1);const data=publicTeachingLoadMatrix(c);
+ const props={schoolId:1,academicYearId:1,classes:[c.class],sections:c.sections,subjects:c.subjects,loads:c.loads,years:[],dataVersion:0,onChanged:async()=>{},onDirtyChange:()=>{},onAdvanced:()=>{}};
+ const card=renderToStaticMarkup(React.createElement(TeachingLoadMatrixTab,props));
+ const header=renderToStaticMarkup(React.createElement(MatrixSummaryDetails,{summary:data.summary}));
+ assert.ok(card.includes(header));assert.match(card,/يحتاج إصلاح تعيين المدرسين/);
+ for(const html of [card,header]){assert.match(html,/1 مدرس غير متاح/);assert.match(html,/1 بدون مدرس/);assert.match(html,/الاكتمال: 0%/);assert.match(html,/إجمالي الحصص: 8/);assert.doesNotMatch(html,/Secret/);}
+ const plan=planTeachingLoadMatrix(c,[{subject_id:1,section_id:2,action:'upsert',employee_id:1,weekly_periods:4}]);
+ const preview=renderToStaticMarkup(React.createElement(MatrixPlanSummary,{plan}));assert.match(preview,/مدرس غير متاح بعد الحفظ: 0/);assert.match(preview,/الاكتمال: 20%/);
+ const load=c.loads.find(l=>l.id===2);const cell=matrixCellPresentation(load,load.employee_id,c.teachers,1);assert.equal(cell.tone,'bg-red-50');assert.notEqual(cell.label,'مكتمل');
+ // These are the same behavioral presenters rendered in the selected header/cell.
+ assert.match(source,/<MatrixSummaryDetails summary=\{data.summary\}/);assert.match(source,/matrixCellPresentation\(load, teacher, data.teachers, schoolId\)/);
+ assert.match(source,/presentation.state === 'invalid_teacher' \? 'bg-red-50'/);assert.match(source,/value="invalid-teacher"/);assert.match(source,/matrixLoadTeacherState\(l\) === 'invalid_teacher'/);
 });

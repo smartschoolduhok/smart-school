@@ -41,17 +41,24 @@ export function fixture({ upgrade = true } = {}) {
 class Statement {
   constructor(owner, sql, args=[]) { this.owner=owner; this.sql=sql; this.args=args; }
   bind(...args) { return new Statement(this.owner,this.sql,args); }
-  async first() { return this.owner.db.prepare(this.sql).get(...this.args) ?? null; }
-  async all() { return {success:true, results:this.owner.db.prepare(this.sql).all(...this.args), meta:{}}; }
+  async first() { this.owner.record(this); return this.owner.db.prepare(this.sql).get(...this.args) ?? null; }
+  async all() { this.owner.record(this); return {success:true, results:this.owner.db.prepare(this.sql).all(...this.args), meta:{}}; }
   async run() {
+    this.owner.record(this);
     const stmt=this.owner.db.prepare(this.sql);
-    if (stmt.columns().length) return this.all();
+    if (stmt.columns().length) return {success:true,results:stmt.all(...this.args),meta:{}};
     const r=stmt.run(...this.args);
     return {success:true,results:[],meta:{changes:r.changes,last_row_id:Number(r.lastInsertRowid)}};
   }
 }
 export class LocalD1 {
-  constructor(db) { this.db=db; this.sql=[]; this.batchSizes=[]; this.beforeWrite=null; this.failAt=null; }
+  constructor(db) { this.db=db; this.sql=[]; this.batchSizes=[]; this.beforeWrite=null; this.failAt=null; this.executions=[]; this.queryBudget=Infinity; }
+  resetQueryBudget(limit=50) { this.executions=[]; this.queryBudget=limit; }
+  record(statement) {
+    if (this.executions.length >= this.queryBudget) throw new Error('D1 request query budget exceeded');
+    if (statement.args.length > 100) throw new Error('D1 bound parameter limit exceeded');
+    this.executions.push({sql:statement.sql,parameters:statement.args.length});
+  }
   prepare(sql) { this.sql.push(sql); return new Statement(this,sql); }
   async batch(statements) {
     this.batchSizes.push(statements.length);
@@ -82,4 +89,29 @@ export function addConstraints(db, employee, values) {
 }
 export function addAvailability(db,employee,slot,status) {
   db.prepare('INSERT INTO timetable_teacher_availability(school_id,academic_year_id,employee_id,slot_id,status) VALUES(1,1,?,?,?)').run(employee,slot,status);
+}
+
+export function invalidateAssignedTeacher(db, kind) {
+  if (kind === 'archived') db.exec("UPDATE employees SET status='archived' WHERE id=2");
+  else if (kind === 'nonteacher') db.exec("UPDATE employees SET role='accountant' WHERE id=2");
+  else if (kind === 'other-school') db.exec("UPDATE employees SET school_id=2, full_name='Secret moved teacher' WHERE id=2");
+  else if (kind === 'missing') {
+    // Defensive corrupted-read fixture only: keep the dangling ID without
+    // weakening or synthetically altering the genuine schema/triggers.
+    db.exec('PRAGMA foreign_keys=OFF; DELETE FROM employees WHERE id=2; PRAGMA foreign_keys=ON;');
+  } else throw new Error('Unknown defensive fixture');
+}
+
+export function benchmarkMatrix(db, subjectCount, sectionCount, populated=false) {
+  db.exec("INSERT INTO classes(id,school_id,name,stage,order_index,status) VALUES(10,1,'Benchmark','ابتدائي',10,'active')");
+  for(let s=0;s<sectionCount;s++) db.prepare("INSERT INTO sections(id,school_id,class_id,name,status) VALUES(?,1,10,?,'active')").run(100+s,'Section '+s);
+  const changes=[];
+  for(let i=0;i<subjectCount;i++) {
+    db.prepare("INSERT INTO subjects(id,school_id,class_id,name,status,order_index) VALUES(?,1,10,?,'active',?)").run(100+i,'Subject '+i,i);
+    for(let s=0;s<sectionCount;s++) {
+      if(populated) db.prepare("INSERT INTO timetable_teaching_loads(school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status) VALUES(1,1,10,?,?,1,3,'active')").run(100+s,100+i);
+      changes.push({subject_id:100+i,section_id:100+s,action:'upsert',employee_id:populated?2:1,weekly_periods:3});
+    }
+  }
+  return changes;
 }

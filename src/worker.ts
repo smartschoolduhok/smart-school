@@ -2345,7 +2345,7 @@ app.get('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRole
       ) class_sections ON class_sections.school_id = load.school_id AND class_sections.class_id = load.class_id
       LEFT JOIN sections section ON section.id = load.section_id
       LEFT JOIN subjects subject ON subject.id = load.subject_id
-      LEFT JOIN employees employee ON employee.id = load.employee_id
+      LEFT JOIN employees employee ON employee.id = load.employee_id AND employee.school_id = load.school_id
       WHERE load.school_id = ? AND load.academic_year_id = ?
       ORDER BY class.order_index, load.section_id, subject.order_index, load.id
     `).bind(schoolId, academicYearId).all<TimetableTeachingLoad>()

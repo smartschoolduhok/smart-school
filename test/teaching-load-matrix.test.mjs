@@ -3,9 +3,10 @@ import test from 'node:test';
 import {
   parseMatrixRequest, parseMatrixCopyRequest, matrixCells, matrixClassCards, matrixKey,
   matrixDraftChanges, applyMatrixRow, planTeachingLoadMatrix, planTeachingLoadCopy, createMatrixRequestGuard,
+  matrixLoadTeacherState, matrixCellPresentation, isMatrixTeacherEligible,
 } from '../src/lib/teachingLoadMatrix.ts';
 import { loadTeachingLoadMatrix, publicTeachingLoadMatrix, buildMatrixApplyStatements } from '../src/lib/teachingLoadMatrixDb.ts';
-import { fixture, entry, revision, snapshot, addConstraints, addAvailability, migrationSQL } from './helpers/teaching-load-matrix-fixture.mjs';
+import { fixture, entry, revision, snapshot, addConstraints, addAvailability, migrationSQL, invalidateAssignedTeacher } from './helpers/teaching-load-matrix-fixture.mjs';
 
 const scope={school_id:1,academic_year_id:1,class_id:1};
 const up=(subject_id=1,section_id=1,employee_id=1,weekly_periods=4)=>({subject_id,section_id,employee_id,weekly_periods,action:'upsert'});
@@ -166,7 +167,7 @@ test('atomic revision race and stale solver assertions reject with zero writes',
  const fresh=planTeachingLoadMatrix(await context(f),[up()]);await f.d1.batch(buildMatrixApplyStatements(f.d1,scope,fresh,1));
  assert.throws(()=>f.db.prepare('INSERT INTO timetable_revision_assertions(token,school_id,academic_year_id,expected_revision) VALUES(?,1,1,?)').run('old-proposal',fresh.revision),/stale_timetable_proposal/);
 });
-test('maximum 500 teacher changes stay within D1 parameter and paid query budgets',async()=>{
+test('maximum 500 teacher changes use six statements with five bound parameters',async()=>{
  const f=fixture();
  for(let i=0;i<500;i++){
   f.db.prepare("INSERT INTO subjects(id,school_id,class_id,name,status) VALUES(?,1,2,?,'active')").run(100+i,'Bulk '+i);
@@ -176,7 +177,7 @@ test('maximum 500 teacher changes stay within D1 parameter and paid query budget
  assert.equal(parseMatrixRequest({...body(changes),class_id:2}).ok,true);
  const plan=planTeachingLoadMatrix(await loadTeachingLoadMatrix(f.d1,1,1,2),changes);
  const statements=buildMatrixApplyStatements(f.d1,{...scope,class_id:2},plan,1);
- assert.equal(statements.length,510);assert.ok(statements.every(s=>s.args.length<=100));
+ assert.equal(statements.length,6);assert.ok(statements.every(s=>s.args.length<=5));
  await f.d1.batch(statements);
  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM timetable_teaching_loads WHERE school_id=1 AND academic_year_id=1 AND class_id=2 AND employee_id=2').get().n,500);
 });
@@ -205,4 +206,28 @@ test('populated 0026 upgrade is data-preserving, FK clean and keeps immutable ve
  assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
  assert.ok(f.db.prepare("SELECT name FROM sqlite_schema WHERE name='trg_timetable_loads_validate_teacher_reassignment'").get());
  assert.throws(()=>f.db.exec("UPDATE timetable_schedule_version_entries SET is_locked=0"),/immutable/);
+});
+
+test('query guard counts actual executions, including reused statements inside one batch',async()=>{
+ const f=fixture();const before=snapshot(f.db);const statement=f.d1.prepare('SELECT 1');f.d1.resetQueryBudget(50);
+ await assert.rejects(f.d1.batch(Array.from({length:51},()=>statement)),/query budget exceeded/);
+ assert.equal(f.d1.executions.length,50);assert.deepEqual(snapshot(f.db),before);
+});
+
+for(const kind of ['archived','nonteacher','other-school','missing'])test(`domain ${kind} reference remains configured, invalid/red, not NULL or complete`,async()=>{
+ const f=fixture();invalidateAssignedTeacher(f.db,kind);const before=snapshot(f.db);const c=await context(f);const data=publicTeachingLoadMatrix(c);
+ const load=data.loads.find(l=>l.id===2);assert.equal(matrixLoadTeacherState(load),'invalid_teacher');
+ assert.deepEqual(matrixCellPresentation(load,2,c.teachers,1),{state:'invalid_teacher',tone:'bg-red-50',label:'مدرس غير متاح — اختر بديلًا'});
+ assert.equal(matrixCellPresentation(data.loads.find(l=>l.id===1),null,c.teachers,1).state,'without_teacher');
+ assert.equal(matrixCellPresentation(undefined,null,c.teachers,1).state,'missing');
+ const p=planTeachingLoadMatrix(c,[up(1,2,1)]);assert.equal(p.summary_after.invalid_teacher,0);assert.equal(p.summary_after.without_teacher,1);assert.equal(p.summary_after.completion_percent,20);
+ assert.equal(p.summary_after.weekly_periods,8);assert.equal(p.summary_after.configured,2);
+ assert.deepEqual(snapshot(f.db),before);
+});
+
+test('eligibility is fail-closed for missing metadata/inactive/foreign/nonteacher; repair presentation turns valid',()=>{
+ for(const teacher of [undefined,{}, {school_id:1,status:'inactive',role:'teacher'},{school_id:2,status:'active',role:'teacher'},{school_id:1,status:'active',role:'staff'}])assert.equal(isMatrixTeacherEligible(teacher,1),false);
+ const teacher={id:1,school_id:1,status:'active',role:'teacher',full_name:'A'};
+ assert.equal(isMatrixTeacherEligible(teacher,1),true);
+ assert.equal(matrixCellPresentation({employee_id:999},1,[teacher],1).tone,'bg-emerald-50');
 });

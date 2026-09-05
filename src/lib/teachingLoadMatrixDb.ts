@@ -76,36 +76,46 @@ export function buildMatrixApplyStatements(db: D1Database, scope: Required<Matri
     (token, school_id, academic_year_id, expected_revision) VALUES (?, ?, ?, ?)`)
     .bind(token, scope.school_id, scope.academic_year_id, plan.revision)];
   const updates = plan.items.filter(i => i.action === 'update');
+  const creates = plan.items.filter(i => i.action === 'create');
+  const deactivations = plan.items.filter(i => i.action === 'deactivate');
+  // Bind validated numeric/null data, never interpolate it into SQL. Each
+  // non-empty group is ONE statement regardless of cell count (maximum 500).
+  const group = (sql: string, values: unknown[]) => db.prepare(sql).bind(
+    JSON.stringify(values), scope.school_id, scope.academic_year_id, scope.class_id, userId);
   // Clear ONLY changing, previously assigned teachers, inside this same batch.
   // This permits coupled swaps without weakening any DB trigger.
   const changingTeachers = updates.filter(i => i.old_employee_id != null && i.old_employee_id !== i.new_employee_id);
-  // Bound both D1's 100 parameters/query and its per-invocation query budget:
-  // 500 changes need at most 6 clearing statements, not another 500 statements.
-  for (let offset = 0; offset < changingTeachers.length; offset += 90) {
-    const ids = changingTeachers.slice(offset, offset + 90).map(i => i.existing_load_id);
-    statements.push(db.prepare(`UPDATE timetable_teaching_loads SET employee_id = NULL,
-      updated_by_user_id = ?, updated_at = unixepoch()
-      WHERE school_id = ? AND academic_year_id = ? AND class_id = ? AND status = 'active'
-        AND id IN (${ids.map(() => '?').join(',')})`)
-      .bind(userId, scope.school_id, scope.academic_year_id, scope.class_id, ...ids));
+  if (changingTeachers.length) {
+    statements.push(group(`UPDATE timetable_teaching_loads SET employee_id = NULL,
+      updated_by_user_id = ?5, updated_at = unixepoch()
+      WHERE school_id = ?2 AND academic_year_id = ?3 AND class_id = ?4 AND status = 'active'
+        AND id IN (SELECT value FROM json_each(?1))`, changingTeachers.map(i => i.existing_load_id)));
   }
-  for (const item of plan.items) {
-    if (item.action === 'create') {
-      // Historical inactive rows are preserved; match the individual-create API.
-      statements.push(db.prepare(`INSERT INTO timetable_teaching_loads
-        (school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods,
-         status, created_by_user_id, updated_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`)
-        .bind(scope.school_id, scope.academic_year_id, scope.class_id, item.section_id, item.subject_id,
-          item.new_employee_id, item.new_weekly_periods, userId, userId));
-    } else if (item.action === 'update' || item.action === 'deactivate') {
-      statements.push(db.prepare(`UPDATE timetable_teaching_loads
-        SET employee_id = ?, weekly_periods = ?, status = ?, updated_by_user_id = ?, updated_at = unixepoch()
-        WHERE id = ? AND school_id = ? AND academic_year_id = ? AND class_id = ? AND status = 'active'`)
-        .bind(item.action === 'deactivate' ? item.old_employee_id : item.new_employee_id,
-          item.action === 'deactivate' ? item.old_weekly_periods : item.new_weekly_periods,
-          item.action === 'deactivate' ? 'inactive' : 'active', userId,
-          item.existing_load_id, scope.school_id, scope.academic_year_id, scope.class_id));
-    }
+  if (creates.length) {
+    // Historical inactive rows are preserved; match the individual-create API.
+    statements.push(group(`INSERT INTO timetable_teaching_loads
+      (school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods,
+       status, created_by_user_id, updated_by_user_id)
+      SELECT ?2, ?3, ?4, json_extract(value, '$.section_id'), json_extract(value, '$.subject_id'),
+        json_extract(value, '$.employee_id'), json_extract(value, '$.weekly_periods'), 'active', ?5, ?5
+      FROM json_each(?1) ORDER BY CAST(key AS INTEGER)`, creates.map(i => ({ section_id: i.section_id,
+        subject_id: i.subject_id, employee_id: i.new_employee_id, weekly_periods: i.new_weekly_periods }))));
+  }
+  if (updates.length) {
+    statements.push(group(`UPDATE timetable_teaching_loads
+      SET employee_id = json_extract(change.value, '$.employee_id'),
+          weekly_periods = json_extract(change.value, '$.weekly_periods'),
+          updated_by_user_id = ?5, updated_at = unixepoch()
+      FROM json_each(?1) AS change
+      WHERE timetable_teaching_loads.id = json_extract(change.value, '$.id')
+        AND school_id = ?2 AND academic_year_id = ?3 AND class_id = ?4 AND status = 'active'`,
+      updates.map(i => ({ id: i.existing_load_id, employee_id: i.new_employee_id, weekly_periods: i.new_weekly_periods }))));
+  }
+  if (deactivations.length) {
+    statements.push(group(`UPDATE timetable_teaching_loads
+      SET status = 'inactive', updated_by_user_id = ?5, updated_at = unixepoch()
+      WHERE school_id = ?2 AND academic_year_id = ?3 AND class_id = ?4 AND status = 'active'
+        AND id IN (SELECT value FROM json_each(?1))`, deactivations.map(i => i.existing_load_id)));
   }
   // Even a confirmed all-unchanged apply consumes its revision. Capture the
   // response revision in this batch, never through a post-commit plan reread.
