@@ -38,7 +38,6 @@ import {
 } from '../../lib/api';
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import {
-  calculateWeeklyCapacity,
   TIMETABLE_DAY_NAMES,
   type TimetableDay,
   type TimetableReadinessSummary,
@@ -53,6 +52,8 @@ import { TimetableGridTab } from './TimetableGridTab';
 import { TimetableVersionsTab } from './TimetableVersionsTab';
 import { TeachingLoadMatrixTab } from './TeachingLoadMatrixTab';
 import { MATRIX_LEAVE_MESSAGE } from '../../lib/teachingLoadMatrix';
+import { WeekSetupTab } from './WeekSetupTab';
+import { WEEK_LEAVE_MESSAGE } from '../../lib/weekSetup';
 
 type TabKey = 'grid' | 'master' | 'automatic' | 'versions' | 'week' | 'loads' | 'availability' | 'readiness';
 
@@ -152,7 +153,12 @@ export default function TimetablePage() {
   const [advancedLoads, setAdvancedLoads] = useState(false);
   const matrixDirty = useRef(false);
   const onMatrixDirty = useCallback((dirty: boolean) => { matrixDirty.current = dirty; }, []);
-  function allowMatrixLeave() { return !matrixDirty.current || window.confirm(MATRIX_LEAVE_MESSAGE); }
+  const weekDirty = useRef(false);
+  const onWeekDirty = useCallback((dirty: boolean) => { weekDirty.current = dirty; }, []);
+  function allowMatrixLeave() {
+    if (matrixDirty.current && !window.confirm(MATRIX_LEAVE_MESSAGE)) return false;
+    return !weekDirty.current || window.confirm(WEEK_LEAVE_MESSAGE);
+  }
   const [years, setYears] = useState<AcademicYearRecord[]>([]);
   const [academicYearId, setAcademicYearId] = useState<number | null>(null);
   const [classes, setClasses] = useState<Class[]>([]);
@@ -294,7 +300,6 @@ export default function TimetablePage() {
     employee.status === 'active'
     && employee.role === 'teacher'
   )), [employees]);
-  const weekMetrics = calculateWeeklyCapacity(days, slots);
 
   async function handleDayChange(dayOfWeek: number, changes: Partial<{ is_active: 0 | 1; order_index: number }>) {
     if (schoolId == null || academicYearId == null) return;
@@ -493,43 +498,10 @@ export default function TimetablePage() {
 
               {loading && <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-500">جاري تحميل إعدادات الجدول...</div>}
 
-              {!loading && tab === 'week' && (
-                <div className="space-y-5">
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <Metric label="أيام الدوام" value={weekMetrics.teachingDays} />
-                    <Metric label="إجمالي الحصص الأسبوعية" value={weekMetrics.lessonSlots} tone="green" />
-                    <Metric label="فترات الاستراحة" value={weekMetrics.breakSlots} tone="amber" />
-                  </div>
-                  {TIMETABLE_DAY_NAMES.map((name, dayOfWeek) => {
-                    const day = days.find((item) => item.day_of_week === dayOfWeek);
-                    const daySlots = slots.filter((item) => item.day_of_week === dayOfWeek);
-                    const active = Number(day?.is_active || 0) === 1;
-                    return (
-                      <section key={name} className={`rounded-xl border bg-white ${active ? 'border-primary-200' : 'border-gray-200'}`}>
-                        <div className="flex flex-wrap items-center gap-4 border-b border-gray-100 p-4">
-                          <label className="flex items-center gap-3 font-bold text-gray-900">
-                            <input type="checkbox" checked={active} disabled={saving} onChange={(event) => void handleDayChange(dayOfWeek, { is_active: event.target.checked ? 1 : 0 })} className="h-4 w-4" />
-                            {name}
-                          </label>
-                          <label className="mr-auto flex items-center gap-2 text-sm text-gray-600">الترتيب
-                            <input type="number" min="0" value={day?.order_index ?? dayOfWeek} onChange={(event) => void handleDayChange(dayOfWeek, { order_index: Number(event.target.value) })} className="w-20 rounded-lg border border-gray-300 px-2 py-1" />
-                          </label>
-                          {active && <button onClick={() => beginSlot(dayOfWeek)} className="flex items-center gap-1 rounded-lg bg-primary-600 px-3 py-2 text-sm font-semibold text-white"><Plus size={16} />إضافة فترة</button>}
-                        </div>
-                        {active && (
-                          <div className="overflow-x-auto p-4">
-                            {daySlots.length === 0 ? <p className="py-4 text-center text-sm text-amber-700">لا توجد حصص أو استراحات لهذا اليوم.</p> : (
-                              <table className="w-full min-w-[620px] text-sm">
-                                <thead><tr className="border-b text-right text-gray-500"><th className="p-2">الترتيب</th><th className="p-2">النوع</th><th className="p-2">الاسم</th><th className="p-2">الوقت</th><th className="p-2">إجراء</th></tr></thead>
-                                <tbody>{daySlots.map((slot) => <tr key={slot.id} className="border-b last:border-0"><td className="p-2"><bdi dir="ltr">{slot.slot_index}</bdi></td><td className="p-2">{slot.slot_type === 'lesson' ? `الحصة ${slot.lesson_number}` : 'استراحة'}</td><td className="p-2 font-medium">{slot.label}</td><td className="p-2"><bdi dir="ltr">{slot.start_time} – {slot.end_time}</bdi></td><td className="flex gap-1 p-2"><button onClick={() => beginSlot(dayOfWeek, slot)} className="rounded p-2 text-blue-700 hover:bg-blue-50" aria-label="تعديل الفترة"><Pencil size={16} /></button><button onClick={() => void removeSlot(slot)} className="rounded p-2 text-red-700 hover:bg-red-50" aria-label="حذف الفترة"><Trash2 size={16} /></button></td></tr>)}</tbody>
-                              </table>
-                            )}
-                          </div>
-                        )}
-                      </section>
-                    );
-                  })}
-                </div>
+              {tab === 'week' && schoolId != null && academicYearId != null && (
+                <WeekSetupTab key={`${schoolId}:${academicYearId}`} schoolId={schoolId} academicYearId={academicYearId}
+                  dataVersion={yearDataVersion} onDirtyChange={onWeekDirty} onChanged={reloadYearData}
+                  onEditSlot={beginSlot} onDeleteSlot={removeSlot} onDayChange={handleDayChange} saving={saving}/>
               )}
 
               {tab === 'grid' && schoolId != null && academicYearId != null && (

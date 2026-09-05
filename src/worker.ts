@@ -5,6 +5,8 @@
 // ===========================================
 
 import { Hono } from 'hono'
+import { parseWeekRequest, planWeekSetup, publicWeekSnapshot, WeekSetupError } from './lib/weekSetup'
+import { loadWeekSetup, buildWeekApplyStatements, readWeekJson, weekDatabaseError } from './lib/weekSetupDb'
 import { parseMatrixRequest, parseMatrixCopyRequest, planTeachingLoadMatrix, planTeachingLoadCopy, MAX_MATRIX_CHANGES } from './lib/teachingLoadMatrix'
 import { loadTeachingLoadMatrix, publicTeachingLoadMatrix, loadMatrixCopySource, buildMatrixApplyStatements, MatrixError, matrixDatabaseError, staleMatrixError } from './lib/teachingLoadMatrixDb'
 import { serveStatic } from 'hono/cloudflare-workers'
@@ -2104,6 +2106,50 @@ app.put('/api/academic-years/:id/activate', requireSameSchoolOrAdmin(), requireR
 // ===========================================
 // API ROUTES: Timetable foundation (Phase 18A.1)
 // ===========================================
+app.get('/api/timetable/week-setup', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  try {
+    const query = c.req.queries()
+    if (Object.entries(query).some(([key, values]) => !['school_id', 'academic_year_id'].includes(key) || values.length !== 1 || !/^[1-9]\d*$/.test(values[0]) || !Number.isSafeInteger(Number(values[0]))))
+      throw new WeekSetupError('invalid_week_scope', 'حدد المدرسة والسنة بمعرّفات صحيحة.')
+    const year = Number(c.req.query('academic_year_id'))
+    if (!Number.isSafeInteger(year) || year <= 0) throw new WeekSetupError('invalid_week_scope', 'السنة الدراسية مطلوبة.')
+    const target = await resolveActiveWriteSchool(c.env.DB, c.get('user') as UserContext, c.req.query('school_id'))
+    if (!target.ok) return c.json({error: target.error}, target.status)
+    return c.json({data: publicWeekSnapshot(await loadWeekSetup(c.env.DB, target.schoolId, year))})
+  } catch (error) {
+    const known = weekDatabaseError(error)
+    if (!known) console.error('[timetable/week-setup] read failed', error)
+    return c.json({error: known?.message ?? 'تعذر تحميل إعداد الأسبوع.', code: known?.code ?? 'week_load_failed'}, known?.status ?? 500)
+  }
+})
+for (const operation of ['preview', 'apply'] as const) {
+  app.post(`/api/timetable/week-setup/${operation}`, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+    try {
+      const input = parseWeekRequest(await readWeekJson(c.req.raw), operation === 'apply')
+      const target = await resolveActiveWriteSchool(c.env.DB, c.get('user') as UserContext, input.school_id)
+      if (!target.ok) return c.json({error: target.error}, target.status)
+      const context = await loadWeekSetup(c.env.DB, target.schoolId, input.academic_year_id)
+      const plan = await planWeekSetup(context, {...input, school_id: target.schoolId})
+      if (operation === 'preview') return c.json({data: plan})
+      if (plan.preview_digest !== input.preview_digest) throw new WeekSetupError('week_preview_mismatch', 'تغيرت المسودة أو المعاينة. اطلب معاينة جديدة.', 409)
+      if (!plan.can_apply) return c.json({error: 'توجد موانع؛ لم يتم حفظ أي يوم.', code: 'blocked_week_setup', data: plan}, 409)
+      if (plan.requires_availability_acknowledgement && !input.acknowledge_availability_impact)
+        throw new WeekSetupError('availability_acknowledgement_required', 'يلزم الإقرار ببقاء إعدادات التوفر على الفترات المعدلة.', 409)
+      if (plan.no_change) return c.json({data: {...plan, applied: false, no_change: true}})
+      const batch = buildWeekApplyStatements(c.env.DB, target.schoolId, input.academic_year_id, plan)
+      const results = await c.env.DB.batch(batch.statements)
+      const count = (index: number | null) => index === null ? 0 : results[index].results?.length ?? 0
+      const counts = {...plan.counts, create: count(batch.createsIndex), update: batch.updateIndexes.reduce((sum, index) => sum + count(index), 0), activated: count(batch.dayIndex)}
+      const revision = Number(results[results.length - 1]?.results?.[0]?.revision)
+      return c.json({data: {...plan, counts, revision, applied: true, no_change: false}})
+    } catch (error) {
+      const known = weekDatabaseError(error)
+      if (!known) console.error('[timetable/week-setup] operation failed', error)
+      return c.json({error: known?.message ?? 'تعذرت معالجة إعداد الأسبوع.', code: known?.code ?? 'week_save_failed'}, known?.status ?? 500)
+    }
+  })
+}
+
 app.get('/api/timetable/days', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const schoolId: number | null = c.get('resolvedSchoolId')
   const academicYearId = Number(c.req.query('academic_year_id'))

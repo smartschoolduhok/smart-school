@@ -4,6 +4,8 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
+    "test:week-setup": "node --experimental-strip-types --test --test-concurrency=1 test/week-setup.test.mjs test/week-setup-api.test.mjs test/week-setup-ui.test.mjs",
+    "test:week-setup:local": "node scripts/validate-week-setup-local.mjs",
     "test:teaching-load-matrix": "node --experimental-strip-types --test --test-concurrency=1 test/teaching-load-matrix.test.mjs test/teaching-load-matrix-api.test.mjs test/teaching-load-matrix-ui.test.mjs",
     "test:teaching-load-matrix:local": "node scripts/validate-teaching-load-matrix-local.mjs",
     "test:rbac": "node --experimental-strip-types --test test/rbac.test.mjs test/result-card.test.mjs test/settings-permissions.test.mjs test/tenant-targeting.test.mjs",
@@ -55,6 +57,7 @@
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",
     "@hono/vite-dev-server": "^0.18.2",
+    "happy-dom": "^20.14.0",
     "vite": "^6.3.5",
     "wrangler": "^4.4.0"
   }

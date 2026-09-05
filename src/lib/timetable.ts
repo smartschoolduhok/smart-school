@@ -874,6 +874,27 @@ function sortDaySlots(slots: TimetableSlot[]) {
   ));
 }
 
+// Shared occupancy primitives. Both single-entry placement and whole-schedule
+// projections use the same active lesson and distinct-day definitions.
+export function activeTimetableLessonSlots(days: TimetableDay[], slots: TimetableSlot[]): TimetableSlot[] {
+  const activeDayScopes = new Set(days.filter((day) => Number(day.is_active) === 1).map((day) => (
+    `${Number(day.school_id)}:${Number(day.academic_year_id)}:${Number(day.day_of_week)}`
+  )));
+  return slots.filter((slot) => slot.slot_type === 'lesson' && Number(slot.is_active) === 1
+    && activeDayScopes.has(`${Number(slot.school_id)}:${Number(slot.academic_year_id)}:${Number(slot.day_of_week)}`));
+}
+
+// Callers pass only entries/slots in the relevant teacher and school/year scope.
+export function occupiedTimetableDays(entries: TimetableEntry[], slots: TimetableSlot[]): Set<number> {
+  const slotById = new Map(slots.map((slot) => [Number(slot.id), slot]));
+  const days = new Set<number>();
+  for (const entry of entries) {
+    const slot = slotById.get(Number(entry.slot_id));
+    if (slot) days.add(Number(slot.day_of_week));
+  }
+  return days;
+}
+
 export function evaluateTimetableEntryPlacement(input: {
   candidate: { id?: number | null; slot_id: number; teaching_load_id: number };
   days: TimetableDay[];
@@ -882,6 +903,9 @@ export function evaluateTimetableEntryPlacement(input: {
   entries: TimetableEntry[];
   teacherAvailability?: TimetableTeacherAvailabilityOverride[];
   teacherConstraints?: TimetableTeacherConstraints[];
+  // Optional evidence from the SAME validator for projected configuration
+  // comparisons. Does not alter placement acceptance or response shapes.
+  onConstraintMetric?: (code: TimetableEntryHardConflictCode, count: number) => void;
 }): { hard_conflicts: TimetableEntryNotice[]; warnings: TimetableEntryNotice[] } {
   const hardConflicts: TimetableEntryNotice[] = [];
   const warnings: TimetableEntryNotice[] = [];
@@ -915,18 +939,12 @@ export function evaluateTimetableEntryPlacement(input: {
   }
 
   const otherEntries = input.entries.filter((entry) => candidateId == null || Number(entry.id) !== candidateId);
-  const activeDayScopes = new Set(input.days.filter((item) => Number(item.is_active) === 1).map((item) => (
-    `${Number(item.school_id)}:${Number(item.academic_year_id)}:${Number(item.day_of_week)}`
-  )));
-  const activeLessonSlotIds = new Set(input.slots.filter((item) => (
-    item.slot_type === 'lesson'
-    && Number(item.is_active) === 1
-    && activeDayScopes.has(`${Number(item.school_id)}:${Number(item.academic_year_id)}:${Number(item.day_of_week)}`)
-  )).map((item) => Number(item.id)));
+  const activeLessonSlotIds = new Set(activeTimetableLessonSlots(input.days, input.slots).map((item) => Number(item.id)));
   const activeEntries = otherEntries.filter((entry) => activeLessonSlotIds.has(Number(entry.slot_id)));
   const scheduledForLoad = activeEntries.filter((entry) => (
     Number(entry.teaching_load_id) === Number(load.id)
   )).length;
+  input.onConstraintMetric?.('weekly_periods_exceeded', scheduledForLoad + 1);
   if (scheduledForLoad >= Number(load.weekly_periods)) {
     hardConflicts.push(entryNotice('weekly_periods_exceeded', 'اكتمل عدد الحصص الأسبوعية المطلوبة لهذا النصاب'));
   }
@@ -975,17 +993,15 @@ export function evaluateTimetableEntryPlacement(input: {
       const entrySlot = input.slots.find((item) => Number(item.id) === Number(entry.slot_id));
       return entrySlot != null && Number(entrySlot.day_of_week) === Number(slot.day_of_week);
     });
+    input.onConstraintMetric?.('teacher_max_periods_per_day', teacherEntriesForDay.length + 1);
     if (constraints?.max_periods_per_day != null
       && teacherEntriesForDay.length + 1 > Number(constraints.max_periods_per_day)) {
       hardConflicts.push(entryNotice('teacher_max_periods_per_day', 'تجاوز المدرس الحد الأقصى للحصص اليومية'));
     }
 
-    const teacherWorkingDays = new Set<number>();
-    for (const entry of activeTeacherEntries) {
-      const entrySlot = input.slots.find((item) => Number(item.id) === Number(entry.slot_id));
-      if (entrySlot) teacherWorkingDays.add(Number(entrySlot.day_of_week));
-    }
+    const teacherWorkingDays = occupiedTimetableDays(activeTeacherEntries, input.slots);
     const addsWorkingDay = !teacherWorkingDays.has(Number(slot.day_of_week));
+    input.onConstraintMetric?.('teacher_max_working_days', teacherWorkingDays.size + Number(addsWorkingDay));
     if (constraints?.max_working_days != null
       && addsWorkingDay
       && teacherWorkingDays.size >= Number(constraints.max_working_days)) {
@@ -1014,6 +1030,7 @@ export function evaluateTimetableEntryPlacement(input: {
       && maximumRun > Number(constraints.max_consecutive_periods)) {
       hardConflicts.push(entryNotice('teacher_max_consecutive_periods', 'تجاوز المدرس الحد الأقصى للحصص المتتالية'));
     }
+    input.onConstraintMetric?.('teacher_max_consecutive_periods', maximumRun);
 
     if (availability?.status === 'avoid') {
       warnings.push(entryNotice('avoid_slot', 'المدرس يفضل تجنب هذه الفترة'));
