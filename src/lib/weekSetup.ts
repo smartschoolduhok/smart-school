@@ -1,5 +1,5 @@
 import {
-  evaluateTimetableEntryPlacement, calculateTeacherAvailabilitySummary,
+  evaluateTimetableEntryPlacement, calculateTeacherAvailabilitySummary, activeTimetableLessonSlots, occupiedTimetableDays,
   type TimetableDay, type TimetableSlot, type TimetableEntry, type TimetableTeachingLoad,
   type TimetableTeacherAvailabilityOverride, type TimetableTeacherConstraints,
 } from './timetable.ts';
@@ -33,7 +33,10 @@ export interface WeekSnapshot extends WeekScope {
   school_id: number; revision: number; days: TimetableDay[]; periods: TimetableSlot[];
   references: WeekReferences[]; summary: ReturnType<typeof summarizeWeekDay>[];
 }
-export interface WeekNotice { code: string; message: string; entry_id?: number }
+export interface WeekNotice {
+  code: string; message: string; entry_id?: number; employee_id?: number;
+  evidence?: { dimension: 'capacity_deficit' | 'working_days'; actual: number; limit: number; excess: number };
+}
 export interface WeekChange { day_of_week: number; id: number | null; before: WeekPeriod | null; after: WeekPeriod; action: 'create' | 'update' | 'unchanged' | 'retained' }
 export interface WeekDayPlan {
   day_of_week: number; action: 'configure' | 'skipped_existing' | 'blocked'; activate_day: boolean;
@@ -178,13 +181,37 @@ function scheduleEvidence(c: WeekContext) {
     const metrics: Record<string, number> = {};
     const evaluation = evaluateTimetableEntryPlacement({candidate: entry, ...c, teacherAvailability: c.availability, teacherConstraints: c.constraints,
       onConstraintMetric: (code, count) => { metrics[code] = count; }});
-    for (const n of evaluation.hard_conflicts) evidence.set(`entry:${entry.id}:${n.code}`, {notice: {...n, entry_id: entry.id}, severity: metrics[n.code] ?? 1});
+    // addsWorkingDay belongs to hypothetical single-entry placement. A week
+    // projection must compare actual occupied days, once per teacher, below.
+    for (const n of evaluation.hard_conflicts) if (n.code !== 'teacher_max_working_days')
+      evidence.set(`entry:${entry.id}:${n.code}`, {notice: {...n, entry_id: entry.id}, severity: metrics[n.code] ?? 1});
   }
+  const activeSlots = activeTimetableLessonSlots(c.days, c.slots);
   for (const constraint of c.constraints) {
-    const demand = c.loads.filter(l => l.status === 'active' && l.employee_id === constraint.employee_id).reduce((n, l) => n + l.weekly_periods, 0);
+    const teacherLoads = c.loads.filter(l => l.employee_id === constraint.employee_id);
+    const demand = teacherLoads.filter(l => l.status === 'active').reduce((n, l) => n + l.weekly_periods, 0);
     const summary = calculateTeacherAvailabilitySummary({schoolId: c.school_id, academicYearId: c.academic_year_id, employeeId: constraint.employee_id,
       employeeName: '', assignedWeeklyPeriods: demand, days: c.days, slots: c.slots, overrides: c.availability, constraints: constraint});
-    for (const n of summary.blockers) evidence.set(`teacher:${constraint.employee_id}:${n.code}`, {notice: n, severity: Math.max(1, demand - summary.hard_weekly_capacity)});
+    const shortage = Math.max(0, summary.assigned_weekly_periods - summary.hard_weekly_capacity);
+    if (shortage > 0 && summary.blockers[0]) {
+      // Diagnostic wording may change as capacity improves; constraint identity
+      // and numerical severity must not. Demand is never reduced to fit capacity.
+      evidence.set(`teacher:${constraint.employee_id}:capacity_deficit`, {severity: shortage, notice: {
+        ...summary.blockers[0], employee_id: constraint.employee_id,
+        message: `${summary.blockers[0].message} العجز المتبقي: ${shortage} حصة.`,
+        evidence: {dimension: 'capacity_deficit', actual: summary.assigned_weekly_periods, limit: summary.hard_weekly_capacity, excess: shortage},
+      }});
+    }
+    if (constraint.max_working_days != null) {
+      const loadIds = new Set(teacherLoads.map(l => l.id));
+      const workingDays = occupiedTimetableDays(c.entries.filter(e => loadIds.has(e.teaching_load_id)), activeSlots).size;
+      const excess = Math.max(0, workingDays - constraint.max_working_days);
+      if (excess > 0) evidence.set(`teacher:${constraint.employee_id}:working_days`, {severity: excess, notice: {
+        code: 'teacher_max_working_days', employee_id: constraint.employee_id,
+        message: `أيام عمل المدرس المشغولة فعليًا: ${workingDays}؛ الحد الأقصى: ${constraint.max_working_days}.`,
+        evidence: {dimension: 'working_days', actual: workingDays, limit: constraint.max_working_days, excess},
+      }});
+    }
   }
   return evidence;
 }
@@ -252,9 +279,11 @@ export async function planWeekSetup(context: WeekContext, input: WeekRequest): P
   });
   const blockers: WeekNotice[] = []; const warnings: WeekNotice[] = [];
   const beforeEvidence = scheduleEvidence(context), afterEvidence = scheduleEvidence(projected);
-  for (const [key, issue] of beforeEvidence) warnings.push({...issue.notice, code: `existing_${issue.notice.code}`, message: `ملاحظة إصلاح سابقة لم تُخفَ: ${issue.notice.message}`});
-  for (const [key, issue] of afterEvidence) if (!beforeEvidence.has(key) || issue.severity > beforeEvidence.get(key)!.severity)
-    blockers.push({...issue.notice, message: `الإعداد المقترح ينشئ أو يزيد مخالفة: ${issue.notice.message}`});
+  for (const [key, issue] of afterEvidence) {
+    if (!beforeEvidence.has(key) || issue.severity > beforeEvidence.get(key)!.severity)
+      blockers.push({...issue.notice, message: `الإعداد المقترح ينشئ أو يزيد مخالفة: ${issue.notice.message}`});
+    else warnings.push({...issue.notice, code: `existing_${issue.notice.code}`, message: `ملاحظة إصلاح متبقية بعد الإعداد: ${issue.notice.message}`});
+  }
   const changes = plans.filter(p => p.action === 'configure').flatMap(p => p.changes);
   let layers: number[][] = [];
   try { layers = orderWeekUpdates(changes, context.slots); }

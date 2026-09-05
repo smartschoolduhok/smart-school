@@ -5,6 +5,7 @@
 - Base: `3a7ebda1e9a2d5f31ef8bf7d30a0ccf4e9790998`, verified `origin/main`, including merged PR #35 / Phase 19B.
 - Branch: `feature/quick-week-setup-day-copy-phase-19c`.
 - Delivery: one new **Draft** PR to `main`. The delivered commit SHA and CI Preview link are recorded in the PR description and delivery response, rather than embedding a self-referential commit hash in this file.
+- Review follow-up: same branch and existing **Draft PR #36**, starting at `5e2131566907d6bbc7501865e855e7ee92bc2058`. No second branch/PR.
 - No changes to any migration, Wrangler configuration, authentication, roles, enrollment lifecycle, grades, finance, adoption, or solver behavior.
 - No remote D1 commands (including reads), staging/production access, shared seed/reset, manual deployment, account changes, or merge.
 - Only generated disposable local fixtures are used. No credentials, real records, database files, backups, build outputs, or temporary logs are included in the PR.
@@ -73,7 +74,43 @@ Updates are ordered by dependencies on other rows' **old** intervals. Only indep
 - Availability-linked permitted time changes retain the same slot ID and every override; explicit acknowledgement is required. Acknowledgement never bypasses hard constraints.
 - Impact counts include other periods on a day when activation or bell-layout changes can affect them, not only the edited break's direct links. Metadata-only changes count the directly changed periods.
 - Immutable version rows remain unchanged. Restoring a placement version does **not** restore old bell times; the preview explains this when relevant.
-- Before/after evidence comes from the canonical timetable validator, keyed by **entry identity + conflict code**, plus canonical teacher capacity evidence. Optional numeric evidence from that same validator detects worsening counts/runs. Existing unrelated repair items remain visible warnings; new/worsened conflicts block the entire application. No competing solver or constraint implementation.
+- Before/after evidence comes from the canonical timetable validator, keyed by **entry identity + conflict code**, except working days, which must be compared as actual whole-schedule occupancy. Teacher capacity deficit and working-day excess have stable **teacher + constraint dimension** identities, independent of diagnostic wording. Optional numeric evidence from the same single-entry validator detects worsening daily counts/runs. Remaining unrelated repair items are disclosed using their AFTER-state severity; resolved items are not shown as current warnings. New/worsened conflicts block the entire application. No competing solver or capacity formula.
+
+### Review fixes: reproductions and numerical evidence
+
+Before changing production logic, four focused tests (two domain + two authenticated Worker API) were added and executed against the reviewed head's logic. **All four failed for the reported reasons**:
+
+- Demand 4, capacity 0 → 2: preview incorrectly `can_apply: false`, apply **409 / blocked_week_setup**. The old code compared `teacher_no_available_slots` against the different `teacher_load_exceeds_availability` key and kept the obsolete zero-capacity warning.
+- Actual working days 1 → 2, limit 1, two entries per occupied day: preview incorrectly `can_apply: true`, apply **200**. Single-entry `addsWorkingDay` evidence incorrectly described the dormant candidate before activation and omitted the actual whole-schedule violation after activation.
+
+Changes are limited to projected evidence and shared counting primitives:
+
+1. `scheduleEvidence()` keys capacity by `teacher:<id>:capacity_deficit`, with severity `max(0, assigned_weekly_periods - hard_weekly_capacity)` from **calculateTeacherAvailabilitySummary**. Human diagnostic codes remain separate. Returned notice evidence exposes actual demand, capacity limit and excess; Arabic text explicitly states the remaining shortage.
+2. It keys actual occupied days by `teacher:<id>:working_days`, with severity `max(0, distinct_active_occupied_days - max_working_days)`, across all the teacher's loads/classes in the authorized school/year. Disabled days, breaks and inactive periods do not count as active occupancy. Historical rows remain stored.
+3. `activeTimetableLessonSlots()` and `occupiedTimetableDays()` factor the existing active-slot/distinct-day definitions from the canonical validator. Its single-entry `addsWorkingDay` acceptance semantics are unchanged. Week projection does not depend on that hypothetical-placement condition.
+4. Comparison iterates AFTER evidence: new/increased severity blocks; unchanged/reduced severity stays visible as a remaining warning. Resolved warnings disappear. This is permission to save safe incremental configuration, **not** permission to adopt an incomplete schedule. The actual readiness API still reports `ready: false`, demand 4 and insufficient capacity after saving only two periods.
+
+| Focused scenario | Before → after | Result after fix |
+| --- | --- | --- |
+| Demand 4, incremental setup | Capacity 0 → 2; shortage 4 → 2 | Preview allowed; apply 200; 2 saved periods; AFTER shortage 2 |
+| Further setup | Capacity 2 → 3; shortage 2 → 1 | Allowed; AFTER shortage 1 |
+| Sufficient capacity | Capacity 0 → 4 (domain/API), 3 → 4 (workerd sequence) | Allowed; no obsolete shortage warning |
+| Metadata edit | Capacity 2 → 2; shortage 2 → 2 | Allowed; shortage warning retained; demand unchanged |
+| Explicit activation of an empty target | Capacity 0 → 2 | Allowed with truthful remaining shortage |
+| Occupied-day activation, demand/capacity both 4 | Working days 1 → 2, limit 1; excess 0 → 1 | Preview blocked; apply 409; every row unchanged |
+| Third occupied day | Days 2 → 3, limit 2; excess 0 → 1 | Blocked, including multiple entries per day |
+| Worsening existing aggregate violation | Days 2 → 3, limit 1; excess 1 → 2 | Blocked despite unchanged diagnostic code |
+| Harmless edit of already-invalid schedule | Days 2 → 2, limit 1; excess 1 → 1 | Allowed; remaining aggregate warning retained |
+| Safe activation | Days 1 → 2, limit 2 | Allowed, no false four-lessons-as-four-days count |
+| Only inactive periods on activated day | Active occupied days 1 → 1, limit 1 | Allowed; inactive-period repair remains visible |
+| Other teacher already over day limit | Unchanged days 2, limit 1; primary teacher 2 → 3, limit 3 | Safe activation allowed; only unrelated teacher's warning retained |
+| Break edit genuinely worsens consecutive run | Run 1 → 2, limit 1 | Still blocked; full relevant rows preserved |
+
+The 25 added tests are **12 domain and 13 actual Worker API tests**. They also prove cross-class teacher aggregation, foreign school/year isolation, explicit empty-day activation, full-row preservation (including locks, availability, loads, immutable versions and revisions), and no reduction of demand. Rejected API applies execute only the read preflight and never call the write batch.
+
+The review additionally runs the affected cases through actual authenticated Worker handlers backed by a fresh disposable **Wrangler/workerd D1**, using the production statement builder. Incremental 0 → 2 → 3 → 4 saves each use **16 complete D1 statements / max 4 binds**. Working-day rejection uses **12 read statements / zero writes**, with every application row exactly equal. The original maximum/mixed budgets remain 17/45/**47**, not additional queries for the new in-memory comparisons.
+
+No UI redesign, endpoint/SQL-builder change, demand mutation, teacher reassignment, history rewrite, migration or trigger change. Existing rollback/races, digest/revision checks, locks, availability acknowledgement, safe earlier/later updates, payload/budget limits, retained/source/exception-day behavior and 12 behavioral UI tests are retained and rerun.
 
 ## Query budget evidence
 
@@ -81,10 +118,10 @@ The HTTP adapter counts **every executed D1 statement**, including auth/scope an
 
 | Authenticated apply case | Reads | Writes | Complete statements | Request bytes | Representative local HTTP time |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 1 day × 7 lessons + 2 breaks | 13 | 3 | 16 | 1,488 | 3.15 ms |
-| 5 days × example | 13 | 4 | 17 | 1,642 | 4.95 ms |
-| 7 days × 30 periods | 13 | 4 | 17 | 4,562 | 9.42 ms |
-| 7 populated days × 30 periods, 30 update layers | 13 | 32 | 45 | 4,574 | 103.40 ms |
+| 1 day × 7 lessons + 2 breaks | 13 | 3 | 16 | 1,488 | 2.69 ms |
+| 5 days × example | 13 | 4 | 17 | 1,642 | 3.22 ms |
+| 7 days × 30 periods | 13 | 4 | 17 | 4,562 | 9.70 ms |
+| 7 populated days × 30 periods, 30 update layers | 13 | 32 | 45 | 4,574 | 90.84 ms |
 | Mixed creates/activation/updates/retained | 13 | 5 | 18 | 494 | fixture-dependent |
 | 6 populated days × 30 updates + new 30-period day | 13 | 34 | **47** | 4,574 | fixture-dependent |
 
@@ -117,7 +154,7 @@ Production loader/builder execution through `getPlatformProxy` with `remoteBindi
 | Injected failure after cleanup AND response SELECT | whole batch rejected | Every application-table row value exactly restored |
 | Mixed metadata updates/create/activation/retained | 6 | 2 updates + 1 create + 1 activation; retained rows unchanged |
 
-The last full local report is generated at `<temp>/smart-school-phase19c-local-euK4BQ/report.json`. This is a temporary local artifact, not committed. The script is repeatable and creates a new directory on each invocation. Entries, locks, loads, availability, constraints, immutable versions/version entries, source/unselected periods and unrelated application tables were compared by complete row values—not only counts. No orphan assertions; final FK check clean.
+The latest review run's full local report is generated at `<temp>/smart-school-phase19c-local-Cl5f1w/report.json` (preceding review run: `smart-school-phase19c-local-JnkqRG`). These are temporary local artifacts, not committed. The script is repeatable and creates a new directory on each invocation. Entries, locks, loads, availability, constraints, immutable versions/version entries, source/unselected periods and unrelated application tables were compared by complete row values—not only counts. No orphan assertions; final FK check clean. The table above retains representative original local timings; the generated reports contain each rerun's actual timings and the new review-specific API cases.
 
 ## UI and async verification
 
@@ -148,7 +185,7 @@ Final verification matrix; every listed suite has **0 failed / 0 skipped / 0 can
 
 | Command | Passed |
 | --- | ---: |
-| `pnpm run test:week-setup` | 64 (25 domain + 27 API + 12 component) |
+| `pnpm run test:week-setup` | 89 (37 domain + 40 API + 12 component) |
 | `pnpm run test:teaching-load-matrix` | 117 |
 | `pnpm run test:timetable` | 319 |
 | `pnpm run test:subject-management` | 59 |
@@ -167,9 +204,11 @@ Final verification matrix; every listed suite has **0 failed / 0 skipped / 0 can
 | `pnpm run test:student-profile` | 24 |
 | `pnpm run test:settings` | 5 |
 
-**1,177 passing executions in the final matrix; 1,085 distinct tests.** Duplicates are Result Cards (66) and Settings (5) within RBAC, and Subject Ordering (21) within Subject Management. Development reruns and the independent local-D1 scenario script are not added to this final-matrix total.
+**1,202 passing executions in the final review matrix; 1,110 distinct tests.** Duplicates are Result Cards (66) and Settings (5) within RBAC, and Subject Ordering (21) within Subject Management. Development reruns and the independent local-D1 scenario script are not added to this final-matrix total. All 18 commands above were rerun for this review patch. Local final logs: `<temp>/smart-school-pr36-review-f576da5470b0499ea209ce767fe7a404/*-final.log`.
 
 Earlier development runs caught two new fixture mistakes (required academic-year dates and the wrong choice of an unrelated repair fixture) and an old source test's fixed route count (35→36). These were corrected without removing tests; the route test now also asserts the new routes use the same RBAC. The final reruns pass.
+
+During this review, the initial four deliberately reproducing tests failed on the old logic as documented above. A subsequent two-test failure was a new fixture-only mismatch: generated period labels differed from the requested unchanged template, causing legitimate label updates in an activation-only preservation assertion. The fixture now uses the exact template labels; no assertion was removed. All 89 Week Setup tests pass in the final run.
 
 - `pnpm run typecheck`: PASS, exit 0.
 - `pnpm run build:fe`: PASS, exit 0.
@@ -179,6 +218,8 @@ Earlier development runs caught two new fixture mistakes (required academic-year
 - New API failure-injection tests deliberately log unexpected injected server errors; sanitized client responses and full rollback are asserted.
 
 ## Changed files and purposes
+
+This review follow-up changes only **seven** files relative to `5e213156`: `src/lib/weekSetup.ts` (stable numerical/AFTER evidence), `src/lib/timetable.ts` (equivalent shared occupancy primitives), `test/helpers/week-setup-fixture.mjs` (isolated generated review cases), `test/week-setup.test.mjs` (12 domain regressions), `test/week-setup-api.test.mjs` (13 Worker API regressions), `scripts/validate-week-setup-local.mjs` (actual workerd-backed handler validation), and this report. The full Phase 19C inventory relative to main follows.
 
 | File(s) | Purpose |
 | --- | --- |

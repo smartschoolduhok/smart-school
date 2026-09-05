@@ -3,6 +3,67 @@ import test from 'node:test';
 import {generateWeekTemplate,validateWeekTemplate,parseWeekRequest,minuteOfDay,bellTime,recalculateWeekTimes,periodValues,planWeekSetup,publicWeekSnapshot,canonicalWeekJSON,summarizeWeekDay} from '../src/lib/weekSetup.ts';
 import {loadWeekSetup,buildWeekApplyStatements,readWeekJson} from '../src/lib/weekSetupDb.ts';
 import {weekFixture,example,maximum,request,snapshot,revision,assertPreserved,entry,addConstraints,addAvailability,historySQL} from './helpers/week-setup-fixture.mjs';
+import {capacityEvidenceSQL,workingDaysEvidenceSQL,reviewLessons,evidenceRequest,reviewCapacity,unrelatedEvidenceSQL} from './helpers/week-setup-fixture.mjs';
+
+test('review capacity 0 -> 2 demand 4: safe incremental setup is allowed with AFTER shortage',async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL());const c=await loadWeekSetup(f.d1,1,40);
+ const p=await planWeekSetup(c,evidenceRequest(c,reviewLessons(2)));
+ t.diagnostic(JSON.stringify({can_apply:p.can_apply,warnings:p.warnings,blockers:p.blockers}));
+ assert.equal(p.can_apply,true);assert.ok(p.warnings.some(n=>n.code==='existing_teacher_load_exceeds_availability'));
+ assert.ok(!p.warnings.some(n=>n.code==='existing_teacher_no_available_slots'));
+});
+test('review actual days 1 -> 2 limit 1: multi-entry days must block activation',async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL());const c=await loadWeekSetup(f.d1,1,41);
+ const p=await planWeekSetup(c,evidenceRequest(c,reviewLessons(),1));
+ t.diagnostic(JSON.stringify({can_apply:p.can_apply,warnings:p.warnings,blockers:p.blockers}));
+ assert.equal(p.can_apply,false);assert.ok(p.blockers.some(n=>n.code==='teacher_max_working_days'));
+});
+
+for(const [beforeCapacity,afterCapacity,day] of [[2,3,0],[0,4,0],[0,2,1]])
+test(`review capacity ${beforeCapacity} -> ${afterCapacity} day ${day}: AFTER evidence and preserved demand`,async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(beforeCapacity));const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
+ assert.equal(reviewCapacity(c).hard_weekly_capacity,beforeCapacity);
+ const p=await planWeekSetup(c,evidenceRequest(c,reviewLessons(afterCapacity),day));assert.equal(p.can_apply,true);
+ const warning=p.warnings.find(n=>n.evidence?.dimension==='capacity_deficit');
+ if(afterCapacity<4)assert.deepEqual(warning.evidence,{dimension:'capacity_deficit',actual:4,limit:afterCapacity,excess:4-afterCapacity});
+ else assert.equal(warning,undefined,'resolved shortage must not remain as an obsolete warning');
+ await f.d1.batch(buildWeekApplyStatements(f.d1,1,40,p).statements);const after=snapshot(f.db);assertPreserved(before,after);
+ const summary=reviewCapacity(await loadWeekSetup(f.d1,1,40));assert.equal(summary.hard_weekly_capacity,afterCapacity);assert.equal(summary.assigned_weekly_periods,4);assert.equal(summary.feasible,afterCapacity>=4);
+ assert.deepEqual(after.timetable_slots.filter(s=>s.academic_year_id!==40||s.day_of_week!==day),before.timetable_slots.filter(s=>s.academic_year_id!==40||s.day_of_week!==day));
+});
+test('review unchanged shortage: harmless metadata save retains truthful warning, not a readiness claim',async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(2));const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
+ const p=await planWeekSetup(c,evidenceRequest(c,reviewLessons(2).map((s,i)=>({...s,label:'Label '+i}))));
+ assert.equal(p.can_apply,true);assert.deepEqual(p.warnings[0].evidence,{dimension:'capacity_deficit',actual:4,limit:2,excess:2});
+ await f.d1.batch(buildWeekApplyStatements(f.d1,1,40,p).statements);assertPreserved(before,snapshot(f.db));
+ assert.equal(reviewCapacity(await loadWeekSetup(f.d1,1,40)).feasible,false);
+});
+for(const limit of [1,2])test(`review actual days 2 -> 3 limit ${limit}: new OR worsened aggregate rejected`,async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL({limit,activeDays:2,occupiedDays:3}));const c=await loadWeekSetup(f.d1,1,41),before=snapshot(f.db);
+ const p=await planWeekSetup(c,evidenceRequest(c,reviewLessons(),2));assert.equal(p.can_apply,false);
+ const issue=p.blockers.find(n=>n.code==='teacher_max_working_days');assert.deepEqual(issue.evidence,{dimension:'working_days',actual:3,limit,excess:3-limit});
+ assert.throws(()=>buildWeekApplyStatements(f.d1,1,41,p),e=>e.code==='blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+});
+for(const limit of [1,2])test(`review same-day multiple lessons and harmless edit with limit ${limit}`,async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL({limit,activeDays:2}));const c=await loadWeekSetup(f.d1,1,41);
+ const p=await planWeekSetup(c,evidenceRequest(c,reviewLessons().map(s=>({...s,label:'Harmless'})),0));assert.equal(p.can_apply,true);
+ const warning=p.warnings.find(n=>n.code==='existing_teacher_max_working_days');
+ if(limit===1)assert.deepEqual(warning.evidence,{dimension:'working_days',actual:2,limit:1,excess:1});
+ else assert.equal(warning,undefined,'four lessons across two days must not count as four days');
+});
+test('review safe activation respects same-teacher multi-class occupancy and excludes inactive periods',async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL());f.db.exec('UPDATE timetable_slots SET is_active=0 WHERE academic_year_id=41 AND day_of_week=1');
+ const c=await loadWeekSetup(f.d1,1,41),p=await planWeekSetup(c,evidenceRequest(c,reviewLessons().map(s=>({...s,is_active:0})),1));
+ assert.equal(p.can_apply,true);assert.ok(![...p.warnings,...p.blockers].some(n=>n.code.includes('working_days')));
+ assert.ok(p.warnings.some(n=>n.code==='existing_inactive_slot'),'inactive-period repair remains visible');
+});
+test('review scope: unrelated teacher violation remains visible; foreign school/year cannot contaminate safe activation',async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL({limit:3,activeDays:2,occupiedDays:3})+unrelatedEvidenceSQL);
+ const c=await loadWeekSetup(f.d1,1,41),before=snapshot(f.db),p=await planWeekSetup(c,evidenceRequest(c,reviewLessons(),2));
+ assert.ok(c.loads.every(l=>l.school_id===1&&l.academic_year_id===41));assert.equal(p.can_apply,true);assert.equal(p.blockers.length,0);
+ assert.equal(p.warnings.length,1);assert.equal(p.warnings[0].employee_id,2);assert.deepEqual(p.warnings[0].evidence,{dimension:'working_days',actual:2,limit:1,excess:1});
+ await f.d1.batch(buildWeekApplyStatements(f.d1,1,41,p).statements);assertPreserved(before,snapshot(f.db),['timetable_days','timetable_revisions']);
+});
 
 test('generator: exact labelled example, separate numbering and integer-minute totals',()=>{
  const p=example();assert.deepEqual(p.map(p=>[p.start_time,p.end_time]),[['13:00','13:35'],['13:35','14:10'],['14:10','14:25'],['14:25','15:00'],['15:00','15:35'],['15:35','15:45'],['15:45','16:20'],['16:20','16:55'],['16:55','17:30']]);

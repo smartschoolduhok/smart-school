@@ -4,6 +4,8 @@ import {createServer} from 'vite';
 import {signJWT} from '../src/lib/jwtSecurity.ts';
 import {periodValues,bellTime,minuteOfDay} from '../src/lib/weekSetup.ts';
 import {root,weekFixture,request,example,maximum,snapshot,revision,assertPreserved,addAvailability,entry,historySQL} from './helpers/week-setup-fixture.mjs';
+import {capacityEvidenceSQL,workingDaysEvidenceSQL,reviewLessons,evidenceRequest,reviewCapacity,unrelatedEvidenceSQL,addConstraints} from './helpers/week-setup-fixture.mjs';
+import {loadWeekSetup} from '../src/lib/weekSetupDb.ts';
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
 const {default:app}=await vite.ssrLoadModule('/src/worker.ts');after(()=>vite.close());
 const secret='week-local-generated-only-test-secret-over-32-characters';
@@ -19,6 +21,75 @@ async function prepare(f,input,role='owner') {
  return {plan:p.body.data,input:{...input,confirm_apply:true,preview_digest:p.body.data.preview_digest}};
 }
 const apply=(f,input,role)=>call(f,'POST','/apply',input,role);
+
+test('review capacity 0 -> 2: real Worker preview/apply persists safe partial setup',async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL());const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
+ const p=await prepare(f,evidenceRequest(c,reviewLessons(2))),r=await apply(f,p.input);
+ t.diagnostic(JSON.stringify({preview_can_apply:p.plan.can_apply,apply_status:r.status,code:r.body.code}));
+ assert.equal(r.status,200);assert.equal(r.body.data.counts.create,2);assertPreserved(before,snapshot(f.db));
+ assert.ok(r.body.data.warnings.some(n=>n.code==='existing_teacher_load_exceeds_availability'));
+ f.d1.resetQueryBudget(49);
+ const readiness=await app.request('http://localhost/api/timetable/readiness?school_id=1&academic_year_id=40',
+  {headers:{Authorization:'Bearer '+tokens.owner}},{DB:f.d1,JWT_SECRET:secret,APP_ENV:'test'});
+ assert.equal(readiness.status,200);const data=(await readiness.json()).data;
+ assert.equal(data.ready,false);assert.equal(data.total_required_periods,4);
+ assert.ok(data.teacher_feasibility_issues.some(n=>n.code==='teacher_load_exceeds_availability'));
+});
+test('review working days 1 -> 2: real Worker rejected apply preserves EVERY row',async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL());const c=await loadWeekSetup(f.d1,1,41),before=snapshot(f.db);
+ const p=await prepare(f,evidenceRequest(c,reviewLessons(),1)),r=await apply(f,p.input);
+ t.diagnostic(JSON.stringify({preview_can_apply:p.plan.can_apply,apply_status:r.status,code:r.body.code}));
+ assert.equal(r.status,409);assert.equal(r.body.code,'blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+});
+
+for(const [capacity,count,metadata,day] of [[2,3,false,0],[0,4,false,0],[2,2,true,0],[0,2,false,1]])
+test(`review Worker capacity ${capacity}->${count} metadata=${metadata} target=${day}`,async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(capacity));const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
+ const template=reviewLessons(count).map(s=>metadata?{...s,label:'Metadata'}:s);
+ const p=await prepare(f,evidenceRequest(c,template,day));assert.equal(p.plan.can_apply,true);assert.deepEqual(snapshot(f.db),before);
+ const r=await apply(f,p.input);assert.equal(r.status,200,JSON.stringify(r));assertPreserved(before,snapshot(f.db));
+ const warning=r.body.data.warnings.find(n=>n.evidence?.dimension==='capacity_deficit');
+ if(count<4)assert.deepEqual(warning.evidence,{dimension:'capacity_deficit',actual:4,limit:count,excess:4-count});else assert.equal(warning,undefined);
+ const after=await loadWeekSetup(f.d1,1,40);assert.equal(reviewCapacity(after).assigned_weekly_periods,4);assert.equal(reviewCapacity(after).feasible,count>=4);
+ assert.deepEqual(after.slots.filter(s=>s.day_of_week===day).map(periodValues),template);
+});
+for(const limit of [1,2])test(`review Worker aggregate 2 -> 3, limit ${limit}: rejection includes every protected table/revision`,async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL({limit,activeDays:2,occupiedDays:3}));const c=await loadWeekSetup(f.d1,1,41),before=snapshot(f.db);
+ const p=await prepare(f,evidenceRequest(c,reviewLessons(),2));assert.equal(p.plan.can_apply,false);assert.deepEqual(snapshot(f.db),before);
+ assert.deepEqual(p.plan.blockers.find(n=>n.code==='teacher_max_working_days').evidence,{dimension:'working_days',actual:3,limit,excess:3-limit});
+ const r=await apply(f,p.input);assert.equal(r.status,409);assert.equal(r.body.code,'blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+ assert.ok(f.d1.executions.every(s=>!/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql)));
+});
+for(const [limit,inactivePeriods] of [[2,false],[1,true]])test(`review Worker safe day activation limit=${limit}, inactive periods=${inactivePeriods}`,async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL({limit}));
+ if(inactivePeriods)f.db.exec('UPDATE timetable_slots SET is_active=0 WHERE academic_year_id=41 AND day_of_week=1');
+ const c=await loadWeekSetup(f.d1,1,41),before=snapshot(f.db),template=c.slots.filter(s=>s.day_of_week===1).map(periodValues);
+ const p=await prepare(f,evidenceRequest(c,template,1));assert.equal(p.plan.can_apply,true);
+ assert.ok(![...p.plan.warnings,...p.plan.blockers].some(n=>n.code.includes('working_days')));
+ const r=await apply(f,p.input);assert.equal(r.status,200,JSON.stringify(r));assert.equal(r.body.data.counts.activated,1);
+ assertPreserved(before,snapshot(f.db),['timetable_days','timetable_revisions']);
+});
+test('review Worker unchanged aggregate violation: harmless metadata edit succeeds and keeps AFTER warning',async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL({limit:1,activeDays:2}));const c=await loadWeekSetup(f.d1,1,41),before=snapshot(f.db);
+ const p=await prepare(f,evidenceRequest(c,reviewLessons().map(s=>({...s,label:'Harmless'})),0));assert.equal(p.plan.can_apply,true);
+ assert.deepEqual(p.plan.warnings.find(n=>n.code==='existing_teacher_max_working_days').evidence,{dimension:'working_days',actual:2,limit:1,excess:1});
+ assert.equal((await apply(f,p.input)).status,200);assertPreserved(before,snapshot(f.db));
+});
+test('review Worker scope: safe third day with unrelated same-year warning, other school/year unchanged',async t=>{
+ const f=weekFixture(t);f.db.exec(workingDaysEvidenceSQL({limit:3,activeDays:2,occupiedDays:3})+unrelatedEvidenceSQL);
+ const c=await loadWeekSetup(f.d1,1,41),before=snapshot(f.db),p=await prepare(f,evidenceRequest(c,reviewLessons(),2));
+ assert.equal(p.plan.can_apply,true);assert.equal(p.plan.warnings.length,1);assert.equal(p.plan.warnings[0].employee_id,2);
+ assert.deepEqual(p.plan.warnings[0].evidence,{dimension:'working_days',actual:2,limit:1,excess:1});
+ const r=await apply(f,p.input);assert.equal(r.status,200,JSON.stringify(r));assertPreserved(before,snapshot(f.db),['timetable_days','timetable_revisions']);
+ assert.deepEqual(snapshot(f.db).timetable_days.filter(d=>d.school_id!==1||d.academic_year_id!==41),before.timetable_days.filter(d=>d.school_id!==1||d.academic_year_id!==41));
+});
+test('review Worker genuinely worse consecutive constraint from break edit still rejects entire operation',async t=>{
+ const f=weekFixture(t);entry(f.db,2,3,1);entry(f.db,2,5);addConstraints(f.db,2,{max_consecutive_periods:1});
+ const c=await loadWeekSetup(f.d1,1,1),before=snapshot(f.db),template=c.slots.filter(s=>s.day_of_week===0).map(periodValues);
+ template[3]={...template[3],start_time:'11:00',end_time:'11:10'};const p=await prepare(f,evidenceRequest(c,template));
+ assert.equal(p.plan.can_apply,false);assert.ok(p.plan.blockers.some(n=>n.code==='teacher_max_consecutive_periods'));
+ assert.equal((await apply(f,p.input)).status,409);assert.deepEqual(snapshot(f.db),before);
+});
 
 for(const role of ['owner','admin','principal','vice','registrar'])test(`${role} can read, preview and explicitly apply authorized school/year`,async t=>{
  const f=weekFixture(t),before=snapshot(f.db);const read=await call(f,'GET','?school_id=1&academic_year_id=1',undefined,role);assert.equal(read.status,200,JSON.stringify(read));assert.equal(read.body.data.summary.length,7);assert.equal(read.body.data.periods.length,7);
