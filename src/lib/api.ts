@@ -5,6 +5,21 @@
 // ===========================================
 
 import type { AcademicYearRecord } from './academicYears';
+import type { TeachingLoadMatrixData, MatrixScope, MatrixRequest, MatrixPlan, MatrixCopyRequest, MatrixCopyPlan } from './teachingLoadMatrix';
+
+export function getTeachingLoadMatrix(scope: Required<MatrixScope>) {
+  const params = new URLSearchParams(Object.entries(scope).map(([key, value]) => [key, String(value)]));
+  return fetchApi<TeachingLoadMatrixData>(`/api/timetable/teaching-load-matrix?${params}`);
+}
+export function previewTeachingLoadMatrix(data: MatrixRequest) {
+  return fetchApi<MatrixPlan>('/api/timetable/teaching-load-matrix/preview', { method: 'POST', body: JSON.stringify(data) });
+}
+export function applyTeachingLoadMatrix(data: MatrixRequest & { confirm_apply: true }) {
+  return fetchApi<MatrixPlan & { applied: true }>('/api/timetable/teaching-load-matrix/apply', { method: 'POST', body: JSON.stringify(data) });
+}
+export function previewTeachingLoadCopy(data: MatrixCopyRequest) {
+  return fetchApi<MatrixCopyPlan>('/api/timetable/teaching-load-matrix/copy-preview', { method: 'POST', body: JSON.stringify(data) });
+}
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from './studentEnrollments';
 import type { StudentReligiousSubjectState } from './religiousSubjects';
 import type {

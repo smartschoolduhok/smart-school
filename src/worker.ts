@@ -5,6 +5,8 @@
 // ===========================================
 
 import { Hono } from 'hono'
+import { parseMatrixRequest, parseMatrixCopyRequest, planTeachingLoadMatrix, planTeachingLoadCopy, MAX_MATRIX_CHANGES } from './lib/teachingLoadMatrix'
+import { loadTeachingLoadMatrix, publicTeachingLoadMatrix, loadMatrixCopySource, buildMatrixApplyStatements, MatrixError, matrixDatabaseError, staleMatrixError } from './lib/teachingLoadMatrixDb'
 import { serveStatic } from 'hono/cloudflare-workers'
 import type { RoleKey } from './types'
 import {
@@ -2353,6 +2355,63 @@ app.get('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRole
   }
 })
 
+app.get('/api/timetable/teaching-load-matrix', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const yearId = Number(c.req.query('academic_year_id'))
+  const classId = Number(c.req.query('class_id'))
+  if (schoolId == null || !Number.isSafeInteger(yearId) || yearId <= 0 || !Number.isSafeInteger(classId) || classId <= 0)
+    return c.json({ error: 'يجب تحديد المدرسة والسنة والصف.', code: 'invalid_matrix_scope' }, 400)
+  try {
+    return c.json({ data: publicTeachingLoadMatrix(await loadTeachingLoadMatrix(c.env.DB, schoolId, yearId, classId)) })
+  } catch (error) {
+    const known = matrixDatabaseError(error)
+    return c.json({ error: known?.message ?? 'فشل في تحميل مصفوفة النصاب', code: known?.code ?? 'matrix_load_failed' }, known?.status ?? 500)
+  }
+})
+
+for (const operation of ['preview', 'apply'] as const) {
+  app.post(`/api/timetable/teaching-load-matrix/${operation}`, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+    const user = c.get('user') as UserContext
+    try {
+      const parsed = parseMatrixRequest(await readJsonObject(c), operation === 'apply')
+      if (!parsed.ok) return c.json({ error: parsed.error, code: parsed.code }, 400)
+      const input = parsed.value
+      const target = await resolveActiveWriteSchool(c.env.DB, user, input.school_id)
+      if (!target.ok) return c.json({ error: target.error }, target.status)
+      const context = await loadTeachingLoadMatrix(c.env.DB, target.schoolId, input.academic_year_id, input.class_id)
+      if (context.timetable_revision !== input.expected_revision) throw staleMatrixError()
+      const plan = planTeachingLoadMatrix(context, input.changes)
+      if (operation === 'preview') return c.json({ data: plan })
+      if (!plan.can_apply) return c.json({ error: 'توجد تعارضات تمنع حفظ النصاب.', code: 'blocked_teaching_load_matrix', data: plan }, 409)
+      const results = await c.env.DB.batch(buildMatrixApplyStatements(c.env.DB, { ...input, school_id: target.schoolId }, plan, user.id))
+      const revision = Number(results[results.length - 1].results![0].revision)
+      return c.json({ data: { ...plan, revision, applied: true } })
+    } catch (error) {
+      const known = matrixDatabaseError(error)
+      return c.json({ error: known?.message ?? 'فشل في معالجة مصفوفة النصاب', code: known?.code ?? 'matrix_save_failed' }, known?.status ?? 500)
+    }
+  })
+}
+
+app.post('/api/timetable/teaching-load-matrix/copy-preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const user = c.get('user') as UserContext
+  try {
+    const parsed = parseMatrixCopyRequest(await readJsonObject(c))
+    if (!parsed.ok) return c.json({ error: parsed.error, code: parsed.code }, 400)
+    const input = parsed.value
+    const target = await resolveActiveWriteSchool(c.env.DB, user, input.school_id)
+    if (!target.ok) return c.json({ error: target.error }, target.status)
+    const context = await loadTeachingLoadMatrix(c.env.DB, target.schoolId, input.target_academic_year_id, input.class_id)
+    const source = await loadMatrixCopySource(c.env.DB, target.schoolId, input.source_academic_year_id, input.class_id)
+    const copy = planTeachingLoadCopy(context, source, input.copy_mode)
+    if (copy.changes.length > MAX_MATRIX_CHANGES) throw new MatrixError('invalid_change_count', 'عدد الخلايا المنسوخة يتجاوز الحد المسموح.')
+    return c.json({ data: copy })
+  } catch (error) {
+    const known = matrixDatabaseError(error)
+    return c.json({ error: known?.message ?? 'فشل في معاينة النسخ', code: known?.code ?? 'matrix_copy_failed' }, known?.status ?? 500)
+  }
+})
+
 app.post('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const user = c.get('user') as UserContext
   try {
@@ -2429,11 +2488,13 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/timetable load has scheduled entries/i.test(message)) {
-      return c.json({ error: 'توجد حصص مجدولة مرتبطة بهذا النصاب. احذف الحصص المجدولة أولًا قبل تغيير صفه أو مادته أو مدرسه.' }, 400)
+      return c.json({ error: 'توجد حصص مجدولة مرتبطة بهذا النصاب تمنع تغيير صفه أو شعبته أو مادته.' }, 400)
     }
     if (/weekly periods below scheduled entries/i.test(message)) {
       return c.json({ error: 'لا يمكن تقليل عدد الحصص الأسبوعية عن عدد الحصص المجدولة حاليًا.' }, 400)
     }
+    const reassignmentError = /timetable reassignment/.test(message) ? matrixDatabaseError(error) : null
+    if (reassignmentError) return c.json({ error: reassignmentError.message, code: reassignmentError.code }, reassignmentError.status)
     if (isTimetableConstraintError(error)) return c.json({ error: 'يوجد نصاب فعال لهذه المادة في الصف والشعبة المحددين' }, 409)
     return c.json({ error: 'فشل في تعديل نصاب المادة' }, 500)
   }
