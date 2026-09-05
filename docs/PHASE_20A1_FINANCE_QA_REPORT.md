@@ -1,5 +1,157 @@
 # Phase 20A1 — Finance core stabilization QA
 
+## Review follow-up — 2026-09-05 (current evidence)
+
+This section supersedes the initial submission's validation totals and seed statement below.
+
+- Reviewed/reproduction HEAD: `27a2d9cc8ea6ca3d006587de88a1f6f65f992f63`.
+- **Validated implementation HEAD: `9c079eef6abfee71ae7c6437f6abbcc38046db94`.** The final delivery HEAD includes a report-only follow-up; its exact SHA and latest CI link are recorded in the [same Draft PR #37 description](https://github.com/smartschoolduhok/smart-school/pull/37).
+- Same branch: `fix/finance-fees-payments-integrity-phase-20a1`. No new PR or merge.
+- No remote D1 command/read/write, staging/production access, remote migration/seed/reset, real school data, manual deployment, authentication change or dependency change. Only normal existing GitHub/Cloudflare Preview CI following the authorized branch push.
+- Local/demo `seed.sql` is explicitly authorized for this follow-up and ran **only on newly created disposable LOCAL databases**. It is not a repair script for any existing database.
+- Only unmerged/unapplied `0028` was refined. Migrations 0001–0027 are unchanged; no 0029. Migration 0028 raw CR/CRLF count: **0**.
+
+### Confirmed pre-fix reproductions
+
+Before production edits, the eleven initial review tests ran on the reviewed HEAD: **0 pass / 11 fail**, exit 1.
+
+| Review finding | Observed before fix | Verified correction |
+| --- | --- | --- |
+| Fresh migrations then exact repository seed | SQLite and actual Wrangler LOCAL D1 both rejected seed with `invalid_finance_amount` | Exact fresh chain plus seed succeeds under intact production guards |
+| Fee ledger 20,000 vs paid cache 50,000 | Payment, metadata edit, amount edit and cancellation returned success and rewrote cache | All four reject with `finance_reconciliation_required`; every application row unchanged |
+| Treasury cache = ledger + 1 | All four operations were allowed; money operations silently recomputed the cache | All four reject without reconciling cache or inserting repair rows |
+| Fee year A with active year B | Receipt incorrectly snapshotted B | Receipt and each payment snapshot use the fee's year A |
+| Key-only SQL tampering | Changing fee_type_key without changing display fee_type succeeded | Direct SQL is rejected |
+
+Pre-fix fresh D1 logs: `%TEMP%/smart-school-finance-seed-local-6GLevD/migrations.log` and `seed.log`. All 29 migration files applied first; the seed then exited 1 with `invalid_finance_amount: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_TRIGGER)`.
+
+During implementation, an initial Unicode-whitespace `GLOB` guard passed Node SQLite but failed real workerd with `LIKE or GLOB pattern too complex: SQLITE_ERROR`. It was replaced with `instr` over a fixed code-point set via `json_each`. This is a corrected intermediate failure, not a claimed successful run. Final fresh workerd validation below passed.
+
+### Local seed and financial invariants
+
+Fees retain demo IDs 1–8 and begin with canonical keys, 500,000 whole IQD net, explicit zero discounts, paid_amount=0/status=pending. Eight deterministic `LOCAL-DEMO-PAYMENT-0001..0008` requests use the fixed local date 2025-05-01 UTC and the exact SHA-256 of the canonical payment payload (verified independently against `parsePayment` serialization in the test).
+
+Production payment triggers create the paid/status caches, eight fee-linked treasury rows and the treasury account. Manual demo treasury identities are moved to 1001–1006 to avoid the automatic IDs and source collisions. Only local fixture construction initializes their combined opening cache from the exact ledger. No production reconciliation behavior is introduced.
+
+`pnpm run test:finance-seed:local` / `node --experimental-strip-types scripts/validate-finance-seed-local.mjs`: **exit 0**.
+
+| Assertion after exact fresh migrations → seed.sql | Actual |
+| --- | --- |
+| Genuine migrations copied/applied through 0028 | 29 files |
+| PRAGMA foreign_keys | 1 |
+| PRAGMA foreign_key_check | zero rows |
+| IQD student fees checked individually | 8 |
+| Payments checked individually | 8 |
+| Every fee paid_amount equals active payment sum | yes |
+| Every fee status/discount/net/key valid | yes |
+| Every payment has exactly one matching active IQD fee_payment treasury link | yes |
+| Deterministic request keys and exact 64-hex fingerprints | valid |
+| School 1 treasury cached balance | 2,550,000 |
+| School 1 active IQD ledger balance | 2,550,000 |
+| Fee and treasury readiness views | all healthy |
+
+Final real seed artifacts: `%TEMP%/smart-school-finance-seed-local-M380a9/` (`migrations.log`, `seed.log`, `evidence.json`). Test configuration uses a dummy database ID, explicit `--local`, an OS-temp persistence path, no repository env files and `remoteBindings:false`.
+
+### Legacy consistency gate / operational preflight
+
+`finance_fee_readiness` and `finance_treasury_readiness` are **read-only SQL views**, not caches or repair tables. They validate whole supported money, discount/net arithmetic, paid/status agreement, same-school/student payment scope, exact treasury payment links, required account existence and exact active ledger balance.
+
+Payment INSERT and cancellation BEFORE triggers reject inconsistent pre-state within the writer transaction. Fee business edits have a column-specific BEFORE gate; canonical posting/reversal triggers modify only the paid/status/revision/timestamp fields after their own pre-state check. The API checks the same views in its existing fee SELECT (also covering no-op edits), with no extra round trip. No mutable bypass flag, claim marker, application mutex, background cleanup or reconciliation transaction is added. A brand-new school may bootstrap an account only when there is no prior treasury history.
+
+Eight authenticated rejection tests plus eight direct-SQL rejection tests compare **all application rows before/after**. Consistent legacy state still allows ordinary metadata/posting/cancellation. Real workerd repeats all eight drift operation cases from intentionally inconsistent pre-0028 fixtures; migration preserves the inconsistencies rather than fixing them.
+
+The local-only preflight now separates:
+
+- `migration_safe` / `migration_blockers`: duplicate identities/documents, broken receipt selections/totals and foreign keys.
+- `operational_ready` / `operational_blockers`: fee paid/status/net/discount drift, invalid whole IQD, payment scope/treasury links, missing account, treasury cache drift and unsupported active currencies.
+- `warnings`: legacy statuses such as overdue requiring review, without making their presence a migration failure.
+
+The compatibility `safe` field still means **migration-safe only**, not finance-ready. CLI exits nonzero when operational readiness fails. It uses fixed table reads/maps rather than receipt/payment N+1 queries and `DatabaseSync(...,{readOnly:true})`; it never repairs data.
+
+Actual read-only CLI checks on the disposable workerd SQLite files:
+
+| Local database | Migration blockers | Operational findings | Exit |
+| --- | ---: | --- | ---: |
+| Populated upgrade fixture | 0 | legacy USD fee; fee 3 paid 50,000 vs ledger 20,000; school 2 treasury 20,001 vs ledger 20,000 | 1, expected |
+| Fresh seeded fixture | 0 | none | 0 |
+
+Command: `node --experimental-strip-types scripts/preflight-finance.mjs <explicit generated local SQLite file>`. Eleven additional intentionally inconsistent local cases verify the individual findings and unchanged historical columns through migration.
+
+### Receipt year / fee identity
+
+For a **new** receipt, all selected payments must share one nullable fee academic_year_id. Multiple fee types in that same year are valid; different years or null+named year return sanitized `receipt_academic_year_conflict` with no document/link write. The year must belong to the fee's school. Null remains null, not the active year.
+
+Set-wise SQL checks revalidate this at INSERT time and verify the top-level year snapshot matches the selected fee year. Per-payment immutable evidence now includes student_fee_id, academic_year_id and academic_year_name. Already-issued documents, including exact-set reuse, are not rewritten; public verification and private print read the original snapshots even after an academic year is renamed/activated elsewhere. Manual and opt-in automatic receipts retain their shared engine.
+
+The fee UPDATE guard rejects key-only tampering. An unchanged display type keeps its original canonical key; a changed type must equal its bounded nonempty canonical key. Unicode/noncanonical whitespace is rejected without unsupported D1 pattern complexity. Migration preserves legacy display text.
+
+### Final regressions / runtime / builds
+
+All nineteen configured package suites were rerun using their exact Node commands via `scripts/run-finance-regressions.mjs`; **exit 0**. `pnpm run test:finance-fees` was also rerun directly after strengthening the exact public snapshot assertion: 144/144.
+
+| Suite | Pass | Fail | Skip |
+| --- | ---: | ---: | ---: |
+| Finance fees (99 existing + 45 review regressions) | 144 | 0 | 0 |
+| Security | 22 | 0 | 0 |
+| RBAC / tenant | 95 | 0 | 0 |
+| Settings | 5 | 0 | 0 |
+| Academic years | 30 | 0 | 0 |
+| Student enrollments | 58 | 0 | 0 |
+| Student promotion | 129 | 0 | 0 |
+| Student profile | 24 | 0 | 0 |
+| Subject management | 59 | 0 | 0 |
+| Subject order | 21 | 0 | 0 |
+| Religious subjects | 39 | 0 | 0 |
+| Subject applicability | 3 | 0 | 0 |
+| Flexible grades | 36 | 0 | 0 |
+| Grade presentation | 9 | 0 | 0 |
+| Result cards | 66 | 0 | 0 |
+| Excel import | 81 | 0 | 0 |
+| Timetable | 319 | 0 | 0 |
+| Teaching load matrix | 117 | 0 | 0 |
+| Week setup | 89 | 0 | 0 |
+| **Modern executions** | **1,346** | **0** | **0** |
+
+There are **1,254 distinct modern tests**: result-card 66, settings 5 and subject-order 21 each run twice. Do not combine tests, assertions and runtime scenarios into a misleading distinct-test total.
+
+- Real workerd `test:finance-fees:local`: **30 scenario checks pass**, exit 0. Fresh chain applies 29 genuine migrations. Populated 0027→0028 preserves all old columns/rows across 46 application tables, including generated grade/card/timetable/employee data, legacy currency and the two intentional financial discrepancies. FK enabled and clean.
+- Final local runtime artifacts: `%TEMP%/smart-school-finance-local-6Wks88/evidence.json` plus exact command logs. All eight drift operations returned 409 with no application changes. Old-year/null/mixed receipt cases and key tamper rejection passed on real workerd.
+- Complete authenticated HTTP budgets remain **4–9 D1 statements**: fee edit 5; payment 7; payment retry 4; cancel 6; receipt for one or ten payments 8; concurrent receipt loser 9; print 7. Drift payment rejection 8, metadata/amount rejection 4, cancellation rejection 6; mixed-year rejection 5. Maximum parameters 15, no N+1 round trips.
+- `scripts/validate-finance-legacy-local.mjs`: existing employee/salary/treasury shell assertions **40 pass / 0 fail**, exit 0. Final log: `%TEMP%/smart-school-finance-legacy-U9bZfc/employees.log`.
+- `node test_treasury_rollback.js`: rerun, **exit 1 before assertions** (`ReferenceError: require is not defined in ES module scope`, line 15). Pre-existing harness incompatibility; not called a passing or skipped suite, and not altered to patch/restart a fixed service. Modern and actual-D1 injected failure tests cover fee-linked atomic rollback safely.
+- `pnpm run typecheck`: exit 0.
+- `pnpm run build:fe`: exit 0, 1,910 modules.
+- `pnpm run build:api`: exit 0, 76 modules, Worker 590.70 kB.
+- `git diff --check` and staged diff check: clean.
+- Final full-suite logs: `%TEMP%/smart-school-finance-regressions-RLA4PZ/summary.json` and per-suite logs. Expected sanitized failure logs occur only in deliberate rollback injection cases. Existing Vite >500 kB frontend chunk warning and non-migration Git LF/CRLF notices remain.
+
+### Review follow-up files
+
+| File | Change |
+| --- | --- |
+| migrations/0028_finance_fee_payment_integrity.sql | Read-only readiness views and transaction gates, fee key guard, receipt year authority |
+| src/lib/financeFees.ts | Safe reconciliation and receipt-year error messages |
+| src/lib/financeFeesDb.ts | Same readiness on edit/no-op, fee-year receipt snapshots/evidence |
+| seed.sql | Fresh-local invariant-valid fees/payments and collision-free manual ledger fixture |
+| scripts/preflight-finance.mjs | Separate migration and operational-readiness findings, read-only local CLI |
+| scripts/validate-finance-fees-local.mjs | Genuine pre-0028 drift fixtures, rejection/snapshot/key tests and request counts |
+| scripts/validate-finance-seed-local.mjs | Exact fresh local migrations then repository seed validation |
+| test/helpers/finance-seed-assertions.mjs | Shared semantic ledger, links, fingerprint and FK assertions |
+| test/finance-review.test.mjs | 45 focused review regressions |
+| test/finance-fees-api.test.mjs | Keep overflow fixtures financially consistent; no weaker assertions |
+| package.json | Include review regressions and explicit local seed test script |
+| docs/PHASE_20A1_FINANCE_QA_REPORT.md | Reproductions, current implementation SHA, exact evidence and limitations |
+
+### Preview and remaining boundary
+
+GitHub's Cloudflare Pages check for validated implementation HEAD `9c079ee` reports **SUCCESS / Deployed successfully**. Reported immutable [Preview](https://278a1f39.smart-school-staging.pages.dev) and [branch Preview](https://fix-finance-fees-payments-in.smart-school-staging.pages.dev). These links/status were read from GitHub check metadata only. The report-only follow-up's final HEAD/CI status are also recorded in the PR description.
+
+No Preview HTTP request or authenticated staging QA was performed. CI build success is not database readiness: **0028 is not remotely applied**. Legacy financial discrepancies must undergo separately authorized administrative review; this PR neither repairs them nor broadens Phase 20A1 into salary/manual-treasury reconciliation.
+
+## Initial submission record (historical; superseded above)
+
+
+
 ## Outcome and scope
 
 Local validation passed for the fees/payment/receipt stabilization described below. This is **not approval for real financial operations** and not authenticated staging QA. Migration 0028 has **not** been applied remotely. A Preview build alone cannot validate the new database behavior.
