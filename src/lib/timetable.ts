@@ -882,6 +882,9 @@ export function evaluateTimetableEntryPlacement(input: {
   entries: TimetableEntry[];
   teacherAvailability?: TimetableTeacherAvailabilityOverride[];
   teacherConstraints?: TimetableTeacherConstraints[];
+  // Optional evidence from the SAME validator for projected configuration
+  // comparisons. Does not alter placement acceptance or response shapes.
+  onConstraintMetric?: (code: TimetableEntryHardConflictCode, count: number) => void;
 }): { hard_conflicts: TimetableEntryNotice[]; warnings: TimetableEntryNotice[] } {
   const hardConflicts: TimetableEntryNotice[] = [];
   const warnings: TimetableEntryNotice[] = [];
@@ -927,6 +930,7 @@ export function evaluateTimetableEntryPlacement(input: {
   const scheduledForLoad = activeEntries.filter((entry) => (
     Number(entry.teaching_load_id) === Number(load.id)
   )).length;
+  input.onConstraintMetric?.('weekly_periods_exceeded', scheduledForLoad + 1);
   if (scheduledForLoad >= Number(load.weekly_periods)) {
     hardConflicts.push(entryNotice('weekly_periods_exceeded', 'اكتمل عدد الحصص الأسبوعية المطلوبة لهذا النصاب'));
   }
@@ -975,6 +979,7 @@ export function evaluateTimetableEntryPlacement(input: {
       const entrySlot = input.slots.find((item) => Number(item.id) === Number(entry.slot_id));
       return entrySlot != null && Number(entrySlot.day_of_week) === Number(slot.day_of_week);
     });
+    input.onConstraintMetric?.('teacher_max_periods_per_day', teacherEntriesForDay.length + 1);
     if (constraints?.max_periods_per_day != null
       && teacherEntriesForDay.length + 1 > Number(constraints.max_periods_per_day)) {
       hardConflicts.push(entryNotice('teacher_max_periods_per_day', 'تجاوز المدرس الحد الأقصى للحصص اليومية'));
@@ -986,6 +991,7 @@ export function evaluateTimetableEntryPlacement(input: {
       if (entrySlot) teacherWorkingDays.add(Number(entrySlot.day_of_week));
     }
     const addsWorkingDay = !teacherWorkingDays.has(Number(slot.day_of_week));
+    input.onConstraintMetric?.('teacher_max_working_days', teacherWorkingDays.size + Number(addsWorkingDay));
     if (constraints?.max_working_days != null
       && addsWorkingDay
       && teacherWorkingDays.size >= Number(constraints.max_working_days)) {
@@ -1014,6 +1020,7 @@ export function evaluateTimetableEntryPlacement(input: {
       && maximumRun > Number(constraints.max_consecutive_periods)) {
       hardConflicts.push(entryNotice('teacher_max_consecutive_periods', 'تجاوز المدرس الحد الأقصى للحصص المتتالية'));
     }
+    input.onConstraintMetric?.('teacher_max_consecutive_periods', maximumRun);
 
     if (availability?.status === 'avoid') {
       warnings.push(entryNotice('avoid_slot', 'المدرس يفضل تجنب هذه الفترة'));

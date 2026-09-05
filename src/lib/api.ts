@@ -5,6 +5,16 @@
 // ===========================================
 
 import type { AcademicYearRecord } from './academicYears';
+import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan } from './weekSetup';
+export function getWeekSetup(scope: Required<WeekScope>) {
+  return fetchApi<WeekSnapshot>(`/api/timetable/week-setup?${new URLSearchParams({school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id)})}`);
+}
+export function previewWeekSetup(input: WeekRequest) {
+  return fetchApi<WeekPlan>('/api/timetable/week-setup/preview', {method: 'POST', body: JSON.stringify(input)});
+}
+export function applyWeekSetup(input: WeekRequest & {confirm_apply: true; preview_digest: string}) {
+  return fetchApi<WeekPlan & {applied: boolean}>('/api/timetable/week-setup/apply', {method: 'POST', body: JSON.stringify(input)});
+}
 import type { TeachingLoadMatrixData, MatrixScope, MatrixRequest, MatrixPlan, MatrixCopyRequest, MatrixCopyPlan } from './teachingLoadMatrix';
 
 export function getTeachingLoadMatrix(scope: Required<MatrixScope>) {
