@@ -25,7 +25,20 @@ async function snap(db){const tables=(await db.prepare("SELECT name FROM sqlite_
 function preserve(before,after){for(const [table,rows]of Object.entries(before)){if(table==='d1_migrations')continue;assert.equal(after[table].length,rows.length,table);
  const keys=rows.length?Object.keys(rows[0]):[],project=row=>Object.fromEntries(keys.map(k=>[k,row[k]]));const sort=rows=>rows.map(project).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));assert.deepEqual(sort(after[table]),sort(rows),table);}}
 
-const upgrade=setup('upgrade','0027');run(upgrade,['migrations','apply']);fixtures(upgrade,financeFixtureSQL+legacyFinanceSQL);
+// Intentionally inconsistent pre-0028 LOCAL fixtures. Migration must preserve
+// them, and real workerd must reject operations instead of repairing either.
+const driftSQL=`
+INSERT INTO student_fees(id,school_id,student_id,academic_year_id,fee_type,amount,currency,paid_amount,status,discount_type,discount_value,discount_amount,net_fee) VALUES
+ (3,1,1,1,'Local fee drift',100000,'IQD',50000,'partial','none',0,0,100000),
+ (4,2,3,3,'Local treasury drift',100000,'IQD',20000,'partial','none',0,0,100000);
+INSERT INTO fee_payments(id,school_id,student_fee_id,student_id,amount,payment_method,payment_date,created_by_user_id) VALUES
+ (2,1,3,1,20000,'cash',1788600000,1),(3,2,4,3,20000,'cash',1788600000,1);
+INSERT INTO treasury_transactions(id,school_id,transaction_type,category,amount,currency,source_type,source_id,status,created_by) VALUES
+ (2,1,'income','tuition_fee',20000,'IQD','fee_payment',2,'active',1),(3,2,'income','tuition_fee',20000,'IQD','fee_payment',3,'active',1);
+UPDATE treasury_accounts SET current_balance=80000 WHERE school_id=1;
+INSERT INTO treasury_accounts(school_id,current_balance) VALUES(2,20001);
+`;
+const upgrade=setup('upgrade','0027');run(upgrade,['migrations','apply']);fixtures(upgrade,financeFixtureSQL+legacyFinanceSQL+driftSQL);
 let proxy=await open(upgrade),before;try{before=await snap(proxy.env.DB);}finally{await proxy.dispose();}
 copyFileSync(join(root,'migrations/0028_finance_fee_payment_integrity.sql'),join(upgrade.path,'migrations/0028_finance_fee_payment_integrity.sql'));
 run(upgrade,['migrations','apply']);proxy=await open(upgrade);
@@ -37,14 +50,24 @@ try{
  const db=proxy.env.DB,{default:app}=await vite.ssrLoadModule('/src/worker.ts');
  assert.equal((await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,migrationFiles.length);
  const secret='generated-local-finance-workerd-test-secret-only',token=await signJWT({email:'owner@matrix.test',auth_version:1},secret);
- async function api(label,method,path,input,{failAt=null,failSql=null}={}){
+ async function api(label,method,path,input,{failAt=null,failSql=null,database=db,authToken=token}={}){
   let count=0,maxParameters=0;
   const wrap=(real,sql)=>({real,sql,bind(...args){maxParameters=Math.max(maxParameters,args.length);return wrap(real.bind(...args),sql);},async first(...args){count++;return real.first(...args);},async all(...args){count++;return real.all(...args);},async run(...args){count++;return real.run(...args);}});
-  const counted={prepare:sql=>wrap(db.prepare(sql),sql),async batch(statements){count+=statements.length;const real=statements.map(s=>s.real);if(failAt!==null)real[failAt]=db.prepare('SELECT * FROM local_intentional_missing_finance_table');if(failSql)real.splice(1,0,db.prepare(failSql));return db.batch(real);}};
-  const response=await app.request('http://localhost/api/'+path,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:input===undefined?undefined:JSON.stringify(input)},{DB:counted,JWT_SECRET:secret,APP_ENV:'test'});
+  const counted={prepare:sql=>wrap(database.prepare(sql),sql),async batch(statements){count+=statements.length;const real=statements.map(s=>s.real);if(failAt!==null)real[failAt]=database.prepare('SELECT * FROM local_intentional_missing_finance_table');if(failSql)real.splice(1,0,database.prepare(failSql));return database.batch(real);}};
+  const response=await app.request('http://localhost/api/'+path,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+authToken},body:input===undefined?undefined:JSON.stringify(input)},{DB:counted,JWT_SECRET:secret,APP_ENV:'test'});
   const result={status:response.status,body:await response.json()};assert.ok(count<50,label+' '+count);assert.ok(maxParameters<=100);evidence.push({case:label,status:result.status,http_d1_statements:count,max_parameters:maxParameters});return result;
  }
  async function fee(label,patch={}){const r=await api(label,'POST','student-fees',feeDraft({fee_type:label,...patch}));assert.equal(r.status,201,JSON.stringify(r));return r.body.data.id;}
+ const driftProxy=await open(upgrade);
+ try{const adminToken=await signJWT({email:'admin@matrix.test',auth_version:1},secret);
+  for(const [label,schoolId,feeId,paymentId]of [['fee',1,3,2],['treasury',2,4,3]])for(const op of ['payment','metadata','amount','cancel']){
+   const before=await snap(driftProxy.env.DB),options={database:driftProxy.env.DB,authToken:adminToken};
+   const r=op==='payment'?await api('legacy-'+label+'-'+op,'POST','fee-payments',paymentDraft(feeId,{school_id:schoolId,amount:1000}),options):
+    op==='cancel'?await api('legacy-'+label+'-'+op,'PUT','fee-payments/'+paymentId+'/cancel',{school_id:schoolId,cancel_reason:'Local correction'},options):
+    await api('legacy-'+label+'-'+op,'PUT','student-fees/'+feeId,{school_id:schoolId,...(op==='metadata'?{notes:'Local edit'}:{amount:120000})},options);
+   assert.equal(r.status,409,JSON.stringify(r));assert.equal(r.body.code,'finance_reconciliation_required');assert.deepEqual(await snap(driftProxy.env.DB),before);checks++;
+  }
+ }finally{await driftProxy.dispose();}
  const id=await fee('fee-create');let r=await api('fee-update','PUT','student-fees/'+id,{school_id:1,notes:'Local only'});assert.equal(r.status,200);
  const payment=paymentDraft(id),first=await api('one-payment','POST','fee-payments',payment);assert.equal(first.status,201);const p=first.body.data.id;
  const retry=await api('idempotent-retry','POST','fee-payments',payment);assert.equal(retry.status,200);assert.equal(retry.body.data.id,p);assert.equal(retry.body.data.already_applied,true);checks++;
@@ -70,6 +93,17 @@ try{
   const before=await snap(db),r=await api('rollback-'+stage,'POST','fee-payments',paymentDraft(failFee),{failAt:stage==='first'?0:stage==='final'?1:null});assert.equal(r.status,500);assert.deepEqual(await snap(db),before);checks++;
   if(targets[stage])await db.prepare('DROP TRIGGER local_fail_stage').run();
  }
+ const oldYear=await db.prepare('SELECT name FROM academic_years WHERE id=1').first();
+ await db.batch([db.prepare('UPDATE academic_years SET is_active=0 WHERE school_id=1'),db.prepare('UPDATE academic_years SET is_active=1 WHERE id=2')]);
+ const yearFee=await fee('old-year-receipt'),yearPayment=await api('old-year-payment','POST','fee-payments',paymentDraft(yearFee));assert.equal(yearPayment.status,201);
+ const yearDoc=await api('old-fee-year-not-active-year','POST','fee-receipts/generate',{school_id:1,student_id:1,payment_ids:[yearPayment.body.data.id]});
+ assert.equal(yearDoc.status,200,JSON.stringify(yearDoc));assert.equal(yearDoc.body.data.receipt.academic_year_snapshot,oldYear.name);checks++;
+ const unspecifiedFee=await fee('unspecified-year-fee',{academic_year_id:null}),unspecifiedPayment=await api('unspecified-year-payment','POST','fee-payments',paymentDraft(unspecifiedFee));assert.equal(unspecifiedPayment.status,201);
+ const otherFee=await fee('other-year-fee',{academic_year_id:2}),otherPayment=await api('other-year-payment','POST','fee-payments',paymentDraft(otherFee));assert.equal(otherPayment.status,201);
+ const beforeMixed=await snap(db),mixed=await api('mixed-years-rejected','POST','fee-receipts/generate',{school_id:1,student_id:1,payment_ids:[otherPayment.body.data.id,unspecifiedPayment.body.data.id]});
+ assert.equal(mixed.body.code,'receipt_academic_year_conflict');assert.equal(mixed.status,400);assert.deepEqual(await snap(db),beforeMixed);checks++;
+ const unspecifiedDoc=await api('null-fee-year-remains-null','POST','fee-receipts/generate',{school_id:1,student_id:1,payment_ids:[unspecifiedPayment.body.data.id]});assert.equal(unspecifiedDoc.status,200);assert.equal(unspecifiedDoc.body.data.receipt.academic_year_snapshot,null);checks++;
+ const beforeKey=await snap(db);await assert.rejects(()=>db.prepare("UPDATE student_fees SET fee_type_key='tampered local key' WHERE id=?").bind(yearFee).run(),/invalid_finance_request/);assert.deepEqual(await snap(db),beforeKey);checks++;
  assert.equal((await db.prepare('PRAGMA foreign_keys').first()).foreign_keys,1);assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
  const balance=await db.prepare("SELECT (SELECT current_balance FROM treasury_accounts WHERE school_id=1) cache,coalesce(SUM(CASE WHEN transaction_type='income' THEN amount ELSE -amount END),0) ledger FROM treasury_transactions WHERE school_id=1 AND status='active'").first();assert.equal(balance.cache,balance.ledger);checks++;
  console.log(JSON.stringify({local_only:true,real_migrations:migrationFiles.length,checks,evidence,artifacts:directory},null,2));

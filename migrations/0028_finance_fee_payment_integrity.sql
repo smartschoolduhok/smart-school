@@ -59,6 +59,51 @@ INSERT INTO fee_receipt_payments(receipt_id,payment_id,school_id,is_active)
   FROM fee_receipts r,json_each(r.payment_ids_json) j;
 DROP TABLE _finance_0028_preflight;
 
+-- Read-only pre-state checks. Never reconcile old financial drift in a new
+-- operation. These views store no data and do not change migration history.
+CREATE VIEW finance_fee_readiness AS
+SELECT f.id, f.school_id, coalesce(
+  f.amount>0 AND f.amount<=9007199254740991 AND f.amount=CAST(f.amount AS INTEGER)
+  AND f.net_fee>=0 AND f.net_fee<=f.amount AND f.net_fee=CAST(f.net_fee AS INTEGER)
+  AND f.discount_amount>=0 AND f.discount_amount=f.amount-f.net_fee
+  AND f.discount_value>=0 AND f.discount_type IN ('none','fixed','percentage')
+  AND ( (f.discount_type='none' AND f.discount_value=0 AND f.discount_amount=0)
+    OR (f.discount_type='fixed' AND f.discount_value=CAST(f.discount_value AS INTEGER) AND f.discount_amount=f.discount_value)
+    OR (f.discount_type='percentage' AND f.discount_value<=100 AND round(f.discount_value,2)=f.discount_value
+      AND f.discount_amount=(CAST(f.amount AS INTEGER)/10000)*CAST(round(f.discount_value*100) AS INTEGER)
+        +((CAST(f.amount AS INTEGER)%10000)*CAST(round(f.discount_value*100) AS INTEGER)+5000)/10000))
+  AND NOT EXISTS(SELECT 1 FROM fee_payments p WHERE p.student_fee_id=f.id AND p.status='active'
+    AND (p.school_id!=f.school_id OR p.student_id!=f.student_id OR p.amount<=0 OR p.amount>9007199254740991 OR p.amount!=CAST(p.amount AS INTEGER)))
+  AND f.paid_amount=(SELECT coalesce(SUM(CAST(p.amount AS INTEGER)),0) FROM fee_payments p WHERE p.student_fee_id=f.id AND p.status='active')
+  AND f.paid_amount<=f.net_fee
+  AND f.status= CASE WHEN f.paid_amount>=f.net_fee THEN 'paid' WHEN f.paid_amount>0 THEN 'partial' ELSE 'pending' END
+  AND NOT EXISTS(SELECT 1 FROM fee_payments p WHERE p.student_fee_id=f.id AND p.status='active' AND
+    ((SELECT COUNT(*) FROM treasury_transactions t WHERE t.source_type='fee_payment' AND t.source_id=p.id)!=1
+      OR NOT EXISTS(SELECT 1 FROM treasury_transactions t WHERE t.source_type='fee_payment' AND t.source_id=p.id
+        AND t.school_id=f.school_id AND t.transaction_type='income' AND t.category='tuition_fee' AND t.currency='IQD' AND t.amount=p.amount AND t.status='active')))
+  ,0) AS healthy FROM student_fees f;
+
+CREATE VIEW finance_treasury_readiness AS
+SELECT s.id AS school_id, coalesce(
+  NOT EXISTS(SELECT 1 FROM treasury_transactions t WHERE t.school_id=s.id AND t.status='active'
+    AND (t.currency!='IQD' OR t.amount<=0 OR t.amount>9007199254740991 OR t.amount!=CAST(t.amount AS INTEGER)))
+  AND ( (a.id IS NULL AND NOT EXISTS(SELECT 1 FROM treasury_transactions t WHERE t.school_id=s.id))
+    OR (a.id IS NOT NULL AND abs(a.current_balance)<=9007199254740991
+      AND a.current_balance=(SELECT coalesce(SUM( CASE WHEN t.transaction_type='income' THEN CAST(t.amount AS INTEGER) ELSE -CAST(t.amount AS INTEGER) END),0)
+        FROM treasury_transactions t WHERE t.school_id=s.id AND t.status='active'))) ,0) AS healthy
+FROM schools s LEFT JOIN treasury_accounts a ON a.school_id=s.id;
+
+-- Column-specific business edit gate: posting triggers below modify ONLY
+-- paid_amount/status/revision/timestamp after their own BEFORE pre-state gate.
+-- No request flag, mutable bypass marker or process-local lock is involved.
+CREATE TRIGGER trg_student_fees_require_reconciliation BEFORE UPDATE OF
+  fee_type,fee_type_key,amount,currency,due_date,notes,discount_type,discount_value,discount_amount,net_fee,school_id,student_id,academic_year_id ON student_fees
+WHEN OLD.currency='IQD' BEGIN
+  SELECT CASE WHEN (SELECT healthy FROM finance_fee_readiness WHERE id=OLD.id)!=1
+    OR (SELECT healthy FROM finance_treasury_readiness WHERE school_id=OLD.school_id)!=1
+    THEN RAISE(ABORT,'finance_reconciliation_required') END;
+END;
+
 CREATE TRIGGER trg_student_fees_finance_insert BEFORE INSERT ON student_fees BEGIN
   SELECT CASE WHEN NEW.net_fee IS NULL OR NEW.discount_amount IS NULL OR NEW.discount_type IS NULL OR NEW.discount_value IS NULL
     OR NEW.discount_type NOT IN ('none','fixed','percentage') OR NEW.discount_value<0
@@ -75,6 +120,7 @@ CREATE TRIGGER trg_student_fees_finance_insert BEFORE INSERT ON student_fees BEG
     THEN RAISE(ABORT,'invalid_finance_amount') END;
   SELECT CASE WHEN NEW.fee_type_key IS NULL OR NEW.fee_type_key!=NEW.fee_type
     OR length(NEW.fee_type_key)=0 OR length(NEW.fee_type_key)>120 OR trim(NEW.fee_type_key)!=NEW.fee_type_key OR instr(NEW.fee_type_key,'  ')>0
+    OR EXISTS(SELECT 1 FROM json_each('[9,10,11,12,13,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279]') WHERE instr(NEW.fee_type_key,char(value))>0)
     THEN RAISE(ABORT,'invalid_finance_request') END;
   SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM students s JOIN schools sch ON sch.id=s.school_id WHERE s.id=NEW.student_id AND s.school_id=NEW.school_id AND s.status='active' AND sch.status='active')
     OR (NEW.academic_year_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM academic_years y WHERE y.id=NEW.academic_year_id AND y.school_id=NEW.school_id))
@@ -104,8 +150,12 @@ CREATE TRIGGER trg_student_fees_finance_update BEFORE UPDATE ON student_fees BEG
     THEN RAISE(ABORT,'fee_net_below_paid') END;
   SELECT CASE WHEN NEW.paid_amount!=(SELECT coalesce(SUM(CAST(amount AS INTEGER)),0) FROM fee_payments WHERE school_id=NEW.school_id AND student_fee_id=NEW.id AND status='active')
     OR NEW.status!= CASE WHEN NEW.paid_amount>=NEW.net_fee THEN 'paid' WHEN NEW.paid_amount>0 THEN 'partial' ELSE 'pending' END
-    THEN RAISE(ABORT,'finance_operation_stale') END;
-  SELECT CASE WHEN NEW.fee_type_key IS NULL OR (NEW.fee_type IS NOT OLD.fee_type AND NEW.fee_type_key!=NEW.fee_type)
+    THEN RAISE(ABORT,'finance_reconciliation_required') END;
+  SELECT CASE WHEN NEW.fee_type_key IS NULL
+    OR (NEW.fee_type IS OLD.fee_type AND NEW.fee_type_key IS NOT OLD.fee_type_key)
+    OR (NEW.fee_type IS NOT OLD.fee_type AND NEW.fee_type_key!=NEW.fee_type)
+    OR length(NEW.fee_type_key) NOT BETWEEN 1 AND 120 OR trim(NEW.fee_type_key)!=NEW.fee_type_key OR instr(NEW.fee_type_key,'  ')>0
+    OR EXISTS(SELECT 1 FROM json_each('[9,10,11,12,13,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279]') WHERE instr(NEW.fee_type_key,char(value))>0)
     THEN RAISE(ABORT,'invalid_finance_request') END;
 END;
 CREATE TRIGGER trg_student_fees_preserve_payments BEFORE DELETE ON student_fees
@@ -127,6 +177,9 @@ CREATE TRIGGER trg_fee_payments_finance_insert BEFORE INSERT ON fee_payments BEG
     WHERE f.id=NEW.student_fee_id AND f.school_id=NEW.school_id AND f.student_id=NEW.student_id AND s.status='active' AND sch.status='active')
     THEN RAISE(ABORT,'finance_not_found') END;
   SELECT CASE WHEN (SELECT currency FROM student_fees WHERE id=NEW.student_fee_id)!='IQD' THEN RAISE(ABORT,'unsupported_finance_currency') END;
+  SELECT CASE WHEN (SELECT healthy FROM finance_fee_readiness WHERE id=NEW.student_fee_id)!=1
+    OR (SELECT healthy FROM finance_treasury_readiness WHERE school_id=NEW.school_id)!=1
+    THEN RAISE(ABORT,'finance_reconciliation_required') END;
   SELECT CASE WHEN (SELECT coalesce(net_fee,amount) FROM student_fees WHERE id=NEW.student_fee_id)<=0 THEN RAISE(ABORT,'fee_not_payable') END;
   -- Runs against current DB state INSIDE the writer transaction, not a JS snapshot.
   SELECT CASE WHEN NEW.amount+(SELECT coalesce(SUM(CAST(amount AS INTEGER)),0) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')
@@ -167,6 +220,9 @@ CREATE TRIGGER trg_fee_payments_finance_update BEFORE UPDATE ON fee_payments BEG
     OR (SELECT COUNT(*) FROM treasury_transactions WHERE source_type='fee_payment' AND source_id=OLD.id)!=1
     OR NOT EXISTS(SELECT 1 FROM treasury_accounts WHERE school_id=OLD.school_id)
     THEN RAISE(ABORT,'payment_treasury_integrity_error') END;
+  SELECT CASE WHEN (SELECT healthy FROM finance_fee_readiness WHERE id=OLD.student_fee_id)!=1
+    OR (SELECT healthy FROM finance_treasury_readiness WHERE school_id=OLD.school_id)!=1
+    THEN RAISE(ABORT,'finance_reconciliation_required') END;
 END;
 CREATE TRIGGER trg_fee_payments_cancel AFTER UPDATE OF status ON fee_payments WHEN OLD.status='active' AND NEW.status='cancelled' BEGIN
   UPDATE treasury_transactions SET status='cancelled',cancelled_at=NEW.cancelled_at,cancelled_by=NEW.cancelled_by_user_id,cancel_reason=NEW.cancel_reason,updated_at=unixepoch()
@@ -195,6 +251,18 @@ CREATE TRIGGER trg_fee_receipts_validate_insert BEFORE INSERT ON fee_receipts BE
     LEFT JOIN student_fees f ON f.id=p.student_fee_id AND f.school_id=p.school_id AND f.student_id=p.student_id
     WHERE p.id IS NULL OR f.id IS NULL OR p.status!='active' OR f.currency!='IQD' OR p.amount<=0 OR p.amount!=CAST(p.amount AS INTEGER))
     THEN RAISE(ABORT,'receipt_payment_invalid') END;
+  -- Set-wise, transaction-time year authority. Null is an unspecified year,
+  -- not the active year and not interchangeable with a named year.
+  SELECT CASE WHEN (SELECT COUNT(DISTINCT coalesce(f.academic_year_id,0)) FROM json_each(NEW.payment_ids_json) j
+      JOIN fee_payments p ON p.id=j.value JOIN student_fees f ON f.id=p.student_fee_id)!=1
+    OR EXISTS(SELECT 1 FROM json_each(NEW.payment_ids_json) j JOIN fee_payments p ON p.id=j.value
+      JOIN student_fees f ON f.id=p.student_fee_id LEFT JOIN academic_years y ON y.id=f.academic_year_id AND y.school_id=f.school_id
+      WHERE f.academic_year_id IS NOT NULL AND y.id IS NULL)
+    THEN RAISE(ABORT,'receipt_academic_year_conflict') END;
+  SELECT CASE WHEN NEW.academic_year_snapshot IS NOT (SELECT y.name FROM json_each(NEW.payment_ids_json) j
+      JOIN fee_payments p ON p.id=j.value JOIN student_fees f ON f.id=p.student_fee_id
+      LEFT JOIN academic_years y ON y.id=f.academic_year_id AND y.school_id=f.school_id LIMIT 1)
+    THEN RAISE(ABORT,'receipt_academic_year_conflict') END;
   SELECT CASE WHEN NEW.total_amount!=(SELECT SUM(p.amount) FROM fee_payments p JOIN json_each(NEW.payment_ids_json) j ON j.value=p.id WHERE p.school_id=NEW.school_id AND p.student_id=NEW.student_id)
     OR NEW.total_amount>9007199254740991 THEN RAISE(ABORT,'invalid_finance_amount') END;
 END;

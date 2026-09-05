@@ -23,7 +23,9 @@ test('cancelled payment excluded from receipts; overlapping different receipts b
 test('mixed-currency treasury cannot be recomputed as IQD and aggregate safe integer overflow rolls back',async t=>{
  const f=financeFixture(t),id=await createFee(f);f.db.exec("INSERT INTO treasury_transactions(school_id,transaction_type,category,amount,currency,status,created_by) VALUES(1,'income','other_income',1,'USD','active',1)");
  let before=snapshot(f.db),r=await call(f,'POST','fee-payments',paymentDraft(id));assert.equal(r.body.code,'unsupported_finance_currency');assert.deepEqual(snapshot(f.db),before);
- f.db.exec("UPDATE treasury_transactions SET currency='IQD',amount=9007199254740991");before=snapshot(f.db);r=await call(f,'POST','fee-payments',paymentDraft(id));assert.equal(r.body.code,'invalid_finance_amount');assert.deepEqual(snapshot(f.db),before);
+ // Build a consistent large LOCAL opening balance; historical cache drift is
+ // now a separate reconciliation blocker, not a valid overflow fixture.
+ f.db.exec("UPDATE treasury_transactions SET currency='IQD',amount=9007199254740991; INSERT INTO treasury_accounts(school_id,current_balance) VALUES(1,9007199254740991)");before=snapshot(f.db);r=await call(f,'POST','fee-payments',paymentDraft(id));assert.equal(r.body.code,'invalid_finance_amount');assert.deepEqual(snapshot(f.db),before);
 });
 test('receipt insertion and printing injected middle failures leave no reservations or printed timestamp',async t=>{
  const f=financeFixture(t),id=await createFee(f),p=await pay(f,id);f.d1.failAt=1;let before=snapshot(f.db);
@@ -206,7 +208,8 @@ test('fee posting and cancellation sum whole-IQD ledger exactly despite large in
  const f=financeFixture(t),id=await createFee(f);
  f.db.exec(`INSERT INTO treasury_transactions(school_id,transaction_type,category,amount,currency,status,created_by) VALUES
   (1,'income','other',9007199254740991,'IQD','active',1),(1,'income','other',2,'IQD','active',1),
-  (1,'expense','other',9007199254740991,'IQD','active',1)`);
+  (1,'expense','other',9007199254740991,'IQD','active',1);
+  INSERT INTO treasury_accounts(school_id,current_balance) VALUES(1,2)`);
  const p=await pay(f,id,{amount:1});
  assert.equal(one(f,'SELECT current_balance FROM treasury_accounts WHERE school_id=1').current_balance,3);
  assert.equal((await call(f,'PUT','fee-payments/'+p+'/cancel',{school_id:1,cancel_reason:'Local correction'})).status,200);

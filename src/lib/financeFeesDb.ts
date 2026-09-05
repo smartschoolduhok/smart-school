@@ -49,15 +49,20 @@ export async function findSameFinanceReceipt(db: D1Database, schoolId: number, s
 
 /** Both opt-in auto receipts and manual receipts use this single engine. */
 export async function createFinanceReceipt(db: D1Database, schoolId: number, studentId: number, ids: number[], userId: number) {
-  const payments = (await db.prepare(`SELECT p.id,p.amount,p.payment_method,p.payment_date,f.fee_type,p.status,f.currency
+  const payments = (await db.prepare(`SELECT p.id,p.amount,p.payment_method,p.payment_date,f.fee_type,p.status,f.currency,
+      f.id student_fee_id,f.academic_year_id,y.id validated_year_id,y.name academic_year_name
     FROM fee_payments p JOIN student_fees f ON f.id=p.student_fee_id AND f.school_id=p.school_id AND f.student_id=p.student_id
+    LEFT JOIN academic_years y ON y.id=f.academic_year_id AND y.school_id=f.school_id
     WHERE p.school_id=? AND p.student_id=? AND p.id IN(SELECT value FROM json_each(?)) ORDER BY p.id`).bind(schoolId,studentId,JSON.stringify(ids)).all<Row>()).results ?? [];
   requireFinance(payments.length===ids.length,'receipt_payment_missing');
   requireFinance(payments.every(p=>p.status==='active' && p.currency==='IQD' && Number.isSafeInteger(p.amount) && p.amount>0),'receipt_payment_invalid');
   const total=payments.reduce((sum,p)=>sum+p.amount,0); requireFinance(Number.isSafeInteger(total),'invalid_finance_amount');
   const same=await findSameFinanceReceipt(db,schoolId,studentId,ids); if(same) return same;
+  // Existing issued documents are immutable. New documents describe the fee
+  // year, never the school's currently active year (including legacy null years).
+  const yearId=payments[0].academic_year_id;
+  requireFinance(payments.every(p=>p.academic_year_id===yearId && (yearId===null || p.validated_year_id===yearId)), 'receipt_academic_year_conflict');
   const student=await db.prepare(`SELECT s.full_name,cl.name class_name,sec.name section_name,sch.name school_name,sch.logo_url,
-      (SELECT name FROM academic_years WHERE school_id=s.school_id AND is_active=1) academic_year_name,
       settings.receipt_footer_text,settings.verification_note_text,settings.use_school_logo_on_docs
     FROM students s JOIN schools sch ON sch.id=s.school_id
     LEFT JOIN classes cl ON cl.id=s.class_id AND cl.school_id=s.school_id
@@ -66,7 +71,8 @@ export async function createFinanceReceipt(db: D1Database, schoolId: number, stu
     WHERE s.id=? AND s.school_id=? AND s.status='active' AND sch.status='active'`).bind(studentId,schoolId).first<Row>();
   requiredRow(student);
   const token=crypto.randomUUID(),number=`REC-${schoolId}-${crypto.randomUUID()}`;
-  const snapshot=payments.map(p=>({payment_id:p.id,amount:p.amount,payment_method:p.payment_method,payment_date:p.payment_date,fee_type:p.fee_type,currency:'IQD'}));
+  const snapshot=payments.map(p=>({payment_id:p.id,student_fee_id:p.student_fee_id,academic_year_id:p.academic_year_id,academic_year_name:p.academic_year_name,
+    amount:p.amount,payment_method:p.payment_method,payment_date:p.payment_date,fee_type:p.fee_type,currency:'IQD'}));
   const settings={receipt_footer_text:student.receipt_footer_text??null,verification_note_text:student.verification_note_text??null,logo_url:student.use_school_logo_on_docs===1?student.logo_url??null:null,currency:'IQD'};
   try {
     // Trigger reserves every payment. Uniqueness/conflict failure rolls back the
@@ -75,7 +81,7 @@ export async function createFinanceReceipt(db: D1Database, schoolId: number, stu
       db.prepare(`INSERT INTO fee_receipts(school_id,student_id,receipt_number,total_amount,payment_ids_json,payments_snapshot_json,settings_snapshot_json,
         student_name_snapshot,class_name_snapshot,section_name_snapshot,school_name_snapshot,academic_year_snapshot,verification_token,verification_hash,status,created_by_user_id)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)`).bind(schoolId,studentId,number,total,JSON.stringify(ids),JSON.stringify(snapshot),JSON.stringify(settings),
-          student.full_name,student.class_name??null,student.section_name??null,student.school_name,student.academic_year_name??null,token,await sha256(token),userId),
+          student.full_name,student.class_name??null,student.section_name??null,student.school_name,payments[0].academic_year_name??null,token,await sha256(token),userId),
       db.prepare('SELECT * FROM fee_receipts WHERE verification_token=? AND school_id=?').bind(token,schoolId),
     ]);
     return resultRow(results,1)!;
@@ -117,8 +123,10 @@ export function registerFinanceRoutes(app: Hono<FinanceEnv>) {
   });
   route('PUT','student-fees/:id',async c=>{
     const raw=await body(c),schoolId=await school(c,raw?.school_id),id=financeQueryId(c.req.param('id'))!,db=c.env.DB;
-    const current=await db.prepare(`SELECT f.*,(SELECT coalesce(SUM(p.amount),0) FROM fee_payments p WHERE p.school_id=f.school_id AND p.student_fee_id=f.id AND p.status='active') ledger_paid
+    const current=await db.prepare(`SELECT f.*,(SELECT coalesce(SUM(p.amount),0) FROM fee_payments p WHERE p.school_id=f.school_id AND p.student_fee_id=f.id AND p.status='active') ledger_paid,
+      (SELECT healthy FROM finance_fee_readiness WHERE id=f.id) fee_ready,(SELECT healthy FROM finance_treasury_readiness WHERE school_id=f.school_id) treasury_ready
       FROM student_fees f WHERE f.id=? AND f.school_id=?`).bind(id,schoolId).first<Row>(); requiredRow(current);
+    requireFinance(current.currency!=='IQD' || (current.fee_ready===1 && current.treasury_ready===1),'finance_reconciliation_required',409);
     const input=parseFee(raw,current); requireFinance(input.net_fee>=current.ledger_paid,'fee_net_below_paid');
     const status=feeStatus(input.net_fee,current.ledger_paid);
     const values={fee_type:input.fee_type,amount:input.amount,currency:input.currency,due_date:input.due_date,notes:input.notes,discount_type:input.discount_type,

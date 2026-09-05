@@ -20,6 +20,8 @@ export const FINANCE_MESSAGES = {
   receipt_payment_already_receipted: 'تتداخل الدفعات المختارة مع إيصال فعال. ألغِ المستند القديم قبل إعادة إصداره.',
   receipt_already_cancelled: 'الإيصال ملغى؛ لا يمكن طباعته أو إلغاؤه مجددًا.',
   finance_operation_stale: 'تغيّرت البيانات المالية. أعد تحميلها قبل المتابعة.',
+  finance_reconciliation_required: 'توجد فروقات سابقة بين السجلات المالية والأرصدة المحفوظة. يلزم تدقيق إداري مستقل قبل المتابعة؛ لم يتم تصحيحها أو تعديل المال تلقائيًا.',
+  receipt_academic_year_conflict: 'يجب أن تنتمي جميع دفعات الإيصال إلى سنة دراسية واحدة للقسط، دون خلط السنوات أو السنة غير المحددة.',
   finance_failure: 'تعذر إتمام العملية المالية؛ لم يتم اعتماد عملية جزئية.',
 } as const;
 export type FinanceCode = keyof typeof FINANCE_MESSAGES;
@@ -113,7 +115,7 @@ export function financeDatabaseError(error: unknown): FinanceError {
   if (error instanceof FinanceError) return error;
   const message = error instanceof Error ? error.message : '';
   for (const code of Object.keys(FINANCE_MESSAGES) as FinanceCode[]) {
-    if (message.includes(code)) return new FinanceError(code, ['duplicate_student_fee','finance_operation_stale','payment_idempotency_conflict','receipt_payment_already_receipted'].includes(code) ? 409 : 400);
+    if (message.includes(code)) return new FinanceError(code, ['duplicate_student_fee','finance_operation_stale','finance_reconciliation_required','payment_idempotency_conflict','receipt_payment_already_receipted'].includes(code) ? 409 : 400);
   }
   if (message.includes('student_fees.school_id') || message.includes('idx_student_fees_identity')) return new FinanceError('duplicate_student_fee',409);
   if (message.includes('fee_receipt_payments.payment_id')) return new FinanceError('receipt_payment_already_receipted',409);
