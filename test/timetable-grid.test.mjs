@@ -29,6 +29,7 @@ function fixture() {
     '0023_timetable_foundation.sql',
     '0024_teacher_timetable_constraints.sql',
     '0025_timetable_entries.sql',
+    '0027_timetable_safe_teacher_reassignment.sql',
   ]) database.exec(migration(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
@@ -317,7 +318,13 @@ test('slot and load structural re-scope is blocked while entries exist', () => {
   assert.throws(() => database.prepare("UPDATE timetable_slots SET slot_type='break', lesson_number=NULL WHERE id=?").run(slotId), /scheduled entries/);
   assert.throws(() => database.prepare('UPDATE timetable_slots SET day_of_week = 1 WHERE id = ?').run(slotId), /scheduled entries/);
   assert.throws(() => database.prepare('UPDATE timetable_teaching_loads SET class_id = 3, section_id = 3, subject_id = 4 WHERE id = ?').run(loadId), /scheduled entries/);
-  assert.throws(() => database.prepare('UPDATE timetable_teaching_loads SET employee_id = 2 WHERE id = ?').run(loadId), /scheduled entries/);
+  const original = database.prepare('SELECT * FROM timetable_entries').all();
+  database.prepare('UPDATE timetable_teaching_loads SET employee_id = 2 WHERE id = ?').run(loadId);
+  assert.equal(database.prepare('SELECT employee_id FROM timetable_teaching_loads WHERE id=?').get(loadId).employee_id, 2);
+  assert.deepEqual(database.prepare('SELECT * FROM timetable_entries').all(), original);
+  const conflicting = load(database, { classId: 3, sectionId: 3, subjectId: 4, employeeId: 1 });
+  entry(database, { slotId, loadId: conflicting });
+  assert.throws(() => database.prepare('UPDATE timetable_teaching_loads SET employee_id = 1 WHERE id=?').run(loadId), /teacher collision/);
 });
 
 test('weekly requirement cannot shrink below scheduled count', () => {

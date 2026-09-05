@@ -51,6 +51,8 @@ import { AutomaticTimetableTab } from './AutomaticTimetableTab';
 import { MasterTimetableTab } from './MasterTimetableTab';
 import { TimetableGridTab } from './TimetableGridTab';
 import { TimetableVersionsTab } from './TimetableVersionsTab';
+import { TeachingLoadMatrixTab } from './TeachingLoadMatrixTab';
+import { MATRIX_LEAVE_MESSAGE } from '../../lib/teachingLoadMatrix';
 
 type TabKey = 'grid' | 'master' | 'automatic' | 'versions' | 'week' | 'loads' | 'availability' | 'readiness';
 
@@ -61,6 +63,7 @@ interface SubjectOption {
   section_id: number | null;
   name: string;
   status: string;
+  order_index: number;
 }
 
 interface EmployeeOption {
@@ -146,6 +149,10 @@ export default function TimetablePage() {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const requestGenerationRef = useRef(0);
   const [tab, setTab] = useState<TabKey>('grid');
+  const [advancedLoads, setAdvancedLoads] = useState(false);
+  const matrixDirty = useRef(false);
+  const onMatrixDirty = useCallback((dirty: boolean) => { matrixDirty.current = dirty; }, []);
+  function allowMatrixLeave() { return !matrixDirty.current || window.confirm(MATRIX_LEAVE_MESSAGE); }
   const [years, setYears] = useState<AcademicYearRecord[]>([]);
   const [academicYearId, setAcademicYearId] = useState<number | null>(null);
   const [classes, setClasses] = useState<Class[]>([]);
@@ -190,6 +197,7 @@ export default function TimetablePage() {
     setSelectedSectionId(null);
     setSlotForm(null);
     setLoadForm(EMPTY_LOAD);
+    setAdvancedLoads(false);
     setSaving(false);
     setError('');
     setSuccess('');
@@ -439,7 +447,7 @@ export default function TimetablePage() {
         </div>
       </div>
 
-      <SystemAdminSchoolSelector {...schoolScope} />
+      <SystemAdminSchoolSelector {...schoolScope} selectSchool={(id) => { if (allowMatrixLeave()) schoolScope.selectSchool(id); }} />
 
       {error && <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800"><AlertTriangle size={18} />{error}<button className="mr-auto" onClick={() => setError('')}><X size={16} /></button></div>}
       {success && <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"><CheckCircle2 size={18} />{success}<button className="mr-auto" onClick={() => setSuccess('')}><X size={16} /></button></div>}
@@ -453,7 +461,7 @@ export default function TimetablePage() {
             <select
               id="timetable-academic-year"
               value={academicYearId ?? ''}
-              onChange={(event) => setAcademicYearId(event.target.value ? Number(event.target.value) : null)}
+              onChange={(event) => { if (allowMatrixLeave()) { setAdvancedLoads(false); setAcademicYearId(event.target.value ? Number(event.target.value) : null); } }}
               className="w-full rounded-lg border border-gray-300 px-3 py-2.5 md:w-80"
             >
               <option value="">اختر سنة دراسية</option>
@@ -477,7 +485,7 @@ export default function TimetablePage() {
                   ['availability', 'توفر المدرسين والقيود', UserRoundCheck],
                   ['readiness', 'التحقق من الجاهزية', CheckCircle2],
                 ] as const).map(([key, label, Icon]) => (
-                  <button key={key} onClick={() => setTab(key)} className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold ${tab === key ? 'border-primary-600 text-primary-700' : 'border-transparent text-gray-500 hover:text-gray-800'}`}>
+                  <button key={key} onClick={() => { if (key === tab || allowMatrixLeave()) setTab(key); }} className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold ${tab === key ? 'border-primary-600 text-primary-700' : 'border-transparent text-gray-500 hover:text-gray-800'}`}>
                     <Icon size={18} />{label}
                   </button>
                 ))}
@@ -562,8 +570,16 @@ export default function TimetablePage() {
                 />
               )}
 
-              {!loading && tab === 'loads' && (
+              {tab === 'loads' && !advancedLoads && schoolId != null && academicYearId != null && (
+                <TeachingLoadMatrixTab key={`${schoolId}:${academicYearId}`}
+                  schoolId={schoolId} academicYearId={academicYearId} years={years}
+                  classes={classes} sections={sections} subjects={subjects} loads={loads}
+                  dataVersion={yearDataVersion} onChanged={reloadYearData} onDirtyChange={onMatrixDirty}
+                  onAdvanced={(load) => { setAdvancedLoads(true); beginLoad(load); }} />
+              )}
+              {!loading && tab === 'loads' && advancedLoads && (
                 <div className="space-y-5">
+                  <button className="rounded-lg border bg-white px-3 py-2" onClick={() => { setAdvancedLoads(false); setLoadForm(EMPTY_LOAD); }}>العودة إلى مصفوفة النصاب</button>
                   <div className="grid gap-4 rounded-xl border border-gray-200 bg-white p-4 md:grid-cols-2">
                     <label className="text-sm font-medium text-gray-700">الصف
                       <select value={selectedClassId ?? ''} onChange={(event) => { const classId = event.target.value ? Number(event.target.value) : null; setSelectedClassId(classId); setSelectedSectionId(null); setLoadForm({ ...EMPTY_LOAD, class_id: classId == null ? '' : String(classId) }); }} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"><option value="">كل الصفوف</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>

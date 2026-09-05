@@ -490,6 +490,8 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.put('/api/timetable/slots/:id'",
     "app.delete('/api/timetable/slots/:id'",
     "app.get('/api/timetable/teaching-loads'",
+    "app.get('/api/timetable/teaching-load-matrix'",
+    "app.post('/api/timetable/teaching-load-matrix/copy-preview'",
     "app.post('/api/timetable/teaching-loads'",
     "app.put('/api/timetable/teaching-loads/:id'",
     "app.delete('/api/timetable/teaching-loads/:id'",
@@ -507,7 +509,9 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.get('/api/timetable/teacher-availability-summary'",
   ]) assert.ok(workerSource.includes(route), route);
   const routeGuards = timetableWorkerSource.match(/app\.(?:get|post|put|delete)\('\/api\/timetable[^\n]*requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/g) || [];
-  assert.equal(routeGuards.length, 33);
+  assert.equal(routeGuards.length, 35);
+  assert.match(timetableWorkerSource, /for \(const operation of \['preview', 'apply'\] as const\)/);
+  assert.ok(timetableWorkerSource.includes("app.post(`/api/timetable/teaching-load-matrix/${operation}`, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES)"));
   assert.match(workerSource, /resolveActiveWriteSchool\(c\.env\.DB, user, body\.school_id\)/);
   assert.doesNotMatch(timetableWorkerSource, /school_id\s*(?:\?\?|\|\|)\s*1/);
   assert.doesNotMatch(timetableWorkerSource, /students\.class_id|students\.section_id/);

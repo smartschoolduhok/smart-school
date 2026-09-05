@@ -136,7 +136,8 @@ test('teacher availability requests are protected across school, year and teache
 
 test('system admin uses the shared explicit tenant-school selector with no school fallback', () => {
   assert.match(pageSource, /useTenantSchool\(\)/);
-  assert.match(pageSource, /<SystemAdminSchoolSelector \{\.\.\.schoolScope\} \/>/);
+  assert.match(pageSource, /<SystemAdminSchoolSelector \{\.\.\.schoolScope\} selectSchool=/);
+  assert.match(pageSource, /if \(allowMatrixLeave\(\)\) schoolScope\.selectSchool\(id\)/);
   assert.match(pageSource, /schoolId == null/);
   assert.doesNotMatch(pageSource, /school(?:_id|Id)\s*(?:\?\?|\|\|)\s*1/);
 });

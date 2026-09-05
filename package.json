@@ -4,6 +4,8 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
+    "test:teaching-load-matrix": "node --experimental-strip-types --test --test-concurrency=1 test/teaching-load-matrix.test.mjs test/teaching-load-matrix-api.test.mjs test/teaching-load-matrix-ui.test.mjs",
+    "test:teaching-load-matrix:local": "node scripts/validate-teaching-load-matrix-local.mjs",
     "test:rbac": "node --experimental-strip-types --test test/rbac.test.mjs test/result-card.test.mjs test/settings-permissions.test.mjs test/tenant-targeting.test.mjs",
     "build": "vite build && vite build --config vite.worker.config.ts",
     "build:fe": "vite build",
@@ -30,7 +32,7 @@
     "test:subject-management": "node --experimental-strip-types --test test/subject-management.test.mjs test/subject-order.test.mjs",
     "test:religious-subjects": "node --experimental-strip-types --test test/religious-subjects.test.mjs",
     "test:subject-applicability": "node --experimental-strip-types --test test/subject-applicability.test.mjs",
-    "test:timetable": "node --experimental-strip-types --test test/timetable-foundation.test.mjs test/timetable-availability.test.mjs test/timetable-grid.test.mjs test/timetable-api.test.mjs test/timetable-grid-api.test.mjs test/timetable-ui.test.mjs test/timetable-master-views.test.mjs test/timetable-solver.test.mjs test/timetable-solver-api.test.mjs test/timetable-solver-ui.test.mjs test/timetable-adoption.test.mjs test/timetable-adoption-api.test.mjs test/timetable-adoption-ui.test.mjs",
+    "test:timetable": "node --experimental-strip-types --test --test-concurrency=1 test/timetable-foundation.test.mjs test/timetable-availability.test.mjs test/timetable-grid.test.mjs test/timetable-api.test.mjs test/timetable-grid-api.test.mjs test/timetable-ui.test.mjs test/timetable-master-views.test.mjs test/timetable-solver.test.mjs test/timetable-solver-api.test.mjs test/timetable-solver-ui.test.mjs test/timetable-adoption.test.mjs test/timetable-adoption-api.test.mjs test/timetable-adoption-ui.test.mjs",
     "test:excel-import": "node --experimental-strip-types --test test/excel-import.test.mjs test/grade-excel-import.test.mjs"
   },
   "dependencies": {
