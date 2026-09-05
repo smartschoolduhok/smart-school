@@ -1,5 +1,7 @@
 -- ============================================
 -- Seed data for Smart School System
+-- FRESH DISPOSABLE LOCAL/DEMO DATABASE ONLY, after all migrations.
+-- Never run against remote/staging/production or as a reconciliation/reset.
 -- Compatible with Cloudflare D1 (SQLite)
 -- ============================================
 
@@ -327,40 +329,46 @@ INSERT OR IGNORE INTO grades (id, school_id, student_subject_id, first_month, se
 -- ============================================
 -- Demo: Student Fees (School 1)
 -- ============================================
-INSERT OR IGNORE INTO student_fees (id, school_id, student_id, academic_year_id, fee_type, amount, currency, due_date, paid_amount, status, notes) VALUES
-  (1, 1, 1, 1, 'رسوم دراسية', 500000, 'IQD', unixepoch(), 500000, 'paid', 'تم السداد بالكامل'),
-  (2, 1, 2, 1, 'رسوم دراسية', 500000, 'IQD', unixepoch(), 300000, 'pending', 'متبقي ٢٠٠٠٠٠ دينار'),
-  (3, 1, 3, 1, 'رسوم دراسية', 500000, 'IQD', unixepoch(), 500000, 'paid', 'تم السداد بالكامل'),
-  (4, 1, 4, 1, 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'overdue', 'لم يتم السداد بعد'),
-  (5, 1, 5, 1, 'رسوم دراسية', 500000, 'IQD', unixepoch(), 500000, 'paid', 'تم السداد بالكامل'),
-  (6, 1, 6, 1, 'رسوم دراسية', 500000, 'IQD', unixepoch(), 250000, 'pending', 'متبقي ٢٥٠٠٠٠ دينار'),
-  (7, 1, 7, 1, 'رسوم دراسية', 500000, 'IQD', unixepoch(), 500000, 'paid', 'تم السداد بالكامل'),
-  (8, 1, 8, 1, 'رسوم دراسية', 500000, 'IQD', unixepoch(), 150000, 'pending', 'متبقي ٣٥٠٠٠٠ دينار');
+-- Fresh LOCAL/DEMO database only, after ALL migrations. Never use as a repair
+-- script on an existing database. Payment triggers build the financial caches.
+INSERT INTO student_fees (id, school_id, student_id, academic_year_id, fee_type, fee_type_key, amount, currency, due_date, paid_amount, status, discount_type, discount_value, discount_amount, net_fee, notes) VALUES
+  (1, 1, 1, 1, 'رسوم دراسية', 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'pending', 'none', 0, 0, 500000, 'تم السداد بالكامل'),
+  (2, 1, 2, 1, 'رسوم دراسية', 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'pending', 'none', 0, 0, 500000, 'متبقي ٢٠٠٠٠٠ دينار'),
+  (3, 1, 3, 1, 'رسوم دراسية', 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'pending', 'none', 0, 0, 500000, 'تم السداد بالكامل'),
+  (4, 1, 4, 1, 'رسوم دراسية', 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'pending', 'none', 0, 0, 500000, 'لم يتم السداد بعد'),
+  (5, 1, 5, 1, 'رسوم دراسية', 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'pending', 'none', 0, 0, 500000, 'تم السداد بالكامل'),
+  (6, 1, 6, 1, 'رسوم دراسية', 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'pending', 'none', 0, 0, 500000, 'متبقي ٢٥٠٠٠٠ دينار'),
+  (7, 1, 7, 1, 'رسوم دراسية', 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'pending', 'none', 0, 0, 500000, 'تم السداد بالكامل'),
+  (8, 1, 8, 1, 'رسوم دراسية', 'رسوم دراسية', 500000, 'IQD', unixepoch(), 0, 'pending', 'none', 0, 0, 500000, 'متبقي ٣٥٠٠٠٠ دينار');
 
 -- Demo: Fee Payments
-INSERT OR IGNORE INTO fee_payments (id, school_id, student_fee_id, student_id, amount, payment_method, payment_date, receipt_number, notes, created_by_user_id) VALUES
-  (1, 1, 1, 1, 500000, 'cash', unixepoch(), 'REC-2025-001', 'دفعة كاملة', 2),
-  (2, 1, 2, 2, 200000, 'cash', unixepoch(), 'REC-2025-002', 'دفعة أولى', 2),
-  (3, 1, 2, 2, 100000, 'bank_transfer', unixepoch(), 'REC-2025-003', 'دفعة ثانية', 2),
-  (4, 1, 3, 3, 500000, 'cash', unixepoch(), 'REC-2025-004', 'دفعة كاملة', 2),
-  (5, 1, 5, 5, 500000, 'cash', unixepoch(), 'REC-2025-005', 'دفعة كاملة', 2),
-  (6, 1, 6, 6, 250000, 'cash', unixepoch(), 'REC-2025-006', 'دفعة جزئية', 2),
-  (7, 1, 7, 7, 500000, 'cash', unixepoch(), 'REC-2025-007', 'دفعة كاملة', 2),
-  (8, 1, 8, 8, 150000, 'cash', unixepoch(), 'REC-2025-008', 'دفعة جزئية', 2);
+-- Fixed local date (2025-05-01 UTC) and SHA-256 fingerprints of the canonical
+-- parsePayment payload, auto_generate_receipt=false, excluding client_request_id.
+INSERT INTO fee_payments (id, school_id, student_fee_id, student_id, amount, payment_method, payment_date, receipt_number, notes, created_by_user_id, client_request_id, request_fingerprint) VALUES
+  (1, 1, 1, 1, 500000, 'cash', 1746057600, 'REC-2025-001', 'دفعة كاملة', 2, 'LOCAL-DEMO-PAYMENT-0001', '75bbb14f52d2f055399520b386dbd4e46ff456b72929c05c348f8d0b7d2995f3'),
+  (2, 1, 2, 2, 200000, 'cash', 1746057600, 'REC-2025-002', 'دفعة أولى', 2, 'LOCAL-DEMO-PAYMENT-0002', 'b4299642d3e169de67feceae823ecec504d221cf971b71a9a87bbe10abad9880'),
+  (3, 1, 2, 2, 100000, 'bank_transfer', 1746057600, 'REC-2025-003', 'دفعة ثانية', 2, 'LOCAL-DEMO-PAYMENT-0003', '23a949b2991d7d6573fbd371349cd57719ef988d91d6142640b9c0c3551364f5'),
+  (4, 1, 3, 3, 500000, 'cash', 1746057600, 'REC-2025-004', 'دفعة كاملة', 2, 'LOCAL-DEMO-PAYMENT-0004', 'dcd95df1d138e38cbd23ba1f3f55af378b5c89a2357e93c219a6acb0a5eaab84'),
+  (5, 1, 5, 5, 500000, 'cash', 1746057600, 'REC-2025-005', 'دفعة كاملة', 2, 'LOCAL-DEMO-PAYMENT-0005', 'd2d97fa8361ee242538d8d1b31606750b62c38788d93639d3a745e0c3f29b528'),
+  (6, 1, 6, 6, 250000, 'cash', 1746057600, 'REC-2025-006', 'دفعة جزئية', 2, 'LOCAL-DEMO-PAYMENT-0006', '3b8e04c8d63055bb8968de2c58aabd92dfacf6777d06c80a0e5b66af9dd8bacb'),
+  (7, 1, 7, 7, 500000, 'cash', 1746057600, 'REC-2025-007', 'دفعة كاملة', 2, 'LOCAL-DEMO-PAYMENT-0007', 'c0a8ac4c14e2aeeca0572700b4c48e5c40b95102dfcc7f5478c7dab31ac521ba'),
+  (8, 1, 8, 8, 150000, 'cash', 1746057600, 'REC-2025-008', 'دفعة جزئية', 2, 'LOCAL-DEMO-PAYMENT-0008', 'bada6b598d993c39d48880a459305ec958e2a9d7a804227616f0b5f8d58fa630');
 
 -- ============================================
 -- Demo: Treasury Account & Transactions (School 1)
 -- ============================================
-INSERT OR IGNORE INTO treasury_accounts (id, school_id, current_balance, last_closing_balance, last_closing_date) VALUES
-  (1, 1, 850000, 0, NULL);
-
-INSERT OR IGNORE INTO treasury_transactions (id, school_id, transaction_type, category, amount, currency, description, source_type, source_id, status, created_by, created_at) VALUES
-  (1, 1, 'income', 'tuition_fee', 1500000, 'IQD', 'قسط دراسي - الفصل الأول', 'manual', 1, 'active', 2, unixepoch()),
-  (2, 1, 'income', 'other_income', 500000, 'IQD', 'تبرع أولياء الأمور', 'manual', 2, 'active', 2, unixepoch()),
-  (3, 1, 'expense', 'rent', 600000, 'IQD', 'إيجار المبنى - شهر', 'manual', 3, 'active', 2, unixepoch()),
-  (4, 1, 'expense', 'salary', 1200000, 'IQD', 'رواتب الموظفين - شهر', 'manual', 4, 'active', 2, unixepoch()),
-  (5, 1, 'expense', 'supplies', 200000, 'IQD', 'مستلزمات مدرسية وقرطاسية', 'manual', 5, 'active', 2, unixepoch()),
-  (6, 1, 'expense', 'bills', 150000, 'IQD', 'فاتورة كهرباء وإنترنت', 'manual', 6, 'active', 2, unixepoch());
+-- Payment triggers have created the account and treasury IDs 1..8. Keep manual
+-- demo identities separate. Construct their opening cache from the exact ledger;
+-- this is local fixture construction, never production reconciliation.
+INSERT INTO treasury_transactions (id, school_id, transaction_type, category, amount, currency, description, source_type, source_id, status, created_by, created_at) VALUES
+  (1001, 1, 'income', 'tuition_fee', 1500000, 'IQD', 'قسط دراسي - الفصل الأول', 'manual', 1001, 'active', 2, unixepoch()),
+  (1002, 1, 'income', 'other_income', 500000, 'IQD', 'تبرع أولياء الأمور', 'manual', 1002, 'active', 2, unixepoch()),
+  (1003, 1, 'expense', 'rent', 600000, 'IQD', 'إيجار المبنى - شهر', 'manual', 1003, 'active', 2, unixepoch()),
+  (1004, 1, 'expense', 'salary', 1200000, 'IQD', 'رواتب الموظفين - شهر', 'manual', 1004, 'active', 2, unixepoch()),
+  (1005, 1, 'expense', 'supplies', 200000, 'IQD', 'مستلزمات مدرسية وقرطاسية', 'manual', 1005, 'active', 2, unixepoch()),
+  (1006, 1, 'expense', 'bills', 150000, 'IQD', 'فاتورة كهرباء وإنترنت', 'manual', 1006, 'active', 2, unixepoch());
+UPDATE treasury_accounts SET current_balance=(SELECT SUM(CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END)
+  FROM treasury_transactions WHERE school_id=1 AND currency='IQD' AND status='active') WHERE school_id=1;
 
 -- ============================================
 -- Demo: Employees (School 1)
