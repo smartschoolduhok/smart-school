@@ -5,6 +5,7 @@
 // ===========================================
 
 import { Hono } from 'hono'
+import { registerFinanceRoutes } from './lib/financeFeesDb'
 import { parseWeekRequest, planWeekSetup, publicWeekSnapshot, WeekSetupError } from './lib/weekSetup'
 import { loadWeekSetup, buildWeekApplyStatements, readWeekJson, weekDatabaseError } from './lib/weekSetupDb'
 import { parseMatrixRequest, parseMatrixCopyRequest, planTeachingLoadMatrix, planTeachingLoadCopy, MAX_MATRIX_CHANGES } from './lib/teachingLoadMatrix'
@@ -17,7 +18,6 @@ import {
   EMPLOYEE_ACCESS_ROLES,
   EMPLOYEE_MANAGEMENT_ROLES,
   EMPLOYEE_SALARY_ROLES,
-  FEE_MANAGEMENT_ROLES,
   FINANCE_ACCESS_ROLES,
   GRADE_MANAGEMENT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
@@ -234,7 +234,7 @@ declare global {
   }
 }
 
-type Bindings = {
+export type Bindings = {
   DB: D1Database;
   JWT_SECRET?: string;
   ALLOWED_ORIGINS?: string;
@@ -259,7 +259,7 @@ interface AuthenticatedUserContext {
   authVersion: number;
 }
 
-type Variables = {
+export type Variables = {
   user: UserContext;
   session: JwtPayload;
   resolvedSchoolId: number | null;
@@ -7751,16 +7751,6 @@ app.get('/api/verify/result-card/:token', async (c) => {
 // Phase 7: Student Fees & Financial Receipts
 // ===========================================
 
-function toArabicIndic(num: number | null | undefined): string {
-  if (num === null || num === undefined) return '';
-  return String(num).replace(/\d/g, d => String.fromCharCode(0x0660 + parseInt(d, 10)));
-}
-
-function generateReceiptNumber(schoolId: number, studentId: number): string {
-  const ts = Math.floor(Date.now() / 1000);
-  return `REC-${schoolId}-${studentId}-${ts}`;
-}
-
 function canManageOfficialBookTemplates(roleKey: RoleKey): boolean {
   return hasRole(roleKey, SCHOOL_MANAGEMENT_ROLES);
 }
@@ -7775,10 +7765,6 @@ function canViewOfficialBooks(roleKey: RoleKey): boolean {
 
 function canViewPrintRecords(roleKey: RoleKey): boolean {
   return hasRole(roleKey, OFFICIAL_BOOK_VIEW_ROLES);
-}
-
-function canManageFees(roleKey: RoleKey): boolean {
-  return hasRole(roleKey, FEE_MANAGEMENT_ROLES);
 }
 
 function canAccessTreasury(roleKey: RoleKey): boolean {
@@ -7801,649 +7787,8 @@ function canManageSalaries(roleKey: RoleKey): boolean {
   return hasRole(roleKey, EMPLOYEE_SALARY_ROLES);
 }
 
-// GET /api/student-fees
-// ===========================================
-app.get('/api/student-fees', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  try {
-    const query = c.req.query();
-    const studentId = query.student_id ? parseInt(query.student_id, 10) : null;
-    const status = query.status || null;
-
-    let sql = `SELECT sf.id, sf.school_id, sf.student_id, sf.academic_year_id, sf.fee_type, sf.amount, sf.currency, sf.due_date, sf.paid_amount, sf.status, sf.notes, sf.discount_type, sf.discount_value, sf.discount_amount, sf.net_fee, sf.created_at, sf.updated_at, st.full_name as student_name, st.student_number, c.name as class_name, s.name as section_name FROM student_fees sf LEFT JOIN students st ON sf.student_id = st.id LEFT JOIN classes c ON st.class_id = c.id LEFT JOIN sections s ON st.section_id = s.id WHERE 1=1`;
-    const params: any[] = [];
-
-    if (scope === 'single' && resolvedSchoolId) {
-      sql += ` AND sf.school_id = ?`;
-      params.push(resolvedSchoolId);
-    }
-
-    if (studentId) { sql += ` AND sf.student_id = ?`; params.push(studentId); }
-    if (status) { sql += ` AND sf.status = ?`; params.push(status); }
-
-    sql += ` ORDER BY sf.created_at DESC`;
-
-    const stmt = db.prepare(sql);
-    const rows = await stmt.bind(...params).all<any>();
-    return c.json({ data: rows.results || [] });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الأقساط', detail: err.message }, 500);
-  }
-});
-
-// POST /api/student-fees
-// ===========================================
-app.post('/api/student-fees', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  if (!user || !canManageFees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الأقساط' }, 403);
-  }
-
-  try {
-    const body = await c.req.json();
-    let { school_id, student_id, academic_year_id, fee_type, amount, currency, due_date, notes } = body;
-    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    school_id = targetSchool.schoolId;
-
-    if (!school_id || !student_id || !amount) {
-      return c.json({ error: 'المدرسة والطالب والمبلغ مطلوبة' }, 400);
-    }
-
-    const student = await db.prepare('SELECT school_id, status FROM students WHERE id = ?').bind(student_id).first<{ school_id: number; status: string }>();
-    if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
-    if (student.school_id !== school_id) return c.json({ error: 'الطالب لا ينتمي لهذه المدرسة' }, 400);
-    if (student.status !== 'active') return c.json({ error: 'لا يمكن إنشاء قسط لطالب غير نشط' }, 400);
-
-    // Duplicate fee prevention: same student + academic_year + fee_type (unless academic_year is null, then block any active fee for same type)
-    const duplicateCheck = await db.prepare(`
-      SELECT id FROM student_fees
-      WHERE student_id = ? AND academic_year_id IS ? AND fee_type = ? AND status IN ('pending','partial','paid')
-    `).bind(student_id, academic_year_id || null, fee_type || 'رسوم دراسية').first<{ id: number }>();
-    if (duplicateCheck) {
-      return c.json({ error: 'يوجد قسط نشط بنفس النوع والعام الدراسي لهذا الطالب' }, 409);
-    }
-
-    // Discount calculations
-    const discount_type = body.discount_type || 'none';
-    const discount_value = parseFloat(body.discount_value || '0') || 0;
-    const amountNum = parseFloat(amount);
-    let discount_amount = 0;
-    let net_fee = amountNum;
-    if (discount_type === 'fixed') {
-      discount_amount = Math.min(discount_value, amountNum);
-      net_fee = amountNum - discount_amount;
-    } else if (discount_type === 'percentage') {
-      discount_amount = Math.min((amountNum * discount_value) / 100, amountNum);
-      net_fee = amountNum - discount_amount;
-    }
-
-    const result = await db.prepare(`
-      INSERT INTO student_fees (school_id, student_id, academic_year_id, fee_type, amount, currency, due_date, paid_amount, status, notes, discount_type, discount_value, discount_amount, net_fee, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-    `).bind(school_id, student_id, academic_year_id || null, fee_type || 'رسوم دراسية', amountNum, currency || 'EGP', due_date || null, notes || null, discount_type, discount_value, discount_amount, net_fee).run();
-
-    return c.json({ data: { id: result.meta.last_row_id, school_id, student_id, amount, status: 'pending' } }, 201);
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء القسط', detail: err.message }, 500);
-  }
-});
-
-// PUT /api/student-fees/:id
-// ===========================================
-app.put('/api/student-fees/:id', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-  const id = parseInt(c.req.param('id'), 10);
-
-  if (!user || !canManageFees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية تعديل الأقساط' }, 403);
-  }
-
-  try {
-    const body = await c.req.json();
-    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const existing = await db.prepare('SELECT * FROM student_fees WHERE id = ?').bind(id).first<any>();
-    if (!existing) return c.json({ error: 'القسط غير موجود' }, 404);
-    if (existing.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح' }, 403);
-    }
-
-    const fee_type = body.fee_type !== undefined ? body.fee_type : existing.fee_type;
-    const amount = body.amount !== undefined ? parseFloat(body.amount) : existing.amount;
-    const currency = body.currency !== undefined ? body.currency : existing.currency;
-    const due_date = body.due_date !== undefined ? body.due_date : existing.due_date;
-    const notes = body.notes !== undefined ? body.notes : existing.notes;
-
-    // Recalculate discount if amount or discount fields changed
-    const discount_type = body.discount_type !== undefined ? body.discount_type : (existing.discount_type || 'none');
-    const discount_value = body.discount_value !== undefined ? parseFloat(body.discount_value || '0') : (existing.discount_value || 0);
-    let discount_amount = 0;
-    let net_fee = amount;
-    if (discount_type === 'fixed') {
-      discount_amount = Math.min(discount_value, amount);
-      net_fee = amount - discount_amount;
-    } else if (discount_type === 'percentage') {
-      discount_amount = Math.min((amount * discount_value) / 100, amount);
-      net_fee = amount - discount_amount;
-    }
-
-    await db.prepare(`
-      UPDATE student_fees SET fee_type = ?, amount = ?, currency = ?, due_date = ?, notes = ?, discount_type = ?, discount_value = ?, discount_amount = ?, net_fee = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?
-    `).bind(fee_type, amount, currency, due_date, notes, discount_type, discount_value, discount_amount, net_fee, id, targetSchool.schoolId).run();
-
-    return c.json({ data: { id, fee_type, amount, currency, due_date, notes, discount_type, discount_value, discount_amount, net_fee }, message: 'تم تحديث القسط' });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث القسط', detail: err.message }, 500);
-  }
-});
-
-// DELETE /api/student-fees/:id
-// ===========================================
-app.delete('/api/student-fees/:id', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-  const id = parseInt(c.req.param('id'), 10);
-
-  if (!user || !canManageFees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية حذف الأقساط' }, 403);
-  }
-
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const existing = await db.prepare('SELECT school_id, paid_amount FROM student_fees WHERE id = ?').bind(id).first<{ school_id: number; paid_amount: number }>();
-    if (!existing) return c.json({ error: 'القسط غير موجود' }, 404);
-    if (existing.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح' }, 403);
-    }
-    if (existing.paid_amount > 0) {
-      return c.json({ error: 'لا يمكن حذف قسط تم سداد جزء منه' }, 400);
-    }
-
-    // Also block if any payment records exist (even zero-amount ones)
-    const paymentCount = await db.prepare('SELECT COUNT(*) as cnt FROM fee_payments WHERE student_fee_id = ?').bind(id).first<{ cnt: number }>();
-    if (paymentCount && paymentCount.cnt > 0) {
-      return c.json({ error: 'لا يمكن حذف قسط له مدفوعات مسجلة. استخدم إلغاء القسط بدلاً من الحذف.' }, 400);
-    }
-
-    await db.prepare('DELETE FROM student_fees WHERE id = ? AND school_id = ?').bind(id, targetSchool.schoolId).run();
-    return c.json({ data: { id }, message: 'تم حذف القسط' });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في حذف القسط', detail: err.message }, 500);
-  }
-});
-
-// GET /api/fee-payments
-// ===========================================
-app.get('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  try {
-    const query = c.req.query();
-    const studentId = query.student_id ? parseInt(query.student_id, 10) : null;
-    const studentFeeId = query.student_fee_id ? parseInt(query.student_fee_id, 10) : null;
-
-    let sql = `SELECT fp.id, fp.school_id, fp.student_fee_id, fp.student_id, fp.amount, fp.payment_method, fp.payment_date, fp.receipt_number, fp.notes, fp.created_by_user_id, fp.created_at, st.full_name as student_name, st.student_number, u.full_name as created_by_name FROM fee_payments fp LEFT JOIN students st ON fp.student_id = st.id LEFT JOIN users u ON fp.created_by_user_id = u.id WHERE 1=1`;
-    const params: any[] = [];
-
-    if (scope === 'single' && resolvedSchoolId) {
-      sql += ` AND fp.school_id = ?`;
-      params.push(resolvedSchoolId);
-    }
-
-    if (studentId) { sql += ` AND fp.student_id = ?`; params.push(studentId); }
-    if (studentFeeId) { sql += ` AND fp.student_fee_id = ?`; params.push(studentFeeId); }
-
-    sql += ` ORDER BY fp.payment_date DESC`;
-
-    const stmt = db.prepare(sql);
-    const rows = await stmt.bind(...params).all<any>();
-    return c.json({ data: rows.results || [] });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في جلب المدفوعات', detail: err.message }, 500);
-  }
-});
-
-// POST /api/fee-payments
-// ===========================================
-app.post('/api/fee-payments', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  if (!user || !canManageFees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية تسجيل المدفوعات' }, 403);
-  }
-
-  try {
-    const body = await c.req.json();
-    const { student_fee_id, amount, payment_method, payment_date, notes } = body;
-    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-
-    if (!student_fee_id || !amount || !payment_date) {
-      return c.json({ error: 'معرف القسط والمبلغ وتاريخ الدفع مطلوبة' }, 400);
-    }
-    const amountNum = parseFloat(amount);
-    if (isNaN(amountNum) || amountNum <= 0) {
-      return c.json({ error: 'المبلغ يجب أن يكون أكبر من صفر' }, 400);
-    }
-
-    const fee = await db.prepare('SELECT * FROM student_fees WHERE id = ?').bind(student_fee_id).first<any>();
-    if (!fee) return c.json({ error: 'القسط غير موجود' }, 404);
-
-    if (fee.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح: القسط لا ينتمي إلى مدرستك' }, 403);
-    }
-
-    // Use net_fee for remaining if available (discount-aware), fallback to amount
-    const targetAmount = fee.net_fee || fee.amount;
-    const remaining = targetAmount - fee.paid_amount;
-    if (amountNum > remaining) {
-      return c.json({ error: `المبلغ المدفوع (${amountNum}) يتجاوز المتبقي (${remaining})` }, 400);
-    }
-
-    const newPaid = fee.paid_amount + amountNum;
-    const newStatus = newPaid >= targetAmount ? 'paid' : (newPaid > 0 ? 'partial' : 'pending');
-
-    // Save original fee state for potential compensating rollback
-    const originalPaid = fee.paid_amount;
-    const originalStatus = fee.status;
-
-    const result = await db.prepare(`
-      INSERT INTO fee_payments (school_id, student_fee_id, student_id, amount, payment_method, payment_date, notes, created_by_user_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
-    `).bind(fee.school_id, student_fee_id, fee.student_id, amountNum, payment_method || 'cash', payment_date, notes || null, user.id).run();
-
-    await db.prepare(`
-      UPDATE student_fees SET paid_amount = ?, status = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?
-    `).bind(newPaid, newStatus, student_fee_id, targetSchool.schoolId).run();
-
-    const paymentId = result.meta.last_row_id;
-
-    // ── Treasury auto-income transaction (Phase 8) ──
-    try {
-      // Check for duplicate treasury transaction
-      const existingTx = await db.prepare(`
-        SELECT id FROM treasury_transactions WHERE school_id = ? AND source_type = 'fee_payment' AND source_id = ?
-      `).bind(fee.school_id, paymentId).first<any>();
-
-      if (!existingTx) {
-        // TEST HOOK: simulate treasury insert failure for rollback testing
-        if (body._force_treasury_failure === true) {
-          throw new Error('SIMULATED_TREASURY_INSERT_FAILURE');
-        }
-        // Create treasury income transaction
-        await db.prepare(`
-          INSERT INTO treasury_transactions
-          (school_id, transaction_type, category, amount, currency, description,
-           source_type, source_id, status, created_by, created_at)
-          VALUES (?, 'income', 'tuition_fee', ?, 'IQD', 'دفعة قسط طالب',
-                  'fee_payment', ?, 'active', ?, unixepoch())
-        `).bind(fee.school_id, amountNum, paymentId, user.id).run();
-
-        // Update cached balance
-        await db.prepare(`
-          INSERT INTO treasury_accounts (school_id, current_balance, updated_at)
-          VALUES (?, ?, unixepoch())
-          ON CONFLICT(school_id) DO UPDATE SET
-            current_balance = treasury_accounts.current_balance + excluded.current_balance,
-            updated_at = unixepoch()
-        `).bind(fee.school_id, amountNum).run();
-      }
-    } catch (treasuryErr: any) {
-      // COMPENSATING ROLLBACK — treasury failed, undo payment to maintain financial consistency
-      await db.prepare(`DELETE FROM fee_payments WHERE id = ?`).bind(paymentId).run();
-      await db.prepare(`
-        UPDATE student_fees SET paid_amount = ?, status = ?, updated_at = unixepoch() WHERE id = ?
-      `).bind(originalPaid, originalStatus, student_fee_id).run();
-
-      return c.json({
-        error: 'تعذر تسجيل الدفعة في الخزنة، تم التراجع عن الدفعة',
-        detail: treasuryErr.message
-      }, 500);
-    }
-
-    // ── Auto-generate receipt (best-effort, isolated from payment/treasury success) ──
-    let autoReceipt = null;
-    let receiptWarning = null;
-    if (body.auto_generate_receipt === true) {
-      try {
-        const dupCheck = await db.prepare(`SELECT id FROM fee_receipts WHERE payment_ids_json LIKE ?`).bind(`%"${paymentId}"%`).first<any>();
-        if (!dupCheck) {
-          const student = await db.prepare(`
-            SELECT s.id, s.school_id, s.full_name, s.student_number, s.class_id, s.section_id,
-                   c.name AS class_name, sec.name AS section_name, sch.name AS school_name
-            FROM students s
-            LEFT JOIN classes c ON s.class_id = c.id
-            LEFT JOIN sections sec ON s.section_id = sec.id
-            LEFT JOIN schools sch ON s.school_id = sch.id
-            WHERE s.id = ? AND s.status = 'active'
-          `).bind(fee.student_id).first<any>();
-
-          if (student) {
-            const ay = await db.prepare(`SELECT id, name FROM academic_years WHERE school_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1`).bind(student.school_id).first<any>();
-            const token = generateVerificationToken();
-            const tokenHash = await hashToken(token);
-            const receiptNumber = generateReceiptNumber(student.school_id, fee.student_id);
-            const paymentsSnapshot = [{
-              payment_id: paymentId,
-              amount: amountNum,
-              payment_method: payment_method || 'cash',
-              payment_date: payment_date,
-              fee_type: fee.fee_type,
-            }];
-            const receiptSettings = await db.prepare(`
-              SELECT receipt_footer_text, verification_note_text, use_school_logo_on_docs
-              FROM school_settings WHERE school_id = ?
-            `).bind(student.school_id).first<any>();
-            const schoolLogoForReceipt = await db.prepare(`SELECT logo_url FROM schools WHERE id = ?`).bind(student.school_id).first<any>();
-            const settingsSnapshot = {
-              receipt_footer_text: receiptSettings?.receipt_footer_text || null,
-              verification_note_text: receiptSettings?.verification_note_text || null,
-              logo_url: (receiptSettings?.use_school_logo_on_docs === 1 && schoolLogoForReceipt?.logo_url) ? schoolLogoForReceipt.logo_url : null,
-            };
-            await db.prepare(`
-              INSERT INTO fee_receipts (
-                school_id, student_id, receipt_number, total_amount,
-                payment_ids_json, payments_snapshot_json, settings_snapshot_json,
-                student_name_snapshot, class_name_snapshot, section_name_snapshot,
-                school_name_snapshot, academic_year_snapshot,
-                verification_token, verification_hash,
-                status, created_by_user_id, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
-            `).bind(
-              student.school_id, fee.student_id, receiptNumber, amountNum,
-              JSON.stringify([paymentId]), JSON.stringify(paymentsSnapshot), JSON.stringify(settingsSnapshot),
-              student.full_name, student.class_name || null, student.section_name || null,
-              student.school_name || null, ay?.name || null,
-              token, tokenHash,
-              user.id
-            ).run();
-            autoReceipt = { receipt_number: receiptNumber, verification_url: `/verify/receipt/${token}` };
-          }
-        }
-      } catch (receiptErr: any) {
-        receiptWarning = 'تعذر إنشاء الإيصال التلقائي: ' + (receiptErr?.message || receiptErr);
-      }
-    }
-
-    const response: any = { data: { id: paymentId, amount: amountNum, payment_method, remaining: targetAmount - newPaid, auto_receipt: autoReceipt } };
-    if (receiptWarning) response.data.receipt_warning = receiptWarning;
-    return c.json(response, 201);
-  } catch (err: any) {
-    return c.json({ error: 'فشل في تسجيل الدفع', detail: err.message }, 500);
-  }
-});
-
-// GET /api/fee-receipts
-// ===========================================
-app.get('/api/fee-receipts', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  try {
-    const query = c.req.query();
-    const studentId = query.student_id ? parseInt(query.student_id, 10) : null;
-
-    let sql = `SELECT fr.id, fr.school_id, fr.student_id, fr.receipt_number, fr.total_amount, fr.student_name_snapshot, fr.class_name_snapshot, fr.section_name_snapshot, fr.school_name_snapshot, fr.academic_year_snapshot, fr.status, fr.verification_token, fr.created_at, fr.created_by_user_id, u.full_name as created_by_name FROM fee_receipts fr LEFT JOIN users u ON fr.created_by_user_id = u.id WHERE 1=1`;
-    const params: any[] = [];
-
-    if (scope === 'single' && resolvedSchoolId) {
-      sql += ` AND fr.school_id = ?`;
-      params.push(resolvedSchoolId);
-    }
-
-    if (studentId) { sql += ` AND fr.student_id = ?`; params.push(studentId); }
-
-    sql += ` ORDER BY fr.created_at DESC`;
-
-    const stmt = db.prepare(sql);
-    const rows = await stmt.bind(...params).all<any>();
-    return c.json({ data: rows.results || [] });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الإيصالات', detail: err.message }, 500);
-  }
-});
-
-// GET /api/fee-receipts/:id
-// ===========================================
-app.get('/api/fee-receipts/:id', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-  const id = parseInt(c.req.param('id'), 10);
-
-  try {
-    const row = await db.prepare('SELECT * FROM fee_receipts WHERE id = ?').bind(id).first<any>();
-    if (!row) return c.json({ error: 'الإيصال غير موجود' }, 404);
-    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
-      return c.json({ error: 'غير مسموح' }, 403);
-    }
-    let data = row;
-    try {
-      data = { ...row, payments_snapshot: JSON.parse(row.payments_snapshot_json || '[]'), payment_ids: JSON.parse(row.payment_ids_json || '[]'), settings_snapshot: JSON.parse(row.settings_snapshot_json || '{}') };
-    } catch { /* leave as-is */ }
-    return c.json({ data });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الإيصال', detail: err.message }, 500);
-  }
-});
-
-// POST /api/fee-receipts/generate
-// ===========================================
-app.post('/api/fee-receipts/generate', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  if (!user || !canManageFees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إنشاء الإيصالات' }, 403);
-  }
-
-  try {
-    const body = await c.req.json();
-    const { student_id, payment_ids } = body;
-    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-
-    if (!student_id || !Array.isArray(payment_ids) || payment_ids.length === 0) {
-      return c.json({ error: 'الطالب ومعرفات المدفوعات مطلوبة' }, 400);
-    }
-
-    const student = await db.prepare(`
-      SELECT s.id, s.school_id, s.full_name, s.student_number, s.class_id, s.section_id,
-             c.name AS class_name, sec.name AS section_name, sch.name AS school_name
-      FROM students s
-      LEFT JOIN classes c ON s.class_id = c.id
-      LEFT JOIN sections sec ON s.section_id = sec.id
-      LEFT JOIN schools sch ON s.school_id = sch.id
-      WHERE s.id = ? AND s.status = 'active'
-    `).bind(student_id).first<any>();
-
-    if (!student) return c.json({ error: 'الطالب غير موجود أو غير نشط' }, 404);
-    if (student.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح: الطالب لا ينتمي إلى مدرستك' }, 403);
-    }
-
-    // Fetch payments
-    const placeholders = payment_ids.map(() => '?').join(',');
-    const paymentRows = await db.prepare(`
-      SELECT fp.*, sf.fee_type FROM fee_payments fp
-      JOIN student_fees sf ON fp.student_fee_id = sf.id
-      WHERE fp.id IN (${placeholders}) AND fp.student_id = ? AND fp.school_id = ?
-    `).bind(...payment_ids, student_id, student.school_id).all<any>();
-    const payments = paymentRows.results || [];
-
-    if (payments.length === 0) return c.json({ error: 'لا توجد مدفوعات صالحة' }, 400);
-
-    const totalAmount = payments.reduce((sum: number, p: any) => sum + p.amount, 0);
-
-    const ay = await db.prepare(`SELECT id, name FROM academic_years WHERE school_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1`).bind(student.school_id).first<any>();
-
-    const token = generateVerificationToken();
-    const tokenHash = await hashToken(token);
-    const receiptNumber = generateReceiptNumber(student.school_id, student_id);
-
-    const paymentsSnapshot = payments.map((p: any) => ({
-      payment_id: p.id,
-      amount: p.amount,
-      payment_method: p.payment_method,
-      payment_date: p.payment_date,
-      fee_type: p.fee_type,
-    }));
-    const receiptSettings2 = await db.prepare(`
-      SELECT receipt_footer_text, verification_note_text, use_school_logo_on_docs
-      FROM school_settings WHERE school_id = ?
-    `).bind(student.school_id).first<any>();
-    const schoolLogoForReceipt2 = await db.prepare(`SELECT logo_url FROM schools WHERE id = ?`).bind(student.school_id).first<any>();
-    const settingsSnapshot2 = {
-      receipt_footer_text: receiptSettings2?.receipt_footer_text || null,
-      verification_note_text: receiptSettings2?.verification_note_text || null,
-      logo_url: (receiptSettings2?.use_school_logo_on_docs === 1 && schoolLogoForReceipt2?.logo_url) ? schoolLogoForReceipt2.logo_url : null,
-    };
-
-    await db.prepare(`
-      INSERT INTO fee_receipts (
-        school_id, student_id, receipt_number, total_amount,
-        payment_ids_json, payments_snapshot_json, settings_snapshot_json,
-        student_name_snapshot, class_name_snapshot, section_name_snapshot,
-        school_name_snapshot, academic_year_snapshot,
-        verification_token, verification_hash,
-        status, created_by_user_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
-    `).bind(
-      student.school_id, student_id, receiptNumber, totalAmount,
-      JSON.stringify(payment_ids), JSON.stringify(paymentsSnapshot), JSON.stringify(settingsSnapshot2),
-      student.full_name, student.class_name || null, student.section_name || null,
-      student.school_name || null, ay?.name || null,
-      token, tokenHash,
-      user.id
-    ).run();
-
-    const newReceipt = await db.prepare('SELECT * FROM fee_receipts WHERE verification_token = ?').bind(token).first<any>();
-
-    return c.json({
-      data: {
-        receipt: newReceipt,
-        verification_url: `/verify/receipt/${token}`,
-      },
-      message: 'تم إنشاء الإيصال بنجاح',
-    });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء الإيصال', detail: err.message }, 500);
-  }
-});
-
-// PUT /api/fee-receipts/:id/cancel
-// ===========================================
-app.put('/api/fee-receipts/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-  const id = parseInt(c.req.param('id'), 10);
-
-  if (!user || !canManageFees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إلغاء الإيصالات' }, 403);
-  }
-
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const row = await db.prepare('SELECT school_id, status FROM fee_receipts WHERE id = ?').bind(id).first<any>();
-    if (!row) return c.json({ error: 'الإيصال غير موجود' }, 404);
-    if (row.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح' }, 403);
-    }
-    if (row.status !== 'active') {
-      return c.json({ error: 'لا يمكن إلغاء إيصال غير نشط' }, 400);
-    }
-
-    await db.prepare(`UPDATE fee_receipts SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
-    return c.json({ data: { id, status: 'cancelled' }, message: 'تم إلغاء الإيصال' });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء الإيصال', detail: err.message }, 500);
-  }
-});
-
-// ===========================================
-// PUT /api/fee-receipts/:id/mark-printed
-// ===========================================
-app.put('/api/fee-receipts/:id/mark-printed', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-  const id = parseInt(c.req.param('id'), 10);
-
-  if (!user) {
-    return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 403);
-  }
-
-  // Fees access required (view, not just manage, because print is a view-level action)
-  const canAccess = ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant', 'registrar', 'parent'].includes(user.role_key);
-  if (!canAccess) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية الوصول إلى الإيصالات' }, 403);
-  }
-
-  try {
-    const body = await c.req.json().catch(() => ({}));
-    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const row = await db.prepare('SELECT school_id, status, receipt_number FROM fee_receipts WHERE id = ?').bind(id).first<any>();
-    if (!row) return c.json({ error: 'الإيصال غير موجود' }, 404);
-    if (row.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح' }, 403);
-    }
-    if (row.status !== 'active') {
-      return c.json({ error: 'لا يمكن تعليم إيصال غير فعال كمطبوع' }, 400);
-    }
-
-    const printedAt = Math.floor(Date.now() / 1000);
-
-    // Update fee_receipts printed_at if column exists (best-effort via migrations; use try/catch for schema robustness)
-    try {
-      await db.prepare(`UPDATE fee_receipts SET printed_at = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(printedAt, id, targetSchool.schoolId).run();
-    } catch (e: any) {
-      // If column doesn't exist yet, just continue
-      if (e.message && !e.message.includes('no such column')) {
-        throw e;
-      }
-    }
-
-    // Create print record
-    const copies = typeof body.copies === 'number' ? body.copies : 1;
-    await db.prepare(`
-      INSERT INTO print_records (school_id, document_id, print_type, source_type, source_id, document_number, title, printed_at, printed_by_user_id, copies_count, printer_info_json)
-      VALUES (?, ?, 'receipt', 'fee_receipts', ?, ?, 'وصل قسط', ?, ?, ?, ?)
-    `).bind(targetSchool.schoolId, id, id, row.receipt_number || '', printedAt, user.id, copies, null).run();
-
-    return c.json({ data: { id, printed_at: printedAt }, message: 'تم تعليم الإيصال كمطبوع' });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث الإيصال', detail: err.message }, 500);
-  }
-});
+// Finance routes share strict role/school validation and the atomic ledger engine.
+registerFinanceRoutes(app);
 
 // GET /api/verify/receipt/:token
 // Public endpoint — no JWT required
@@ -8503,7 +7848,7 @@ app.get('/api/verify/receipt/:token', async (c) => {
       verification_note: receiptSettings?.verification_note_text || null,
     });
   } catch (err: any) {
-    return c.json({ valid: false, message: 'خطأ في التحقق', detail: err.message }, 500);
+    return c.json({ valid: false, message: 'خطأ في التحقق' }, 500);
   }
 });
 
@@ -10522,6 +9867,12 @@ app.get('/api/print-records', requireSameSchoolOrAdmin(), async (c) => {
 
     let sql = `SELECT pr.id, pr.school_id, pr.document_id, pr.print_type, pr.printed_at, pr.printed_by_user_id, pr.printer_info_json, pr.created_at, u.full_name as printed_by_name FROM print_records pr LEFT JOIN users u ON pr.printed_by_user_id = u.id AND (u.school_id = pr.school_id OR u.school_id IS NULL) WHERE 1=1`;
     const params: any[] = [];
+
+    // Shared print history must not bypass the private finance gate. Leave
+    // non-financial document access unchanged; no admin-wide receipt listing.
+    if (!hasRole(user.role_key, FINANCE_ACCESS_ROLES) || scope !== 'single' || !resolvedSchoolId) {
+      sql += ` AND pr.print_type IS NOT 'receipt' AND coalesce(pr.source_type,'') != 'fee_receipts'`;
+    }
 
     if (scope === 'single' && resolvedSchoolId) {
       sql += ` AND pr.school_id = ?`;
