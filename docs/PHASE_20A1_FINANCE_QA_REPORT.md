@@ -1,6 +1,130 @@
 # Phase 20A1 — Finance core stabilization QA
 
-## Wrangler 4.118.0 splitter correction — 2026-09-06 (current evidence)
+## CASE terminator hardening — 2026-09-06 (current evidence)
+
+This section supersedes the seven-space fix's remote hypothesis and test totals below.
+Base HEAD: `7360d2cc6ae6071d664ecdc9e8a980321cef3471`.
+Same branch `fix/finance-fees-payments-integrity-phase-20a1`, same Draft PR #37; delivery SHA is recorded in the PR description.
+
+### Two historical remote failures — no remote access in this task
+
+The first authorized attempt failed with `incomplete input: SQLITE_ERROR [code: 7500]`.
+The seven-space correction fixed a confirmed **local** splitter defect, but the second authorized attempt at HEAD 7360d2c **still failed with the same error**, exit 1, using Wrangler 4.118.0.
+Thus local success was not sufficient to explain or fix remote D1 parsing.
+
+The previously recorded post-failure audit confirmed an atomic failure: migration history stayed at **28 through 0027**, only 0028 pending; none of 0028's columns, table, views, indexes or triggers survived.
+All fifteen compared table counts and all **71 pre-existing financial field values** remained unchanged.
+The fee stayed 100,000 IQD / 25,000 paid / partial; payment and receipt values, treasury entry, audit timestamps and 25,000 cached/ledger balance remained unchanged. Foreign keys were enabled and the FK check was empty.
+These are **historical supplied/recorded observations, not freshly queried STAGING data**.
+
+### Remaining parser hypothesis and minimal correction
+
+[Cloudflare issue #4326](https://github.com/cloudflare/workers-sdk/issues/4326) reports a CASE/RAISE trigger failing with incomplete input and a parenthesized workaround.
+[Issue #4727](https://github.com/cloudflare/workers-sdk/issues/4727) independently describes unparenthesized CASE termination being confused with trigger termination.
+These are historical reports, not proof of the current remote service's implementation.
+The more recent [#14991](https://github.com/cloudflare/workers-sdk/issues/14991) and [#15314](https://github.com/cloudflare/workers-sdk/issues/15314) report remote migration parsing failures involving CRLF and lowercase body openers; they support keeping local and remote evidence separate.
+
+**Ambiguous SELECT CASE ... END; inside trigger bodies is the leading remaining parser hypothesis, not a confirmed root cause of both STAGING failures.**
+
+Inspected unchanged migration `0027_timetable_safe_teacher_reassignment.sql`: its conditional `SELECT RAISE(...) WHERE condition;` structure has already been remotely applied in this project, according to the recorded history. 0028 now follows that same structural style.
+
+- Converted **45 conditional guards**, across 12 trigger bodies, from CASE/RAISE to SELECT RAISE/WHERE.
+- Conditions, guard order, ABORT types and error strings preserved exactly, apart from grouping the two status calculations.
+- Four unconditional history guards remain unconditional. All trigger timing, UPDATE column lists and WHEN clauses remain unchanged.
+- **Eight calculated CASE expressions remain inside triggers:** one status check in each fee insert/update trigger; one status value and two signed treasury sums in each payment post/cancel trigger.
+- The four status expressions are grouped as `( CASE ... END )`; four existing sums retain `SUM( CASE ... END )`. Every calculated END closes inside parentheses before any SQL statement terminator.
+- Three CASE expressions outside triggers (receipt-link backfill and readiness views) are unchanged.
+- Existing tables, views, indexes, arithmetic, money movement and API error mapping are unchanged. No source modules, dependencies, migrations 0001–0027 or migration 0029 changed.
+
+**0028 no longer contains CASE END semicolon boundaries inside trigger statements that can be mistaken for the trigger terminator. Remote confirmation is still pending.**
+
+### Independent parser and semantic proof
+
+Exact file SHA256: `4a46fe7bad40cc98241d6b4b53df2a5c51252b3cf818bbc99fa316abc7f34be0`.
+Bytes: **314 LF, 0 CR / CRLF, no BOM, final newline present**.
+Installed Wrangler remains **4.118.0**.
+
+- Red test before SQL changes: **19 tests, 7 pass / 12 fail / 0 skip**. The twelve conditional-guard triggers had extra END-semicolon boundaries.
+- Same terminator tests after correction: **19/19 pass**. Each of the **18** exact trigger chunks has precisely one standalone END-semicolon, at its final terminator.
+- Lexer masks strings, escaped quotes, quoted identifiers and comments; a CASE/BEGIN/END stack checks calculated END grouping, rejects inner CASE terminators and lowercase body openers. Synthetic adversarial lexer checks remain included.
+- Exact splitter result remains **45 statements**. Every statement independently compiles and executes; SQLite's consumed `sourceSQL` must equal the entire chunk. **18/18 named triggers**, both readiness views, link table and all seven indexes are verified. Temporary preflight table absent; FK enabled/clean.
+- Ordered condition/error fingerprint is pinned against the 45 original guards at HEAD 7360d2c. A separate inverse-transform inspection reproduced the entire original SQL modulo formatting/comment additions.
+- Fifteen stable application-visible error codes each compare old conceptual CASE guards and new WHERE guards for TRUE/FALSE/NULL with scalar, correlated-subquery and calculated-CASE predicates. TRUE aborts with the same exact code; FALSE/NULL continue, with no partial insert on ABORT.
+- Exact extracted status expressions cover zero-net paid, fully paid, overpaid predicate boundary, partial, pending and NULL comparison behavior. Existing full finance integration tests continue to enforce actual write constraints.
+- Focused finance module: **68 pass / 0 fail / 0 skip**. Net addition: **36 tests**. Existing swallowed-trigger false-positive reproduction remains enforced.
+
+### Full regression and builds
+
+Executed the exact package test commands using `node scripts/run-finance-regressions.mjs`.
+All final suites below exited 0; all have **0 failed / 0 skipped**.
+
+| Suite | Passed executions |
+|---|---:|
+| Finance | 183 |
+| Security | 22 |
+| RBAC/Tenant | 95 |
+| Settings | 5 |
+| Academic Years | 30 |
+| Student Enrollments | 58 |
+| Student Promotion | 129 |
+| Student Profile | 24 |
+| Subject Management | 59 |
+| Subject Order | 21 |
+| Religious Subjects | 39 |
+| Subject Applicability | 3 |
+| Flexible Grades | 36 |
+| Grade Presentation | 9 |
+| Result Cards | 66 |
+| Excel Import | 81 |
+| Timetable | 319 |
+| Teaching Load Matrix | 117 |
+| Week Setup | 89 |
+| **Total** | **1385** |
+
+**Final 19-suite run: 1385 pass / 0 fail / 0 skip executions; 1293 distinct tests.**
+The 92 repeated executions are Result Cards 66, Settings 5 and Subject Order 21, each included in two package suites.
+These totals do not double-count development red/green runs, nor fold the separate LOCAL D1 scenarios or legacy shell assertions into Node test counts.
+
+Additional validation:
+
+- Safe localhost-only legacy employee/salary/treasury adapter: **40 pass / 0 fail**, exit 0.
+- Unchanged `node test_treasury_rollback.js`: **exit 1 before any assertions**, `ReferenceError: require is not defined in ES module scope` at line 15. This pre-existing ESM/script limitation is separate from passing finance rollback coverage, not hidden as a pass or a skipped Node test.
+- `pnpm run typecheck`: exit 0.
+- `pnpm run build:fe`: exit 0 (1910 modules).
+- `pnpm run build:api`: exit 0 (76 modules).
+- Frontend build retains the >500 kB chunk-size warning. The parallel legacy test emitted `WebSocket server error: Port 24678 is already in use`, but completed all 40 assertions successfully; no existing service was stopped or reconfigured.
+- `git diff --check`: exit 0. Git warns that the test file's LF will become CRLF on checkout; migration 0028 itself remains explicitly LF.
+
+### Genuine disposable LOCAL D1 results
+
+`pnpm run test:finance-fees:local`: **exit 0, 35/35 scenario checks**, using Wrangler 4.118.0 / real workerd and temporary LOCAL-only database configurations with dummy UUIDs, `remoteBindings:false`, no repository env files.
+
+- Fresh **0001 through 0028**: all **29 actual migration files** applied (including both 0014 files). The copied migration SHA256 equals the reviewed working file.
+- Populated **0027 to 0028**: all pre-existing columns and rows across **46 application tables** preserved; historical USD record retained and receipt links backfilled as intended.
+- Five separate populated blocker databases: duplicate fee identity, receipt number, token, active payment reservation, and missing receipt payment each reject migration with the expected error/exit 1. Each rolls back schema, data and history completely, retaining 28 migrations. These are expected successful negative tests, not runner failures.
+- Legacy fee drift and treasury drift survive migration unchanged. All **eight** attempted payment, metadata edit, amount edit and cancellation operations return 409 / `finance_reconciliation_required`, with full before/after equality.
+- Receipt/payment cancellation, late-read failure, print failure and first/final/fee/treasury/cache posting failure all retain atomic rollback.
+- Same-key concurrency reuses one payment; different-key concurrent overpayment permits one commit only. Receipt reservation concurrency, year/null/mixed-year behavior and fee_type_key tamper rejection pass.
+- `PRAGMA foreign_keys = 1`; `PRAGMA foreign_key_check` returns zero rows; final cached treasury balance equals the active ledger.
+
+`pnpm run test:finance-seed:local`: **exit 0**, separate fresh disposable LOCAL chain through 0028 followed by the **exact repository seed.sql**. **8 fees / 8 payments**, deterministic valid payment requests and matching treasury links; cached balance and ledger both **2,550,000 IQD**; all finance invariants and FK checks pass. This authorization was LOCAL seed only; no existing or remote database was seeded/reset.
+
+Explicit `pnpm run test:finance-fees` was also rerun: **183 pass / 0 fail / 0 skip**, exit 0. This repeats the Finance suite already counted in the 1385-execution matrix; it adds no distinct tests. Expected injected-failure logs and the non-fatal HMR port warning do not indicate assertion failures.
+
+### Local evidence locations
+
+- 19-suite summary and per-suite logs: `%TEMP%/smart-school-finance-regressions-MfkgDC/`.
+- Genuine LOCAL D1 commands and evidence: `%TEMP%/smart-school-finance-local-QNO6n7/`.
+- Local seed evidence: `%TEMP%/smart-school-finance-seed-local-O4mUEj/`.
+- Legacy assertions: `%TEMP%/smart-school-finance-legacy-lsFUaz/`.
+
+### Safety boundary and next gate
+
+**ZERO remote D1 access** during this correction: no STAGING reads/writes, no production access, no remote disposable database, no remote migration/execute/seed/reset. GitHub PR inspection/update and public documentation retrieval are not D1 access.
+No dependency change; no new migration or branch/PR; PR #37 must remain Draft/unmerged.
+After independent review, the next step is a **separately and explicitly authorized disposable REMOTE D1 reproduction**, not another STAGING attempt. It has **not** been performed.
+
+## Wrangler 4.118.0 splitter correction — 2026-09-06 (historical, superseded above)
 
 This section supersedes earlier splitter acceptance and validation totals below.
 Reviewed/pre-fix HEAD: `92d45480349fef43a619329d41be18d3831c6922`.

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
+import {DatabaseSync} from 'node:sqlite';
+import {createHash} from 'node:crypto';
 import {unstable_splitSqlQuery} from 'wrangler';
 import {preflightFinance} from '../scripts/preflight-finance.mjs';
 import {calculateFee,feeRemaining,feeStatus,parseFee,parsePayment,parseReceipt,financeTimestamp,canonicalFeeType} from '../src/lib/financeFees.ts';
@@ -92,15 +94,108 @@ test('single-statement guard rejects trailing SQL before executing even the firs
  assert.throws(()=>runSingleStatement(f.db,'CREATE TABLE local_first(id); CREATE TABLE local_second(id);'),/trailing SQL/);
  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE name IN ('local_first','local_second')").get().n,0);
 });
-test('Wrangler compatibility keeps calculated END whitespace but permits ordinary CASE validation',t=>{
+test('Wrangler compatibility keeps calculated END whitespace and encloses retained CASE values',t=>{
  const sql=migrationSQL('0028_finance_fee_payment_integrity.sql'),dangerous=/\bEND(?=[),])/gi;
  assert.equal([...sql.matchAll(dangerous)].length,0,'Wrangler compatibility — do not remove whitespace before calculated CASE punctuation');
- assert.equal([...sql.matchAll(/\bEND (?=[),])/g)].length,7);
+ assert.equal([...sql.matchAll(/\bEND (?=[),])/g)].length,9);
  const f=financeFixture(t,{through:'0027'});
  for(const query of ['SELECT CASE WHEN 1 THEN 1 ELSE 0 END;', 'SELECT SUM( CASE WHEN 1 THEN 1 ELSE 0 END ),0;']){
   assert.doesNotMatch(query,dangerous);runSingleStatement(f.db,query);
  }
- assert.match(sql,/SELECT CASE WHEN[\s\S]*?THEN RAISE\(ABORT,[\s\S]*? END;/);
+ assert.doesNotMatch(sql,/SELECT CASE WHEN[\s\S]*?THEN RAISE\(ABORT,[\s\S]*? END;/);
+});
+// Mask quoted literals/identifiers and comments before inspecting SQL tokens.
+// Combined alternatives prevent comment markers in strings (and vice versa)
+// from being treated as executable SQL. Doubled quotes are SQLite escapes.
+function sqlCode(sql){return sql.replace(/'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|--[^\r\n]*|\/\*[\s\S]*?\*\//g,m=>' '.repeat(m.length));}
+function assertTriggerTerminators(chunk){
+ const code=sqlCode(chunk).trim();
+ // Wrangler removes the final delimiter, not any interior statement delimiter.
+ const terminated=code.endsWith(';')?code:code+';';
+ const tokens=terminated.match(/[A-Za-z_][A-Za-z_0-9]*|[^\s]/g)??[];
+ assert.equal((terminated.match(/\bEND\s*;/gi)??[]).length,1,'only the trigger may end with standalone END;');
+ assert.match(terminated,/\bEND\s*;$/);
+ assert.doesNotMatch(terminated,/\bSELECT\s+CASE\b[^;]*\bRAISE\b/i);
+ const stack=[];
+ for(let i=0;i<tokens.length;i++){
+  const word=tokens[i].toUpperCase();
+  if(word==='BEGIN'){assert.equal(tokens[i],'BEGIN');assert.equal(stack.length,0);stack.push(word);}
+  if(word==='CASE')stack.push(word);
+  if(word==='END'){
+   const opened=stack.pop();assert.ok(opened,'unmatched END');
+   if(opened==='CASE')assert.equal(tokens[i+1],')','calculated CASE must close inside parentheses');
+   else {assert.equal(i,tokens.length-2);assert.equal(tokens[i+1],';');}
+  }
+ }
+ assert.equal(stack.length,0);
+ assert.equal(tokens.filter(t=>t==='BEGIN').length,1);
+}
+for(const name of financeTriggers)test('remote-parser compatibility: one final END; in '+name,()=>{
+ const chunks=unstable_splitSqlQuery(migrationSQL('0028_finance_fee_payment_integrity.sql'));
+ const chunk=chunks.find(q=>q.startsWith('CREATE TRIGGER '+name+' '));assert.ok(chunk,name);
+ assertTriggerTerminators(chunk);
+});
+test('terminator inspection ignores strings/comments but rejects inner CASE END; and lowercase begin',()=>{
+ const good="CREATE TRIGGER probe AFTER INSERT ON x BEGIN SELECT 'it''s END; -- CASE', \"END;\"; /* END; */ -- BEGIN CASE END;\n END;";
+ assert.doesNotThrow(()=>assertTriggerTerminators(good));
+ assert.throws(()=>assertTriggerTerminators('CREATE TRIGGER probe AFTER INSERT ON x BEGIN SELECT CASE WHEN 1 THEN 1 END; END;'));
+ assert.throws(()=>assertTriggerTerminators('CREATE TRIGGER probe AFTER INSERT ON x begin SELECT 1; END;'));
+ assert.doesNotThrow(()=>assertTriggerTerminators('CREATE TRIGGER probe AFTER INSERT ON x BEGIN SELECT ( CASE WHEN 1 THEN 1 END ); END'));
+});
+const stableGuardCodes=[
+ 'finance_reconciliation_required','invalid_discount','unsupported_finance_currency','invalid_finance_amount',
+ 'invalid_finance_request','finance_not_found','fee_net_below_paid','payment_treasury_integrity_error',
+ 'payment_receipt_active','payment_overpay','fee_not_payable','receipt_payment_invalid',
+ 'receipt_academic_year_conflict','finance_operation_stale','receipt_already_cancelled',
+];
+test('all 45 conditional guards preserve baseline conditions, order, ABORT types and error strings',()=>{
+ const sql=migrationSQL('0028_finance_fee_payment_integrity.sql');
+ const guards=[...sql.matchAll(/SELECT RAISE\((ABORT,'[^']+')\)\n  WHERE ([\s\S]*?);/g)].map(m=>({
+  // Undo ONLY the added grouping of the two status calculations, for comparison.
+  condition:m[2].replace(/NEW\.status!= \( (CASE[^\n]*? END) \)/g,'NEW.status!= $1'),raise:m[1],
+ }));
+ assert.equal(guards.length,45);
+ // SHA256 of the ordered {condition,raise} array extracted from reviewed
+ // HEAD 7360d2c's SELECT CASE WHEN <condition> THEN RAISE(<raise>) END; guards.
+ // No git/network dependency at test runtime and no duplicated migration fixture.
+ assert.equal(createHash('sha256').update(JSON.stringify(guards)).digest('hex'),'500714e174f18b996d717907dd8232f94de60a4eb8c1a1d8fef8c83c216db975');
+ assert.equal((sql.match(/SELECT RAISE\(ABORT,'finance_operation_stale'\);/g)??[]).length,4,'unconditional history guards remain unconditional');
+});
+test('exact grouped status guards retain zero-net, paid, partial, pending and NULL behavior',t=>{
+ const sql=migrationSQL('0028_finance_fee_payment_integrity.sql'),db=new DatabaseSync(':memory:');t.after(()=>db.close());
+ const expressions=[...sql.matchAll(/NEW\.status!= \( CASE [^\n]*? END \)/g)].map(m=>m[0]);assert.equal(expressions.length,2);
+ const cases=[{net:0,paid:0,status:'paid'},{net:100,paid:100,status:'paid'},{net:100,paid:101,status:'paid'},
+  {net:100,paid:25,status:'partial'},{net:100,paid:0,status:'pending'}];
+ for(const [i,expression]of expressions.entries()){
+  db.exec(`CREATE TABLE status_probe(net_fee,paid_amount,status);
+   CREATE TRIGGER status_guard BEFORE INSERT ON status_probe BEGIN
+   SELECT RAISE(ABORT,'invalid_finance_request') WHERE ${expression}; END;`);
+  for(const row of cases.filter(r=>i===1||r.paid===0)){
+   for(const status of ['paid','partial','pending',null]){
+    const insert=()=>db.prepare('INSERT INTO status_probe VALUES(?,?,?)').run(row.net,row.paid,status);
+    if(status===row.status||status===null)assert.doesNotThrow(insert);
+    else assert.throws(insert,error=>error.message==='invalid_finance_request');
+   }
+  }
+  db.exec('DROP TABLE status_probe;');
+ }
+});
+for(const code of stableGuardCodes)test('CASE-to-WHERE preserves TRUE/FALSE/NULL ABORT semantics: '+code,t=>{
+ const sql=migrationSQL('0028_finance_fee_payment_integrity.sql');
+ assert.ok(sql.includes("SELECT RAISE(ABORT,'"+code+"')"),'exact application-visible code retained');
+ const db=new DatabaseSync(':memory:');t.after(()=>db.close());
+ // Scalar, correlated subquery and nested calculated CASE: all three SQL
+ // truth values, including nullable results, compared with the old idiom.
+ for(const condition of ['NEW.value=1','(SELECT NEW.value)=1','( CASE WHEN NEW.value IS NULL THEN NULL ELSE NEW.value END )=1']){
+  for(const [name,guard]of [['old',`SELECT CASE WHEN ${condition} THEN RAISE(ABORT,'${code}') END;`],['new',`SELECT RAISE(ABORT,'${code}') WHERE ${condition};`]]){
+   db.exec(`CREATE TABLE ${name}(value); CREATE TRIGGER guard_${name} BEFORE INSERT ON ${name} BEGIN ${guard} END;`);
+   assert.throws(()=>db.prepare(`INSERT INTO ${name} VALUES(?)`).run(1),error=>error.message===code);
+   assert.equal(db.prepare(`SELECT COUNT(*) n FROM ${name}`).get().n,0,'ABORT has no partial insert');
+   for(const value of [0,null])db.prepare(`INSERT INTO ${name} VALUES(?)`).run(value);
+  }
+  assert.deepEqual(db.prepare('SELECT * FROM old').all(),db.prepare('SELECT * FROM new').all());
+  db.exec('DROP TABLE old; DROP TABLE new;');
+ }
 });
 test('regression demonstrates why exec masked all 18 swallowed triggers in the old 27 chunks',t=>{
  const old=migrationSQL('0028_finance_fee_payment_integrity.sql').replace(/\bEND (?=[),])/g,'END');
