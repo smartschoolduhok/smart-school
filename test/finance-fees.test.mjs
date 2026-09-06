@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
 import {unstable_splitSqlQuery} from 'wrangler';
 import {preflightFinance} from '../scripts/preflight-finance.mjs';
 import {calculateFee,feeRemaining,feeStatus,parseFee,parsePayment,parseReceipt,financeTimestamp,canonicalFeeType} from '../src/lib/financeFees.ts';
@@ -51,11 +52,67 @@ test('populated 0027 -> 0028 preserves every old column/row, legacy payments act
  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM fee_receipt_payments').get().n,2);
  assert.equal(f.db.prepare('PRAGMA foreign_keys').get().foreign_keys,1);assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
 });
-test('Wrangler real SQL splitter accepts LF trigger bodies and nested CASE expressions',t=>{
- const f=financeFixture(t,{through:'0027'}),sql=migrationSQL('0028_finance_fee_payment_integrity.sql');
- assert.equal(sql.includes('\r\n'),false);
- for(const query of unstable_splitSqlQuery(sql))f.db.exec(query);
- assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
+const financeTriggers=[
+ 'trg_student_fees_require_reconciliation','trg_student_fees_finance_insert','trg_student_fees_finance_update','trg_student_fees_preserve_payments',
+ 'trg_fee_payments_finance_insert','trg_fee_payments_post','trg_fee_payments_finance_update','trg_fee_payments_cancel','trg_fee_payments_preserve_history',
+ 'trg_fee_receipts_validate_insert','trg_fee_receipts_reserve_payments','trg_fee_receipts_immutable','trg_fee_receipts_release_payments','trg_fee_receipts_preserve_history',
+ 'trg_fee_receipt_links_insert','trg_fee_receipt_links_update','trg_fee_receipt_links_delete','trg_fee_receipts_print_guard',
+].sort();
+function runSingleStatement(db,query){
+ // prepare() alone silently ignores trailing statements too. Compare the SQL
+ // actually consumed by SQLite before running anything; never use exec here.
+ const statement=db.prepare(query);
+ assert.equal(statement.sourceSQL.trim(),query.trim(),'split chunk contains trailing SQL beyond one compiled statement');
+ statement.run();
+}
+function createdFinanceTriggers(db){return db.prepare("SELECT name FROM sqlite_schema WHERE type='trigger'").all().map(r=>r.name).filter(n=>financeTriggers.includes(n)).sort();}
+test('Wrangler splits exact LF 0028 into 45 independently compiled statements and 18 complete triggers',t=>{
+ const f=financeFixture(t,{through:'0027'}),bytes=readFileSync(new URL('../migrations/0028_finance_fee_payment_integrity.sql',import.meta.url));
+ const sql=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes),queries=unstable_splitSqlQuery(sql);
+ assert.equal(sql.startsWith('\ufeff'),false);assert.equal(sql.includes('\r'),false);assert.ok(sql.endsWith('\n'));
+ // Compile/execute first, so a swallowed view+trigger fails at the real SQLite
+ // statement boundary, not just at a regex/count assertion.
+ for(const query of queries)runSingleStatement(f.db,query);
+ assert.equal(queries.length,45);
+ const triggers=queries.filter(q=>/^CREATE TRIGGER\b/i.test(q));assert.equal(triggers.length,18);
+ for(const query of queries)assert.ok((query.match(/\bCREATE TRIGGER\b/gi)??[]).length<=1);
+ for(const trigger of triggers)assert.match(trigger,/\bBEGIN\b[\s\S]*\bEND;?$/);
+ const view=queries.find(q=>/^CREATE VIEW finance_treasury_readiness\b/.test(q));assert.ok(view);assert.doesNotMatch(view,/CREATE TRIGGER/i);
+ assert.deepEqual(createdFinanceTriggers(f.db),financeTriggers);
+ const objects={table:['fee_receipt_payments'],view:['finance_fee_readiness','finance_treasury_readiness'],index:[
+  'idx_student_fees_identity','idx_fee_payments_request','idx_fee_payments_active_fee','idx_fee_receipts_unique_number',
+  'idx_fee_receipts_unique_token','idx_fee_receipt_payments_active','idx_fee_receipt_payments_school_receipt',
+ ]};
+ for(const [type,names]of Object.entries(objects))for(const name of names)assert.equal(f.db.prepare('SELECT type FROM sqlite_schema WHERE name=?').get(name)?.type,type,name);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE name='_finance_0028_preflight'").get().n,0);
+ assert.equal(f.db.prepare('PRAGMA foreign_keys').get().foreign_keys,1);assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+test('single-statement guard rejects trailing SQL before executing even the first statement',t=>{
+ const f=financeFixture(t,{through:'0027'});
+ assert.throws(()=>runSingleStatement(f.db,'CREATE TABLE local_first(id); CREATE TABLE local_second(id);'),/trailing SQL/);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE name IN ('local_first','local_second')").get().n,0);
+});
+test('Wrangler compatibility keeps calculated END whitespace but permits ordinary CASE validation',t=>{
+ const sql=migrationSQL('0028_finance_fee_payment_integrity.sql'),dangerous=/\bEND(?=[),])/gi;
+ assert.equal([...sql.matchAll(dangerous)].length,0,'Wrangler compatibility — do not remove whitespace before calculated CASE punctuation');
+ assert.equal([...sql.matchAll(/\bEND (?=[),])/g)].length,7);
+ const f=financeFixture(t,{through:'0027'});
+ for(const query of ['SELECT CASE WHEN 1 THEN 1 ELSE 0 END;', 'SELECT SUM( CASE WHEN 1 THEN 1 ELSE 0 END ),0;']){
+  assert.doesNotMatch(query,dangerous);runSingleStatement(f.db,query);
+ }
+ assert.match(sql,/SELECT CASE WHEN[\s\S]*?THEN RAISE\(ABORT,[\s\S]*? END;/);
+});
+test('regression demonstrates why exec masked all 18 swallowed triggers in the old 27 chunks',t=>{
+ const old=migrationSQL('0028_finance_fee_payment_integrity.sql').replace(/\bEND (?=[),])/g,'END');
+ const chunks=unstable_splitSqlQuery(old);assert.equal(chunks.length,27);
+ assert.match(chunks.at(-1),/^CREATE VIEW finance_treasury_readiness\b/);
+ assert.equal((chunks.at(-1).match(/CREATE TRIGGER\b/g)??[]).length,18);
+ const strict=financeFixture(t,{through:'0027'});
+ assert.throws(()=>{for(const query of chunks)runSingleStatement(strict.db,query);},/trailing SQL/);
+ assert.deepEqual(createdFinanceTriggers(strict.db),[]);
+ // Deliberately reproduce the OLD test's false positive, never the acceptance path.
+ const weak=financeFixture(t,{through:'0027'});for(const query of chunks)weak.db.exec(query);
+ assert.deepEqual(createdFinanceTriggers(weak.db),financeTriggers);
 });
 test('database discount guard agrees with half-up domain arithmetic including maximum-safe IQD',t=>{
  const f=financeFixture(t);

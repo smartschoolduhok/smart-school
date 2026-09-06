@@ -1,6 +1,174 @@
 # Phase 20A1 — Finance core stabilization QA
 
-## Review follow-up — 2026-09-05 (current evidence)
+## Wrangler 4.118.0 splitter correction — 2026-09-06 (current evidence)
+
+This section supersedes earlier splitter acceptance and validation totals below.
+Reviewed/pre-fix HEAD: `92d45480349fef43a619329d41be18d3831c6922`.
+The correction is on the same `fix/finance-fees-payments-integrity-phase-20a1` branch and Draft PR #37. Final delivery SHA is recorded in the PR description.
+
+### First STAGING attempt (historical evidence, not re-queried here)
+
+The previously authorized first STAGING attempt used Wrangler **4.118.0** and failed with `incomplete input: SQLITE_ERROR [code: 7500]`, exit **1**.
+The recorded read-only post-failure verification confirmed rollback: history remained at **28** applied migrations through 0027, 0028 remained pending, none of its new schema objects/columns survived, and the fifteen compared table counts were unchanged. The test fee remained 100,000 IQD / 25,000 paid / partial; payment, receipt, treasury entry, timestamps and 25,000 balance were unchanged; FK check returned zero violations. Staging remained healthy.
+Those facts are from the prior failure/verification report, **not a new remote inspection in this task**.
+
+### Confirmed local defect and precise boundary
+
+The installed splitter's compound-end recognizer is `/\sEND[;\s]$/`: it fails to close calculated CASE expressions whose END is immediately followed by `)` or `,`. Seven such tokens caused **27 chunks**, with `finance_treasury_readiness` and all **18** subsequent triggers swallowed into the last chunk. SQLite accepts the original SQL as a complete script; this is a statement-boundary defect, not invalid finance arithmetic.
+
+The exact SQL correction is **seven added spaces**, plus a two-line compatibility comment. No condition, value, validation block, trigger behavior, object definition, business rule, source module or dependency changed. Standalone `SELECT CASE ... THEN RAISE ... END;` validation blocks are unchanged. No migration 0029 was added.
+
+[Upstream workers-sdk PR #15226](https://github.com/cloudflare/workers-sdk/pull/15226) documents the same compound-marker/punctuation defect, including `SUM(CASE ... END)`, and the migration workflow using the splitter. Installed-source inspection further distinguishes the paths: local execution splits and batches statements; the remote command path sends the migration SQL to D1's query endpoint. This local reproduction does **not** establish the remote service's exact parsing behavior or conclusively reproduce remote code 7500.
+
+**The confirmed local splitter defect is directly relevant to Wrangler migrations apply and is the leading explanation for the failed remote migration. A successful authorized remote retry is still required for confirmation.**
+
+### Red/green and independent statement proof
+
+The old `for (query of unstable_splitSqlQuery(sql)) db.exec(query)` accepted multiple statements per chunk, hiding the bad boundaries. `DatabaseSync.prepare(query).run()` alone also silently executes only the first statement.
+
+The replacement compiles each chunk, compares SQLite's actual `StatementSync.sourceSQL` to the **entire** chunk before running it, then executes that one statement. A separate adversarial test ensures a two-statement chunk is rejected before even its first statement runs.
+
+- Focused tests **before SQL edit: 2 pass / 2 fail / 0 skip**, exit 1. The acceptance test failed at the real compiled view boundary; the punctuation guard found seven unsafe tokens.
+- Same focused tests **after edit: 4 pass / 0 fail / 0 skip**, exit 0.
+- Fixed exact file: **45 independent compiled/executed statements**; exactly **18** complete single-trigger chunks, no swallowed following trigger or partial body.
+- All **18 explicitly named expected triggers** exist in sqlite_schema; one new link table, both readiness views and seven named indexes exist. The temporary preflight table is absent.
+- Retained in-memory regression removes only those seven spaces: **27 chunks** again; strict execution rejects the trailing SQL and creates **0/18** triggers, while the deliberately reproduced OLD exec loop reports **18/18**. This documents the false positive without weakening the acceptance path.
+- The calculated-END regression rejects `END)` / `END,` and actually executes ordinary CASE and safe SUM-CASE examples. Normal validation CASE statements remain allowed.
+- Byte verification: UTF-8, no BOM, **303 LF / 0 CRLF / 0 CR**, final newline present. Existing `migrations/*.sql text eol=lf` unchanged.
+- Independent comparison against the old Git blob, ignoring only SQL comment lines, confirms the file equals the original plus exactly those seven spaces.
+
+| Exact line (unchanged numbering) | Context | Token change |
+| --- | --- | --- |
+| 92 | Treasury readiness ledger sum | `END)` → `END )` |
+| 192 | Payment posting fee status | `END,` → `END ,` |
+| 196 | Payment posting balance limit | `END)` → `END )` |
+| 200 | Payment posting treasury cache | `END)` → `END )` |
+| 230 | Payment cancellation balance limit | `END)` → `END )` |
+| 235 | Payment cancellation fee status | `END,` → `END ,` |
+| 237 | Payment cancellation treasury cache | `END)` → `END )` |
+
+### Exact 0028 diff
+
+```diff
+diff --git a/migrations/0028_finance_fee_payment_integrity.sql b/migrations/0028_finance_fee_payment_integrity.sql
+index 04cc9d5..9ee917b 100644
+--- a/migrations/0028_finance_fee_payment_integrity.sql
++++ b/migrations/0028_finance_fee_payment_integrity.sql
+@@ -5,2 +5,2 @@
+--- Keep whitespace BEFORE nested CASE keywords: Wrangler 4's SQL splitter
+--- requires it to recognize compound statements (including inside SUM(...)).
++-- Wrangler compatibility — do not remove: whitespace BEFORE nested CASE and
++-- AFTER calculated CASE END (before punctuation) is required by Wrangler 4.118.0.
+@@ -92 +92 @@ SELECT s.id AS school_id, coalesce(
+-      AND a.current_balance=(SELECT coalesce(SUM( CASE WHEN t.transaction_type='income' THEN CAST(t.amount AS INTEGER) ELSE -CAST(t.amount AS INTEGER) END),0)
++      AND a.current_balance=(SELECT coalesce(SUM( CASE WHEN t.transaction_type='income' THEN CAST(t.amount AS INTEGER) ELSE -CAST(t.amount AS INTEGER) END ),0)
+@@ -192 +192 @@ CREATE TRIGGER trg_fee_payments_post AFTER INSERT ON fee_payments BEGIN
+-    status= CASE WHEN (SELECT SUM(CAST(amount AS INTEGER)) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>=coalesce(net_fee,amount) THEN 'paid' ELSE 'partial' END,
++    status= CASE WHEN (SELECT SUM(CAST(amount AS INTEGER)) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>=coalesce(net_fee,amount) THEN 'paid' ELSE 'partial' END ,
+@@ -196 +196 @@ CREATE TRIGGER trg_fee_payments_post AFTER INSERT ON fee_payments BEGIN
+-  SELECT CASE WHEN abs((SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'))>9007199254740991
++  SELECT CASE WHEN abs((SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END ),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'))>9007199254740991
+@@ -200 +200 @@ CREATE TRIGGER trg_fee_payments_post AFTER INSERT ON fee_payments BEGIN
+-    SELECT NEW.school_id,coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END),0),unixepoch()
++    SELECT NEW.school_id,coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END ),0),unixepoch()
+@@ -230 +230 @@ CREATE TRIGGER trg_fee_payments_cancel AFTER UPDATE OF status ON fee_payments WH
+-  SELECT CASE WHEN abs((SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'))>9007199254740991
++  SELECT CASE WHEN abs((SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END ),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'))>9007199254740991
+@@ -235 +235 @@ CREATE TRIGGER trg_fee_payments_cancel AFTER UPDATE OF status ON fee_payments WH
+-    WHEN (SELECT coalesce(SUM(CAST(amount AS INTEGER)),0) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>0 THEN 'partial' ELSE 'pending' END,
++    WHEN (SELECT coalesce(SUM(CAST(amount AS INTEGER)),0) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>0 THEN 'partial' ELSE 'pending' END ,
+@@ -237 +237 @@ CREATE TRIGGER trg_fee_payments_cancel AFTER UPDATE OF status ON fee_payments WH
+-  UPDATE treasury_accounts SET current_balance=(SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'),
++  UPDATE treasury_accounts SET current_balance=(SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END ),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'),
+```
+
+### Final regression results for this correction
+
+`node scripts/run-finance-regressions.mjs` reran the exact Node commands of all nineteen configured package suites, exit **0**. `pnpm run test:finance-fees` was also run directly: **147/147**, exit **0**. The four focused tests replace one weak test and add three tests; all earlier tests remain.
+
+| Package suite | Pass | Fail | Skip |
+| --- | ---: | ---: | ---: |
+| finance-fees | 147 | 0 | 0 |
+| security | 22 | 0 | 0 |
+| rbac | 95 | 0 | 0 |
+| settings | 5 | 0 | 0 |
+| academic-years | 30 | 0 | 0 |
+| student-enrollments | 58 | 0 | 0 |
+| student-promotion | 129 | 0 | 0 |
+| student-profile | 24 | 0 | 0 |
+| subject-management | 59 | 0 | 0 |
+| subject-order | 21 | 0 | 0 |
+| religious-subjects | 39 | 0 | 0 |
+| subject-applicability | 3 | 0 | 0 |
+| flexible-grades | 36 | 0 | 0 |
+| grade-presentation | 9 | 0 | 0 |
+| result-cards | 66 | 0 | 0 |
+| excel-import | 81 | 0 | 0 |
+| timetable | 319 | 0 | 0 |
+| teaching-load-matrix | 117 | 0 | 0 |
+| week-setup | 89 | 0 | 0 |
+| **Modern suite executions** | **1349** | **0** | **0** |
+
+This is **1,257 distinct modern tests**, not 1,349: result-card 66, settings 5 and subject-order 21 each execute twice. Focused/red-green and direct finance reruns are not added again to these totals.
+
+Coverage includes IQD whole amounts, full-discount net zero, idempotent and concurrent payments, overpayment rejection, fee/payment/treasury/cache atomicity, cancellation, receipt reservations/duplicates/cancellation, immutable fee-year snapshots and mixed-year rejection, drift blocking, fee_type_key and RBAC/tenant isolation.
+
+Legacy employee/salary/treasury assertions through `scripts/validate-finance-legacy-local.mjs`: **40 pass / 0 fail**, exit **0**, generated local fixtures only. Includes salary payment/cancellation, linked treasury and balance restoration.
+The separate unchanged `node test_treasury_rollback.js` was rerun: **exit 1 before assertions**, `ReferenceError: require is not defined in ES module scope` at line 15. It is **not a passing or skipped suite**. No source-patching/PM2 phase was reached.
+
+| Check | Result |
+| --- | --- |
+| `pnpm run typecheck` | exit 0 |
+| `pnpm run build:fe` | exit 0; 1,910 modules |
+| `pnpm run build:api` | exit 0; 76 modules; Worker 590.70 kB |
+| `git diff --check` | clean |
+
+Existing frontend warning: `Some chunks are larger than 500 kB after minification`. Deliberate finance failure-injection tests emit sanitized `[finance] operation failed { code: 'finance_failure' }` diagnostics. Git warns about future CRLF checkout for non-migration test/script files; migration 0028 itself remains LF.
+
+Artifacts: `%TEMP%/smart-school-finance-regressions-jmfTOo/summary.json` and per-suite logs; `%TEMP%/smart-school-finance-legacy-PvMk8e/employees.log`.
+
+### Genuine LOCAL D1 and seed — final evidence
+
+`pnpm run test:finance-fees:local`: **exit 0**, **35 scenario checks passed / 0 unexpected failures** (previous 30 plus five new real-D1 migration-blocker cases).
+
+| Local scenario | Verified result |
+| --- | --- |
+| Fresh 0001 → 0028 | all **29 genuine files** applied, including both distinct 0014 files |
+| Populated 0027 → 0028 | every old column/row across **46 application tables** preserved |
+| Legacy finance fixture | original currencies (including USD), amounts, statuses, IDs, balances, timestamps and immutable snapshots unchanged; old payment active and two historical receipt links backfilled |
+| Duplicate fee identity | migration exit 1 as expected; complete schema/data/history rollback |
+| Duplicate receipt number | migration exit 1 as expected; complete schema/data/history rollback |
+| Duplicate receipt token | migration exit 1 as expected; complete schema/data/history rollback |
+| Duplicate active payment reservation | migration exit 1 as expected; complete schema/data/history rollback |
+| Missing receipt-linked payment | migration exit 1 as expected; complete schema/data/history rollback |
+| Intentional fee and treasury drift | retained by migration; all **8** attempted operations return **409 / finance_reconciliation_required**, every application row unchanged |
+| FK enforcement | **foreign_keys=1**, foreign_key_check **zero rows** for each blocker case, populated upgrade and final fresh-runtime database |
+
+For all five negative migration cases, genuine Wrangler local migrations own the transaction; there is no manual history INSERT/DELETE or rollback workaround. Each starts from its own real 0001–0027 chain, and its history remains **28**, with the entire sqlite_schema identical after rejection. Expected child-command exit 1 is asserted explicitly; any unexpected exit, wrong error, partial schema/data/history mutation or failed integrity check fails the overall runner.
+
+The nonempty populated fixture also covers student/enrollment/subject/grade data, school/academic settings, employee/salary, official document, result card and timetable/version history. Real local workerd repeats payment/receipt concurrency, late-stage batch rollback, cancellations, print rollback, receipt-year snapshots, mixed-year rejection and key-tamper rejection. Complete HTTP request budgets remain **4–9 D1 statements**, maximum **15** bound parameters.
+
+Artifacts: `%TEMP%/smart-school-finance-local-jzKkiI/evidence.json` records all 20 Wrangler commands and scenario results; sibling `blocker-*/command-*.log`, `upgrade/command-*.log` and `fresh/command-*.log` retain full outputs.
+
+`pnpm run test:finance-seed:local`: **exit 0**. Exact repository `seed.sql` ran **only on a separately created disposable LOCAL database after the 29 genuine migrations**. Eight IQD fees and eight payments passed per-row amount/cache/status/net/key/fingerprint and unique treasury-link assertions. Treasury stored balance **2,550,000** = calculated active IQD ledger **2,550,000**. Both readiness views healthy; FK enabled and clean.
+Seed artifacts: `%TEMP%/smart-school-finance-seed-local-Rw4KbV/{migrations.log,seed.log,evidence.json}`. No seed file change.
+
+All runners use dummy database IDs, generated `*-local-only` names, explicit `--local --config <temp> --persist-to <temp>`, `remoteBindings:false`, and `envFiles:[]`. Cloudflare/Wrangler guidance informed this isolation and real-runtime verification; no repository staging binding was used. Local scenario/legacy assertion counts are separate from node:test totals.
+
+### Correction files and safety
+
+Only these four files changed in this correction:
+
+- `migrations/0028_finance_fee_payment_integrity.sql`: seven parser-safe spaces and compatibility comment.
+- `test/finance-fees.test.mjs`: strict single-statement execution, expected object verification, byte/punctuation regression and old-test false-positive reproduction.
+- `scripts/validate-finance-fees-local.mjs`: five disposable real-D1 blocker/atomic-rollback scenarios and explicit expected-failure handling.
+- `docs/PHASE_20A1_FINANCE_QA_REPORT.md`: failed first staging attempt, scoped diagnosis, exact SQL diff and this evidence.
+
+**Wrangler remains 4.118.0.** `package.json`, lockfiles, `.gitattributes`, source modules, seed.sql and migrations 0001–0027 are unchanged.
+**ZERO remote D1 access in this correction task. NO STAGING retry. NO production access. NO remote seed/reset. NO manual deployment. NO merge.**
+Commit/push and description update target the **same Draft PR #37** only. A second STAGING attempt requires **new explicit authorization after independent review**.
+
+## Review follow-up — 2026-09-05 (historical; superseded above)
 
 This section supersedes the initial submission's validation totals and seed statement below.
 

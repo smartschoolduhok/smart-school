@@ -2,8 +2,8 @@
 -- Run scripts/preflight-finance.mjs on an authorized LOCAL export before an upgrade.
 -- Duplicate fee identities/receipt numbers/tokens or corrupt receipt links abort
 -- migration rather than deleting, merging or inventing financial history.
--- Keep whitespace BEFORE nested CASE keywords: Wrangler 4's SQL splitter
--- requires it to recognize compound statements (including inside SUM(...)).
+-- Wrangler compatibility — do not remove: whitespace BEFORE nested CASE and
+-- AFTER calculated CASE END (before punctuation) is required by Wrangler 4.118.0.
 ALTER TABLE student_fees ADD COLUMN fee_type_key TEXT;
 ALTER TABLE student_fees ADD COLUMN finance_revision INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE fee_payments ADD COLUMN status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','cancelled'));
@@ -89,7 +89,7 @@ SELECT s.id AS school_id, coalesce(
     AND (t.currency!='IQD' OR t.amount<=0 OR t.amount>9007199254740991 OR t.amount!=CAST(t.amount AS INTEGER)))
   AND ( (a.id IS NULL AND NOT EXISTS(SELECT 1 FROM treasury_transactions t WHERE t.school_id=s.id))
     OR (a.id IS NOT NULL AND abs(a.current_balance)<=9007199254740991
-      AND a.current_balance=(SELECT coalesce(SUM( CASE WHEN t.transaction_type='income' THEN CAST(t.amount AS INTEGER) ELSE -CAST(t.amount AS INTEGER) END),0)
+      AND a.current_balance=(SELECT coalesce(SUM( CASE WHEN t.transaction_type='income' THEN CAST(t.amount AS INTEGER) ELSE -CAST(t.amount AS INTEGER) END ),0)
         FROM treasury_transactions t WHERE t.school_id=s.id AND t.status='active'))) ,0) AS healthy
 FROM schools s LEFT JOIN treasury_accounts a ON a.school_id=s.id;
 
@@ -189,15 +189,15 @@ END;
 
 CREATE TRIGGER trg_fee_payments_post AFTER INSERT ON fee_payments BEGIN
   UPDATE student_fees SET paid_amount=(SELECT SUM(CAST(amount AS INTEGER)) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active'),
-    status= CASE WHEN (SELECT SUM(CAST(amount AS INTEGER)) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>=coalesce(net_fee,amount) THEN 'paid' ELSE 'partial' END,
+    status= CASE WHEN (SELECT SUM(CAST(amount AS INTEGER)) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>=coalesce(net_fee,amount) THEN 'paid' ELSE 'partial' END ,
     finance_revision=finance_revision+1,updated_at=unixepoch() WHERE id=NEW.student_fee_id AND school_id=NEW.school_id;
   INSERT INTO treasury_transactions(school_id,transaction_type,category,amount,currency,description,source_type,source_id,status,created_by)
     VALUES(NEW.school_id,'income','tuition_fee',NEW.amount,'IQD','دفعة قسط','fee_payment',NEW.id,'active',NEW.created_by_user_id);
-  SELECT CASE WHEN abs((SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'))>9007199254740991
+  SELECT CASE WHEN abs((SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END ),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'))>9007199254740991
     OR EXISTS(SELECT 1 FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active' AND (amount<=0 OR amount!=CAST(amount AS INTEGER)))
     THEN RAISE(ABORT,'invalid_finance_amount') END;
   INSERT INTO treasury_accounts(school_id,current_balance,updated_at)
-    SELECT NEW.school_id,coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END),0),unixepoch()
+    SELECT NEW.school_id,coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END ),0),unixepoch()
     FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'
     ON CONFLICT(school_id) DO UPDATE SET current_balance=excluded.current_balance,updated_at=excluded.updated_at;
 END;
@@ -227,14 +227,14 @@ END;
 CREATE TRIGGER trg_fee_payments_cancel AFTER UPDATE OF status ON fee_payments WHEN OLD.status='active' AND NEW.status='cancelled' BEGIN
   UPDATE treasury_transactions SET status='cancelled',cancelled_at=NEW.cancelled_at,cancelled_by=NEW.cancelled_by_user_id,cancel_reason=NEW.cancel_reason,updated_at=unixepoch()
     WHERE school_id=NEW.school_id AND source_type='fee_payment' AND source_id=NEW.id AND status='active';
-  SELECT CASE WHEN abs((SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'))>9007199254740991
+  SELECT CASE WHEN abs((SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END ),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'))>9007199254740991
     OR EXISTS(SELECT 1 FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active' AND (amount<=0 OR amount!=CAST(amount AS INTEGER)))
     THEN RAISE(ABORT,'invalid_finance_amount') END;
   UPDATE student_fees SET paid_amount=(SELECT coalesce(SUM(CAST(amount AS INTEGER)),0) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active'),
     status= CASE WHEN (SELECT coalesce(SUM(CAST(amount AS INTEGER)),0) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>=coalesce(net_fee,amount) THEN 'paid'
-    WHEN (SELECT coalesce(SUM(CAST(amount AS INTEGER)),0) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>0 THEN 'partial' ELSE 'pending' END,
+    WHEN (SELECT coalesce(SUM(CAST(amount AS INTEGER)),0) FROM fee_payments WHERE student_fee_id=NEW.student_fee_id AND school_id=NEW.school_id AND status='active')>0 THEN 'partial' ELSE 'pending' END ,
     finance_revision=finance_revision+1,updated_at=unixepoch() WHERE id=NEW.student_fee_id AND school_id=NEW.school_id;
-  UPDATE treasury_accounts SET current_balance=(SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'),
+  UPDATE treasury_accounts SET current_balance=(SELECT coalesce(SUM( CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END ),0) FROM treasury_transactions WHERE school_id=NEW.school_id AND status='active'),
     updated_at=unixepoch() WHERE school_id=NEW.school_id;
 END;
 CREATE TRIGGER trg_fee_payments_preserve_history BEFORE DELETE ON fee_payments BEGIN SELECT RAISE(ABORT,'finance_operation_stale'); END;

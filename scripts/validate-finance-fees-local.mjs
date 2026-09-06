@@ -15,15 +15,38 @@ function setup(label,through){const path=join(directory,label);mkdirSync(path);m
  for(const file of migrationFiles.filter(f=>f.slice(0,4)<=through))copyFileSync(join(root,'migrations',file),join(path,'migrations',file));
  const configPath=join(path,'wrangler.json'),state=join(path,'state'),name='finance-'+label+'-local-only';
  writeFileSync(configPath,JSON.stringify({name,compatibility_date:'2026-04-13',compatibility_flags:['nodejs_compat'],d1_databases:[{binding:'DB',database_name:name,database_id:'00000000-0000-0000-0000-000000000028',migrations_dir:'migrations'}]}));return {path,configPath,state,name};}
-function run(env,args){assert.ok(!args.includes('--remote'));const command=[join(root,'node_modules/wrangler/bin/wrangler.js'),'d1',...args,env.name,'--local','--config',env.configPath,'--persist-to',env.state];
- const r=spawnSync(process.execPath,command,{cwd:env.path,encoding:'utf8',env:{...process.env,CI:'true',WRANGLER_SEND_METRICS:'false'},timeout:180000,maxBuffer:10_000_000});
- commands.push(command);writeFileSync(join(env.path,'command-'+commands.length+'.log'),(r.stdout??'')+(r.stderr??''));assert.equal(r.status,0,r.stdout+'\n'+r.stderr);return r.stdout;}
+function run(env,args,expectedFailure=null){assert.ok(!args.includes('--remote'));const command=[join(root,'node_modules/wrangler/bin/wrangler.js'),'d1',...args,env.name,'--local','--config',env.configPath,'--persist-to',env.state];
+ const r=spawnSync(process.execPath,command,{cwd:env.path,encoding:'utf8',windowsHide:true,env:{...process.env,CI:'true',WRANGLER_SEND_METRICS:'false'},timeout:180000,maxBuffer:10_000_000});
+ const output=(r.stdout??'')+(r.stderr??'');commands.push(command);writeFileSync(join(env.path,'command-'+commands.length+'.log'),output);
+ assert.equal(r.status,expectedFailure?1:0,output);if(expectedFailure)assert.match(output,expectedFailure);return r.stdout;}
 function fixtures(env,sql){const file=join(env.path,'generated-local-fixtures.sql');writeFileSync(file,sql);run(env,['execute','--file',file]);}
 async function open(env){return getPlatformProxy({configPath:env.configPath,persist:{path:join(env.state,'v3')},remoteBindings:false,envFiles:[]});}
 async function snap(db){const tables=(await db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all()).results;
  const output={};for(const {name}of tables)output[name]=(await db.prepare('SELECT * FROM "'+name+'"').all()).results.sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));return output;}
 function preserve(before,after){for(const [table,rows]of Object.entries(before)){if(table==='d1_migrations')continue;assert.equal(after[table].length,rows.length,table);
  const keys=rows.length?Object.keys(rows[0]):[],project=row=>Object.fromEntries(keys.map(k=>[k,row[k]]));const sort=rows=>rows.map(project).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));assert.deepEqual(sort(after[table]),sort(rows),table);}}
+
+// Each adversarial upgrade uses its own genuine 0001..0027 LOCAL D1 chain.
+// Let Wrangler own the transaction/history; never manually repair or roll back.
+for(const [label,sql,error]of [
+ ['duplicate-fee',"INSERT INTO student_fees(school_id,student_id,academic_year_id,fee_type,amount,currency) VALUES(1,1,1,'رسوم قديمة',100,'IQD')",/UNIQUE constraint failed/],
+ ['duplicate-receipt-number',"UPDATE fee_receipts SET receipt_number='same'",/UNIQUE constraint failed/],
+ ['duplicate-token',"UPDATE fee_receipts SET verification_token='same'",/UNIQUE constraint failed/],
+ ['duplicate-active-reservation',"UPDATE fee_receipts SET status='active'",/UNIQUE constraint failed/],
+ ['missing-payment',"UPDATE fee_receipts SET payment_ids_json='[1,999]' WHERE id=1",/finance_legacy_receipt_review_required/],
+]){
+ const env=setup('blocker-'+label,'0027');run(env,['migrations','apply']);fixtures(env,financeFixtureSQL+legacyFinanceSQL+sql+';');
+ let proxy=await open(env),before,schema;
+ const schemaSQL="SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name";
+ try{before=await snap(proxy.env.DB);schema=(await proxy.env.DB.prepare(schemaSQL).all()).results;assert.equal(before.d1_migrations.length,28);}finally{await proxy.dispose();}
+ copyFileSync(join(root,'migrations/0028_finance_fee_payment_integrity.sql'),join(env.path,'migrations/0028_finance_fee_payment_integrity.sql'));
+ run(env,['migrations','apply'],error);proxy=await open(env);
+ try{const db=proxy.env.DB;assert.deepEqual(await snap(db),before);assert.deepEqual((await db.prepare(schemaSQL).all()).results,schema);
+  assert.equal((await db.prepare('PRAGMA foreign_keys').first()).foreign_keys,1);assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
+  checks++;evidence.push({case:label,migration_exit:1,atomic_rollback:true,history_count:28,schema_and_data_unchanged:true,fk_enabled:true,fk_clean:true});
+ }finally{await proxy.dispose();}
+ console.log('LOCAL expected blocker rolled back schema, history and data: '+label);
+}
 
 // Intentionally inconsistent pre-0028 LOCAL fixtures. Migration must preserve
 // them, and real workerd must reject operations instead of repairing either.
