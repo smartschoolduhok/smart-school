@@ -1,6 +1,71 @@
 # Phase 20A1 — Finance core stabilization QA
 
-## CASE terminator hardening — 2026-09-06 (current evidence)
+## Final acceptance — 2026-09-07
+
+**Status: ACCEPTED / MERGED / DEPLOYED**
+
+Phase 20A1 Finance Stabilization completed its final gates successfully.
+
+### Final delivery
+- PR #37 was merged into `main`.
+- Final PR HEAD: `18201682aa2b1321262063f38fe907bd7662d084`.
+- Merge commit: `e50b73ba9ae399477b837cb91a3b7cbe7fec6b5c`.
+- Cloudflare Pages deployment for the merge commit completed successfully.
+
+### Migration 0028 — final remote/STAGING result
+- The first two STAGING attempts failed historically with D1 parser error 7500 and rolled back atomically.
+- After the final trigger-parser compatibility correction, disposable REMOTE D1 validation succeeded.
+- The third authorized STAGING migration attempt succeeded.
+- STAGING migration history contains 29 migrations, with `0028_finance_fee_payment_integrity.sql` recorded once and last.
+- Verified final 0028 objects: 11/11 columns, 1/1 receipt-payment link table, 2/2 readiness views, 7/7 indexes, 18/18 triggers.
+- 71 compared pre-existing finance values had zero unintended changes.
+- Finance and treasury readiness views were healthy and foreign-key verification was clean.
+- No remote seed/reset was performed and Production was not accessed.
+
+### Final automated validation
+- Finance: **183/183**
+- 19-suite regression matrix: **1385 pass / 0 fail / 0 skip**
+- Distinct modern tests: **1293**
+- Genuine Local D1 scenarios: **35/35**
+- Legacy employee/salary/treasury assertions: **40/40**
+- Typecheck, frontend build, Worker build and `git diff --check`: **PASS**
+- The historical `test_treasury_rollback.js` CommonJS/ESM harness still exits before assertions and is not counted as passing; equivalent modern rollback coverage passed.
+
+### Final Manual Finance QA on STAGING
+The authenticated operator flow was tested successfully:
+
+1. Test fee: **100,000 IQD**
+2. Partial payment: **25,000 IQD**
+   - paid: **25,000**
+   - remaining: **75,000**
+   - status: **partial**
+3. Overpayment attempt: **80,000 IQD**
+   - correctly rejected because only **75,000 IQD** remained
+4. Receipt generation for the 25,000 payment: **PASS**
+5. Receipt cancellation only: **PASS**
+   - payment stayed active
+   - money was not reversed
+6. Payment cancellation: **PASS**
+   - paid returned to **0**
+   - remaining returned to **100,000**
+   - status returned to **pending**
+   - treasury effect was reversed correctly
+
+**End-to-end result: PASS.**
+
+### Acceptance decision
+Phase **20A1 — Fees / Payments / Receipts integrity stabilization** is complete and accepted.
+
+No additional Phase 20A1 finance feature work is required before proceeding.
+
+Next phase:
+**Phase 20A2 — manual treasury integrity, salary payment/cancellation atomicity, daily closing, business date/timezone, and daily/monthly reporting.**
+
+---
+
+> **Historical evidence below:** The remaining sections preserve the investigation and validation record as it existed at each earlier checkpoint. Statements below such as "remote confirmation pending", "ZERO remote D1 access", "keep Draft", or "do not merge" describe those historical checkpoints only and are superseded by the Final acceptance section above.
+
+## CASE terminator hardening — 2026-09-06 (historical evidence)
 
 This section supersedes the seven-space fix's remote hypothesis and test totals below.
 Base HEAD: `7360d2cc6ae6071d664ecdc9e8a980321cef3471`.
@@ -118,7 +183,7 @@ Explicit `pnpm run test:finance-fees` was also rerun: **183 pass / 0 fail / 0 sk
 - Local seed evidence: `%TEMP%/smart-school-finance-seed-local-O4mUEj/`.
 - Legacy assertions: `%TEMP%/smart-school-finance-legacy-lsFUaz/`.
 
-### Safety boundary and next gate
+### Historical safety boundary and next gate
 
 **ZERO remote D1 access** during this correction: no STAGING reads/writes, no production access, no remote disposable database, no remote migration/execute/seed/reset. GitHub PR inspection/update and public documentation retrieval are not D1 access.
 No dependency change; no new migration or branch/PR; PR #37 must remain Draft/unmerged.
@@ -705,4 +770,4 @@ Warnings/diagnostics: existing frontend chunk-size warning (`Some chunks are lar
 - Phase **20B**: broader finance navigation, simpler workflows, confirmation/draft-recovery UX, document presentation and operator pilot feedback. No commercial expansion, online payment, parent portal or multi-currency work here.
 - Cloudflare/Workers skill guidance influenced the atomic D1 design and actual local-runtime validation. Relevant current primary reference: [D1 batch transactions](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch).
 
-Keep the pull request **Draft and unmerged**. No remote migration is part of this delivery.
+**Historical note:** At the time of the initial delivery this PR was intentionally kept Draft and unmerged. This requirement was later satisfied by successful REMOTE/STAGING validation, Manual QA, and the final merge of PR #37. See the Final acceptance section at the top of this report.
