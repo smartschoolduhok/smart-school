@@ -1,0 +1,236 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {readFileSync} from 'node:fs';
+import {DatabaseSync} from 'node:sqlite';
+import {createHash} from 'node:crypto';
+import {unstable_splitSqlQuery} from 'wrangler';
+import {preflightFinance} from '../scripts/preflight-finance.mjs';
+import {calculateFee,feeRemaining,feeStatus,parseFee,parsePayment,parseReceipt,financeTimestamp,canonicalFeeType} from '../src/lib/financeFees.ts';
+import {feeDraft,paymentDraft,financeFixture,migrationSQL,snapshot} from './helpers/finance-fixture.mjs';
+import {legacyFinanceSQL} from './helpers/finance-fixture.mjs';
+const invalid=(fn,code)=>assert.throws(fn,e=>e.code===code);
+test('IQD deterministic half-up rounding, boundaries and maximum safe amount',()=>{
+ assert.equal(calculateFee(1,'percentage',50).discount_amount,1);
+ assert.equal(calculateFee(3,'percentage',50).discount_amount,2);
+ assert.equal(calculateFee(10001,'percentage',0.01).discount_amount,1);
+ assert.equal(calculateFee(Number.MAX_SAFE_INTEGER,'percentage',100).net_fee,0);
+ assert.equal(calculateFee(100,'fixed',100).net_fee,0);
+ assert.equal(calculateFee(100,'none',0).net_fee,100);
+});
+for(const value of [0,-1,1.5,NaN,Infinity,Number.MAX_SAFE_INTEGER+1,'100',null])test('money rejects '+String(value),()=>invalid(()=>parseFee(feeDraft({amount:value})),'invalid_finance_amount'));
+for(const [type,value] of [['fixed',101],['fixed',0.5],['percentage',100.01],['percentage',0.001],['none',1],['other',0],['percentage',-1]])test('discount rejects '+type+'/'+value,()=>invalid(()=>calculateFee(100,type,value),'invalid_discount'));
+test('zero net stays zero and status paid; nullish legacy net uses amount',()=>{assert.equal(feeRemaining({net_fee:0,amount:100,paid_amount:0}),0);assert.equal(feeRemaining({net_fee:null,amount:100,paid_amount:20}),80);assert.equal(feeStatus(0,0),'paid');assert.equal(feeStatus(100,20),'partial');});
+test('strict fields, dates, immutable identities and conservative canonicalization',()=>{
+ assert.equal(canonicalFeeType('  رسوم\t\n دراسية  '),'رسوم دراسية');
+ for(const body of [null,[],{...feeDraft(),secret:1}])invalid(()=>parseFee(body),'invalid_finance_request');
+ for(const timestamp of ['2026-02-30',-1,0.5,253402300800])invalid(()=>financeTimestamp(timestamp),'invalid_finance_request');
+ assert.equal(financeTimestamp(0),0);assert.equal(financeTimestamp(null),null);
+ for(const field of ['student_id','academic_year_id'])invalid(()=>parseFee({[field]:2},feeDraft()),'invalid_finance_request');
+});
+test('payment parser keeps supported existing methods, normalizes notes, requires bounded key',()=>{
+ for(const method of ['cash','bank_transfer','cheque','credit_card','debit_card','mobile_payment','other'])assert.equal(parsePayment(paymentDraft(1,{payment_method:method})).payment_method,method);
+ invalid(()=>parsePayment(paymentDraft(1,{client_request_id:'tiny'})),'invalid_finance_request');
+ invalid(()=>parsePayment(paymentDraft(1,{payment_method:'invented'})),'invalid_finance_request');
+ assert.equal(parsePayment(paymentDraft(1,{notes:' note '})).notes,'note');
+});
+test('receipt set rejects duplicates, empty, over-limit and unsafe IDs, canonical order',()=>{
+ for(const ids of [[],[1,1],Array.from({length:101},(_,i)=>i+1)])invalid(()=>parseReceipt({student_id:1,payment_ids:ids}),'receipt_payment_invalid');
+ assert.deepEqual(parseReceipt({student_id:1,payment_ids:[3,1]}).payment_ids,[1,3]);
+ invalid(()=>parseReceipt({student_id:1,payment_ids:['1']}),'invalid_finance_request');
+});
+test('populated 0027 -> 0028 preserves every old column/row, legacy payments active, currencies unchanged',t=>{
+ const f=financeFixture(t,{through:'0027',legacy:legacyFinanceSQL}),before=snapshot(f.db);
+ assert.equal(preflightFinance(f.db).safe,true);assert.deepEqual(preflightFinance(f.db).legacy_non_iqd_fee_ids,[2]);
+ f.db.exec('BEGIN');f.db.exec(migrationSQL('0028_finance_fee_payment_integrity.sql'));f.db.exec('COMMIT');
+ const after=snapshot(f.db);
+ for(const [name,rows]of Object.entries(before)){
+  assert.equal(after[name].length,rows.length,name);
+  const keys=rows.length?Object.keys(rows[0]):[];
+  const project=row=>Object.fromEntries(keys.map(k=>[k,row[k]]));
+  assert.deepEqual(after[name].map(project).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))),rows.map(project).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))),name);
+ }
+ assert.equal(f.db.prepare('SELECT status FROM fee_payments').get().status,'active');
+ assert.equal(f.db.prepare('SELECT currency FROM student_fees WHERE id=2').get().currency,'USD');
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM fee_receipt_payments').get().n,2);
+ assert.equal(f.db.prepare('PRAGMA foreign_keys').get().foreign_keys,1);assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+const financeTriggers=[
+ 'trg_student_fees_require_reconciliation','trg_student_fees_finance_insert','trg_student_fees_finance_update','trg_student_fees_preserve_payments',
+ 'trg_fee_payments_finance_insert','trg_fee_payments_post','trg_fee_payments_finance_update','trg_fee_payments_cancel','trg_fee_payments_preserve_history',
+ 'trg_fee_receipts_validate_insert','trg_fee_receipts_reserve_payments','trg_fee_receipts_immutable','trg_fee_receipts_release_payments','trg_fee_receipts_preserve_history',
+ 'trg_fee_receipt_links_insert','trg_fee_receipt_links_update','trg_fee_receipt_links_delete','trg_fee_receipts_print_guard',
+].sort();
+function runSingleStatement(db,query){
+ // prepare() alone silently ignores trailing statements too. Compare the SQL
+ // actually consumed by SQLite before running anything; never use exec here.
+ const statement=db.prepare(query);
+ assert.equal(statement.sourceSQL.trim(),query.trim(),'split chunk contains trailing SQL beyond one compiled statement');
+ statement.run();
+}
+function createdFinanceTriggers(db){return db.prepare("SELECT name FROM sqlite_schema WHERE type='trigger'").all().map(r=>r.name).filter(n=>financeTriggers.includes(n)).sort();}
+test('Wrangler splits exact LF 0028 into 45 independently compiled statements and 18 complete triggers',t=>{
+ const f=financeFixture(t,{through:'0027'}),bytes=readFileSync(new URL('../migrations/0028_finance_fee_payment_integrity.sql',import.meta.url));
+ const sql=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes),queries=unstable_splitSqlQuery(sql);
+ assert.equal(sql.startsWith('\ufeff'),false);assert.equal(sql.includes('\r'),false);assert.ok(sql.endsWith('\n'));
+ // Compile/execute first, so a swallowed view+trigger fails at the real SQLite
+ // statement boundary, not just at a regex/count assertion.
+ for(const query of queries)runSingleStatement(f.db,query);
+ assert.equal(queries.length,45);
+ const triggers=queries.filter(q=>/^CREATE TRIGGER\b/i.test(q));assert.equal(triggers.length,18);
+ for(const query of queries)assert.ok((query.match(/\bCREATE TRIGGER\b/gi)??[]).length<=1);
+ for(const trigger of triggers)assert.match(trigger,/\bBEGIN\b[\s\S]*\bEND;?$/);
+ const view=queries.find(q=>/^CREATE VIEW finance_treasury_readiness\b/.test(q));assert.ok(view);assert.doesNotMatch(view,/CREATE TRIGGER/i);
+ assert.deepEqual(createdFinanceTriggers(f.db),financeTriggers);
+ const objects={table:['fee_receipt_payments'],view:['finance_fee_readiness','finance_treasury_readiness'],index:[
+  'idx_student_fees_identity','idx_fee_payments_request','idx_fee_payments_active_fee','idx_fee_receipts_unique_number',
+  'idx_fee_receipts_unique_token','idx_fee_receipt_payments_active','idx_fee_receipt_payments_school_receipt',
+ ]};
+ for(const [type,names]of Object.entries(objects))for(const name of names)assert.equal(f.db.prepare('SELECT type FROM sqlite_schema WHERE name=?').get(name)?.type,type,name);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE name='_finance_0028_preflight'").get().n,0);
+ assert.equal(f.db.prepare('PRAGMA foreign_keys').get().foreign_keys,1);assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+test('single-statement guard rejects trailing SQL before executing even the first statement',t=>{
+ const f=financeFixture(t,{through:'0027'});
+ assert.throws(()=>runSingleStatement(f.db,'CREATE TABLE local_first(id); CREATE TABLE local_second(id);'),/trailing SQL/);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE name IN ('local_first','local_second')").get().n,0);
+});
+test('Wrangler compatibility keeps calculated END whitespace and encloses retained CASE values',t=>{
+ const sql=migrationSQL('0028_finance_fee_payment_integrity.sql'),dangerous=/\bEND(?=[),])/gi;
+ assert.equal([...sql.matchAll(dangerous)].length,0,'Wrangler compatibility — do not remove whitespace before calculated CASE punctuation');
+ assert.equal([...sql.matchAll(/\bEND (?=[),])/g)].length,9);
+ const f=financeFixture(t,{through:'0027'});
+ for(const query of ['SELECT CASE WHEN 1 THEN 1 ELSE 0 END;', 'SELECT SUM( CASE WHEN 1 THEN 1 ELSE 0 END ),0;']){
+  assert.doesNotMatch(query,dangerous);runSingleStatement(f.db,query);
+ }
+ assert.doesNotMatch(sql,/SELECT CASE WHEN[\s\S]*?THEN RAISE\(ABORT,[\s\S]*? END;/);
+});
+// Mask quoted literals/identifiers and comments before inspecting SQL tokens.
+// Combined alternatives prevent comment markers in strings (and vice versa)
+// from being treated as executable SQL. Doubled quotes are SQLite escapes.
+function sqlCode(sql){return sql.replace(/'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|--[^\r\n]*|\/\*[\s\S]*?\*\//g,m=>' '.repeat(m.length));}
+function assertTriggerTerminators(chunk){
+ const code=sqlCode(chunk).trim();
+ // Wrangler removes the final delimiter, not any interior statement delimiter.
+ const terminated=code.endsWith(';')?code:code+';';
+ const tokens=terminated.match(/[A-Za-z_][A-Za-z_0-9]*|[^\s]/g)??[];
+ assert.equal((terminated.match(/\bEND\s*;/gi)??[]).length,1,'only the trigger may end with standalone END;');
+ assert.match(terminated,/\bEND\s*;$/);
+ assert.doesNotMatch(terminated,/\bSELECT\s+CASE\b[^;]*\bRAISE\b/i);
+ const stack=[];
+ for(let i=0;i<tokens.length;i++){
+  const word=tokens[i].toUpperCase();
+  if(word==='BEGIN'){assert.equal(tokens[i],'BEGIN');assert.equal(stack.length,0);stack.push(word);}
+  if(word==='CASE')stack.push(word);
+  if(word==='END'){
+   const opened=stack.pop();assert.ok(opened,'unmatched END');
+   if(opened==='CASE')assert.equal(tokens[i+1],')','calculated CASE must close inside parentheses');
+   else {assert.equal(i,tokens.length-2);assert.equal(tokens[i+1],';');}
+  }
+ }
+ assert.equal(stack.length,0);
+ assert.equal(tokens.filter(t=>t==='BEGIN').length,1);
+}
+for(const name of financeTriggers)test('remote-parser compatibility: one final END; in '+name,()=>{
+ const chunks=unstable_splitSqlQuery(migrationSQL('0028_finance_fee_payment_integrity.sql'));
+ const chunk=chunks.find(q=>q.startsWith('CREATE TRIGGER '+name+' '));assert.ok(chunk,name);
+ assertTriggerTerminators(chunk);
+});
+test('terminator inspection ignores strings/comments but rejects inner CASE END; and lowercase begin',()=>{
+ const good="CREATE TRIGGER probe AFTER INSERT ON x BEGIN SELECT 'it''s END; -- CASE', \"END;\"; /* END; */ -- BEGIN CASE END;\n END;";
+ assert.doesNotThrow(()=>assertTriggerTerminators(good));
+ assert.throws(()=>assertTriggerTerminators('CREATE TRIGGER probe AFTER INSERT ON x BEGIN SELECT CASE WHEN 1 THEN 1 END; END;'));
+ assert.throws(()=>assertTriggerTerminators('CREATE TRIGGER probe AFTER INSERT ON x begin SELECT 1; END;'));
+ assert.doesNotThrow(()=>assertTriggerTerminators('CREATE TRIGGER probe AFTER INSERT ON x BEGIN SELECT ( CASE WHEN 1 THEN 1 END ); END'));
+});
+const stableGuardCodes=[
+ 'finance_reconciliation_required','invalid_discount','unsupported_finance_currency','invalid_finance_amount',
+ 'invalid_finance_request','finance_not_found','fee_net_below_paid','payment_treasury_integrity_error',
+ 'payment_receipt_active','payment_overpay','fee_not_payable','receipt_payment_invalid',
+ 'receipt_academic_year_conflict','finance_operation_stale','receipt_already_cancelled',
+];
+test('all 45 conditional guards preserve baseline conditions, order, ABORT types and error strings',()=>{
+ const sql=migrationSQL('0028_finance_fee_payment_integrity.sql');
+ const guards=[...sql.matchAll(/SELECT RAISE\((ABORT,'[^']+')\)\n  WHERE ([\s\S]*?);/g)].map(m=>({
+  // Undo ONLY the added grouping of the two status calculations, for comparison.
+  condition:m[2].replace(/NEW\.status!= \( (CASE[^\n]*? END) \)/g,'NEW.status!= $1'),raise:m[1],
+ }));
+ assert.equal(guards.length,45);
+ // SHA256 of the ordered {condition,raise} array extracted from reviewed
+ // HEAD 7360d2c's SELECT CASE WHEN <condition> THEN RAISE(<raise>) END; guards.
+ // No git/network dependency at test runtime and no duplicated migration fixture.
+ assert.equal(createHash('sha256').update(JSON.stringify(guards)).digest('hex'),'500714e174f18b996d717907dd8232f94de60a4eb8c1a1d8fef8c83c216db975');
+ assert.equal((sql.match(/SELECT RAISE\(ABORT,'finance_operation_stale'\);/g)??[]).length,4,'unconditional history guards remain unconditional');
+});
+test('exact grouped status guards retain zero-net, paid, partial, pending and NULL behavior',t=>{
+ const sql=migrationSQL('0028_finance_fee_payment_integrity.sql'),db=new DatabaseSync(':memory:');t.after(()=>db.close());
+ const expressions=[...sql.matchAll(/NEW\.status!= \( CASE [^\n]*? END \)/g)].map(m=>m[0]);assert.equal(expressions.length,2);
+ const cases=[{net:0,paid:0,status:'paid'},{net:100,paid:100,status:'paid'},{net:100,paid:101,status:'paid'},
+  {net:100,paid:25,status:'partial'},{net:100,paid:0,status:'pending'}];
+ for(const [i,expression]of expressions.entries()){
+  db.exec(`CREATE TABLE status_probe(net_fee,paid_amount,status);
+   CREATE TRIGGER status_guard BEFORE INSERT ON status_probe BEGIN
+   SELECT RAISE(ABORT,'invalid_finance_request') WHERE ${expression}; END;`);
+  for(const row of cases.filter(r=>i===1||r.paid===0)){
+   for(const status of ['paid','partial','pending',null]){
+    const insert=()=>db.prepare('INSERT INTO status_probe VALUES(?,?,?)').run(row.net,row.paid,status);
+    if(status===row.status||status===null)assert.doesNotThrow(insert);
+    else assert.throws(insert,error=>error.message==='invalid_finance_request');
+   }
+  }
+  db.exec('DROP TABLE status_probe;');
+ }
+});
+for(const code of stableGuardCodes)test('CASE-to-WHERE preserves TRUE/FALSE/NULL ABORT semantics: '+code,t=>{
+ const sql=migrationSQL('0028_finance_fee_payment_integrity.sql');
+ assert.ok(sql.includes("SELECT RAISE(ABORT,'"+code+"')"),'exact application-visible code retained');
+ const db=new DatabaseSync(':memory:');t.after(()=>db.close());
+ // Scalar, correlated subquery and nested calculated CASE: all three SQL
+ // truth values, including nullable results, compared with the old idiom.
+ for(const condition of ['NEW.value=1','(SELECT NEW.value)=1','( CASE WHEN NEW.value IS NULL THEN NULL ELSE NEW.value END )=1']){
+  for(const [name,guard]of [['old',`SELECT CASE WHEN ${condition} THEN RAISE(ABORT,'${code}') END;`],['new',`SELECT RAISE(ABORT,'${code}') WHERE ${condition};`]]){
+   db.exec(`CREATE TABLE ${name}(value); CREATE TRIGGER guard_${name} BEFORE INSERT ON ${name} BEGIN ${guard} END;`);
+   assert.throws(()=>db.prepare(`INSERT INTO ${name} VALUES(?)`).run(1),error=>error.message===code);
+   assert.equal(db.prepare(`SELECT COUNT(*) n FROM ${name}`).get().n,0,'ABORT has no partial insert');
+   for(const value of [0,null])db.prepare(`INSERT INTO ${name} VALUES(?)`).run(value);
+  }
+  assert.deepEqual(db.prepare('SELECT * FROM old').all(),db.prepare('SELECT * FROM new').all());
+  db.exec('DROP TABLE old; DROP TABLE new;');
+ }
+});
+test('regression demonstrates why exec masked all 18 swallowed triggers in the old 27 chunks',t=>{
+ const old=migrationSQL('0028_finance_fee_payment_integrity.sql').replace(/\bEND (?=[),])/g,'END');
+ const chunks=unstable_splitSqlQuery(old);assert.equal(chunks.length,27);
+ assert.match(chunks.at(-1),/^CREATE VIEW finance_treasury_readiness\b/);
+ assert.equal((chunks.at(-1).match(/CREATE TRIGGER\b/g)??[]).length,18);
+ const strict=financeFixture(t,{through:'0027'});
+ assert.throws(()=>{for(const query of chunks)runSingleStatement(strict.db,query);},/trailing SQL/);
+ assert.deepEqual(createdFinanceTriggers(strict.db),[]);
+ // Deliberately reproduce the OLD test's false positive, never the acceptance path.
+ const weak=financeFixture(t,{through:'0027'});for(const query of chunks)weak.db.exec(query);
+ assert.deepEqual(createdFinanceTriggers(weak.db),financeTriggers);
+});
+test('database discount guard agrees with half-up domain arithmetic including maximum-safe IQD',t=>{
+ const f=financeFixture(t);
+ for(const [i,[amount,value]]of [[1,50],[3,50],[10001,0.29],[Number.MAX_SAFE_INTEGER,33.33],[Number.MAX_SAFE_INTEGER,100]].entries()){
+  const d=calculateFee(amount,'percentage',value),type='Integer guard '+i;
+  const result=f.db.prepare(`INSERT INTO student_fees(school_id,student_id,academic_year_id,fee_type,fee_type_key,amount,currency,discount_type,discount_value,discount_amount,net_fee,status)
+   VALUES(1,1,1,?,?,?,'IQD','percentage',?,?,?,?)`).run(type,type,amount,value,d.discount_amount,d.net_fee,feeStatus(d.net_fee,0));
+  assert.equal(f.db.prepare('SELECT net_fee FROM student_fees WHERE id=?').get(result.lastInsertRowid).net_fee,d.net_fee);
+  assert.throws(()=>f.db.prepare('UPDATE student_fees SET discount_amount=discount_amount+1,net_fee=net_fee-1 WHERE id=?').run(result.lastInsertRowid),/invalid_discount/);
+ }
+});
+test('legacy fee canonical key matches JS Unicode whitespace normalization without changing display text',t=>{
+ const f=financeFixture(t,{through:'0027'}),type='  A\t\ufeff B\u00a0';
+ f.db.prepare("INSERT INTO student_fees(school_id,student_id,fee_type,amount,currency) VALUES(1,1,?,100,'IQD')").run(type);
+ f.db.exec(migrationSQL('0028_finance_fee_payment_integrity.sql'));
+ const row=f.db.prepare('SELECT fee_type,fee_type_key FROM student_fees').get();assert.equal(row.fee_type,type);assert.equal(row.fee_type_key,canonicalFeeType(type));
+});
+for(const kind of ['duplicate fee','duplicate receipt number','duplicate token','duplicate active reservation','missing payment'])test('migration stops safely for '+kind,t=>{
+ const f=financeFixture(t,{through:'0027',legacy:legacyFinanceSQL});
+ if(kind==='duplicate fee')f.db.exec("INSERT INTO student_fees(school_id,student_id,academic_year_id,fee_type,amount,currency) VALUES(1,1,1,'رسوم قديمة',100,'IQD')");
+ if(kind==='duplicate receipt number')f.db.exec("UPDATE fee_receipts SET receipt_number='same'");
+ if(kind==='duplicate token')f.db.exec("UPDATE fee_receipts SET verification_token='same'");
+ if(kind==='duplicate active reservation')f.db.exec("UPDATE fee_receipts SET status='active'");
+ if(kind==='missing payment')f.db.exec("UPDATE fee_receipts SET payment_ids_json='[1,999]' WHERE id=1");
+ const before=snapshot(f.db);f.db.exec('BEGIN');assert.throws(()=>f.db.exec(migrationSQL('0028_finance_fee_payment_integrity.sql')));f.db.exec('ROLLBACK');assert.deepEqual(snapshot(f.db),before);
+});

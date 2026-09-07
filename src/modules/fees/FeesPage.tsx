@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { calculateFee, feeRemaining } from '../../lib/financeFees';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getStudentFees, createStudentFee, updateStudentFee, deleteStudentFee,
-  getFeePayments, createFeePayment, getFeeReceipts, generateFeeReceipt, cancelFeeReceipt,
+  getFeePayments, createFeePayment, getFeeReceipts, generateFeeReceipt, cancelFeeReceipt, cancelFeePayment,
   getStudents, getAcademicYears,
 } from '../../lib/api';
 import {
@@ -44,6 +45,9 @@ interface FeeRecord {
 }
 
 interface PaymentRecord {
+  status: 'active' | 'cancelled';
+  currency: string;
+  active_receipt_id: number | null;
   id: number;
   student_fee_id: number;
   student_id: number;
@@ -57,6 +61,7 @@ interface PaymentRecord {
 }
 
 interface ReceiptRecord {
+  student_id: number;
   id: number;
   receipt_number: string;
   student_name_snapshot: string;
@@ -96,7 +101,7 @@ export default function FeesPage() {
   const [selectedStudent, setSelectedStudent] = useState<number | ''>('');
   const [feeType, setFeeType] = useState('رسوم دراسية');
   const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState('EGP');
+  const currency = 'IQD';
   const [dueDate, setDueDate] = useState('');
   const [feeNotes, setFeeNotes] = useState('');
   const [selectedYear, setSelectedYear] = useState<number | ''>('');
@@ -111,6 +116,11 @@ export default function FeesPage() {
   const [payMethod, setPayMethod] = useState('cash');
   const [payDate, setPayDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [payNotes, setPayNotes] = useState('');
+  const paymentFlight = useRef(false);
+  const paymentKey = useRef<string | null>(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [paymentUncertain, setPaymentUncertain] = useState(false);
+  const loadGeneration = useRef({fees:0,payments:0,receipts:0});
 
   // Receipts tab
   const [receipts, setReceipts] = useState<ReceiptRecord[]>([]);
@@ -152,34 +162,37 @@ export default function FeesPage() {
   }, [schoolId]);
 
   const loadFees = useCallback(async () => {
+    const generation = ++loadGeneration.current.fees;
     if (schoolId == null) { setFees([]); setLoading(false); return; }
     const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getStudentFees({ school_id: schoolId });
-    if (!isCurrent()) return;
+    if (!isCurrent() || generation !== loadGeneration.current.fees) return;
     if (res.data) setFees(res.data as any);
     setLoading(false);
   }, [schoolId]);
 
   const loadPayments = useCallback(async () => {
+    const generation = ++loadGeneration.current.payments;
     if (schoolId == null) { setPayments([]); setLoading(false); return; }
     const isCurrent = captureSchoolRequest();
     setLoading(true);
-    const res = await getFeePayments({ school_id: schoolId, student_id: paymentStudentFilter || null });
-    if (!isCurrent()) return;
+    const res = await getFeePayments({ school_id: schoolId });
+    if (!isCurrent() || generation !== loadGeneration.current.payments) return;
     if (res.data) setPayments(res.data as any);
     setLoading(false);
-  }, [schoolId, paymentStudentFilter]);
+  }, [schoolId]);
 
   const loadReceipts = useCallback(async () => {
+    const generation = ++loadGeneration.current.receipts;
     if (schoolId == null) { setReceipts([]); setLoading(false); return; }
     const isCurrent = captureSchoolRequest();
     setLoading(true);
-    const res = await getFeeReceipts({ school_id: schoolId, student_id: receiptStudentFilter || null });
-    if (!isCurrent()) return;
+    const res = await getFeeReceipts({ school_id: schoolId });
+    if (!isCurrent() || generation !== loadGeneration.current.receipts) return;
     if (res.data) setReceipts(res.data as any);
     setLoading(false);
-  }, [schoolId, receiptStudentFilter]);
+  }, [schoolId]);
 
   useEffect(() => {
     setStudents([]);
@@ -192,6 +205,9 @@ export default function FeesPage() {
     setReceiptStudentFilter('');
     setSelectedPayments([]);
     setPayFeeId('');
+    setPayAmount(''); setPayNotes('');
+    paymentKey.current = null; paymentFlight.current = false;
+    setPaymentBusy(false); setPaymentUncertain(false);
     setSelectedYear('');
     setEditingFee(null);
     setLoading(false);
@@ -203,14 +219,16 @@ export default function FeesPage() {
 
   useEffect(() => {
     if (activeTab === 'list') loadFees();
-    if (activeTab === 'payments') loadPayments();
-    if (activeTab === 'receipts') loadReceipts();
+    if (activeTab === 'payments') { loadPayments(); loadFees(); }
+    if (activeTab === 'receipts') { loadReceipts(); loadPayments(); }
   }, [activeTab, loadFees, loadPayments, loadReceipts]);
 
   async function handleAddFee(e: React.FormEvent) {
     e.preventDefault();
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!selectedStudent || !amount) { showError('الطالب والمبلغ مطلوبان'); return; }
+    try { calculateFee(Number(amount),discountType,discountType==='none'?0:Number(discountValue)); }
+    catch (error) { showError(error instanceof Error ? error.message : 'مبلغ أو خصم غير صالح'); return; }
     const isCurrent = captureSchoolRequest();
     const res = await createStudentFee({
       school_id: schoolId,
@@ -264,10 +282,14 @@ export default function FeesPage() {
 
   async function handleAddPayment(e: React.FormEvent) {
     e.preventDefault();
+    if (paymentFlight.current) return;
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!payFeeId || !payAmount || !payDate) { showError('القسط والمبلغ وتاريخ الدفع مطلوبة'); return; }
     const isCurrent = captureSchoolRequest();
+    paymentFlight.current = true; setPaymentBusy(true);
+    paymentKey.current ??= crypto.randomUUID();
     const res = await createFeePayment({
+      client_request_id: paymentKey.current,
       school_id: schoolId,
       student_fee_id: Number(payFeeId),
       amount: Number(payAmount),
@@ -276,8 +298,10 @@ export default function FeesPage() {
       notes: payNotes || null,
     });
     if (!isCurrent()) return;
-    if (res.error) { showError(res.error); }
+    paymentFlight.current = false; setPaymentBusy(false);
+    if (res.error) { setPaymentUncertain(true); showError(res.error); }
     else {
+      paymentKey.current = null; setPaymentUncertain(false);
       showSuccess('تم تسجيل الدفع بنجاح');
       setPayFeeId(''); setPayAmount(''); setPayNotes(''); setPayDate(new Date().toISOString().split('T')[0]); setPayMethod('cash');
       loadPayments();
@@ -296,17 +320,36 @@ export default function FeesPage() {
       showSuccess('تم إنشاء الإيصال بنجاح');
       setSelectedPayments([]);
       loadReceipts();
+      loadPayments();
     }
   }
 
   async function handleCancelReceipt(id: number) {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من إلغاء هذا الإيصال؟')) return;
+    const reason = window.prompt('سبب إلغاء الإيصال (إلغاء المستند فقط، لا يعكس المال):')?.trim();
+    if (!reason) return;
     const isCurrent = captureSchoolRequest();
-    const res = await cancelFeeReceipt(id, schoolId);
+    const res = await cancelFeeReceipt(id, schoolId, reason);
     if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
-    else { showSuccess('تم إلغاء الإيصال'); loadReceipts(); }
+    else { showSuccess('تم إلغاء المستند فقط؛ الدفعات لم تتغير'); loadReceipts(); loadPayments(); }
+  }
+
+  async function handleCancelPayment(id: number) {
+    if (schoolId == null) return;
+    const reason = window.prompt('سبب إلغاء الدفعة وعكس مبلغها في الخزنة (ألغِ إيصالها أولًا إن وُجد):')?.trim();
+    if (!reason) return;
+    const isCurrent = captureSchoolRequest();
+    const res = await cancelFeePayment(id,schoolId,reason);
+    if (!isCurrent()) return;
+    if (res.error) showError(res.error);
+    else { showSuccess('تم إلغاء الدفعة وعكسها في الخزنة'); loadPayments(); loadFees(); }
+  }
+
+  function newPaymentDraft() {
+    if (paymentFlight.current) return;
+    if (paymentKey.current && !window.confirm('قد تكون الدفعة السابقة قد حُفظت. راجع المدفوعات أولًا. هل تريد بدء دفعة جديدة مستقلة؟')) return;
+    paymentKey.current = null; setPaymentUncertain(false); setPayFeeId(''); setPayAmount(''); setPayNotes('');
   }
 
   async function handleVerify() {
@@ -329,7 +372,8 @@ export default function FeesPage() {
   });
 
   const studentPayments = payments.filter(p => !paymentStudentFilter || p.student_id === Number(paymentStudentFilter));
-  const studentUnpaidFees = fees.filter(f => f.status !== 'paid' && (!paymentStudentFilter || f.student_id === Number(paymentStudentFilter)));
+  const studentUnpaidFees = fees.filter(f => f.currency === 'IQD' && feeRemaining(f) > 0 && (!paymentStudentFilter || f.student_id === Number(paymentStudentFilter)));
+  const eligiblePayments = payments.filter(p => p.student_id === Number(receiptStudentFilter) && p.status === 'active' && p.currency === 'IQD' && p.active_receipt_id == null);
 
   function formatDate(ts: number | null): string {
     if (!ts) return '---';
@@ -337,7 +381,7 @@ export default function FeesPage() {
   }
 
   function formatCurrency(amount: number, currency: string): string {
-    return `${toArabicIndic(amount.toFixed(2))} ${currency === 'EGP' ? 'جنيه' : currency}`;
+    return `${toArabicIndic(amount)} ${currency === 'IQD' ? 'د.ع' : currency}`;
   }
 
   const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
@@ -450,9 +494,9 @@ export default function FeesPage() {
                           <div className="text-xs text-gray-500">{fee.student_number} — {fee.class_name} {fee.section_name}</div>
                         </td>
                         <td className="px-4 py-3">{fee.fee_type}</td>
-                        <td className="px-4 py-3 font-mono font-medium">{formatCurrency(fee.net_fee || fee.amount, fee.currency)}</td>
+                        <td className="px-4 py-3 font-mono font-medium">{formatCurrency(fee.net_fee ?? fee.amount, fee.currency)}</td>
                         <td className="px-4 py-3 font-mono text-emerald-600">{formatCurrency(fee.paid_amount, fee.currency)}</td>
-                        <td className="px-4 py-3 font-mono text-red-600">{formatCurrency((fee.net_fee || fee.amount) - fee.paid_amount, fee.currency)}</td>
+                        <td className="px-4 py-3 font-mono text-red-600">{formatCurrency((fee.net_fee ?? fee.amount) - fee.paid_amount, fee.currency)}</td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold ${
                             fee.status === 'paid' ? 'bg-emerald-100 text-emerald-700' :
@@ -515,7 +559,7 @@ export default function FeesPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">المبلغ</label>
                   <input
                     type="number"
-                    step="0.01"
+                    step="1"
                     value={amount}
                     onChange={e => setAmount(e.target.value)}
                     className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"
@@ -529,14 +573,11 @@ export default function FeesPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">العملة</label>
                   <select
                     value={currency}
-                    onChange={e => setCurrency(e.target.value)}
+                    disabled
                     className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"
                     dir="rtl"
                   >
-                    <option value="EGP">جنيه مصري</option>
-                    <option value="USD">دولار أمريكي</option>
-                    <option value="SAR">ريال سعودي</option>
-                    <option value="AED">درهم إماراتي</option>
+                    <option value="IQD">دينار عراقي</option>
                   </select>
                 </div>
                 <div>
@@ -569,7 +610,7 @@ export default function FeesPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">{discountType === 'percentage' ? 'نسبة الخصم (%)' : 'قيمة الخصم'}</label>
                     <input
                       type="number"
-                      step={discountType === 'percentage' ? '1' : '0.01'}
+                      step={discountType === 'percentage' ? '0.01' : '1'}
                       value={discountValue}
                       onChange={e => setDiscountValue(e.target.value)}
                       className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"
@@ -618,7 +659,8 @@ export default function FeesPage() {
                   <DollarSign size={20} className="text-primary-600" />
                   تسجيل دفعة جديدة
                 </h3>
-                <form onSubmit={handleAddPayment} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <form onSubmit={handleAddPayment} aria-label="تسجيل دفعة">
+                <fieldset disabled={paymentBusy || paymentUncertain} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">الطالب</label>
                     <select
@@ -643,7 +685,7 @@ export default function FeesPage() {
                       <option value="">اختر القسط</option>
                       {studentUnpaidFees.map(f => (
                         <option key={f.id} value={f.id}>
-                          {f.fee_type} — متبقي {formatCurrency((f.net_fee || f.amount) - f.paid_amount, f.currency)}
+                          {f.fee_type} — متبقي {formatCurrency(feeRemaining(f), f.currency)}
                         </option>
                       ))}
                     </select>
@@ -652,7 +694,7 @@ export default function FeesPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">المبلغ</label>
                     <input
                       type="number"
-                      step="0.01"
+                      step="1"
                       value={payAmount}
                       onChange={e => setPayAmount(e.target.value)}
                       className="w-full px-3 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"
@@ -698,11 +740,14 @@ export default function FeesPage() {
                       dir="rtl"
                     />
                   </div>
-                  <div className="flex items-end">
-                    <button type="submit" className="w-full px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium flex items-center justify-center gap-2">
+                </fieldset>
+                  {paymentUncertain && <p role="status" className="my-2 text-amber-800">احتُفظ بمعرّف الدفعة. أعد المحاولة نفسها أو راجع المدفوعات قبل بدء دفعة جديدة.</p>}
+                  <div className="flex items-end gap-2 mt-3">
+                    <button type="submit" disabled={paymentBusy || schoolId == null} className="w-full px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium flex items-center justify-center gap-2">
                       <Save size={18} />
                       تسجيل الدفع
                     </button>
+                    <button type="button" disabled={paymentBusy} onClick={newPaymentDraft} className="px-4 py-2 border rounded-lg">دفعة جديدة</button>
                   </div>
                 </form>
               </div>
@@ -729,7 +774,7 @@ export default function FeesPage() {
                         <td className="px-4 py-3">
                           <div className="font-medium text-gray-900">{p.student_name}</div>
                         </td>
-                        <td className="px-4 py-3 font-mono font-medium text-emerald-600">{toArabicIndic(p.amount.toFixed(2))}</td>
+                        <td className="px-4 py-3 font-mono font-medium text-emerald-600">{formatCurrency(p.amount,p.currency)}</td>
                         <td className="px-4 py-3">
                           <span className="inline-flex px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
                             {p.payment_method === 'cash' ? 'نقدي' : p.payment_method === 'bank_transfer' ? 'تحويل بنكي' : p.payment_method === 'cheque' ? 'شيك' : p.payment_method === 'credit_card' ? 'بطاقة ائتمان' : p.payment_method === 'debit_card' ? 'بطاقة خصم' : p.payment_method === 'mobile_payment' ? 'محفظة إلكترونية' : 'أخرى'}
@@ -737,7 +782,11 @@ export default function FeesPage() {
                         </td>
                         <td className="px-4 py-3 text-gray-500">{formatDate(p.payment_date)}</td>
                         <td className="px-4 py-3 text-gray-500">{p.created_by_name || '---'}</td>
-                        <td className="px-4 py-3 text-gray-500 max-w-xs truncate">{p.notes || '---'}</td>
+                        <td className="px-4 py-3 text-gray-500 max-w-xs">
+                          <p>{p.notes || '---'}</p>
+                          <span>{p.status === 'cancelled' ? 'دفعة ملغاة' : 'دفعة فعالة'}</span>
+                          {p.status === 'active' && <button type="button" onClick={() => handleCancelPayment(p.id)} className="block text-red-700 underline">إلغاء الدفعة</button>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -793,7 +842,7 @@ export default function FeesPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-50">
-                          {payments.filter(p => p.student_id === Number(receiptStudentFilter)).map(p => (
+                          {eligiblePayments.map(p => (
                             <tr key={p.id} className="hover:bg-gray-50">
                               <td className="px-3 py-2">
                                 <input
@@ -806,12 +855,12 @@ export default function FeesPage() {
                                   className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                                 />
                               </td>
-                              <td className="px-3 py-2 font-mono">{toArabicIndic(p.amount.toFixed(2))}</td>
+                              <td className="px-3 py-2 font-mono">{toArabicIndic(p.amount)}</td>
                               <td className="px-3 py-2">{p.payment_method}</td>
                               <td className="px-3 py-2 text-gray-500">{formatDate(p.payment_date)}</td>
                             </tr>
                           ))}
-                          {payments.filter(p => p.student_id === Number(receiptStudentFilter)).length === 0 && (
+                          {eligiblePayments.length === 0 && (
                             <tr><td colSpan={4} className="px-3 py-4 text-center text-gray-400 text-sm">لا توجد مدفوعات لهذا الطالب</td></tr>
                           )}
                         </tbody>
@@ -838,11 +887,11 @@ export default function FeesPage() {
                       <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">جاري التحميل...</td></tr>
                     ) : receipts.length === 0 ? (
                       <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">لا توجد إيصالات</td></tr>
-                    ) : receipts.map(r => (
+                    ) : receipts.filter(r => !receiptStudentFilter || r.student_id === Number(receiptStudentFilter)).map(r => (
                       <tr key={r.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 font-mono text-xs">{r.receipt_number}</td>
                         <td className="px-4 py-3 font-medium">{r.student_name_snapshot}</td>
-                        <td className="px-4 py-3 font-mono font-medium">{toArabicIndic(r.total_amount.toFixed(2))}</td>
+                        <td className="px-4 py-3 font-mono font-medium">{toArabicIndic(String(r.total_amount))}</td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold ${
                             r.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
@@ -950,7 +999,7 @@ export default function FeesPage() {
                         </div>
                         <div>
                           <p className="text-xs text-gray-500">المبلغ الإجمالي</p>
-                          <p className="font-mono font-bold text-emerald-600">{toArabicIndic(verifyResult.total_amount?.toFixed(2))}</p>
+                          <p className="font-mono font-bold text-emerald-600">{toArabicIndic(String(verifyResult.total_amount ?? 0))}</p>
                         </div>
                       </div>
                       {verifyResult.payments && verifyResult.payments.length > 0 && (
@@ -960,7 +1009,7 @@ export default function FeesPage() {
                             {verifyResult.payments.map((p: any, i: number) => (
                               <div key={i} className="flex justify-between text-sm bg-gray-50 rounded px-3 py-2">
                                 <span>{p.fee_type || p.payment_method}</span>
-                                <span className="font-mono">{toArabicIndic(p.amount?.toFixed(2))}</span>
+                                <span className="font-mono">{toArabicIndic(String(p.amount ?? 0))}</span>
                               </div>
                             ))}
                           </div>
@@ -998,7 +1047,7 @@ export default function FeesPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">المبلغ</label>
                 <input
                   type="number"
-                  step="0.01"
+                  step="1"
                   value={editingFee.amount}
                   onChange={e => setEditingFee({ ...editingFee, amount: Number(e.target.value) })}
                   className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"

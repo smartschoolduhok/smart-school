@@ -1,6 +1,10 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { useTenantSchool } from '../../hooks/useTenantSchool';
+import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
+import { FINANCE_ACCESS_ROLES, hasRole } from '../../lib/rbac';
 import { getFeeReceipt, markReceiptPrinted } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
@@ -32,21 +36,21 @@ interface ReceiptRecord {
   currency?: string;
   status: string;
   verification_token: string;
-  created_at: string;
+  created_at: number;
   payments_snapshot?: PaymentSnapshot[];
   settings_snapshot?: Record<string, any>;
   settings_snapshot_json?: string;
-}
-
-function canViewFees(roleKey?: string) {
-  return ['system_admin', 'school_owner', 'principal', 'vice_principal', 'accountant', 'registrar', 'parent'].includes(roleKey || '');
 }
 
 export default function PrintReceiptPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, isLoading: authLoading } = useAuth();
-  const [receipt, setReceipt] = useState<ReceiptRecord | null>(null);
+  const schoolScope = useTenantSchool();
+  const { schoolId } = schoolScope;
+  const captureSchoolRequest = useSchoolRequestGuard(schoolId);
+  const [loadedReceipt, setReceipt] = useState<ReceiptRecord | null>(null);
+  const receipt = loadedReceipt?.school_id === schoolId && loadedReceipt?.id === Number(id) ? loadedReceipt : null;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,47 +65,47 @@ export default function PrintReceiptPage() {
     ? `${base}/verify/receipt/${receipt.verification_token}`
     : '';
 
-  const { handlePrint, isPrinting } = usePrintExport({
+  const { handlePrint, isPrinting, error: printError } = usePrintExport({
     documentTitle: receipt?.receipt_number ? `إيصال ${receipt.receipt_number}` : 'إيصال مالي',
     onBeforePrint: async () => {
-      if (!receipt || receipt.status === 'cancelled') return;
-      try {
-        await markReceiptPrinted(receipt.id, receipt.school_id);
-      } catch {
-        // Non-blocking: print record is best-effort
-      }
+      if (!receipt || receipt.status === 'cancelled' || schoolId !== receipt.school_id) throw new Error('الإيصال غير متاح للطباعة');
+      const result = await markReceiptPrinted(receipt.id, schoolId);
+      if (result.error) throw new Error(result.error);
     },
   });
 
-  const fetchReceipt = useCallback(async () => {
-    if (!id) return;
-    setLoading(true);
-    setError(null);
-    const res = await getFeeReceipt(id);
-    if (res.error) {
-      setError(res.error);
-    } else if (res.data) {
-      setReceipt(res.data as ReceiptRecord);
-    }
-    setLoading(false);
-  }, [id]);
-
   useEffect(() => {
+    setReceipt(null);
     if (authLoading) return;
     if (!user) {
       navigate('/login');
       return;
     }
-    if (!canViewFees(user.role_key)) {
+    if (!hasRole(user.role_key, FINANCE_ACCESS_ROLES)) {
       setError('غير مسموح: لا تملك صلاحية تصدير PDF');
       setLoading(false);
       return;
     }
-    fetchReceipt();
-  }, [authLoading, user, navigate, fetchReceipt]);
+    if (!id || schoolId == null) { setLoading(false); return; }
+    const isCurrent = captureSchoolRequest();
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void getFeeReceipt(id, schoolId).then(res => {
+      // An older receipt ID in the same school must not overwrite a newer route.
+      if (cancelled || !isCurrent()) return;
+      if (res.error) setError(res.error);
+      else if (res.data) setReceipt(res.data as ReceiptRecord);
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [authLoading, user, navigate, id, schoolId, captureSchoolRequest]);
 
   const payments = receipt?.payments_snapshot || [];
-  const currencyLabel = receipt?.currency === 'EGP' ? 'جنيه' : (receipt?.currency || 'EGP');
+  // New documents snapshot IQD. Do not relabel legacy documents with unknown currency.
+  const currencyLabel = snapshot.currency === 'IQD' ? 'د.ع' : (receipt?.currency || 'عملة السجل الأصلي');
+
+  if (!authLoading && schoolId == null) return <div className="p-6"><SystemAdminSchoolSelector {...schoolScope} /><p>اختر المدرسة لعرض الإيصال.</p></div>;
 
   if (loading) {
     return (
@@ -147,6 +151,7 @@ export default function PrintReceiptPage() {
         </button>
       }
     >
+      {printError && <p role="alert" className="text-red-700 print:hidden">{printError}</p>}
       <DocumentHeader
         schoolName={snapshot.school_name || receipt.school_name_snapshot}
         principalName={snapshot.principal_name}
@@ -190,7 +195,7 @@ export default function PrintReceiptPage() {
                 <td>{toArabicDigits(String(idx + 1))}</td>
                 <td>{p.fee_type || '-'}</td>
                 <td>{p.payment_method || '-'}</td>
-                <td className="font-mono">{toArabicDigits(String(p.amount?.toFixed(2) ?? '0.00'))} {currencyLabel}</td>
+                <td className="font-mono">{toArabicDigits(String(p.amount ?? 0))} {currencyLabel}</td>
                 <td>{p.payment_date ? toArabicDigits(new Date(p.payment_date * 1000).toLocaleDateString('ar-SA')) : '-'}</td>
               </tr>
             ))}
@@ -200,14 +205,14 @@ export default function PrintReceiptPage() {
 
       <div className="bg-gray-50 p-3 rounded mb-4 text-center">
         <div className="font-bold text-lg">
-          المبلغ الإجمالي: {toArabicDigits(receipt.total_amount.toFixed(2))} {currencyLabel}
+          المبلغ الإجمالي: {toArabicDigits(String(receipt.total_amount))} {currencyLabel}
         </div>
       </div>
 
       <div className="flex items-center justify-between mt-6">
         <QRBlock url={verificationUrl} label="امسح للتحقق من صحة الإيصال" />
         <div className="text-sm text-gray-600">
-          <div>تاريخ الإصدار: {toArabicDigits(new Date(receipt.created_at).toLocaleDateString('ar-SA'))}</div>
+          <div>تاريخ الإصدار: {toArabicDigits(new Date(Number(receipt.created_at) * 1000).toLocaleDateString('ar-SA'))}</div>
         </div>
       </div>
 

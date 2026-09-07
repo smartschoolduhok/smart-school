@@ -1078,16 +1078,20 @@ export function getFeeReceipts(filters?: {
   return fetchApi<Array<Record<string, any>>>(`/api/fee-receipts${qs}`);
 }
 
-export function getFeeReceipt(id: number | string) {
-  return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}`);
+export function getFeeReceipt(id: number | string, schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}?school_id=${schoolId}`);
 }
 
 export function generateFeeReceipt(data: { school_id: number; student_id: number; payment_ids: number[] }) {
   return fetchApi<Record<string, any>>('/api/fee-receipts/generate', { method: 'POST', body: JSON.stringify(data) });
 }
 
-export function cancelFeeReceipt(id: number | string, schoolId: number) {
-  return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ school_id: schoolId }) });
+export function cancelFeeReceipt(id: number | string, schoolId: number, cancelReason: string) {
+  return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ school_id: schoolId, cancel_reason: cancelReason }) });
+}
+
+export function cancelFeePayment(id: number | string, schoolId: number, cancelReason: string) {
+  return fetchApi<Record<string, any>>(`/api/fee-payments/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ school_id: schoolId, cancel_reason: cancelReason }) });
 }
 
 export function markReceiptPrinted(id: number | string, schoolId: number, copies?: number) {
