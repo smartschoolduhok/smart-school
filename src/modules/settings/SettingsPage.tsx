@@ -8,8 +8,8 @@ import {
 } from '../../lib/api';
 import { canEditSchoolSettings } from '../../lib/rbac';
 import {
-  Building2, GraduationCap, FileText, Globe, Shield, Database,
-  Loader2, AlertCircle, CheckCircle, UsersRound
+  Building2, GraduationCap, FileText, Globe, Shield,
+  Loader2, AlertCircle, CheckCircle, UsersRound, ChevronDown
 } from 'lucide-react';
 
 import SchoolProfileTab from './SchoolProfileTab';
@@ -17,10 +17,9 @@ import AcademicTab from './AcademicTab';
 import DocumentTab from './DocumentTab';
 import LocalizationTab from './LocalizationTab';
 import SecurityTab from './SecurityTab';
-import BackupTab from './BackupTab';
 import AccessLinksTab from './AccessLinksTab';
 
-type TabKey = 'profile' | 'academic' | 'document' | 'localization' | 'access' | 'security' | 'backup';
+type TabKey = 'profile' | 'academic' | 'document' | 'localization' | 'access' | 'security';
 
 const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; managementOnly?: boolean }[] = [
   { key: 'profile', label: 'بيانات المدرسة', icon: <Building2 size={18} /> },
@@ -29,7 +28,6 @@ const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; managemen
   { key: 'localization', label: 'إعدادات اللغة والأرقام', icon: <Globe size={18} /> },
   { key: 'access', label: 'ربط المستخدمين', icon: <UsersRound size={18} />, managementOnly: true },
   { key: 'security', label: 'الأمان والصلاحيات', icon: <Shield size={18} /> },
-  { key: 'backup', label: 'النسخ الاحتياطي', icon: <Database size={18} /> },
 ];
 
 export default function SettingsPage() {
@@ -49,6 +47,8 @@ export default function SettingsPage() {
 
   const canEdit = canEditSchoolSettings(user?.role_key, effectiveSchoolId);
   const visibleTabs = TAB_CONFIG.filter(tab => !tab.managementOnly || canEdit);
+  const primaryTabs = visibleTabs.filter(tab => ['profile', 'academic', 'document'].includes(tab.key));
+  const advancedTabs = visibleTabs.filter(tab => ['localization', 'access', 'security'].includes(tab.key));
   const selectedSchoolName = isAdmin
     ? schoolScope.schools.find(school => school.id === effectiveSchoolId)?.name || null
     : user?.school_name || null;
@@ -126,6 +126,25 @@ export default function SettingsPage() {
             إدارة بيانات المدرسة والإعدادات العامة
           </p>
         </div>
+        {effectiveSchoolId != null && advancedTabs.length > 0 && (
+          <details className="relative">
+            <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+              <Shield size={17} /> إعدادات متقدمة <ChevronDown size={16} />
+            </summary>
+            <div className="absolute left-0 z-20 mt-2 min-w-64 rounded-xl border border-gray-200 bg-white p-1 shadow-lg">
+              {advancedTabs.map(tab => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-right text-sm ${activeTab === tab.key ? 'bg-primary-50 font-semibold text-primary-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                >
+                  {tab.icon}{tab.label}
+                </button>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
 
       <SystemAdminSchoolSelector {...schoolScope} />
@@ -175,7 +194,7 @@ export default function SettingsPage() {
       {!loading && effectiveSchoolId != null && loadedSchoolId === effectiveSchoolId ? (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="flex overflow-x-auto border-b border-gray-200">
-            {visibleTabs.map(tab => (
+            {primaryTabs.map(tab => (
               <button
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
@@ -240,7 +259,6 @@ export default function SettingsPage() {
                 user={user}
               />
             )}
-            {activeTab === 'backup' && <BackupTab />}
           </div>
         </div>
       ) : null}

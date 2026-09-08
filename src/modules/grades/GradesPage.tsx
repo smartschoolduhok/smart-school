@@ -148,27 +148,50 @@ export default function GradesPage() {
   const canEditGrades = hasRole(user?.role_key, GRADE_MANAGEMENT_ROLES);
   const canInitializeGrades = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
   const visibleTabs = TAB_CONFIG.filter((tab) => canAccessTab(user?.role_key, tab.roles));
+  const entryTabs = visibleTabs.filter((tab) => tab.key === 'student' || tab.key === 'section');
+  const managementTabs = visibleTabs.filter((tab) => tab.key === 'settings' || tab.key === 'history');
   const [activeTab, setActiveTab] = useState<TabKey>('student');
   // Reset to first visible tab if current tab becomes hidden
   const effectiveTab = visibleTabs.find((t) => t.key === activeTab) ? activeTab : visibleTabs[0]?.key || 'student';
 
   return (
     <div className="space-y-6" dir="rtl">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 bg-primary-50 rounded-lg flex items-center justify-center">
-          <Calculator size={20} className="text-primary-600" />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-primary-50 rounded-lg flex items-center justify-center">
+            <Calculator size={20} className="text-primary-600" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">الدرجات والحسابات</h1>
+            <p className="text-sm text-gray-500">اختر طالبًا أو شعبة؛ أدوات الإعداد والسجل منفصلة عن الإدخال اليومي.</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">الدرجات والحسابات</h1>
-          <p className="text-sm text-gray-500">إدارة درجات الطلاب والحسابات الأكاديمية</p>
-        </div>
+        {managementTabs.length > 0 && (
+          <details className="relative">
+            <summary className="flex cursor-pointer list-none items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+              <Settings size={17} /> أدوات الدرجات <ChevronDown size={16} />
+            </summary>
+            <div className="absolute left-0 z-20 mt-2 min-w-56 rounded-xl border border-gray-200 bg-white p-1 shadow-lg">
+              {managementTabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-right text-sm ${effectiveTab === tab.key ? 'bg-primary-50 font-semibold text-primary-700' : 'text-gray-700 hover:bg-gray-50'}`}
+                >
+                  {tab.icon}{tab.label}
+                </button>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
 
       <SystemAdminSchoolSelector {...schoolScope} />
 
-      {/* Tabs */}
+      {/* Daily grade-entry modes. Administrative tools live in the header menu. */}
       <div className="flex gap-2 border-b border-gray-200">
-        {visibleTabs.map((tab) => (
+        {entryTabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}

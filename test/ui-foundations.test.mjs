@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Window } from 'happy-dom';
 import { createServer } from 'vite';
 import { root } from './helpers/finance-fixture.mjs';
@@ -103,4 +105,24 @@ test('login uses session storage by default, remember-me uses local storage, and
 
   assert.deepEqual(await login(false), { local: null, session: 'generated-token' });
   assert.deepEqual(await login(true), { local: 'generated-token', session: null });
+});
+
+test('daily workflows keep rare actions out of the primary tab rows', () => {
+  const fees = readFileSync(join(root, 'src/modules/fees/FeesPage.tsx'), 'utf8');
+  const grades = readFileSync(join(root, 'src/modules/grades/GradesPage.tsx'), 'utf8');
+  const timetable = readFileSync(join(root, 'src/modules/timetable/TimetablePage.tsx'), 'utf8');
+  const settings = readFileSync(join(root, 'src/modules/settings/SettingsPage.tsx'), 'utf8');
+
+  const feePrimaryTabs = fees.slice(fees.indexOf('const tabs:'), fees.indexOf('function openPaymentForFee'));
+  for (const label of ['قائمة الأقساط', 'المدفوعات', 'الإيصالات']) assert.ok(feePrimaryTabs.includes(label), label);
+  for (const contextual of ['إضافة قسط', 'اختبار التحقق']) assert.equal(feePrimaryTabs.includes(contextual), false, contextual);
+  assert.match(fees, /openPaymentForFee\(fee\)/);
+  assert.match(fees, /وسيصبح المتبقي/);
+
+  assert.match(grades, /entryTabs = visibleTabs\.filter/);
+  assert.match(grades, /<details className="relative">[\s\S]*?أدوات الدرجات/);
+  for (const stage of ['الجدول الحالي', 'إعداد وتوليد', 'السجل والإصدارات']) assert.ok(timetable.includes(stage), stage);
+  assert.match(timetable, /aria-label="مراحل عمل الجدول"/);
+  assert.doesNotMatch(settings, /BackupTab|النسخ الاحتياطي/);
+  assert.match(settings, /إعدادات متقدمة/);
 });

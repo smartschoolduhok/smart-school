@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { calculateFee, feeRemaining } from '../../lib/financeFees';
+import { businessDate } from '../../lib/businessTime';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
@@ -114,7 +115,7 @@ export default function FeesPage() {
   const [payFeeId, setPayFeeId] = useState<number | ''>('');
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState('cash');
-  const [payDate, setPayDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [payDate, setPayDate] = useState(() => businessDate());
   const [payNotes, setPayNotes] = useState('');
   const paymentFlight = useRef(false);
   const paymentKey = useRef<string | null>(null);
@@ -303,7 +304,7 @@ export default function FeesPage() {
     else {
       paymentKey.current = null; setPaymentUncertain(false);
       showSuccess('تم تسجيل الدفع بنجاح');
-      setPayFeeId(''); setPayAmount(''); setPayNotes(''); setPayDate(new Date().toISOString().split('T')[0]); setPayMethod('cash');
+      setPayFeeId(''); setPayAmount(''); setPayNotes(''); setPayDate(businessDate()); setPayMethod('cash');
       loadPayments();
       loadFees();
     }
@@ -386,20 +387,51 @@ export default function FeesPage() {
 
   const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
     { key: 'list', label: 'قائمة الأقساط', icon: <FileText size={18} /> },
-    { key: 'add', label: 'إضافة قسط', icon: <Plus size={18} /> },
     { key: 'payments', label: 'المدفوعات', icon: <Wallet size={18} /> },
     { key: 'receipts', label: 'الإيصالات', icon: <Printer size={18} /> },
-    { key: 'verify', label: 'اختبار التحقق', icon: <QrCode size={18} /> },
   ];
+
+  function openPaymentForFee(fee: FeeRecord) {
+    setPaymentStudentFilter(fee.student_id);
+    setPayFeeId(fee.id);
+    setPayAmount(String(feeRemaining(fee)));
+    setPayDate(businessDate());
+    setActiveTab('payments');
+  }
+
+  const selectedPaymentFee = fees.find((fee) => fee.id === Number(payFeeId));
+  const paymentAmountNumber = /^\d+$/.test(payAmount) ? Number(payAmount) : null;
+  const paymentRemainingAfter = selectedPaymentFee && paymentAmountNumber != null
+    ? feeRemaining(selectedPaymentFee) - paymentAmountNumber
+    : null;
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-          <CreditCard size={28} className="text-primary-600" />
-          الأقساط والمدفوعات
-        </h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+            <CreditCard size={28} className="text-primary-600" />
+            الأقساط والمدفوعات
+          </h1>
+          <p className="mt-1 text-sm text-gray-500">ابدأ من حساب الطالب، ثم سجّل الدفعة وأصدر إيصالها.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab('verify')}
+            className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <QrCode size={17} /> التحقق من إيصال
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('add')}
+            className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700"
+          >
+            <Plus size={18} /> إضافة قسط
+          </button>
+        </div>
       </div>
 
       <SystemAdminSchoolSelector {...schoolScope} />
@@ -420,7 +452,7 @@ export default function FeesPage() {
         </div>
       )}
 
-      {/* Tabs */}
+      {/* Three daily destinations; creation and verification are contextual actions. */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="flex overflow-x-auto border-b border-gray-200">
           {tabs.map(tab => (
@@ -508,7 +540,16 @@ export default function FeesPage() {
                         </td>
                         <td className="px-4 py-3 text-gray-500">{formatDate(fee.due_date)}</td>
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {fee.currency === 'IQD' && feeRemaining(fee) > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => openPaymentForFee(fee)}
+                                className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                              >
+                                تحصيل دفعة
+                              </button>
+                            )}
                             <button onClick={() => setEditingFee(fee)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg" title="تعديل"><Edit2 size={16} /></button>
                             <button onClick={() => handleDeleteFee(fee.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg" title="حذف"><Trash2 size={16} /></button>
                           </div>
@@ -524,10 +565,13 @@ export default function FeesPage() {
           {/* ==================== ADD TAB ==================== */}
           {activeTab === 'add' && (
             <form onSubmit={handleAddFee} className="max-w-2xl mx-auto space-y-4">
-              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                <Plus size={20} className="text-primary-600" />
-                إضافة قسط جديد
-              </h3>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <Plus size={20} className="text-primary-600" />
+                  إضافة قسط جديد
+                </h3>
+                <button type="button" onClick={() => setActiveTab('list')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700">العودة إلى الأقساط</button>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">الطالب</label>
                 <select
@@ -741,6 +785,13 @@ export default function FeesPage() {
                     />
                   </div>
                 </fieldset>
+                  {selectedPaymentFee && paymentAmountNumber != null && paymentAmountNumber > 0 && (
+                    <div className={`mt-3 rounded-lg border p-3 text-sm ${paymentRemainingAfter != null && paymentRemainingAfter < 0 ? 'border-red-200 bg-red-50 text-red-800' : 'border-blue-200 bg-blue-50 text-blue-800'}`}>
+                      دفع <strong>{formatCurrency(paymentAmountNumber, 'IQD')}</strong> من متبقٍ <strong>{formatCurrency(feeRemaining(selectedPaymentFee), 'IQD')}</strong>
+                      {paymentRemainingAfter != null && paymentRemainingAfter >= 0 && <>، وسيصبح المتبقي <strong>{formatCurrency(paymentRemainingAfter, 'IQD')}</strong>.</>}
+                      {paymentRemainingAfter != null && paymentRemainingAfter < 0 && <> — المبلغ أكبر من المتبقي ولن يُقبل.</>}
+                    </div>
+                  )}
                   {paymentUncertain && <p role="status" className="my-2 text-amber-800">احتُفظ بمعرّف الدفعة. أعد المحاولة نفسها أو راجع المدفوعات قبل بدء دفعة جديدة.</p>}
                   <div className="flex items-end gap-2 mt-3">
                     <button type="submit" disabled={paymentBusy || schoolId == null} className="w-full px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium flex items-center justify-center gap-2">
@@ -940,6 +991,7 @@ export default function FeesPage() {
           {/* ==================== VERIFY TAB ==================== */}
           {activeTab === 'verify' && (
             <div className="max-w-xl mx-auto space-y-6">
+              <button type="button" onClick={() => setActiveTab('receipts')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700">العودة إلى الإيصالات</button>
               <div className="bg-white rounded-xl border border-gray-200 p-6">
                 <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
                   <QrCode size={20} className="text-primary-600" />
