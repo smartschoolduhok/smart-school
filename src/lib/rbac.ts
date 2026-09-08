@@ -30,6 +30,24 @@ export const ACADEMIC_ACCESS_ROLES: readonly RoleKey[] = [
   'registrar',
 ];
 
+// Parents use resource-scoped student/grade routes. Accountants receive only
+// the student directory fields required by finance workflows.
+export const STUDENT_DIRECTORY_ROLES: readonly RoleKey[] = [
+  ...ACADEMIC_ACCESS_ROLES,
+  'accountant',
+  'parent',
+];
+
+export const STUDENT_RESOURCE_VIEW_ROLES: readonly RoleKey[] = [
+  ...ACADEMIC_ACCESS_ROLES,
+  'parent',
+];
+
+export const GRADE_VIEW_ROLES: readonly RoleKey[] = [
+  ...ACADEMIC_ACCESS_ROLES,
+  'parent',
+];
+
 export const ACADEMIC_MANAGEMENT_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,
   'registrar',

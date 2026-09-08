@@ -15,6 +15,7 @@ import type { RoleKey } from './types'
 import {
   ACADEMIC_ACCESS_ROLES,
   ACADEMIC_MANAGEMENT_ROLES,
+  ANALYTICS_ACCESS_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   EMPLOYEE_MANAGEMENT_ROLES,
   EMPLOYEE_SALARY_ROLES,
@@ -26,11 +27,20 @@ import {
   RESULT_CARD_PRINT_ROLES,
   RESULT_CARD_VIEW_ROLES,
   SCHOOL_MANAGEMENT_ROLES,
+  STUDENT_DIRECTORY_ROLES,
+  STUDENT_RESOURCE_VIEW_ROLES,
+  GRADE_VIEW_ROLES,
   SETTINGS_MANAGEMENT_ROLES,
   SETTINGS_VIEW_ROLES,
   USER_DIRECTORY_ROLES,
   hasRole,
 } from './lib/rbac'
+import {
+  accessibleGradeIds,
+  accessibleStudentIds,
+  canAccessGradeResource,
+  canAccessStudentResource,
+} from './lib/resourceAccess'
 import {
   calculateResultCardColumnAverages,
   evaluateResultCard,
@@ -1858,6 +1868,193 @@ app.put('/api/users/:id/reset-password', requireAdmin(), async (c) => {
     return c.json({ data: { id, success: true } })
   } catch {
     return c.json({ error: 'فشل في إعادة تعيين كلمة المرور' }, 500)
+  }
+})
+
+// ===========================================
+// API ROUTES: Resource access links
+// ===========================================
+app.get('/api/access-links', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  if (schoolId == null) return c.json({ error: 'يجب تحديد المدرسة المستهدفة' }, 400)
+
+  try {
+    const [parentLinks, teacherLinks, parents, students, teacherUsers, teacherEmployees] = await Promise.all([
+      db.prepare(`
+        SELECT link.id, link.parent_user_id, link.student_id, link.relationship,
+               parent.full_name AS parent_name, student.full_name AS student_name,
+               student.student_number
+        FROM parent_student_links link
+        JOIN users parent ON parent.id = link.parent_user_id
+        JOIN students student ON student.id = link.student_id
+        WHERE link.school_id = ? AND link.status = 'active'
+        ORDER BY parent.full_name, student.full_name, link.id
+      `).bind(schoolId).all(),
+      db.prepare(`
+        SELECT link.id, link.teacher_user_id, link.employee_id,
+               teacher_user.full_name AS user_name, employee.full_name AS employee_name,
+               employee.employee_number
+        FROM teacher_employee_links link
+        JOIN users teacher_user ON teacher_user.id = link.teacher_user_id
+        JOIN employees employee ON employee.id = link.employee_id
+        WHERE link.school_id = ? AND link.status = 'active'
+        ORDER BY teacher_user.full_name, link.id
+      `).bind(schoolId).all(),
+      db.prepare(`
+        SELECT user_record.id, user_record.full_name, user_record.email
+        FROM users user_record
+        JOIN roles role_record ON role_record.id = user_record.role_id
+        WHERE user_record.school_id = ? AND user_record.status = 'active' AND role_record.key = 'parent'
+        ORDER BY user_record.full_name, user_record.id
+      `).bind(schoolId).all(),
+      db.prepare(`
+        SELECT id, full_name, student_number
+        FROM students
+        WHERE school_id = ? AND status = 'active'
+        ORDER BY full_name, id
+      `).bind(schoolId).all(),
+      db.prepare(`
+        SELECT user_record.id, user_record.full_name, user_record.email
+        FROM users user_record
+        JOIN roles role_record ON role_record.id = user_record.role_id
+        WHERE user_record.school_id = ? AND user_record.status = 'active' AND role_record.key = 'teacher'
+        ORDER BY user_record.full_name, user_record.id
+      `).bind(schoolId).all(),
+      db.prepare(`
+        SELECT id, full_name, employee_number
+        FROM employees
+        WHERE school_id = ? AND status = 'active' AND role = 'teacher'
+        ORDER BY full_name, id
+      `).bind(schoolId).all(),
+    ])
+
+    return c.json({
+      data: {
+        parent_links: parentLinks.results || [],
+        teacher_links: teacherLinks.results || [],
+        parents: parents.results || [],
+        students: students.results || [],
+        teacher_users: teacherUsers.results || [],
+        teacher_employees: teacherEmployees.results || [],
+      },
+    })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في جلب روابط الوصول', detail: err.message }, 500)
+  }
+})
+
+app.post('/api/access-links/parents', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات الربط غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    const parentUserId = Number(body.parent_user_id)
+    const studentId = Number(body.student_id)
+    const relationship = typeof body.relationship === 'string' ? body.relationship.trim() : ''
+    if (!Number.isInteger(parentUserId) || parentUserId <= 0 || !Number.isInteger(studentId) || studentId <= 0) {
+      return c.json({ error: 'يجب اختيار حساب ولي الأمر والطالب' }, 400)
+    }
+    if (relationship.length > 100) return c.json({ error: 'صلة القرابة طويلة جدًا' }, 400)
+
+    const link = await db.prepare(`
+      INSERT INTO parent_student_links (
+        school_id, parent_user_id, student_id, relationship, status, created_by_user_id
+      ) VALUES (?, ?, ?, ?, 'active', ?)
+      ON CONFLICT(school_id, parent_user_id, student_id) DO UPDATE SET
+        relationship = excluded.relationship,
+        status = 'active',
+        updated_at = unixepoch()
+      RETURNING id, school_id, parent_user_id, student_id, relationship, status
+    `).bind(
+      targetSchool.schoolId,
+      parentUserId,
+      studentId,
+      relationship || null,
+      user.id,
+    ).first()
+    return c.json({ data: link }, 201)
+  } catch (err: any) {
+    const message = String(err?.message || '')
+    if (/parent access (user|student|creator) invalid/i.test(message)) {
+      return c.json({ error: 'تعذر إنشاء الربط: تأكد من أن الحساب والطالب نشطان ويتبعان المدرسة نفسها' }, 400)
+    }
+    return c.json({ error: 'فشل في ربط ولي الأمر بالطالب', detail: message }, 500)
+  }
+})
+
+app.delete('/api/access-links/parents/:id', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const id = Number(c.req.param('id'))
+  if (schoolId == null) return c.json({ error: 'يجب تحديد المدرسة المستهدفة' }, 400)
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الربط غير صالح' }, 400)
+  try {
+    const result = await db.prepare(`
+      UPDATE parent_student_links
+      SET status = 'inactive', updated_at = unixepoch()
+      WHERE id = ? AND school_id = ? AND status = 'active'
+    `).bind(id, schoolId).run()
+    if (Number(result.meta?.changes || 0) !== 1) return c.json({ error: 'الربط غير موجود أو ملغى مسبقًا' }, 404)
+    return c.json({ data: { id, status: 'inactive' } })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إلغاء ربط ولي الأمر', detail: err.message }, 500)
+  }
+})
+
+app.post('/api/access-links/teachers', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات الربط غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    const teacherUserId = Number(body.teacher_user_id)
+    const employeeId = Number(body.employee_id)
+    if (!Number.isInteger(teacherUserId) || teacherUserId <= 0 || !Number.isInteger(employeeId) || employeeId <= 0) {
+      return c.json({ error: 'يجب اختيار حساب المدرس وسجل الموظف' }, 400)
+    }
+
+    const link = await db.prepare(`
+      INSERT INTO teacher_employee_links (
+        school_id, teacher_user_id, employee_id, status, created_by_user_id
+      ) VALUES (?, ?, ?, 'active', ?)
+      ON CONFLICT(school_id, teacher_user_id) DO UPDATE SET
+        employee_id = excluded.employee_id,
+        status = 'active',
+        updated_at = unixepoch()
+      RETURNING id, school_id, teacher_user_id, employee_id, status
+    `).bind(targetSchool.schoolId, teacherUserId, employeeId, user.id).first()
+    return c.json({ data: link }, 201)
+  } catch (err: any) {
+    const message = String(err?.message || '')
+    if (/teacher access (user|employee|creator) invalid|UNIQUE constraint failed/i.test(message)) {
+      return c.json({ error: 'تعذر إنشاء الربط: تأكد من الحساب وسجل المدرس ومن عدم ربطهما مسبقًا' }, 400)
+    }
+    return c.json({ error: 'فشل في ربط حساب المدرس', detail: message }, 500)
+  }
+})
+
+app.delete('/api/access-links/teachers/:id', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const id = Number(c.req.param('id'))
+  if (schoolId == null) return c.json({ error: 'يجب تحديد المدرسة المستهدفة' }, 400)
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الربط غير صالح' }, 400)
+  try {
+    const result = await db.prepare(`
+      UPDATE teacher_employee_links
+      SET status = 'inactive', updated_at = unixepoch()
+      WHERE id = ? AND school_id = ? AND status = 'active'
+    `).bind(id, schoolId).run()
+    if (Number(result.meta?.changes || 0) !== 1) return c.json({ error: 'الربط غير موجود أو ملغى مسبقًا' }, 404)
+    return c.json({ data: { id, status: 'inactive' } })
+  } catch (err: any) {
+    return c.json({ error: 'فشل في إلغاء ربط المدرس', detail: err.message }, 500)
   }
 })
 
@@ -3778,7 +3975,7 @@ app.delete('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRole
 // ===========================================
 // API ROUTES: Dashboard Stats (RBAC-aware)
 // ===========================================
-app.get('/api/dashboard/stats', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/dashboard/stats', requireSameSchoolOrAdmin(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   const scope: 'all' | 'single' = c.get('scope')
@@ -3832,7 +4029,7 @@ app.get('/api/dashboard/stats', requireSameSchoolOrAdmin(), async (c) => {
 // ===========================================
 // API ROUTES: Classes (with RBAC + school_id filtering)
 // ===========================================
-app.get('/api/classes', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/classes', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   const scope: 'all' | 'single' = c.get('scope')
@@ -3934,7 +4131,7 @@ app.put('/api/classes/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACA
 // ===========================================
 // API ROUTES: Sections (with RBAC + school_id filtering)
 // ===========================================
-app.get('/api/sections', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/sections', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   const scope: 'all' | 'single' = c.get('scope')
@@ -4052,8 +4249,9 @@ app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
 // ===========================================
 // API ROUTES: Students (with RBAC + school_id filtering)
 // ===========================================
-app.get('/api/students', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/students', requireSameSchoolOrAdmin(), requireRoles(STUDENT_DIRECTORY_ROLES), async (c) => {
   const db = c.env.DB
+  const user = c.get('user') as UserContext
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   const scope: 'all' | 'single' = c.get('scope')
   const classId = c.req.query('class_id')
@@ -4064,13 +4262,32 @@ app.get('/api/students', requireSameSchoolOrAdmin(), async (c) => {
       classId,
       sectionId,
     })
-    return c.json({ data: students })
+    const allowedIds = resolvedSchoolId == null
+      ? null
+      : await accessibleStudentIds(db, user, resolvedSchoolId)
+    const visibleStudents = allowedIds == null
+      ? students
+      : students.filter(student => allowedIds.has(Number(student.id)))
+    const data = user.role_key === 'accountant'
+      ? visibleStudents.map(student => ({
+          id: student.id,
+          school_id: student.school_id,
+          student_number: student.student_number,
+          full_name: student.full_name,
+          class_id: student.class_id,
+          section_id: student.section_id,
+          class_name: student.class_name,
+          section_name: student.section_name,
+          status: student.status,
+        }))
+      : visibleStudents
+    return c.json({ data })
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب الطلاب', detail: err.message }, 500)
   }
 })
 
-app.get('/api/students/:id', requireAuthEnforced(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+app.get('/api/students/:id', requireAuthEnforced(), requireRoles(STUDENT_RESOURCE_VIEW_ROLES), async (c) => {
   const db = c.env.DB
   const id = c.req.param('id')
   const user: UserContext | null = c.get('user') || null
@@ -4078,10 +4295,8 @@ app.get('/api/students/:id', requireAuthEnforced(), requireRoles(ACADEMIC_ACCESS
     const student = await getStudentWithEffectivePlacement(db, Number(id))
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404)
 
-    if (user && user.role_key !== 'system_admin') {
-      if (student.school_id !== user.school_id) {
-        return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى بيانات هذا الطالب' }, 403)
-      }
+    if (!user || !await canAccessStudentResource(db, user, Number(id))) {
+      return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى بيانات هذا الطالب' }, 403)
     }
 
     return c.json({ data: student })
@@ -4090,8 +4305,9 @@ app.get('/api/students/:id', requireAuthEnforced(), requireRoles(ACADEMIC_ACCESS
   }
 })
 
-app.get('/api/students/:id/enrollments', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+app.get('/api/students/:id/enrollments', requireSameSchoolOrAdmin(), requireRoles(STUDENT_RESOURCE_VIEW_ROLES), async (c) => {
   const db = c.env.DB
+  const user = c.get('user') as UserContext
   const id = Number(c.req.param('id'))
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   if (resolvedSchoolId == null) {
@@ -4105,6 +4321,9 @@ app.get('/api/students/:id/enrollments', requireSameSchoolOrAdmin(), requireRole
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404)
     if (student.school_id !== resolvedSchoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى سجل طالب في مدرسة أخرى' }, 403)
+    }
+    if (!await canAccessStudentResource(db, user, id)) {
+      return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى سجل هذا الطالب' }, 403)
     }
 
     const history = await listStudentEnrollmentHistory(db, resolvedSchoolId, id)
@@ -4448,7 +4667,7 @@ function bulkSubjectInvalidResponse(c: any, plan: BulkSubjectPlan) {
   return c.json({ error: 'يجب أن تكون جميع الصفوف المحددة فعالة', data: plan }, 400)
 }
 
-app.get('/api/subjects', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   const scope: 'all' | 'single' = c.get('scope')
@@ -5030,7 +5249,7 @@ async function validateStudentSubjectAssignment(
 }
 
 // GET /api/student-subjects - list assignments with filters
-app.get('/api/student-subjects', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/student-subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId');
@@ -5072,14 +5291,14 @@ app.get('/api/student-subjects', requireSameSchoolOrAdmin(), async (c) => {
 });
 
 // GET /api/students/:id/subjects - active subjects for one student
-app.get('/api/students/:id/subjects', requireAuthEnforced(), async (c) => {
+app.get('/api/students/:id/subjects', requireAuthEnforced(), requireRoles(STUDENT_RESOURCE_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const id = Number(c.req.param('id'));
   try {
     const student = await db.prepare('SELECT school_id FROM students WHERE id = ?').bind(id).first<{ school_id: number }>();
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
-    if (user && user.role_key !== 'system_admin' && student.school_id !== user.school_id) {
+    if (!user || !await canAccessStudentResource(db, user, id)) {
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى بيانات هذا الطالب' }, 403);
     }
     const { results } = await db.prepare(`
@@ -5098,8 +5317,9 @@ app.get('/api/students/:id/subjects', requireAuthEnforced(), async (c) => {
 });
 
 // GET /api/students/:id/religious-subject - explicit academic religious-subject state.
-app.get('/api/students/:id/religious-subject', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+app.get('/api/students/:id/religious-subject', requireSameSchoolOrAdmin(), requireRoles(STUDENT_RESOURCE_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
+  const user = c.get('user') as UserContext;
   const studentId = Number(c.req.param('id'));
   const schoolId: number | null = c.get('resolvedSchoolId');
   const scope: 'all' | 'single' = c.get('scope');
@@ -5110,6 +5330,9 @@ app.get('/api/students/:id/religious-subject', requireSameSchoolOrAdmin(), requi
     const student = await getStudentWithEffectivePlacement(db, studentId);
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
     if (student.school_id !== schoolId) return c.json({ error: 'غير مسموح: الطالب ينتمي إلى مدرسة أخرى' }, 403);
+    if (!await canAccessStudentResource(db, user, studentId)) {
+      return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى بيانات هذا الطالب' }, 403);
+    }
 
     const currentAssignment = await findActiveReligiousAssignment(db, schoolId, studentId);
     const placementAvailable = student.class_id != null;
@@ -5858,8 +6081,9 @@ async function getActiveStudentSubjects(db: D1Database, studentId: number, schoo
 // GET /api/grades
 // ===========================================
 
-app.get('/api/grades', requireSameSchoolOrAdmin(), async (c) => {
+app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(GRADE_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
+  const user = c.get('user') as UserContext;
   try {
     const scope = c.get('scope');
     const resolvedSchoolId = c.get('resolvedSchoolId');
@@ -5917,7 +6141,13 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), async (c) => {
 
     const stmt = db.prepare(sql);
     const rows = await (params.length > 0 ? stmt.bind(...params).all<any>() : stmt.all<any>());
-    return c.json({ data: rows.results || [] });
+    const allowedIds = resolvedSchoolId == null
+      ? null
+      : await accessibleGradeIds(db, user, resolvedSchoolId)
+    const visibleRows = allowedIds == null
+      ? (rows.results || [])
+      : (rows.results || []).filter(row => allowedIds.has(Number(row.id)))
+    return c.json({ data: visibleRows });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب الدرجات', detail: err.message }, 500);
   }
@@ -5927,7 +6157,7 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), async (c) => {
 // GET /api/students/:id/grades
 // ===========================================
 
-app.get('/api/students/:id/grades', requireAuthEnforced(), async (c) => {
+app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(GRADE_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const studentId = Number(c.req.param('id'));
@@ -5935,8 +6165,8 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), async (c) => {
     const student = await db.prepare('SELECT school_id, full_name FROM students WHERE id = ?').bind(studentId).first<{ school_id: number; full_name: string }>();
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
 
-    if (user && user.role_key !== 'system_admin' && student.school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح: الطالب في مدرسة أخرى' }, 403);
+    if (!user || !await canAccessStudentResource(db, user, studentId)) {
+      return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى درجات هذا الطالب' }, 403);
     }
 
     const settings = await getGradeSettings(db, student.school_id);
@@ -5961,7 +6191,7 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), async (c) => {
 // Create empty grade rows for all active student_subjects
 // ===========================================
 
-app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(), requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
+app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const studentId = Number(c.req.param('student_id'));
@@ -6004,7 +6234,7 @@ app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(
 // Initialize grades for all students in a section for given subjects
 // ===========================================
 
-app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
+app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   try {
@@ -6089,6 +6319,9 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     if (gradeRow.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
+    if (user?.role_key === 'teacher' && !await canAccessGradeResource(db, user, gradeId)) {
+      return c.json({ error: 'غير مسموح: هذه الدرجة خارج موادك أو شعبك المكلف بها' }, 403);
+    }
 
     const settings = await getGradeSettings(db, gradeRow.school_id);
     const { notes, change_reason } = body;
@@ -6113,33 +6346,58 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     updates.exemption_status = derived.exemption_status;
     updates.updated_by_user_id = user?.id || null;
 
-    // Perform update
+    // Build one atomic mutation. Audit rows are inserted first only while the
+    // revision still matches the row we reviewed. The guarded UPDATE is last,
+    // so any audit failure rolls the whole D1 batch back.
     const setParts: string[] = [];
     const bindVals: any[] = [];
     for (const [k, v] of Object.entries(updates)) {
       setParts.push(`${k} = ?`);
       bindVals.push(v);
     }
-    bindVals.push(gradeId, gradeRow.school_id);
+    setParts.push('revision = revision + 1');
 
-    await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ? AND school_id = ?`).bind(...bindVals).run();
-
-    // Audit log for changed scalar fields
     const auditFields: Array<RawGradeField | 'notes'> = [...RAW_GRADE_FIELDS, 'notes'];
+    const auditStatements: D1PreparedStatement[] = [];
     for (const field of auditFields) {
       if (body[field] !== undefined) {
         const oldVal = gradeRow[field] === null || gradeRow[field] === undefined ? '' : String(gradeRow[field]);
         const newVal = body[field] === '' || body[field] === null || body[field] === undefined ? '' : String(body[field]);
         if (oldVal !== newVal) {
-          await db.prepare(`
-            INSERT INTO grade_change_logs (school_id, grade_id, field_name, old_value, new_value, changed_by_user_id, change_reason, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
-          `).bind(gradeRow.school_id, gradeId, field, oldVal || null, newVal || null, user?.id || null, change_reason || null).run();
+          auditStatements.push(db.prepare(`
+            INSERT INTO grade_change_logs (
+              school_id, grade_id, field_name, old_value, new_value,
+              changed_by_user_id, change_reason, created_at
+            )
+            SELECT school_id, id, ?, ?, ?, ?, ?, unixepoch()
+            FROM grades
+            WHERE id = ? AND school_id = ? AND revision = ?
+          `).bind(
+            field,
+            oldVal || null,
+            newVal || null,
+            user?.id || null,
+            change_reason || null,
+            gradeId,
+            gradeRow.school_id,
+            Number(gradeRow.revision || 0),
+          ));
         }
       }
     }
-
-    const updated = await db.prepare('SELECT * FROM grades WHERE id = ? AND school_id = ?').bind(gradeId, gradeRow.school_id).first<any>();
+    bindVals.push(gradeId, gradeRow.school_id, Number(gradeRow.revision || 0));
+    const updateStatement = db.prepare(`
+      UPDATE grades
+      SET ${setParts.join(', ')}
+      WHERE id = ? AND school_id = ? AND revision = ?
+      RETURNING *
+    `).bind(...bindVals);
+    const results = await db.batch<any>([...auditStatements, updateStatement]);
+    const updatedRows = results[results.length - 1]?.results || [];
+    if (updatedRows.length !== 1) {
+      return c.json({ error: 'تغيرت الدرجة بواسطة مستخدم آخر؛ أعد تحميلها ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
+    }
+    const updated = updatedRows[0];
     return c.json({ data: updated });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الدرجة', detail: err.message }, 500);
@@ -6160,25 +6418,44 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     if (!Array.isArray(entries) || entries.length === 0) return c.json({ error: 'يجب إرسال مدخلات واحدة على الأقل' }, 400);
+    if (entries.length > 50) return c.json({ error: 'يمكن حفظ 50 درجة كحد أقصى في العملية الواحدة' }, 400);
 
-    let updated = 0;
-    const errors: string[] = [];
-
+    const gradeIds = new Set<number>();
+    const settings = await getGradeSettings(db, targetSchool.schoolId);
+    const plans: Array<{
+      gradeId: number;
+      gradeRow: any;
+      updates: Record<string, any>;
+      auditChanges: Array<{ field: RawGradeField | 'notes'; oldValue: string | null; newValue: string | null; reason: string | null }>;
+    }> = [];
     for (const entry of entries) {
       const { grade_id, notes, change_reason } = entry;
-      if (!grade_id) { errors.push('معرف الدرجة مفقود في أحد المدخلات'); continue; }
+      const gradeId = Number(grade_id);
+      if (!Number.isInteger(gradeId) || gradeId <= 0) return c.json({ error: 'معرف الدرجة مفقود أو غير صالح في أحد المدخلات' }, 400);
+      if (gradeIds.has(gradeId)) return c.json({ error: `تكرر معرف الدرجة ${gradeId} في الطلب` }, 400);
+      gradeIds.add(gradeId);
 
-      const gradeRow = await db.prepare('SELECT * FROM grades WHERE id = ?').bind(Number(grade_id)).first<any>();
-      if (!gradeRow) { errors.push(`الدرجة ${grade_id} غير موجودة`); continue; }
+      const gradeRow = await db.prepare(`
+        SELECT grade.*, assignment.is_active AS ss_active, subject.status AS subject_status
+        FROM grades grade
+        JOIN student_subjects assignment ON assignment.id = grade.student_subject_id
+        JOIN subjects subject ON subject.id = assignment.subject_id
+        WHERE grade.id = ?
+      `).bind(gradeId).first<any>();
+      if (!gradeRow) return c.json({ error: `الدرجة ${gradeId} غير موجودة` }, 404);
 
       if (gradeRow.school_id !== targetSchool.schoolId) {
-        errors.push(`غير مسموح بالدرجة ${grade_id}`); continue;
+        return c.json({ error: `غير مسموح بالدرجة ${gradeId}` }, 403);
+      }
+      if (gradeRow.ss_active !== 1 || gradeRow.subject_status !== 'active') {
+        return c.json({ error: `المادة المرتبطة بالدرجة ${gradeId} غير مفعلة` }, 403);
+      }
+      if (user?.role_key === 'teacher' && !await canAccessGradeResource(db, user, gradeId)) {
+        return c.json({ error: `الدرجة ${gradeId} خارج مواد المدرس أو شعبه المكلف بها` }, 403);
       }
 
-      const settings = await getGradeSettings(db, gradeRow.school_id);
-
       const rawUpdates = buildRawGradeUpdates(entry, settings);
-      if (!rawUpdates.ok) { errors.push(rawUpdates.error); continue; }
+      if (!rawUpdates.ok) return c.json({ error: rawUpdates.error }, 400);
       const updates: Record<string, any> = { ...rawUpdates.updates };
       if (notes !== undefined) updates.notes = notes;
 
@@ -6194,35 +6471,90 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       updates.result_status = derived.result_status;
       updates.exemption_status = derived.exemption_status;
       updates.updated_by_user_id = user?.id || null;
-
-      const setParts: string[] = [];
-      const bindVals: any[] = [];
-      for (const [k, v] of Object.entries(updates)) {
-        setParts.push(`${k} = ?`);
-        bindVals.push(v);
-      }
-      bindVals.push(Number(grade_id), gradeRow.school_id);
-      await db.prepare(`UPDATE grades SET ${setParts.join(', ')} WHERE id = ? AND school_id = ?`).bind(...bindVals).run();
-
-      // Audit log
       const auditFields: Array<RawGradeField | 'notes'> = [...RAW_GRADE_FIELDS, 'notes'];
+      const auditChanges: Array<{ field: RawGradeField | 'notes'; oldValue: string | null; newValue: string | null; reason: string | null }> = [];
       for (const field of auditFields) {
         if (entry[field] !== undefined) {
           const oldVal = gradeRow[field] === null || gradeRow[field] === undefined ? '' : String(gradeRow[field]);
           const newVal = entry[field] === '' || entry[field] === null || entry[field] === undefined ? '' : String(entry[field]);
           if (oldVal !== newVal) {
-            await db.prepare(`
-              INSERT INTO grade_change_logs (school_id, grade_id, field_name, old_value, new_value, changed_by_user_id, change_reason, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
-            `).bind(gradeRow.school_id, Number(grade_id), field, oldVal || null, newVal || null, user?.id || null, change_reason || null).run();
+            auditChanges.push({
+              field,
+              oldValue: oldVal || null,
+              newValue: newVal || null,
+              reason: typeof change_reason === 'string' && change_reason.trim() ? change_reason.trim() : null,
+            });
           }
         }
       }
-      updated++;
+      plans.push({ gradeId, gradeRow, updates, auditChanges });
     }
 
-    return c.json({ data: { updated, errors: errors.length > 0 ? errors : undefined } });
+    const expectedJson = JSON.stringify(plans.map(plan => ({
+      id: plan.gradeId,
+      revision: Number(plan.gradeRow.revision || 0),
+    })));
+    const requestId = crypto.randomUUID();
+    const statements: D1PreparedStatement[] = [
+      db.prepare(`
+        INSERT INTO grade_write_assertions(request_id, validated)
+        SELECT ?, CASE WHEN (
+          SELECT COUNT(*)
+          FROM json_each(?) expected
+          JOIN grades grade
+            ON grade.id = CAST(json_extract(expected.value, '$.id') AS INTEGER)
+           AND grade.school_id = ?
+           AND grade.revision = CAST(json_extract(expected.value, '$.revision') AS INTEGER)
+        ) = json_array_length(?) THEN 1 ELSE 0 END
+      `).bind(requestId, expectedJson, targetSchool.schoolId, expectedJson),
+    ];
+    const updateIndexes: number[] = [];
+
+    for (const plan of plans) {
+      for (const change of plan.auditChanges) {
+        statements.push(db.prepare(`
+          INSERT INTO grade_change_logs (
+            school_id, grade_id, field_name, old_value, new_value,
+            changed_by_user_id, change_reason, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+        `).bind(
+          targetSchool.schoolId,
+          plan.gradeId,
+          change.field,
+          change.oldValue,
+          change.newValue,
+          user?.id || null,
+          change.reason,
+        ));
+      }
+
+      const setParts: string[] = [];
+      const bindValues: any[] = [];
+      for (const [key, value] of Object.entries(plan.updates)) {
+        setParts.push(`${key} = ?`);
+        bindValues.push(value);
+      }
+      setParts.push('revision = revision + 1');
+      bindValues.push(plan.gradeId, targetSchool.schoolId, Number(plan.gradeRow.revision || 0));
+      updateIndexes.push(statements.length);
+      statements.push(db.prepare(`
+        UPDATE grades
+        SET ${setParts.join(', ')}
+        WHERE id = ? AND school_id = ? AND revision = ?
+        RETURNING id, revision
+      `).bind(...bindValues));
+    }
+    statements.push(db.prepare('DELETE FROM grade_write_assertions WHERE request_id = ?').bind(requestId));
+
+    const batchResults = await db.batch<any>(statements);
+    if (updateIndexes.some(index => (batchResults[index]?.results || []).length !== 1)) {
+      return c.json({ error: 'تغيرت إحدى الدرجات بواسطة مستخدم آخر؛ أعد تحميل القائمة ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
+    }
+    return c.json({ data: { updated: plans.length } });
   } catch (err: any) {
+    if (/grade_write_assertions|CHECK constraint failed/i.test(String(err?.message || ''))) {
+      return c.json({ error: 'تغيرت إحدى الدرجات بواسطة مستخدم آخر؛ أعد تحميل القائمة ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
+    }
     return c.json({ error: 'فشل في الإدخال المجمّع', detail: err.message }, 500);
   }
 });
@@ -6231,7 +6563,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
 // GET /api/grades/:id/history - audit log
 // ===========================================
 
-app.get('/api/grades/:id/history', requireAuthEnforced(), async (c) => {
+app.get('/api/grades/:id/history', requireAuthEnforced(), requireRoles(GRADE_VIEW_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const gradeId = Number(c.req.param('id'));
@@ -6239,8 +6571,8 @@ app.get('/api/grades/:id/history', requireAuthEnforced(), async (c) => {
     const gradeRow = await db.prepare('SELECT school_id FROM grades WHERE id = ?').bind(gradeId).first<{ school_id: number }>();
     if (!gradeRow) return c.json({ error: 'الدرجة غير موجودة' }, 404);
 
-    if (user && user.role_key !== 'system_admin' && gradeRow.school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح' }, 403);
+    if (!user || !await canAccessGradeResource(db, user, gradeId)) {
+      return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى سجل هذه الدرجة' }, 403);
     }
 
     const rows = await db.prepare(`
@@ -6277,7 +6609,13 @@ function getAnalyticsFilters(c: any) {
   return { user, schoolId, classId, sectionId, subjectId, forbidden: resolved.forbidden };
 }
 
-function buildAnalyticsWhere(opts: { schoolId: number | null; classId: number | null; sectionId: number | null; subjectId: number | null }): { where: string; params: any[] } {
+function buildAnalyticsWhere(opts: {
+  schoolId: number | null;
+  classId: number | null;
+  sectionId: number | null;
+  subjectId: number | null;
+  user: UserContext | null;
+}): { where: string; params: any[] } {
   const conditions: string[] = ['g.is_active = 1'];
   const params: any[] = [];
   if (opts.schoolId != null) {
@@ -6295,6 +6633,27 @@ function buildAnalyticsWhere(opts: { schoolId: number | null; classId: number | 
   if (opts.subjectId != null) {
     conditions.push('ss.subject_id = ?');
     params.push(opts.subjectId);
+  }
+  if (opts.user?.role_key === 'teacher') {
+    conditions.push(`EXISTS (
+      SELECT 1
+      FROM teacher_employee_links access_link
+      JOIN timetable_teaching_loads teaching_load
+        ON teaching_load.school_id = access_link.school_id
+       AND teaching_load.employee_id = access_link.employee_id
+       AND teaching_load.subject_id = ss.subject_id
+       AND teaching_load.class_id = ss.class_id
+       AND (teaching_load.section_id IS NULL OR teaching_load.section_id = ss.section_id)
+       AND teaching_load.status = 'active'
+      JOIN academic_years academic_year
+        ON academic_year.id = teaching_load.academic_year_id
+       AND academic_year.school_id = teaching_load.school_id
+       AND academic_year.is_active = 1
+      WHERE access_link.school_id = g.school_id
+        AND access_link.teacher_user_id = ?
+        AND access_link.status = 'active'
+    )`);
+    params.push(opts.user.id);
   }
   return { where: conditions.join(' AND '), params };
 }
@@ -6320,7 +6679,7 @@ function rowToAnalytics(row: any, passingGrade: number, exemptionGrade: number) 
 }
 
 // GET /api/analytics/overview
-app.get('/api/analytics/overview', requireAuthEnforced(), async (c) => {
+app.get('/api/analytics/overview', requireAuthEnforced(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const filters = getAnalyticsFilters(c);
   if (filters.forbidden) return c.json({ error: 'غير مسموح' }, 403);
@@ -6334,7 +6693,7 @@ app.get('/api/analytics/overview', requireAuthEnforced(), async (c) => {
       if (gs) { passingGrade = gs.passing_grade; exemptionGrade = gs.exemption_grade; }
     }
 
-    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId });
+    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId, user: filters.user });
 
     const rows = await db.prepare(`
       SELECT
@@ -6380,7 +6739,7 @@ app.get('/api/analytics/overview', requireAuthEnforced(), async (c) => {
 });
 
 // GET /api/analytics/by-class
-app.get('/api/analytics/by-class', requireAuthEnforced(), async (c) => {
+app.get('/api/analytics/by-class', requireAuthEnforced(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const filters = getAnalyticsFilters(c);
   if (filters.forbidden) return c.json({ error: 'غير مسموح' }, 403);
@@ -6393,7 +6752,7 @@ app.get('/api/analytics/by-class', requireAuthEnforced(), async (c) => {
       if (gs) { passingGrade = gs.passing_grade; exemptionGrade = gs.exemption_grade; }
     }
 
-    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId });
+    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId, user: filters.user });
 
     const rows = await db.prepare(`
       SELECT
@@ -6437,7 +6796,7 @@ app.get('/api/analytics/by-class', requireAuthEnforced(), async (c) => {
 });
 
 // GET /api/analytics/by-section
-app.get('/api/analytics/by-section', requireAuthEnforced(), async (c) => {
+app.get('/api/analytics/by-section', requireAuthEnforced(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const filters = getAnalyticsFilters(c);
   if (filters.forbidden) return c.json({ error: 'غير مسموح' }, 403);
@@ -6450,7 +6809,7 @@ app.get('/api/analytics/by-section', requireAuthEnforced(), async (c) => {
       if (gs) { passingGrade = gs.passing_grade; exemptionGrade = gs.exemption_grade; }
     }
 
-    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId });
+    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId, user: filters.user });
 
     const rows = await db.prepare(`
       SELECT
@@ -6496,7 +6855,7 @@ app.get('/api/analytics/by-section', requireAuthEnforced(), async (c) => {
 });
 
 // GET /api/analytics/by-subject
-app.get('/api/analytics/by-subject', requireAuthEnforced(), async (c) => {
+app.get('/api/analytics/by-subject', requireAuthEnforced(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const filters = getAnalyticsFilters(c);
   if (filters.forbidden) return c.json({ error: 'غير مسموح' }, 403);
@@ -6509,7 +6868,7 @@ app.get('/api/analytics/by-subject', requireAuthEnforced(), async (c) => {
       if (gs) { passingGrade = gs.passing_grade; exemptionGrade = gs.exemption_grade; }
     }
 
-    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId });
+    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId, user: filters.user });
 
     const rows = await db.prepare(`
       SELECT
@@ -6552,7 +6911,7 @@ app.get('/api/analytics/by-subject', requireAuthEnforced(), async (c) => {
 });
 
 // GET /api/analytics/students-close-to-passing
-app.get('/api/analytics/students-close-to-passing', requireAuthEnforced(), async (c) => {
+app.get('/api/analytics/students-close-to-passing', requireAuthEnforced(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const filters = getAnalyticsFilters(c);
   if (filters.forbidden) return c.json({ error: 'غير مسموح' }, 403);
@@ -6564,7 +6923,7 @@ app.get('/api/analytics/students-close-to-passing', requireAuthEnforced(), async
       if (gs) passingGrade = gs.passing_grade;
     }
 
-    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId });
+    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId, user: filters.user });
 
     const rows = await db.prepare(`
       SELECT
@@ -6601,7 +6960,7 @@ app.get('/api/analytics/students-close-to-passing', requireAuthEnforced(), async
 });
 
 // GET /api/analytics/students-close-to-exemption
-app.get('/api/analytics/students-close-to-exemption', requireAuthEnforced(), async (c) => {
+app.get('/api/analytics/students-close-to-exemption', requireAuthEnforced(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const filters = getAnalyticsFilters(c);
   if (filters.forbidden) return c.json({ error: 'غير مسموح' }, 403);
@@ -6613,7 +6972,7 @@ app.get('/api/analytics/students-close-to-exemption', requireAuthEnforced(), asy
       if (gs) exemptionGrade = gs.exemption_grade;
     }
 
-    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId });
+    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: filters.subjectId, user: filters.user });
 
     const rows = await db.prepare(`
       SELECT
@@ -6651,13 +7010,13 @@ app.get('/api/analytics/students-close-to-exemption', requireAuthEnforced(), asy
 });
 
 // GET /api/analytics/exemption-blockers
-app.get('/api/analytics/exemption-blockers', requireAuthEnforced(), async (c) => {
+app.get('/api/analytics/exemption-blockers', requireAuthEnforced(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const filters = getAnalyticsFilters(c);
   if (filters.forbidden) return c.json({ error: 'غير مسموح' }, 403);
 
   try {
-    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: null });
+    const { where, params } = buildAnalyticsWhere({ schoolId: filters.schoolId, classId: filters.classId, sectionId: filters.sectionId, subjectId: null, user: filters.user });
 
     let genMin = 75;
     if (filters.schoolId) {
@@ -6686,7 +7045,7 @@ app.get('/api/analytics/exemption-blockers', requireAuthEnforced(), async (c) =>
 });
 
 // GET /api/analytics/student-summary/:student_id
-app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), async (c) => {
+app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const studentId = Number(c.req.param('student_id'));
@@ -6704,8 +7063,8 @@ app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), asy
 
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
 
-    if (user && user.role_key !== 'system_admin' && student.school_id !== user.school_id) {
-      return c.json({ error: 'غير مسموح' }, 403);
+    if (!user || !await canAccessStudentResource(db, user, studentId, { allowAccountant: true })) {
+      return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى تحليل هذا الطالب' }, 403);
     }
 
     let passingGrade = 50;

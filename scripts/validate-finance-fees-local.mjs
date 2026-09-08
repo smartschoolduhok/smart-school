@@ -71,7 +71,10 @@ const fresh=setup('fresh','0028');run(fresh,['migrations','apply']);fixtures(fre
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
 try{
  const db=proxy.env.DB,{default:app}=await vite.ssrLoadModule('/src/worker.ts');
- assert.equal((await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,migrationFiles.length);
+ assert.equal(
+  (await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,
+  migrationFiles.filter(file => file.slice(0,4) <= '0028').length,
+ );
  const secret='generated-local-finance-workerd-test-secret-only',token=await signJWT({email:'owner@matrix.test',auth_version:1},secret);
  async function api(label,method,path,input,{failAt=null,failSql=null,database=db,authToken=token}={}){
   let count=0,maxParameters=0;

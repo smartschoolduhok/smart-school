@@ -12,6 +12,7 @@
     "test:teaching-load-matrix": "node --experimental-strip-types --test --test-concurrency=1 test/teaching-load-matrix.test.mjs test/teaching-load-matrix-api.test.mjs test/teaching-load-matrix-ui.test.mjs",
     "test:teaching-load-matrix:local": "node scripts/validate-teaching-load-matrix-local.mjs",
     "test:rbac": "node --experimental-strip-types --test test/rbac.test.mjs test/result-card.test.mjs test/settings-permissions.test.mjs test/tenant-targeting.test.mjs",
+    "test:resource-access": "node --experimental-strip-types --test --test-concurrency=1 test/resource-access.test.mjs",
     "build": "vite build && vite build --config vite.worker.config.ts",
     "build:fe": "vite build",
     "build:api": "vite build --config vite.worker.config.ts",
