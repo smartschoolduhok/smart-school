@@ -181,6 +181,27 @@ export function resetUserPassword(id: number | string, password: string) {
   return fetchApi<Record<string, any>>(`/api/users/${id}/reset-password`, { method: 'PUT', body: JSON.stringify({ password }) });
 }
 
+// Resource-scoped access links for parents and teacher accounts.
+export function getAccessLinks(schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/access-links?school_id=${schoolId}`);
+}
+
+export function linkParentStudent(data: { school_id: number; parent_user_id: number; student_id: number; relationship?: string }) {
+  return fetchApi<Record<string, any>>('/api/access-links/parents', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function unlinkParentStudent(id: number, schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/access-links/parents/${id}?school_id=${schoolId}`, { method: 'DELETE' });
+}
+
+export function linkTeacherEmployee(data: { school_id: number; teacher_user_id: number; employee_id: number }) {
+  return fetchApi<Record<string, any>>('/api/access-links/teachers', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function unlinkTeacherEmployee(id: number, schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/access-links/teachers/${id}?school_id=${schoolId}`, { method: 'DELETE' });
+}
+
 // ===========================================
 // Roles
 // ===========================================

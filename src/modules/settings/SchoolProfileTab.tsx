@@ -14,6 +14,55 @@ interface Props {
 const SCHOOL_TYPES = ['خاص', 'حكومي', 'دولي', 'مختلط'];
 const EMPTY_SCHOOL_PROFILE: Record<string, any> = {};
 
+interface ProfileInputProps {
+  label: string;
+  name: string;
+  value: string;
+  canEdit: boolean;
+  type?: string;
+  icon?: React.ComponentType<{ size?: number; className?: string }>;
+  placeholder?: string;
+  onChange: (name: string, value: string) => void;
+}
+
+// Keep the field component stable across form updates. Defining it inside the
+// tab remounted every input on each keystroke and made the active field lose
+// focus.
+function ProfileInput({
+  label,
+  name,
+  value,
+  canEdit,
+  type = 'text',
+  icon: Icon,
+  placeholder,
+  onChange,
+}: ProfileInputProps) {
+  const inputId = `school-profile-${name}`;
+  return (
+    <div>
+      <label htmlFor={inputId} className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+      <div className="relative">
+        {Icon && <Icon size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />}
+        <input
+          id={inputId}
+          name={name}
+          type={type}
+          value={value}
+          onChange={event => onChange(name, event.target.value)}
+          disabled={!canEdit}
+          placeholder={placeholder}
+          className={`w-full ${Icon ? 'pr-10' : 'pr-4'} pl-4 py-2 rounded-lg border text-sm transition-colors focus:outline-none ${
+            canEdit
+              ? 'border-gray-200 focus:border-primary-500 focus:ring-1 focus:ring-primary-500'
+              : 'border-gray-100 bg-gray-50 text-gray-600 cursor-not-allowed'
+          }`}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, onError }: Props) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const school = data?.school || EMPTY_SCHOOL_PROFILE;
@@ -61,29 +110,6 @@ export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, o
     }
   };
 
-  const Input = ({ label, name, type = 'text', icon: Icon, placeholder }: {
-    label: string; name: string; type?: string; icon?: any; placeholder?: string;
-  }) => (
-    <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
-      <div className="relative">
-        {Icon && <Icon size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />}
-        <input
-          type={type}
-          value={form[name] || ''}
-          onChange={e => handleChange(name, e.target.value)}
-          disabled={!canEdit}
-          placeholder={placeholder}
-          className={`w-full ${Icon ? 'pr-10' : 'pr-4'} pl-4 py-2 rounded-lg border text-sm transition-colors focus:outline-none ${
-            canEdit
-              ? 'border-gray-200 focus:border-primary-500 focus:ring-1 focus:ring-primary-500'
-              : 'border-gray-100 bg-gray-50 text-gray-600 cursor-not-allowed'
-          }`}
-        />
-      </div>
-    </div>
-  );
-
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="flex items-center justify-between">
@@ -104,8 +130,8 @@ export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, o
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <Input label="اسم المدرسة" name="name" icon={Building2} placeholder="مثال: مدرسة النور" />
-        <Input label="الاسم بالإنجليزية" name="name_en" icon={Building2} placeholder="Al-Noor School" />
+        <ProfileInput label="اسم المدرسة" name="name" value={form.name || ''} canEdit={canEdit} onChange={handleChange} icon={Building2} placeholder="مثال: مدرسة النور" />
+        <ProfileInput label="الاسم بالإنجليزية" name="name_en" value={form.name_en || ''} canEdit={canEdit} onChange={handleChange} icon={Building2} placeholder="Al-Noor School" />
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">نوع المدرسة</label>
@@ -126,15 +152,15 @@ export default function SchoolProfileTab({ data, canEdit, schoolId, onSuccess, o
           </select>
         </div>
 
-        <Input label="المحافظة / المدينة" name="city" icon={MapPin} placeholder="مثال: بغداد" />
-        <Input label="المنطقة / المحافظة" name="province" icon={MapPin} placeholder="مثال: بغداد" />
-        <Input label="العنوان التفصيلي" name="address" icon={MapPin} placeholder="الحي، الشارع، رقم البناء" />
-        <Input label="رقم الهاتف" name="phone" icon={Phone} placeholder="0770xxxxxxx" />
-        <Input label="البريد الإلكتروني" name="email" type="email" icon={Mail} placeholder="info@school.iq" />
-        <Input label="الموقع الإلكتروني" name="website" icon={Globe} placeholder="https://school.iq" />
-        <Input label="اسم المدير / المسؤول" name="principal_name" icon={User} placeholder="اسم المدير الكامل" />
-        <Input label="رابط شعار المدرسة" name="logo_url" icon={Image} placeholder="https://..." />
-        <Input label="رابط الختم الرسمي" name="official_stamp_url" icon={Image} placeholder="https://..." />
+        <ProfileInput label="المحافظة / المدينة" name="city" value={form.city || ''} canEdit={canEdit} onChange={handleChange} icon={MapPin} placeholder="مثال: بغداد" />
+        <ProfileInput label="المنطقة / المحافظة" name="province" value={form.province || ''} canEdit={canEdit} onChange={handleChange} icon={MapPin} placeholder="مثال: بغداد" />
+        <ProfileInput label="العنوان التفصيلي" name="address" value={form.address || ''} canEdit={canEdit} onChange={handleChange} icon={MapPin} placeholder="الحي، الشارع، رقم البناء" />
+        <ProfileInput label="رقم الهاتف" name="phone" value={form.phone || ''} canEdit={canEdit} onChange={handleChange} icon={Phone} placeholder="0770xxxxxxx" />
+        <ProfileInput label="البريد الإلكتروني" name="email" value={form.email || ''} canEdit={canEdit} onChange={handleChange} type="email" icon={Mail} placeholder="info@school.iq" />
+        <ProfileInput label="الموقع الإلكتروني" name="website" value={form.website || ''} canEdit={canEdit} onChange={handleChange} icon={Globe} placeholder="https://school.iq" />
+        <ProfileInput label="اسم المدير / المسؤول" name="principal_name" value={form.principal_name || ''} canEdit={canEdit} onChange={handleChange} icon={User} placeholder="اسم المدير الكامل" />
+        <ProfileInput label="رابط شعار المدرسة" name="logo_url" value={form.logo_url || ''} canEdit={canEdit} onChange={handleChange} icon={Image} placeholder="https://..." />
+        <ProfileInput label="رابط الختم الرسمي" name="official_stamp_url" value={form.official_stamp_url || ''} canEdit={canEdit} onChange={handleChange} icon={Image} placeholder="https://..." />
       </div>
 
       {/* Preview images */}

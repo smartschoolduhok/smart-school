@@ -9,7 +9,7 @@ import {
 import { canEditSchoolSettings } from '../../lib/rbac';
 import {
   Building2, GraduationCap, FileText, Globe, Shield, Database,
-  Loader2, AlertCircle, Save, CheckCircle
+  Loader2, AlertCircle, CheckCircle, UsersRound
 } from 'lucide-react';
 
 import SchoolProfileTab from './SchoolProfileTab';
@@ -18,14 +18,16 @@ import DocumentTab from './DocumentTab';
 import LocalizationTab from './LocalizationTab';
 import SecurityTab from './SecurityTab';
 import BackupTab from './BackupTab';
+import AccessLinksTab from './AccessLinksTab';
 
-type TabKey = 'profile' | 'academic' | 'document' | 'localization' | 'security' | 'backup';
+type TabKey = 'profile' | 'academic' | 'document' | 'localization' | 'access' | 'security' | 'backup';
 
-const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
+const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; managementOnly?: boolean }[] = [
   { key: 'profile', label: 'بيانات المدرسة', icon: <Building2 size={18} /> },
   { key: 'academic', label: 'السنة الدراسية', icon: <GraduationCap size={18} /> },
   { key: 'document', label: 'إعدادات الطباعة والوثائق', icon: <FileText size={18} /> },
   { key: 'localization', label: 'إعدادات اللغة والأرقام', icon: <Globe size={18} /> },
+  { key: 'access', label: 'ربط المستخدمين', icon: <UsersRound size={18} />, managementOnly: true },
   { key: 'security', label: 'الأمان والصلاحيات', icon: <Shield size={18} /> },
   { key: 'backup', label: 'النسخ الاحتياطي', icon: <Database size={18} /> },
 ];
@@ -46,6 +48,7 @@ export default function SettingsPage() {
   const [loadedSchoolId, setLoadedSchoolId] = useState<number | null>(null);
 
   const canEdit = canEditSchoolSettings(user?.role_key, effectiveSchoolId);
+  const visibleTabs = TAB_CONFIG.filter(tab => !tab.managementOnly || canEdit);
   const selectedSchoolName = isAdmin
     ? schoolScope.schools.find(school => school.id === effectiveSchoolId)?.name || null
     : user?.school_name || null;
@@ -172,7 +175,7 @@ export default function SettingsPage() {
       {!loading && effectiveSchoolId != null && loadedSchoolId === effectiveSchoolId ? (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="flex overflow-x-auto border-b border-gray-200">
-            {TAB_CONFIG.map(tab => (
+            {visibleTabs.map(tab => (
               <button
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
@@ -220,6 +223,13 @@ export default function SettingsPage() {
               <LocalizationTab
                 data={systemData}
                 canEdit={canEdit}
+                schoolId={effectiveSchoolId}
+                onSuccess={handleSuccess}
+                onError={handleError}
+              />
+            )}
+            {activeTab === 'access' && canEdit && (
+              <AccessLinksTab
                 schoolId={effectiveSchoolId}
                 onSuccess={handleSuccess}
                 onError={handleError}

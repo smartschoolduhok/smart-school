@@ -41,7 +41,11 @@ import {
   IMPORT_EXPORT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
   SETTINGS_VIEW_ROLES,
+  GRADE_VIEW_ROLES,
+  STUDENT_DIRECTORY_ROLES,
+  STUDENT_RESOURCE_VIEW_ROLES,
   SYSTEM_ADMIN_ROLES,
+  USER_DIRECTORY_ROLES,
   hasRole,
 } from './lib/rbac';
 
@@ -92,22 +96,6 @@ function RoleGuard({ children, allowedRoles, fallback }: RouteGuardProps) {
   return <>{children}</>;
 }
 
-// Disabled module placeholder - redirects to dashboard
-function DisabledModulePage({ moduleName }: { moduleName: string }) {
-  return (
-    <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">{moduleName}</h1>
-      <div className="bg-white rounded-xl border border-gray-200 p-8 text-center">
-        <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-4">
-          <span className="text-2xl">🔒</span>
-        </div>
-        <h2 className="text-lg font-bold text-gray-900 mb-2">الموديل غير مفعّل</h2>
-        <p className="text-sm text-gray-500">هذا الموديل غير متاح في الوقت الحالي وسيتم تفعيله في المرحلة القادمة</p>
-      </div>
-    </div>
-  );
-}
-
 // Admin-only route wrapper
 function AdminRoute({ children }: { children: React.ReactNode }) {
   return (
@@ -154,18 +142,18 @@ export default function App() {
 
           {/* Admin-only routes */}
           <Route path="/schools" element={<Layout><AdminRoute><SchoolsPage /></AdminRoute></Layout>} />
-          <Route path="/users" element={<Layout><AdminRoute><UsersPage /></AdminRoute></Layout>} />
+          <Route path="/users" element={<Layout><RoleGuard allowedRoles={USER_DIRECTORY_ROLES}><UsersPage /></RoleGuard></Layout>} />
           <Route path="/roles" element={<Layout><AdminRoute><RolesPage /></AdminRoute></Layout>} />
 
           {/* Academic routes */}
-          <Route path="/students" element={<Layout><AcademicRoute><StudentsPage /></AcademicRoute></Layout>} />
-          <Route path="/students/:id" element={<Layout><AcademicRoute><StudentProfilePage /></AcademicRoute></Layout>} />
+          <Route path="/students" element={<Layout><RoleGuard allowedRoles={STUDENT_DIRECTORY_ROLES}><StudentsPage /></RoleGuard></Layout>} />
+          <Route path="/students/:id" element={<Layout><RoleGuard allowedRoles={STUDENT_RESOURCE_VIEW_ROLES}><StudentProfilePage /></RoleGuard></Layout>} />
           <Route path="/student-promotion" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><StudentPromotionPage /></RoleGuard></Layout>} />
           <Route path="/timetable" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><TimetablePage /></RoleGuard></Layout>} />
           <Route path="/classes" element={<Layout><AcademicRoute><ClassesPage /></AcademicRoute></Layout>} />
           <Route path="/subjects" element={<Layout><AcademicRoute><SubjectsPage /></AcademicRoute></Layout>} />
           <Route path="/student-subjects" element={<Layout><AcademicRoute><StudentSubjectsPage /></AcademicRoute></Layout>} />
-          <Route path="/grades" element={<Layout><AcademicRoute><GradesPage /></AcademicRoute></Layout>} />
+          <Route path="/grades" element={<Layout><RoleGuard allowedRoles={GRADE_VIEW_ROLES}><GradesPage /></RoleGuard></Layout>} />
           <Route path="/result-cards" element={<Layout><AcademicRoute><ResultCardsPage /></AcademicRoute></Layout>} />
 
           {/* Analytics - wider access */}
@@ -197,12 +185,6 @@ export default function App() {
           <Route path="/print/result-card/:id" element={<PrintResultCardPage />} />
           <Route path="/print/receipt/:id" element={<PrintReceiptPage />} />
           <Route path="/print/official-book/:id" element={<PrintOfficialBookPage />} />
-
-          {/* Disabled/future modules */}
-          <Route path="/transport" element={<Layout><DisabledModulePage moduleName="النقل المدرسي" /></Layout>} />
-          <Route path="/teacher-portal" element={<Layout><DisabledModulePage moduleName="بوابة المدرس" /></Layout>} />
-          <Route path="/parent-portal" element={<Layout><DisabledModulePage moduleName="بوابة ولي الأمر" /></Layout>} />
-          <Route path="/ai-assistant" element={<Layout><DisabledModulePage moduleName="المساعد الذكي" /></Layout>} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

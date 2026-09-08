@@ -20,31 +20,45 @@ interface MeResponse {
   data: AuthUser;
 }
 
+interface LoginResult {
+  success: boolean;
+  error?: string;
+}
+
 interface AuthContextType extends AuthState {
-  login: (email: string, password: string) => Promise<boolean>;
+  login: (email: string, password: string, rememberMe?: boolean) => Promise<LoginResult>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
 }
 
 function getStoredUser(): AuthUser | null {
   try {
-    const raw = localStorage.getItem(USER_KEY);
+    const raw = localStorage.getItem(USER_KEY) || sessionStorage.getItem(USER_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
 
+function getCurrentAuthStorage(): Storage | null {
+  if (localStorage.getItem(TOKEN_KEY)) return localStorage;
+  if (sessionStorage.getItem(TOKEN_KEY)) return sessionStorage;
+  return null;
+}
+
 function clearAuth() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(USER_KEY);
   // Also remove legacy key if present
   localStorage.removeItem('smart_school_auth');
+  sessionStorage.removeItem('smart_school_auth');
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -71,7 +85,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         const body = (await res.json()) as MeResponse;
         if (body.data) {
-          localStorage.setItem(USER_KEY, JSON.stringify(body.data));
+          getCurrentAuthStorage()?.setItem(USER_KEY, JSON.stringify(body.data));
           setState({
             user: body.data,
             isAuthenticated: true,
@@ -91,7 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
   }, []);
 
-  const login = useCallback(async (email: string, password: string): Promise<boolean> => {
+  const login = useCallback(async (email: string, password: string, rememberMe = false): Promise<LoginResult> => {
     setState(prev => ({ ...prev, isLoading: true }));
 
     try {
@@ -102,25 +116,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
         setState(prev => ({ ...prev, isLoading: false }));
-        return false;
+        return {
+          success: false,
+          error: body.error || (res.status === 429
+            ? 'محاولات تسجيل دخول كثيرة، حاول مرة أخرى لاحقاً'
+            : 'تعذر تسجيل الدخول'),
+        };
       }
 
       const body = (await res.json()) as LoginResponse;
       const { token, user } = body.data;
 
-      localStorage.setItem(TOKEN_KEY, token);
-      localStorage.setItem(USER_KEY, JSON.stringify(user));
+      clearAuth();
+      const storage = rememberMe ? localStorage : sessionStorage;
+      storage.setItem(TOKEN_KEY, token);
+      storage.setItem(USER_KEY, JSON.stringify(user));
 
       setState({
         user,
         isAuthenticated: true,
         isLoading: false,
       });
-      return true;
+      return { success: true };
     } catch {
       setState(prev => ({ ...prev, isLoading: false }));
-      return false;
+      return { success: false, error: 'تعذر الاتصال بالخادم. تحقق من الشبكة وحاول مجدداً' };
     }
   }, []);
 

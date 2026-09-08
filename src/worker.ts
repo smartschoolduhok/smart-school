@@ -1372,8 +1372,9 @@ app.post('/api/auth/login', async (c) => {
 
     const row = await db.prepare(
       'SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.password_hash, u.status, u.auth_version, '
-      + 'r.key AS role_key, r.name AS role_name '
-      + 'FROM users u LEFT JOIN roles r ON u.role_id = r.id WHERE LOWER(u.email) = ?',
+      + 'r.key AS role_key, r.name AS role_name, s.name AS school_name '
+      + 'FROM users u LEFT JOIN roles r ON u.role_id = r.id '
+      + 'LEFT JOIN schools s ON s.id = u.school_id WHERE LOWER(u.email) = ?',
     ).bind(email).first<{
       id: number;
       email: string;
@@ -1385,6 +1386,7 @@ app.post('/api/auth/login', async (c) => {
       auth_version: number;
       role_key: string;
       role_name: string;
+      school_name: string | null;
     }>();
 
     let passwordValid = false;
@@ -1451,6 +1453,7 @@ app.post('/api/auth/login', async (c) => {
           role_key: row.role_key,
           role_name: row.role_name,
           school_id: row.school_id,
+          school_name: row.school_name,
         },
       },
     });
@@ -6322,6 +6325,13 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     if (user?.role_key === 'teacher' && !await canAccessGradeResource(db, user, gradeId)) {
       return c.json({ error: 'غير مسموح: هذه الدرجة خارج موادك أو شعبك المكلف بها' }, 403);
     }
+    const expectedRevision = body.revision === undefined ? Number(gradeRow.revision || 0) : Number(body.revision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+      return c.json({ error: 'نسخة الدرجة غير صالحة', code: 'grade_revision_invalid' }, 400);
+    }
+    if (expectedRevision !== Number(gradeRow.revision || 0)) {
+      return c.json({ error: 'تغيرت الدرجة بواسطة مستخدم آخر؛ أعد تحميلها ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
+    }
 
     const settings = await getGradeSettings(db, gradeRow.school_id);
     const { notes, change_reason } = body;
@@ -6380,12 +6390,12 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
             change_reason || null,
             gradeId,
             gradeRow.school_id,
-            Number(gradeRow.revision || 0),
+            expectedRevision,
           ));
         }
       }
     }
-    bindVals.push(gradeId, gradeRow.school_id, Number(gradeRow.revision || 0));
+    bindVals.push(gradeId, gradeRow.school_id, expectedRevision);
     const updateStatement = db.prepare(`
       UPDATE grades
       SET ${setParts.join(', ')}
@@ -6425,6 +6435,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
     const plans: Array<{
       gradeId: number;
       gradeRow: any;
+      expectedRevision: number;
       updates: Record<string, any>;
       auditChanges: Array<{ field: RawGradeField | 'notes'; oldValue: string | null; newValue: string | null; reason: string | null }>;
     }> = [];
@@ -6452,6 +6463,13 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       }
       if (user?.role_key === 'teacher' && !await canAccessGradeResource(db, user, gradeId)) {
         return c.json({ error: `الدرجة ${gradeId} خارج مواد المدرس أو شعبه المكلف بها` }, 403);
+      }
+      const expectedRevision = entry.revision === undefined ? Number(gradeRow.revision || 0) : Number(entry.revision);
+      if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+        return c.json({ error: `نسخة الدرجة ${gradeId} غير صالحة`, code: 'grade_revision_invalid' }, 400);
+      }
+      if (expectedRevision !== Number(gradeRow.revision || 0)) {
+        return c.json({ error: `تغيرت الدرجة ${gradeId} بواسطة مستخدم آخر؛ أعد تحميل القائمة ثم حاول مجددًا`, code: 'grade_write_stale' }, 409);
       }
 
       const rawUpdates = buildRawGradeUpdates(entry, settings);
@@ -6487,12 +6505,12 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
           }
         }
       }
-      plans.push({ gradeId, gradeRow, updates, auditChanges });
+      plans.push({ gradeId, gradeRow, expectedRevision, updates, auditChanges });
     }
 
     const expectedJson = JSON.stringify(plans.map(plan => ({
       id: plan.gradeId,
-      revision: Number(plan.gradeRow.revision || 0),
+      revision: plan.expectedRevision,
     })));
     const requestId = crypto.randomUUID();
     const statements: D1PreparedStatement[] = [
@@ -6535,7 +6553,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
         bindValues.push(value);
       }
       setParts.push('revision = revision + 1');
-      bindValues.push(plan.gradeId, targetSchool.schoolId, Number(plan.gradeRow.revision || 0));
+      bindValues.push(plan.gradeId, targetSchool.schoolId, plan.expectedRevision);
       updateIndexes.push(statements.length);
       statements.push(db.prepare(`
         UPDATE grades

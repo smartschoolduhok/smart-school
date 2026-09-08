@@ -4,7 +4,7 @@ import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import type { RoleKey } from '../../types';
-import { SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import { ACADEMIC_MANAGEMENT_ROLES, GRADE_MANAGEMENT_ROLES, SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
   getGrades, getStudentGrades, initializeStudentGrades, initializeSectionGrades,
   updateGrade, bulkUpdateGrades, getGradeHistory, getGradeSettings, updateGradeSettings,
@@ -68,6 +68,7 @@ interface GradeRecord {
   effective_grade: number | null;
   result_status: string | null;
   exemption_status: number;
+  revision: number;
   notes: string | null;
   is_active: number;
   student_name?: string;
@@ -130,9 +131,9 @@ const DEFAULT_GRADE_SETTINGS_FORM = {
 
 const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; roles?: readonly RoleKey[] }[] = [
   { key: 'student', label: 'إدخال درجات طالب', icon: <User size={18} /> },
-  { key: 'section', label: 'إدخال درجات شعبة', icon: <Users size={18} /> },
+  { key: 'section', label: 'إدخال درجات شعبة', icon: <Users size={18} />, roles: GRADE_MANAGEMENT_ROLES },
   { key: 'settings', label: 'إعدادات الدرجات', icon: <Settings size={18} />, roles: SCHOOL_MANAGEMENT_ROLES },
-  { key: 'history', label: 'سجل تعديل الدرجات', icon: <History size={18} /> },
+  { key: 'history', label: 'سجل تعديل الدرجات', icon: <History size={18} />, roles: GRADE_MANAGEMENT_ROLES },
 ];
 
 function canAccessTab(userRole: RoleKey | undefined, tabRoles?: readonly RoleKey[]): boolean {
@@ -144,6 +145,8 @@ export default function GradesPage() {
   const { user } = useAuth();
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
+  const canEditGrades = hasRole(user?.role_key, GRADE_MANAGEMENT_ROLES);
+  const canInitializeGrades = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
   const visibleTabs = TAB_CONFIG.filter((tab) => canAccessTab(user?.role_key, tab.roles));
   const [activeTab, setActiveTab] = useState<TabKey>('student');
   // Reset to first visible tab if current tab becomes hidden
@@ -181,8 +184,8 @@ export default function GradesPage() {
         ))}
       </div>
 
-      {effectiveTab === 'student' && <StudentGradesTab schoolId={schoolId} />}
-      {effectiveTab === 'section' && <SectionGradesTab schoolId={schoolId} />}
+      {effectiveTab === 'student' && <StudentGradesTab schoolId={schoolId} canEdit={canEditGrades} canInitialize={canInitializeGrades} />}
+      {effectiveTab === 'section' && <SectionGradesTab schoolId={schoolId} canInitialize={canInitializeGrades} />}
       {effectiveTab === 'settings' && <SettingsTab schoolId={schoolId} />}
       {effectiveTab === 'history' && <HistoryTab schoolId={schoolId} />}
     </div>
@@ -192,7 +195,7 @@ export default function GradesPage() {
 /* ═══════════════════════════════════════
    Tab 1: إدخال درجات طالب
    ═══════════════════════════════════════ */
-function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
+function StudentGradesTab({ schoolId, canEdit, canInitialize }: { schoolId: number | null; canEdit: boolean; canInitialize: boolean }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
@@ -271,7 +274,7 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
 
     if (schoolId == null) return;
     const isCurrent = captureSchoolRequest();
-    const payload: Record<string, any> = { [field]: field === 'notes' ? value : num };
+    const payload: Record<string, any> = { [field]: field === 'notes' ? value : num, revision: grade.revision };
     try {
       await gradeSaveQueue.enqueue(grade.id, async () => {
         if (!isCurrent()) return;
@@ -336,14 +339,16 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
             </select>
           </div>
         </div>
-        <button
-          onClick={handleInit}
-          disabled={initLoading || !selectedStudentId}
-          className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          {initLoading ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
-          تهيئة درجات الطالب
-        </button>
+        {canInitialize && (
+          <button
+            onClick={handleInit}
+            disabled={initLoading || !selectedStudentId}
+            className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {initLoading ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
+            تهيئة درجات الطالب
+          </button>
+        )}
       </div>
 
       {loading && (
@@ -357,7 +362,7 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center">
           <BookOpen size={40} className="mx-auto text-gray-300 mb-3" />
           <p className="text-sm text-gray-500">لا توجد درجات لهذا الطالب</p>
-          <p className="text-xs text-gray-400 mt-1">يمكنك تهيئة الدرجات بالنقر على الزر أعلاه</p>
+          {canInitialize && <p className="text-xs text-gray-400 mt-1">يمكنك تهيئة الدرجات بالنقر على الزر أعلاه</p>}
         </div>
       )}
 
@@ -399,7 +404,7 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
                     <td className="px-3 py-2 border-b border-gray-100 font-medium text-gray-900">{g.subject_name}</td>
                     {inputColumns.map((column) => (
                       <td key={column.key} className={`px-1 py-1 border-b border-gray-100 ${column.editable ? '' : 'text-center text-gray-600 font-medium bg-gray-50/50'}`}>
-                        {column.editable ? (
+                        {column.editable && canEdit ? (
                           <input
                             type="text"
                             inputMode="numeric"
@@ -422,16 +427,18 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
                     <td className="px-1 py-1 border-b border-gray-100 text-center text-gray-700 font-semibold bg-rose-50/30">{displayNum(g.effective_grade ?? g.final_grade)}</td>
                     <td className="px-2 py-2 border-b border-gray-100 text-center">{statusBadge(displayGradeStatus(g.result_status, g.exemption_status))}</td>
                     <td className="px-1 py-1 border-b border-gray-100">
-                      <input
-                        type="text"
-                        defaultValue={g.notes || ''}
-                        onBlur={(e) => {
-                          const val = e.target.value.trim();
-                          if (val !== (g.notes || '')) void handleSaveGrade(g, 'notes', val);
-                        }}
-                        className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
-                        placeholder="—"
-                      />
+                      {canEdit ? (
+                        <input
+                          type="text"
+                          defaultValue={g.notes || ''}
+                          onBlur={(e) => {
+                            const val = e.target.value.trim();
+                            if (val !== (g.notes || '')) void handleSaveGrade(g, 'notes', val);
+                          }}
+                          className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
+                          placeholder="—"
+                        />
+                      ) : (g.notes || '—')}
                     </td>
                   </tr>
                 ))}
@@ -451,7 +458,7 @@ function StudentGradesTab({ schoolId }: { schoolId: number | null }) {
 /* ═══════════════════════════════════════
    Tab 2: إدخال درجات شعبة
    ═══════════════════════════════════════ */
-function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
+function SectionGradesTab({ schoolId, canInitialize }: { schoolId: number | null; canInitialize: boolean }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [sections, setSections] = useState<SectionRecord[]>([]);
@@ -583,6 +590,7 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
       .filter(([, v]) => v !== '')
       .map(([gradeId, value]) => ({
         grade_id: Number(gradeId),
+        revision: grades.find(grade => grade.id === Number(gradeId))?.revision,
         [fieldToEdit]: value,
       }));
     if (entries.length === 0) {
@@ -602,6 +610,7 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
       .filter(([, v]) => v !== '')
       .map(([gradeId, value]) => ({
         grade_id: Number(gradeId),
+        revision: grades.find(grade => grade.id === Number(gradeId))?.revision,
         [fieldToEdit]: value,
       }));
     const res = await bulkUpdateGrades(entries, schoolId);
@@ -673,10 +682,12 @@ function SectionGradesTab({ schoolId }: { schoolId: number | null }) {
         <button onClick={loadGrades} disabled={!selectedSectionId || !selectedSubjectId} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-50">
           عرض الدرجات
         </button>
-        <button onClick={handleInit} disabled={initLoading || !selectedSectionId || !selectedSubjectId} className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50">
-          {initLoading ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
-          تهيئة
-        </button>
+        {canInitialize && (
+          <button onClick={handleInit} disabled={initLoading || !selectedSectionId || !selectedSubjectId} className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50">
+            {initLoading ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
+            تهيئة
+          </button>
+        )}
       </div>
 
       {grades.length > 0 && (

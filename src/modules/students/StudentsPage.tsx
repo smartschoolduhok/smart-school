@@ -6,7 +6,7 @@ import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getStudents, getClasses, getSections, createStudent, updateStudent, archiveStudent } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
-import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import { ACADEMIC_ACCESS_ROLES, ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import type { StudentReligion } from '../../lib/studentReligion';
 import {
   FINALIZED_STUDENT_PLACEMENT_MESSAGE,
@@ -98,6 +98,8 @@ export default function StudentsPage() {
 
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
   const canManageSelectedSchool = canManage && schoolId != null;
+  const canBrowseAcademicCatalog = hasRole(user?.role_key, ACADEMIC_ACCESS_ROLES);
+  const isParent = user?.role_key === 'parent';
 
   useEffect(() => {
     setStudents([]);
@@ -130,8 +132,8 @@ export default function StudentsPage() {
     setError('');
     const [sRes, cRes, secRes] = await Promise.all([
       getStudents(schoolId),
-      getClasses(schoolId),
-      getSections(schoolId),
+      canBrowseAcademicCatalog ? getClasses(schoolId) : Promise.resolve({ data: [] as ClassRecord[] }),
+      canBrowseAcademicCatalog ? getSections(schoolId) : Promise.resolve({ data: [] as SectionRecord[] }),
     ]);
     if (!isCurrentRequest()) return;
     if (sRes.data) setStudents(sRes.data as StudentRecord[]);
@@ -258,8 +260,10 @@ export default function StudentsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">الطلاب</h1>
-          <p className="text-sm text-gray-500 mt-1">إدارة بيانات الطلاب والشؤون الأكاديمية</p>
+          <h1 className="text-2xl font-bold text-gray-900">{isParent ? 'أبنائي' : 'الطلاب'}</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            {isParent ? 'عرض ملفات الأبناء المرتبطين بحسابك' : 'إدارة بيانات الطلاب والشؤون الأكاديمية'}
+          </p>
         </div>
         {canManageSelectedSchool && (
           <button
