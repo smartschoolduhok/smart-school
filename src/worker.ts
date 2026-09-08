@@ -8164,6 +8164,97 @@ function canManageSalaries(roleKey: RoleKey): boolean {
   return hasRole(roleKey, EMPLOYEE_SALARY_ROLES);
 }
 
+const FINANCE_BUSINESS_TIME_ZONE = 'Asia/Baghdad';
+const MAX_SAFE_FINANCE_AMOUNT = 9_007_199_254_740_991;
+
+function formatBusinessDate(value: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: FINANCE_BUSINESS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+function parseBusinessDate(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() + 1 !== month
+    || date.getUTCDate() !== day
+  ) return null;
+  return value;
+}
+
+function parseBusinessDateFilter(value: unknown, inclusiveEnd = false): string | null {
+  const direct = parseBusinessDate(value);
+  if (direct) return direct;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const epochSeconds = Number(value);
+  if (!Number.isSafeInteger(epochSeconds) || epochSeconds <= 0) return null;
+  return formatBusinessDate(new Date((epochSeconds - (inclusiveEnd ? 1 : 0)) * 1000));
+}
+
+function parseWholeFinanceAmount(value: unknown, allowZero = false): number | null {
+  let parsed: number;
+  if (typeof value === 'number') {
+    parsed = value;
+  } else if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    parsed = Number(value.trim());
+  } else {
+    return null;
+  }
+  if (!Number.isSafeInteger(parsed) || parsed > MAX_SAFE_FINANCE_AMOUNT) return null;
+  if (allowZero ? parsed < 0 : parsed <= 0) return null;
+  return parsed;
+}
+
+function parseFinancePeriodPart(value: unknown, minimum: number, maximum: number): number | null {
+  const parsed = parseWholeFinanceAmount(value, false);
+  return parsed != null && parsed >= minimum && parsed <= maximum ? parsed : null;
+}
+
+async function financeRequestFingerprint(values: unknown[]): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(values)));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function mapTreasuryDomainError(error: unknown, fallback: string): {
+  status: 400 | 409 | 500;
+  code: string;
+  error: string;
+} {
+  const detail = String((error as any)?.message || error || '');
+  const mappings: Array<[string, 400 | 409, string, string]> = [
+    ['invalid_business_date', 400, 'invalid_business_date', 'تاريخ العمل المالي غير صالح'],
+    ['future_business_date', 400, 'future_business_date', 'لا يمكن تسجيل حركة أو إقفال بتاريخ مستقبلي'],
+    ['treasury_day_closed', 409, 'treasury_day_closed', 'هذه الفترة المالية مقفلة ولا تقبل تغييرات جديدة'],
+    ['treasury_day_already_closed', 409, 'treasury_day_already_closed', 'تم إقفال هذا اليوم أو يوم لاحق مسبقاً'],
+    ['treasury_closing_mismatch', 409, 'treasury_closing_mismatch', 'تعذر تثبيت الإقفال لأن أرقام الخزنة تغيرت'],
+    ['finance_reconciliation_required', 409, 'finance_reconciliation_required', 'تحتاج الخزنة إلى مطابقة قبل تنفيذ هذه العملية'],
+    ['salary_finance_integrity_error', 409, 'salary_finance_integrity_error', 'حالة الراتب لا تطابق قيد الخزنة'],
+    ['salary_not_payable', 409, 'salary_not_payable', 'الراتب مدفوع أو ملغى أو تغيرت حالته'],
+    ['salary_employee_mismatch', 400, 'salary_employee_mismatch', 'الموظف غير نشط أو لا ينتمي إلى المدرسة'],
+    ['invalid_salary_request', 400, 'invalid_salary_request', 'بيانات الراتب غير صالحة'],
+    ['unsupported_finance_currency', 400, 'unsupported_finance_currency', 'العمليات المالية التشغيلية تدعم الدينار العراقي فقط'],
+    ['invalid_finance_amount', 400, 'invalid_finance_amount', 'المبلغ يجب أن يكون عدداً صحيحاً موجباً وآمناً'],
+    ['invalid_treasury_category', 400, 'invalid_treasury_category', 'التصنيف لا يطابق نوع القيد'],
+    ['invalid_finance_request', 400, 'invalid_finance_request', 'بيانات العملية المالية غير صالحة'],
+    ['finance_operation_stale', 409, 'finance_operation_stale', 'تم تنفيذ العملية أو تغيرت حالتها مسبقاً'],
+  ];
+  for (const [needle, status, code, message] of mappings) {
+    if (detail.includes(needle)) return { status, code, error: message };
+  }
+  if (detail.includes('UNIQUE constraint failed')) {
+    return { status: 409, code: 'finance_operation_stale', error: 'تم تنفيذ العملية مسبقاً' };
+  }
+  return { status: 500, code: 'treasury_operation_failed', error: fallback };
+}
+
 // Finance routes share strict role/school validation and the atomic ledger engine.
 registerFinanceRoutes(app);
 
@@ -8332,9 +8423,9 @@ app.post('/api/employees', requireSameSchoolOrAdmin(), async (c) => {
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const targetSchoolId = targetSchool.schoolId;
 
-    const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseInt(String(salary_amount), 10) : 0;
-    if (isNaN(salaryNum) || salaryNum < 0) {
-      return c.json({ error: 'راتب الموظف يجب أن يكون صفر أو أكبر' }, 400);
+    const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseWholeFinanceAmount(salary_amount, true) : 0;
+    if (salaryNum == null) {
+      return c.json({ error: 'راتب الموظف يجب أن يكون عدداً صحيحاً آمناً، صفر أو أكبر' }, 400);
     }
 
     const result = await db.prepare(`
@@ -8378,9 +8469,9 @@ app.put('/api/employees/:id', requireSameSchoolOrAdmin(), async (c) => {
 
     const { full_name, employee_number, phone, email, role, job_title, salary_amount, hire_date, notes } = body;
 
-    const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseInt(String(salary_amount), 10) : existing.salary_amount;
-    if (isNaN(salaryNum) || salaryNum < 0) {
-      return c.json({ error: 'راتب الموظف يجب أن يكون صفر أو أكبر' }, 400);
+    const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseWholeFinanceAmount(salary_amount, true) : existing.salary_amount;
+    if (salaryNum == null) {
+      return c.json({ error: 'راتب الموظف يجب أن يكون عدداً صحيحاً آمناً، صفر أو أكبر' }, 400);
     }
 
     await db.prepare(`
@@ -8454,27 +8545,40 @@ app.get('/api/salaries', requireSameSchoolOrAdmin(), async (c) => {
 
   try {
     const query = c.req.query();
-    const employeeId = query.employee_id ? parseInt(query.employee_id, 10) : null;
-    const month = query.month ? parseInt(query.month, 10) : null;
-    const year = query.year ? parseInt(query.year, 10) : null;
+    const employeeId = query.employee_id ? parseFinancePeriodPart(query.employee_id, 1, MAX_SAFE_FINANCE_AMOUNT) : null;
+    const month = query.month ? parseFinancePeriodPart(query.month, 1, 12) : null;
+    const year = query.year ? parseFinancePeriodPart(query.year, 2000, 2200) : null;
     const status = query.status || null;
+    const requestedSchoolId = query.school_id ? parseFinancePeriodPart(query.school_id, 1, MAX_SAFE_FINANCE_AMOUNT) : null;
+    const targetSchoolId = scope === 'single' ? resolvedSchoolId : requestedSchoolId;
 
-    let sql = `SELECT s.*, e.full_name as employee_name, e.employee_number, e.job_title FROM employee_salaries s LEFT JOIN employees e ON s.employee_id = e.id WHERE 1=1`;
+    if (!targetSchoolId) return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+    if ((query.employee_id && employeeId == null) || (query.month && month == null) || (query.year && year == null)) {
+      return c.json({ error: 'مرشحات الرواتب غير صالحة' }, 400);
+    }
+    if (status && !['unpaid', 'paid', 'cancelled'].includes(status)) {
+      return c.json({ error: 'حالة الراتب غير صالحة' }, 400);
+    }
+
+    let sql = `SELECT s.*, e.full_name as employee_name, e.employee_number, e.job_title,
+      t.business_date as payment_business_date
+      FROM employee_salaries s
+      LEFT JOIN employees e ON s.employee_id = e.id
+      LEFT JOIN treasury_transactions t ON t.id = s.treasury_transaction_id
+      WHERE 1=1`;
     const params: any[] = [];
 
-    if (scope === 'single' && resolvedSchoolId) {
-      sql += ` AND s.school_id = ?`;
-      params.push(resolvedSchoolId);
-    }
-    if (employeeId && !isNaN(employeeId)) {
+    sql += ` AND s.school_id = ?`;
+    params.push(targetSchoolId);
+    if (employeeId != null) {
       sql += ` AND s.employee_id = ?`;
       params.push(employeeId);
     }
-    if (month !== null && !isNaN(month)) {
+    if (month !== null) {
       sql += ` AND s.month = ?`;
       params.push(month);
     }
-    if (year !== null && !isNaN(year)) {
+    if (year !== null) {
       sql += ` AND s.year = ?`;
       params.push(year);
     }
@@ -8506,19 +8610,21 @@ app.get('/api/salaries/:id', requireSameSchoolOrAdmin(), async (c) => {
   try {
     const id = parseInt(c.req.param('id'), 10);
     if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+    const query = c.req.query();
+    const requestedSchoolId = query.school_id ? parseFinancePeriodPart(query.school_id, 1, MAX_SAFE_FINANCE_AMOUNT) : null;
+    const targetSchoolId = scope === 'single' ? resolvedSchoolId : requestedSchoolId;
+    if (!targetSchoolId) return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
 
     const row = await db.prepare(`
-      SELECT s.*, e.full_name as employee_name, e.employee_number, e.job_title, e.status as employee_status
+      SELECT s.*, e.full_name as employee_name, e.employee_number, e.job_title, e.status as employee_status,
+             t.business_date as payment_business_date
       FROM employee_salaries s
       LEFT JOIN employees e ON s.employee_id = e.id
-      WHERE s.id = ?
-    `).bind(id).first<any>();
+      LEFT JOIN treasury_transactions t ON t.id = s.treasury_transaction_id
+      WHERE s.id = ? AND s.school_id = ?
+    `).bind(id, targetSchoolId).first<any>();
 
     if (!row) return c.json({ error: 'الراتب غير موجود' }, 404);
-
-    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
-      return c.json({ error: 'غير مسموح: الراتب لا ينتمي إلى مدرستك' }, 403);
-    }
 
     return c.json({ data: row });
   } catch (err: any) {
@@ -8544,11 +8650,14 @@ app.post('/api/salaries/generate', requireSameSchoolOrAdmin(), async (c) => {
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
 
-    if (!employee_id || !month || !year) {
+    const employeeId = parseFinancePeriodPart(employee_id, 1, MAX_SAFE_FINANCE_AMOUNT);
+    const salaryMonth = parseFinancePeriodPart(month, 1, 12);
+    const salaryYear = parseFinancePeriodPart(year, 2000, 2200);
+    if (employeeId == null || salaryMonth == null || salaryYear == null) {
       return c.json({ error: 'معرف الموظف والشهر والسنة مطلوبة' }, 400);
     }
 
-    const emp = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(employee_id).first<any>();
+    const emp = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(employeeId).first<any>();
     if (!emp) return c.json({ error: 'الموظف غير موجود' }, 404);
 
     const targetSchoolId = targetSchool.schoolId;
@@ -8560,31 +8669,32 @@ app.post('/api/salaries/generate', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'لا يمكن توليد راتب لموظف مؤرشف' }, 400);
     }
 
-    const base = base_salary !== undefined ? parseInt(String(base_salary), 10) : emp.salary_amount;
-    const bonus = bonus_amount !== undefined ? parseInt(String(bonus_amount), 10) : 0;
-    const deduction = deduction_amount !== undefined ? parseInt(String(deduction_amount), 10) : 0;
+    const base = base_salary !== undefined ? parseWholeFinanceAmount(base_salary, true) : parseWholeFinanceAmount(emp.salary_amount, true);
+    const bonus = bonus_amount !== undefined ? parseWholeFinanceAmount(bonus_amount, true) : 0;
+    const deduction = deduction_amount !== undefined ? parseWholeFinanceAmount(deduction_amount, true) : 0;
 
-    if (isNaN(base) || base < 0 || isNaN(bonus) || bonus < 0 || isNaN(deduction) || deduction < 0) {
-      return c.json({ error: 'المبالغ يجب أن تكون صفر أو أكبر' }, 400);
+    if (base == null || bonus == null || deduction == null) {
+      return c.json({ error: 'المبالغ يجب أن تكون أعداداً صحيحة آمنة، صفر أو أكبر' }, 400);
     }
 
     const net = base + bonus - deduction;
-    if (net < 0) {
+    if (net < 0 || !Number.isSafeInteger(net)) {
       return c.json({ error: 'مبلغ الاستقطاع أكبر من الراتب والمكافأة' }, 400);
     }
 
     const result = await db.prepare(`
       INSERT INTO employee_salaries (school_id, employee_id, month, year, base_salary, bonus_amount, deduction_amount, net_salary, status, created_by_user_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, unixepoch(), unixepoch())
-    `).bind(targetSchoolId, employee_id, month, year, base, bonus, deduction, net, user.id).run();
+    `).bind(targetSchoolId, employeeId, salaryMonth, salaryYear, base, bonus, deduction, net, user.id).run();
 
     const newId = result.meta.last_row_id;
-    return c.json({ data: { id: newId, employee_id, month, year, base_salary: base, bonus_amount: bonus, deduction_amount: deduction, net_salary: net, status: 'unpaid' } }, 201);
+    return c.json({ data: { id: newId, employee_id: employeeId, month: salaryMonth, year: salaryYear, base_salary: base, bonus_amount: bonus, deduction_amount: deduction, net_salary: net, status: 'unpaid' } }, 201);
   } catch (err: any) {
     if (err.message && err.message.includes('UNIQUE constraint failed')) {
       return c.json({ error: 'يوجد راتب مسجل لهذا الموظف في هذا الشهر' }, 409);
     }
-    return c.json({ error: 'فشل في توليد الراتب', detail: err.message }, 500);
+    const mapped = mapTreasuryDomainError(err, 'فشل في توليد الراتب');
+    return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -8604,7 +8714,9 @@ app.post('/api/salaries/generate-all', requireSameSchoolOrAdmin(), async (c) => 
     const body = await c.req.json();
     const { school_id, month, year, bonus_amount, deduction_amount } = body;
 
-    if (!month || !year) {
+    const salaryMonth = parseFinancePeriodPart(month, 1, 12);
+    const salaryYear = parseFinancePeriodPart(year, 2000, 2200);
+    if (salaryMonth == null || salaryYear == null) {
       return c.json({ error: 'الشهر والسنة مطلوبة' }, 400);
     }
 
@@ -8612,11 +8724,11 @@ app.post('/api/salaries/generate-all', requireSameSchoolOrAdmin(), async (c) => 
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const targetSchoolId = targetSchool.schoolId;
 
-    const bonus = bonus_amount !== undefined ? parseInt(String(bonus_amount), 10) : 0;
-    const deduction = deduction_amount !== undefined ? parseInt(String(deduction_amount), 10) : 0;
+    const bonus = bonus_amount !== undefined ? parseWholeFinanceAmount(bonus_amount, true) : 0;
+    const deduction = deduction_amount !== undefined ? parseWholeFinanceAmount(deduction_amount, true) : 0;
 
-    if (isNaN(bonus) || bonus < 0 || isNaN(deduction) || deduction < 0) {
-      return c.json({ error: 'المبالغ يجب أن تكون صفر أو أكبر' }, 400);
+    if (bonus == null || deduction == null) {
+      return c.json({ error: 'المبالغ يجب أن تكون أعداداً صحيحة آمنة، صفر أو أكبر' }, 400);
     }
 
     const employees = await db.prepare(`
@@ -8627,9 +8739,13 @@ app.post('/api/salaries/generate-all', requireSameSchoolOrAdmin(), async (c) => 
     const skipped: any[] = [];
 
     for (const emp of (employees.results || [])) {
-      const base = emp.salary_amount || 0;
+      const base = parseWholeFinanceAmount(emp.salary_amount, true);
+      if (base == null) {
+        skipped.push({ employee_id: emp.id, reason: 'راتب الموظف المخزن غير صالح' });
+        continue;
+      }
       const net = base + bonus - deduction;
-      if (net < 0) {
+      if (net < 0 || !Number.isSafeInteger(net)) {
         skipped.push({ employee_id: emp.id, reason: 'مبلغ الاستقطاع أكبر من الراتب والمكافأة' });
         continue;
       }
@@ -8637,20 +8753,21 @@ app.post('/api/salaries/generate-all', requireSameSchoolOrAdmin(), async (c) => 
         const result = await db.prepare(`
           INSERT INTO employee_salaries (school_id, employee_id, month, year, base_salary, bonus_amount, deduction_amount, net_salary, status, created_by_user_id, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, unixepoch(), unixepoch())
-        `).bind(targetSchoolId, emp.id, month, year, base, bonus, deduction, net, user.id).run();
-        created.push({ id: result.meta.last_row_id, employee_id: emp.id, month, year, net_salary: net });
+        `).bind(targetSchoolId, emp.id, salaryMonth, salaryYear, base, bonus, deduction, net, user.id).run();
+        created.push({ id: result.meta.last_row_id, employee_id: emp.id, month: salaryMonth, year: salaryYear, net_salary: net });
       } catch (insertErr: any) {
         if (insertErr.message && insertErr.message.includes('UNIQUE constraint failed')) {
           skipped.push({ employee_id: emp.id, reason: 'يوجد راتب مسجل لهذا الموظف في هذا الشهر' });
         } else {
-          skipped.push({ employee_id: emp.id, reason: insertErr.message });
+          skipped.push({ employee_id: emp.id, reason: mapTreasuryDomainError(insertErr, 'تعذر توليد الراتب').error });
         }
       }
     }
 
     return c.json({ data: { created, skipped, count: created.length } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في توليد الرواتب', detail: err.message }, 500);
+    const mapped = mapTreasuryDomainError(err, 'فشل في توليد الرواتب');
+    return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -8659,16 +8776,14 @@ app.post('/api/salaries/generate-all', requireSameSchoolOrAdmin(), async (c) => 
 app.put('/api/salaries/:id/pay', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
 
   if (!user || !canManageSalaries(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
   }
 
   try {
-    const id = parseInt(c.req.param('id'), 10);
-    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+    const id = parseFinancePeriodPart(c.req.param('id'), 1, MAX_SAFE_FINANCE_AMOUNT);
+    if (id == null) return c.json({ error: 'معرف غير صالح' }, 400);
     const body = await c.req.json().catch(() => ({}));
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
@@ -8692,65 +8807,43 @@ app.put('/api/salaries/:id/pay', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'هذا الراتب ملغى مسبقاً' }, 409);
     }
 
-    // Check duplicate treasury transaction
-    const existingTx = await db.prepare(`
-      SELECT id FROM treasury_transactions WHERE school_id = ? AND source_type = 'salary_payment' AND source_id = ?
-    `).bind(salary.school_id, id).first<any>();
-
-    if (existingTx) {
-      return c.json({ error: 'تم دفع هذا الراتب مسبقاً' }, 409);
+    const businessDate = parseBusinessDate(body.paid_at || formatBusinessDate());
+    if (!businessDate) return c.json({ error: 'تاريخ الدفع غير صالح', code: 'invalid_business_date' }, 400);
+    if (businessDate > formatBusinessDate()) {
+      return c.json({ error: 'لا يمكن دفع راتب بتاريخ مستقبلي', code: 'future_business_date' }, 400);
     }
 
-    const paidAt = body.paid_at || new Date().toISOString().split('T')[0];
-    const paidAtUnix = Math.floor(new Date(paidAt).getTime() / 1000) || Math.floor(Date.now() / 1000);
-
-    // ── Mark salary paid first (optimistic), then treasury; rollback on failure ──
-    await db.prepare(`
-      UPDATE employee_salaries SET status = 'paid', paid_at = ?, paid_by_user_id = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?
-    `).bind(paidAtUnix, user.id, id, targetSchool.schoolId).run();
-
-    try {
-      // Create treasury expense transaction
-      await db.prepare(`
-        INSERT INTO treasury_transactions
+    const transaction = await db.prepare(`
+      INSERT INTO treasury_transactions
         (school_id, transaction_type, category, amount, currency, description,
-         source_type, source_id, status, created_by, created_at)
-        VALUES (?, 'expense', 'salary', ?, 'IQD', ?,
-                'salary_payment', ?, 'active', ?, unixepoch())
-      `).bind(salary.school_id, salary.net_salary, `دفع راتب ${salary.employee_name || salary.employee_id}`, id, user.id).run();
+         source_type, source_id, status, created_by, created_at, business_date)
+      VALUES (?, 'expense', 'salary', ?, 'IQD', ?,
+              'salary_payment', ?, 'active', ?, unixepoch(), ?)
+      RETURNING id, business_date, amount
+    `).bind(
+      salary.school_id,
+      salary.net_salary,
+      `دفع راتب ${salary.employee_name || salary.employee_id}`,
+      id,
+      user.id,
+      businessDate,
+    ).first<any>();
 
-      // Update cached balance
-      await db.prepare(`
-        INSERT INTO treasury_accounts (school_id, current_balance, updated_at)
-        VALUES (?, ?, unixepoch())
-        ON CONFLICT(school_id) DO UPDATE SET
-          current_balance = treasury_accounts.current_balance + excluded.current_balance,
-          updated_at = unixepoch()
-      `).bind(salary.school_id, -salary.net_salary).run();
-
-      // Link treasury transaction id back to salary
-      const txRow = await db.prepare(`
-        SELECT id FROM treasury_transactions WHERE school_id = ? AND source_type = 'salary_payment' AND source_id = ? ORDER BY id DESC LIMIT 1
-      `).bind(salary.school_id, id).first<any>();
-
-      if (txRow) {
-        await db.prepare(`UPDATE employee_salaries SET treasury_transaction_id = ? WHERE id = ?`).bind(txRow.id, id).run();
-      }
-    } catch (treasuryErr: any) {
-      // COMPENSATING ROLLBACK — treasury failed, revert salary to unpaid
-      await db.prepare(`
-        UPDATE employee_salaries SET status = 'unpaid', paid_at = NULL, paid_by_user_id = NULL, treasury_transaction_id = NULL, updated_at = unixepoch() WHERE id = ?
-      `).bind(id).run();
-
-      return c.json({
-        error: 'تعذر تسجيل الدفع في الخزنة، تم التراجع عن دفع الراتب',
-        detail: treasuryErr.message
-      }, 500);
+    if (!transaction) {
+      return c.json({ error: 'تعذر إنشاء قيد دفع الراتب', code: 'salary_not_payable' }, 409);
     }
 
-    return c.json({ data: { id, status: 'paid', paid_at: paidAtUnix, net_salary: salary.net_salary } });
+    return c.json({ data: {
+      id,
+      status: 'paid',
+      payment_business_date: transaction.business_date,
+      treasury_transaction_id: transaction.id,
+      net_salary: salary.net_salary,
+      business_timezone: FINANCE_BUSINESS_TIME_ZONE,
+    } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في دفع الراتب', detail: err.message }, 500);
+    const mapped = mapTreasuryDomainError(err, 'فشل في دفع الراتب');
+    return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -8759,16 +8852,14 @@ app.put('/api/salaries/:id/pay', requireSameSchoolOrAdmin(), async (c) => {
 app.put('/api/salaries/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
 
   if (!user || !canManageSalaries(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
   }
 
   try {
-    const id = parseInt(c.req.param('id'), 10);
-    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
+    const id = parseFinancePeriodPart(c.req.param('id'), 1, MAX_SAFE_FINANCE_AMOUNT);
+    if (id == null) return c.json({ error: 'معرف غير صالح' }, 400);
     const body = await c.req.json().catch(() => ({}));
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
@@ -8785,37 +8876,42 @@ app.put('/api/salaries/:id/cancel', requireSameSchoolOrAdmin(), async (c) => {
     }
 
     const { cancel_reason } = body;
-    if (!cancel_reason || typeof cancel_reason !== 'string' || cancel_reason.trim().length === 0) {
+    if (!cancel_reason || typeof cancel_reason !== 'string' || cancel_reason.trim().length === 0 || cancel_reason.trim().length > 1000) {
       return c.json({ error: 'سبب الإلغاء مطلوب' }, 400);
     }
+    const reason = cancel_reason.trim();
 
-    // If paid, cancel linked treasury transaction and reverse balance
-    if (salary.status === 'paid' && salary.treasury_transaction_id) {
-      const tx = await db.prepare(`SELECT * FROM treasury_transactions WHERE id = ? AND source_type = 'salary_payment' AND source_id = ?`)
-        .bind(salary.treasury_transaction_id, id).first<any>();
-      if (tx && tx.status === 'active') {
-        await db.prepare(`
-          UPDATE treasury_transactions SET status = 'cancelled', cancel_reason = ?, cancelled_by = ?, cancelled_at = unixepoch(), updated_at = unixepoch() WHERE id = ?
-        `).bind(cancel_reason, user.id, tx.id).run();
-
-        // Reverse cached balance
-        await db.prepare(`
-          INSERT INTO treasury_accounts (school_id, current_balance, updated_at)
-          VALUES (?, ?, unixepoch())
-          ON CONFLICT(school_id) DO UPDATE SET
-            current_balance = treasury_accounts.current_balance + excluded.current_balance,
-            updated_at = unixepoch()
-        `).bind(salary.school_id, salary.net_salary).run();
+    if (salary.status === 'paid') {
+      if (!salary.treasury_transaction_id) {
+        return c.json({ error: 'الراتب المدفوع لا يملك قيد خزنة مطابقاً', code: 'salary_finance_integrity_error' }, 409);
+      }
+      const cancelled = await db.prepare(`
+        UPDATE treasury_transactions
+        SET status = 'cancelled', cancel_reason = ?, cancelled_by = ?,
+            cancelled_at = unixepoch(), updated_at = unixepoch()
+        WHERE id = ? AND school_id = ? AND source_type = 'salary_payment'
+          AND source_id = ? AND status = 'active'
+        RETURNING id
+      `).bind(reason, user.id, salary.treasury_transaction_id, targetSchool.schoolId, id).first<any>();
+      if (!cancelled) {
+        return c.json({ error: 'تم إلغاء الراتب أو تغير قيده مسبقاً', code: 'finance_operation_stale' }, 409);
+      }
+    } else {
+      const cancelled = await db.prepare(`
+        UPDATE employee_salaries
+        SET status = 'cancelled', cancel_reason = ?, updated_at = unixepoch()
+        WHERE id = ? AND school_id = ? AND status = 'unpaid'
+        RETURNING id
+      `).bind(reason, id, targetSchool.schoolId).first<any>();
+      if (!cancelled) {
+        return c.json({ error: 'تم إلغاء الراتب أو تغيرت حالته مسبقاً', code: 'finance_operation_stale' }, 409);
       }
     }
 
-    await db.prepare(`
-      UPDATE employee_salaries SET status = 'cancelled', cancel_reason = ?, updated_at = unixepoch() WHERE id = ? AND school_id = ?
-    `).bind(cancel_reason, id, targetSchool.schoolId).run();
-
-    return c.json({ data: { id, status: 'cancelled', cancel_reason } });
+    return c.json({ data: { id, status: 'cancelled', cancel_reason: reason } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء الراتب', detail: err.message }, 500);
+    const mapped = mapTreasuryDomainError(err, 'فشل في إلغاء الراتب');
+    return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -8833,10 +8929,16 @@ app.get('/api/salaries/reports/monthly', requireSameSchoolOrAdmin(), async (c) =
 
   try {
     const query = c.req.query();
-    const month = query.month ? parseInt(query.month, 10) : null;
-    const year = query.year ? parseInt(query.year, 10) : null;
+    const month = query.month ? parseFinancePeriodPart(query.month, 1, 12) : null;
+    const year = query.year ? parseFinancePeriodPart(query.year, 2000, 2200) : null;
 
-    let targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : (query.school_id ? parseInt(query.school_id, 10) : null);
+    if ((query.month && month == null) || (query.year && year == null)) {
+      return c.json({ error: 'الشهر أو السنة غير صالحين' }, 400);
+    }
+
+    const requestedSchoolId = query.school_id ? parseFinancePeriodPart(query.school_id, 1, MAX_SAFE_FINANCE_AMOUNT) : null;
+    const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : requestedSchoolId;
+    if (!targetSchoolId) return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
 
     let sql = `
       SELECT month, year,
@@ -8857,11 +8959,11 @@ app.get('/api/salaries/reports/monthly', requireSameSchoolOrAdmin(), async (c) =
       sql += ` AND school_id = ?`;
       params.push(targetSchoolId);
     }
-    if (month !== null && !isNaN(month)) {
+    if (month !== null) {
       sql += ` AND month = ?`;
       params.push(month);
     }
-    if (year !== null && !isNaN(year)) {
+    if (year !== null) {
       sql += ` AND year = ?`;
       params.push(year);
     }
@@ -8934,20 +9036,18 @@ app.get('/api/treasury/summary', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
     }
 
-    // Source-of-truth balance calculation from active transactions
+    const businessDate = formatBusinessDate();
+
+    // Source-of-truth balance calculation from active transactions.
     const balanceRow = await db.prepare(`
       SELECT 
-        COALESCE(SUM(CASE WHEN transaction_type = 'income' AND status = 'active' THEN amount ELSE 0 END), 0) -
-        COALESCE(SUM(CASE WHEN transaction_type = 'expense' AND status = 'active' THEN amount ELSE 0 END), 0)
+        COALESCE(SUM(CASE WHEN transaction_type = 'income' AND status = 'active' THEN CAST(amount AS INTEGER) ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN transaction_type = 'expense' AND status = 'active' THEN CAST(amount AS INTEGER) ELSE 0 END), 0)
       AS verified_balance
       FROM treasury_transactions WHERE school_id = ?
     `).bind(targetSchoolId).first<{ verified_balance: number }>();
 
     const verifiedBalance = balanceRow?.verified_balance || 0;
-
-    // Today's income & expense
-    const todayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
-    const todayEnd = todayStart + 86400;
 
     const todayRow = await db.prepare(`
       SELECT 
@@ -8955,18 +9055,29 @@ app.get('/api/treasury/summary', requireSameSchoolOrAdmin(), async (c) => {
         COALESCE(SUM(CASE WHEN transaction_type = 'expense' AND status = 'active' THEN amount ELSE 0 END), 0) AS today_expense,
         COUNT(CASE WHEN status = 'active' THEN 1 END) AS today_count
       FROM treasury_transactions
-      WHERE school_id = ? AND created_at >= ? AND created_at < ?
-    `).bind(targetSchoolId, todayStart, todayEnd).first<any>();
+      WHERE school_id = ? AND business_date = ?
+    `).bind(targetSchoolId, businessDate).first<any>();
 
     // Cached balance (may differ, used for quick display)
     const cachedRow = await db.prepare(`SELECT current_balance FROM treasury_accounts WHERE school_id = ?`).bind(targetSchoolId).first<{ current_balance: number }>();
 
     // Pending fees count for quick reference
     const pendingFees = await db.prepare(`SELECT COUNT(*) as count FROM student_fees WHERE school_id = ? AND status IN ('pending','partial')`).bind(targetSchoolId).first<{ count: number }>();
+    const todayClosing = await db.prepare(`
+      SELECT id, closing_balance, created_at FROM treasury_closings
+      WHERE school_id = ? AND closing_date = ?
+    `).bind(targetSchoolId, businessDate).first<any>();
+    const payrollReadiness = await db.prepare(`
+      SELECT COUNT(*) AS salary_count,
+        COALESCE(SUM(CASE WHEN healthy = 0 THEN 1 ELSE 0 END), 0) AS unhealthy_count
+      FROM finance_payroll_readiness WHERE school_id = ?
+    `).bind(targetSchoolId).first<any>();
 
     return c.json({
       data: {
         school_id: targetSchoolId,
+        business_date: businessDate,
+        business_timezone: FINANCE_BUSINESS_TIME_ZONE,
         verified_balance: verifiedBalance,
         cached_balance: cachedRow?.current_balance || 0,
         balance_sync: verifiedBalance === (cachedRow?.current_balance || 0),
@@ -8975,6 +9086,10 @@ app.get('/api/treasury/summary', requireSameSchoolOrAdmin(), async (c) => {
         today_net: (todayRow?.today_income || 0) - (todayRow?.today_expense || 0),
         today_transaction_count: todayRow?.today_count || 0,
         pending_fees_count: pendingFees?.count || 0,
+        today_closed: Boolean(todayClosing),
+        today_closing: todayClosing || null,
+        payroll_integrity: (payrollReadiness?.unhealthy_count || 0) === 0,
+        payroll_unhealthy_count: payrollReadiness?.unhealthy_count || 0,
       }
     });
   } catch (err: any) {
@@ -9001,10 +9116,21 @@ app.get('/api/treasury/transactions', requireSameSchoolOrAdmin(), async (c) => {
     const type = query.type || null;
     const category = query.category || null;
     const status = query.status || null;
-    const dateFrom = query.date_from ? parseInt(query.date_from, 10) : null;
-    const dateTo = query.date_to ? parseInt(query.date_to, 10) : null;
-    const limit = Math.min(parseInt(query.limit || '50', 10), 200);
-    const offset = parseInt(query.offset || '0', 10);
+    const rawDateFrom = query.from || query.date_from || null;
+    const rawDateTo = query.to || query.date_to || null;
+    const dateFrom = rawDateFrom ? parseBusinessDateFilter(rawDateFrom) : null;
+    const dateTo = rawDateTo ? parseBusinessDateFilter(rawDateTo, true) : null;
+    const parsedLimit = parseFinancePeriodPart(query.limit || '50', 1, 200);
+    const parsedOffset = parseWholeFinanceAmount(query.offset || '0', true);
+    const limit = parsedLimit ?? 50;
+    const offset = parsedOffset ?? 0;
+
+    if (!targetSchoolId) return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+    if (type && !['income', 'expense'].includes(type)) return c.json({ error: 'نوع القيد غير صالح' }, 400);
+    if (status && !['active', 'cancelled'].includes(status)) return c.json({ error: 'حالة القيد غير صالحة' }, 400);
+    if ((rawDateFrom && !dateFrom) || (rawDateTo && !dateTo) || (dateFrom && dateTo && dateFrom > dateTo)) {
+      return c.json({ error: 'نطاق تاريخ العمل غير صالح', code: 'invalid_business_date' }, 400);
+    }
 
     let sql = `SELECT t.*, u.full_name as created_by_name FROM treasury_transactions t LEFT JOIN users u ON t.created_by = u.id WHERE 1=1`;
     const params: any[] = [];
@@ -9013,10 +9139,10 @@ app.get('/api/treasury/transactions', requireSameSchoolOrAdmin(), async (c) => {
     if (type) { sql += ` AND t.transaction_type = ?`; params.push(type); }
     if (category) { sql += ` AND t.category = ?`; params.push(category); }
     if (status) { sql += ` AND t.status = ?`; params.push(status); }
-    if (dateFrom) { sql += ` AND t.created_at >= ?`; params.push(dateFrom); }
-    if (dateTo) { sql += ` AND t.created_at < ?`; params.push(dateTo); }
+    if (dateFrom) { sql += ` AND t.business_date >= ?`; params.push(dateFrom); }
+    if (dateTo) { sql += ` AND t.business_date <= ?`; params.push(dateTo); }
 
-    sql += ` ORDER BY t.created_at DESC LIMIT ? OFFSET ?`;
+    sql += ` ORDER BY t.business_date DESC, t.created_at DESC, t.id DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
 
     const rows = await db.prepare(sql).bind(...params).all<any>();
@@ -9028,12 +9154,16 @@ app.get('/api/treasury/transactions', requireSameSchoolOrAdmin(), async (c) => {
     if (type) { countSql += ` AND t.transaction_type = ?`; countParams.push(type); }
     if (category) { countSql += ` AND t.category = ?`; countParams.push(category); }
     if (status) { countSql += ` AND t.status = ?`; countParams.push(status); }
-    if (dateFrom) { countSql += ` AND t.created_at >= ?`; countParams.push(dateFrom); }
-    if (dateTo) { countSql += ` AND t.created_at < ?`; countParams.push(dateTo); }
+    if (dateFrom) { countSql += ` AND t.business_date >= ?`; countParams.push(dateFrom); }
+    if (dateTo) { countSql += ` AND t.business_date <= ?`; countParams.push(dateTo); }
 
     const countRow = await db.prepare(countSql).bind(...countParams).first<{ total: number }>();
 
-    return c.json({ data: rows.results || [], meta: { total: countRow?.total || 0, limit, offset } });
+    return c.json({
+      data: rows.results || [],
+      meta: { total: countRow?.total || 0, limit, offset },
+      business_timezone: FINANCE_BUSINESS_TIME_ZONE,
+    });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب القيود المالية', detail: err.message }, 500);
   }
@@ -9066,37 +9196,84 @@ app.post('/api/treasury/transactions', requireSameSchoolOrAdmin(), async (c) => 
       return c.json({ error: 'نوع القيد يجب أن يكون وارد أو مصروف' }, 400);
     }
 
-    const amountNum = parseInt(amount, 10);
-    if (isNaN(amountNum) || amountNum <= 0) {
+    const amountNum = parseWholeFinanceAmount(amount);
+    if (amountNum == null) {
       return c.json({ error: 'المبلغ يجب أن يكون عدداً صحيحاً أكبر من صفر' }, 400);
     }
 
-    // Validate category exists
-    const catRow = await db.prepare(`SELECT name FROM treasury_categories WHERE name = ?`).bind(category).first<any>();
-    if (!catRow) {
-      return c.json({ error: 'التصنيف غير موجود' }, 400);
+    if ((currency || 'IQD') !== 'IQD') {
+      return c.json({ error: 'العمليات المالية التشغيلية تدعم الدينار العراقي فقط', code: 'unsupported_finance_currency' }, 400);
     }
 
-    const result = await db.prepare(`
+    const businessDate = parseBusinessDate(body.business_date || formatBusinessDate());
+    if (!businessDate) return c.json({ error: 'تاريخ العمل المالي غير صالح', code: 'invalid_business_date' }, 400);
+    if (businessDate > formatBusinessDate()) {
+      return c.json({ error: 'لا يمكن تسجيل قيد بتاريخ مستقبلي', code: 'future_business_date' }, 400);
+    }
+
+    const clientRequestId = typeof body.client_request_id === 'string' ? body.client_request_id.trim() : '';
+    if (clientRequestId.length < 16 || clientRequestId.length > 100) {
+      return c.json({ error: 'معرف طلب القيد غير صالح', code: 'invalid_finance_request' }, 400);
+    }
+
+    const normalizedDescription = typeof description === 'string' && description.trim() ? description.trim() : null;
+    if (normalizedDescription && normalizedDescription.length > 1000) {
+      return c.json({ error: 'وصف القيد أطول من الحد المسموح' }, 400);
+    }
+
+    // Validate category exists
+    const catRow = await db.prepare(`
+      SELECT name FROM treasury_categories
+      WHERE name = ? AND type = ? AND (school_id IS NULL OR school_id = ?)
+    `).bind(category, transaction_type, school_id).first<any>();
+    if (!catRow) {
+      return c.json({ error: 'التصنيف لا يطابق نوع القيد', code: 'invalid_treasury_category' }, 400);
+    }
+
+    const fingerprint = await financeRequestFingerprint([
+      school_id, transaction_type, category, amountNum, 'IQD', normalizedDescription, businessDate,
+    ]);
+    const replay = await db.prepare(`
+      SELECT id, transaction_type, amount, status, business_date, request_fingerprint
+      FROM treasury_transactions WHERE school_id = ? AND client_request_id = ?
+    `).bind(school_id, clientRequestId).first<any>();
+    if (replay) {
+      if (replay.request_fingerprint !== fingerprint) {
+        return c.json({ error: 'أُعيد استخدام معرف الطلب ببيانات مختلفة', code: 'finance_idempotency_conflict' }, 409);
+      }
+      return c.json({ data: { ...replay, replayed: true, business_timezone: FINANCE_BUSINESS_TIME_ZONE } });
+    }
+
+    let created: any;
+    try {
+      created = await db.prepare(`
       INSERT INTO treasury_transactions
-      (school_id, transaction_type, category, amount, currency, description,
-       source_type, source_id, status, created_by, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'manual', NULL, 'active', ?, unixepoch())
-    `).bind(school_id, transaction_type, category, amountNum, currency || 'IQD', description || null, user.id).run();
+        (school_id, transaction_type, category, amount, currency, description,
+         source_type, source_id, status, created_by, created_at, business_date,
+         client_request_id, request_fingerprint)
+      VALUES (?, ?, ?, ?, 'IQD', ?, 'manual', NULL, 'active', ?, unixepoch(), ?, ?, ?)
+      RETURNING id, transaction_type, category, amount, currency, description, status, business_date
+      `).bind(
+        school_id, transaction_type, category, amountNum, normalizedDescription,
+        user.id, businessDate, clientRequestId, fingerprint,
+      ).first<any>();
+    } catch (insertError: any) {
+      if (String(insertError?.message || '').includes('UNIQUE constraint failed')) {
+        const concurrentReplay = await db.prepare(`
+          SELECT id, transaction_type, amount, status, business_date, request_fingerprint
+          FROM treasury_transactions WHERE school_id = ? AND client_request_id = ?
+        `).bind(school_id, clientRequestId).first<any>();
+        if (concurrentReplay?.request_fingerprint === fingerprint) {
+          return c.json({ data: { ...concurrentReplay, replayed: true, business_timezone: FINANCE_BUSINESS_TIME_ZONE } });
+        }
+      }
+      throw insertError;
+    }
 
-    // Update cached balance
-    const balanceDelta = transaction_type === 'income' ? amountNum : -amountNum;
-    await db.prepare(`
-      INSERT INTO treasury_accounts (school_id, current_balance, updated_at)
-      VALUES (?, ?, unixepoch())
-      ON CONFLICT(school_id) DO UPDATE SET
-        current_balance = treasury_accounts.current_balance + excluded.current_balance,
-        updated_at = unixepoch()
-    `).bind(school_id, balanceDelta).run();
-
-    return c.json({ data: { id: result.meta.last_row_id, transaction_type, amount: amountNum, status: 'active' } }, 201);
+    return c.json({ data: { ...created, replayed: false, business_timezone: FINANCE_BUSINESS_TIME_ZONE } }, 201);
   } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء القيد المالي', detail: err.message }, 500);
+    const mapped = mapTreasuryDomainError(err, 'فشل في إنشاء القيد المالي');
+    return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -9113,7 +9290,8 @@ app.put('/api/treasury/transactions/:id/cancel', requireSameSchoolOrAdmin(), asy
   }
 
   try {
-    const id = parseInt(c.req.param('id'), 10);
+    const id = parseFinancePeriodPart(c.req.param('id'), 1, MAX_SAFE_FINANCE_AMOUNT);
+    if (id == null) return c.json({ error: 'معرف القيد غير صالح' }, 400);
     const body = await c.req.json();
     const { cancel_reason } = body;
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
@@ -9127,7 +9305,7 @@ app.put('/api/treasury/transactions/:id/cancel', requireSameSchoolOrAdmin(), asy
     }
 
     if (tx.status === 'cancelled') {
-      return c.json({ error: 'القيد المالي ملغى مسبقاً' }, 400);
+      return c.json({ error: 'القيد المالي ملغى مسبقاً', code: 'finance_operation_stale' }, 409);
     }
 
     // Cannot cancel fee_payment linked transactions from here (must cancel the fee payment itself)
@@ -9135,29 +9313,30 @@ app.put('/api/treasury/transactions/:id/cancel', requireSameSchoolOrAdmin(), asy
       return c.json({ error: 'لا يمكن إلغاء قيد مرتبط بدفعة طالب من هنا. استخدم إلغاء الدفعة.' }, 400);
     }
 
-    if (!cancel_reason || typeof cancel_reason !== 'string' || cancel_reason.trim().length === 0) {
+    if (!cancel_reason || typeof cancel_reason !== 'string' || cancel_reason.trim().length === 0 || cancel_reason.trim().length > 1000) {
       return c.json({ error: 'سبب الإلغاء مطلوب' }, 400);
     }
 
-    await db.prepare(`
+    const cancelled = await db.prepare(`
       UPDATE treasury_transactions
       SET status = 'cancelled', cancelled_at = unixepoch(), cancelled_by = ?, cancel_reason = ?, updated_at = unixepoch()
-      WHERE id = ? AND school_id = ?
-    `).bind(user.id, cancel_reason.trim(), id, targetSchool.schoolId).run();
+      WHERE id = ? AND school_id = ? AND status = 'active'
+      RETURNING id, status, cancel_reason, source_type
+    `).bind(user.id, cancel_reason.trim(), id, targetSchool.schoolId).first<any>();
 
-    // Reverse cached balance
-    const reverseDelta = tx.transaction_type === 'income' ? -tx.amount : tx.amount;
-    await db.prepare(`
-      INSERT INTO treasury_accounts (school_id, current_balance, updated_at)
-      VALUES (?, ?, unixepoch())
-      ON CONFLICT(school_id) DO UPDATE SET
-        current_balance = treasury_accounts.current_balance + excluded.current_balance,
-        updated_at = unixepoch()
-    `).bind(tx.school_id, reverseDelta).run();
+    if (!cancelled) {
+      return c.json({ error: 'تم إلغاء القيد أو تغيرت حالته مسبقاً', code: 'finance_operation_stale' }, 409);
+    }
 
-    return c.json({ data: { id, status: 'cancelled', cancel_reason } });
+    return c.json({
+      data: {
+        ...cancelled,
+        salary_status_synchronized: cancelled.source_type === 'salary_payment',
+      },
+    });
   } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء القيد المالي', detail: err.message }, 500);
+    const mapped = mapTreasuryDomainError(err, 'فشل في إلغاء القيد المالي');
+    return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -9224,73 +9403,52 @@ app.post('/api/treasury/daily-closings/close-day', requireSameSchoolOrAdmin(), a
       return c.json({ error: 'المدرسة وتاريخ الإقفال مطلوبان' }, 400);
     }
 
-    // Validate date format YYYY-MM-DD
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(closing_date)) {
+    closing_date = parseBusinessDate(closing_date);
+    if (!closing_date) {
       return c.json({ error: 'تاريخ الإقفال يجب أن يكون بالصيغة YYYY-MM-DD' }, 400);
     }
-
-    // Check if already closed
-    const existing = await db.prepare(`SELECT id FROM treasury_closings WHERE school_id = ? AND closing_date = ?`).bind(school_id, closing_date).first<any>();
-    if (existing) {
-      return c.json({ error: 'تم إقفال هذا اليوم مسبقاً' }, 409);
+    if (closing_date > formatBusinessDate()) {
+      return c.json({ error: 'لا يمكن إقفال تاريخ مستقبلي', code: 'future_business_date' }, 400);
+    }
+    const normalizedNotes = typeof notes === 'string' && notes.trim() ? notes.trim() : null;
+    if (normalizedNotes && normalizedNotes.length > 1000) {
+      return c.json({ error: 'ملاحظات الإقفال أطول من الحد المسموح' }, 400);
     }
 
-    // Parse date boundaries
-    const dateObj = new Date(closing_date + 'T00:00:00');
-    const dayStart = Math.floor(dateObj.getTime() / 1000);
-    const dayEnd = dayStart + 86400;
-
-    // Calculate opening balance from last closing
-    const lastClosing = await db.prepare(`
-      SELECT closing_balance FROM treasury_closings
-      WHERE school_id = ? AND closing_date < ?
-      ORDER BY closing_date DESC LIMIT 1
-    `).bind(school_id, closing_date).first<{ closing_balance: number }>();
-    const openingBalance = lastClosing?.closing_balance || 0;
-
-    // Calculate day's transactions
-    const dayStats = await db.prepare(`
-      SELECT 
-        COALESCE(SUM(CASE WHEN transaction_type = 'income' AND status = 'active' THEN amount ELSE 0 END), 0) AS total_income,
-        COALESCE(SUM(CASE WHEN transaction_type = 'expense' AND status = 'active' THEN amount ELSE 0 END), 0) AS total_expense,
-        COUNT(CASE WHEN status = 'active' THEN 1 END) AS transaction_count
-      FROM treasury_transactions
-      WHERE school_id = ? AND created_at >= ? AND created_at < ?
-    `).bind(school_id, dayStart, dayEnd).first<any>();
-
-    const totalIncome = dayStats?.total_income || 0;
-    const totalExpense = dayStats?.total_expense || 0;
-    const closingBalance = openingBalance + totalIncome - totalExpense;
-    const txCount = dayStats?.transaction_count || 0;
-
-    const result = await db.prepare(`
+    const closing = await db.prepare(`
       INSERT INTO treasury_closings
-      (school_id, closing_date, opening_balance, total_income, total_expense, closing_balance, transaction_count, notes, closed_by, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
-    `).bind(school_id, closing_date, openingBalance, totalIncome, totalExpense, closingBalance, txCount, notes || null, user.id).run();
+        (school_id, closing_date, opening_balance, total_income, total_expense,
+         closing_balance, transaction_count, notes, closed_by, created_at)
+      SELECT ?, ?, opening_balance, total_income, total_expense,
+        opening_balance + total_income - total_expense,
+        transaction_count, ?, ?, unixepoch()
+      FROM (
+        SELECT
+          COALESCE(SUM(CASE
+            WHEN status = 'active' AND business_date < ? AND transaction_type = 'income' THEN CAST(amount AS INTEGER)
+            WHEN status = 'active' AND business_date < ? AND transaction_type = 'expense' THEN -CAST(amount AS INTEGER)
+            ELSE 0 END ), 0) AS opening_balance,
+          COALESCE(SUM(CASE
+            WHEN status = 'active' AND business_date = ? AND transaction_type = 'income' THEN CAST(amount AS INTEGER)
+            ELSE 0 END ), 0) AS total_income,
+          COALESCE(SUM(CASE
+            WHEN status = 'active' AND business_date = ? AND transaction_type = 'expense' THEN CAST(amount AS INTEGER)
+            ELSE 0 END ), 0) AS total_expense,
+          COUNT(CASE WHEN status = 'active' AND business_date = ? THEN 1 END) AS transaction_count
+        FROM treasury_transactions WHERE school_id = ?
+      ) totals
+      RETURNING id, school_id, closing_date, opening_balance, total_income,
+        total_expense, closing_balance, transaction_count, notes, closed_by, created_at
+    `).bind(
+      school_id, closing_date, normalizedNotes, user.id,
+      closing_date, closing_date, closing_date, closing_date, closing_date, school_id,
+    ).first<any>();
 
-    // Update cached last_closing info
-    await db.prepare(`
-      INSERT INTO treasury_accounts (school_id, current_balance, last_closing_balance, last_closing_date, updated_at)
-      VALUES (?, ?, ?, ?, unixepoch())
-      ON CONFLICT(school_id) DO UPDATE SET
-        last_closing_balance = excluded.last_closing_balance,
-        last_closing_date = excluded.last_closing_date,
-        updated_at = unixepoch()
-    `).bind(school_id, closingBalance, closingBalance, dayStart).run();
-
-    return c.json({ data: {
-      id: result.meta.last_row_id,
-      school_id,
-      closing_date,
-      opening_balance: openingBalance,
-      total_income: totalIncome,
-      total_expense: totalExpense,
-      closing_balance: closingBalance,
-      transaction_count: txCount,
-    }}, 201);
+    if (!closing) return c.json({ error: 'تعذر تثبيت الإقفال اليومي' }, 409);
+    return c.json({ data: { ...closing, business_timezone: FINANCE_BUSINESS_TIME_ZONE } }, 201);
   } catch (err: any) {
-    return c.json({ error: 'فشل في إقفال اليوم المالي', detail: err.message }, 500);
+    const mapped = mapTreasuryDomainError(err, 'فشل في إقفال اليوم المالي');
+    return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -9310,15 +9468,12 @@ app.get('/api/treasury/reports/daily', requireSameSchoolOrAdmin(), async (c) => 
     const query = c.req.query();
     const schoolIdParam = query.school_id ? parseInt(query.school_id, 10) : null;
     const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : schoolIdParam;
-    const date = query.date || new Date().toISOString().split('T')[0];
+    const date = parseBusinessDate(query.date || formatBusinessDate());
 
     if (!targetSchoolId) {
       return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
     }
-
-    const dateObj = new Date(date + 'T00:00:00');
-    const dayStart = Math.floor(dateObj.getTime() / 1000);
-    const dayEnd = dayStart + 86400;
+    if (!date) return c.json({ error: 'تاريخ التقرير غير صالح', code: 'invalid_business_date' }, 400);
 
     // Summary
     const summary = await db.prepare(`
@@ -9327,30 +9482,37 @@ app.get('/api/treasury/reports/daily', requireSameSchoolOrAdmin(), async (c) => 
         COALESCE(SUM(CASE WHEN transaction_type = 'expense' AND status = 'active' THEN amount ELSE 0 END), 0) AS total_expense,
         COUNT(CASE WHEN status = 'active' THEN 1 END) AS transaction_count
       FROM treasury_transactions
-      WHERE school_id = ? AND created_at >= ? AND created_at < ?
-    `).bind(targetSchoolId, dayStart, dayEnd).first<any>();
+      WHERE school_id = ? AND business_date = ?
+    `).bind(targetSchoolId, date).first<any>();
 
     // By category
     const byCategory = await db.prepare(`
       SELECT category, transaction_type, COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
       FROM treasury_transactions
-      WHERE school_id = ? AND created_at >= ? AND created_at < ? AND status = 'active'
+      WHERE school_id = ? AND business_date = ? AND status = 'active'
       GROUP BY category, transaction_type
       ORDER BY transaction_type, total DESC
-    `).bind(targetSchoolId, dayStart, dayEnd).all<any>();
+    `).bind(targetSchoolId, date).all<any>();
 
     // Transactions list
     const transactions = await db.prepare(`
       SELECT t.*, u.full_name as created_by_name
       FROM treasury_transactions t
       LEFT JOIN users u ON t.created_by = u.id
-      WHERE t.school_id = ? AND t.created_at >= ? AND t.created_at < ?
+      WHERE t.school_id = ? AND t.business_date = ?
       ORDER BY t.created_at DESC
-    `).bind(targetSchoolId, dayStart, dayEnd).all<any>();
+    `).bind(targetSchoolId, date).all<any>();
+    const closing = await db.prepare(`
+      SELECT id, opening_balance, closing_balance, created_at, closed_by
+      FROM treasury_closings WHERE school_id = ? AND closing_date = ?
+    `).bind(targetSchoolId, date).first<any>();
 
     return c.json({ data: {
       date,
       school_id: targetSchoolId,
+      business_timezone: FINANCE_BUSINESS_TIME_ZONE,
+      closed: Boolean(closing),
+      closing: closing || null,
       summary: {
         total_income: summary?.total_income || 0,
         total_expense: summary?.total_expense || 0,
@@ -9381,40 +9543,41 @@ app.get('/api/treasury/reports/monthly', requireSameSchoolOrAdmin(), async (c) =
     const query = c.req.query();
     const schoolIdParam = query.school_id ? parseInt(query.school_id, 10) : null;
     const targetSchoolId = (scope === 'single' && resolvedSchoolId) ? resolvedSchoolId : schoolIdParam;
-    const year = parseInt(query.year || new Date().getFullYear().toString(), 10);
-    const month = parseInt(query.month || (new Date().getMonth() + 1).toString(), 10);
+    const today = formatBusinessDate();
+    const combinedMonth = !query.year && /^\d{4}-\d{2}$/.test(query.month || '') ? query.month : null;
+    const year = parseFinancePeriodPart(combinedMonth?.slice(0, 4) || query.year || today.slice(0, 4), 2000, 2200);
+    const month = parseFinancePeriodPart(combinedMonth?.slice(5, 7) || query.month || today.slice(5, 7), 1, 12);
 
     if (!targetSchoolId) {
       return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
     }
-
-    // Calculate month boundaries
-    const monthStart = new Date(year, month - 1, 1);
-    const monthEnd = new Date(year, month, 1);
-    const startTs = Math.floor(monthStart.getTime() / 1000);
-    const endTs = Math.floor(monthEnd.getTime() / 1000);
+    if (year == null || month == null) {
+      return c.json({ error: 'شهر التقرير غير صالح' }, 400);
+    }
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
 
     // Daily breakdown
     const dailyBreakdown = await db.prepare(`
       SELECT 
-        DATE(datetime(created_at, 'unixepoch')) as day,
+        business_date as day,
         COALESCE(SUM(CASE WHEN transaction_type = 'income' AND status = 'active' THEN amount ELSE 0 END), 0) AS income,
         COALESCE(SUM(CASE WHEN transaction_type = 'expense' AND status = 'active' THEN amount ELSE 0 END), 0) AS expense,
+        COALESCE(SUM(CASE WHEN transaction_type = 'income' AND status = 'active' THEN amount WHEN transaction_type = 'expense' AND status = 'active' THEN -amount ELSE 0 END), 0) AS net,
         COUNT(CASE WHEN status = 'active' THEN 1 END) AS count
       FROM treasury_transactions
-      WHERE school_id = ? AND created_at >= ? AND created_at < ?
+      WHERE school_id = ? AND substr(business_date, 1, 7) = ?
       GROUP BY day
       ORDER BY day
-    `).bind(targetSchoolId, startTs, endTs).all<any>();
+    `).bind(targetSchoolId, monthKey).all<any>();
 
     // Category summary
     const categorySummary = await db.prepare(`
       SELECT category, transaction_type, COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
       FROM treasury_transactions
-      WHERE school_id = ? AND created_at >= ? AND created_at < ? AND status = 'active'
+      WHERE school_id = ? AND substr(business_date, 1, 7) = ? AND status = 'active'
       GROUP BY category, transaction_type
       ORDER BY transaction_type, total DESC
-    `).bind(targetSchoolId, startTs, endTs).all<any>();
+    `).bind(targetSchoolId, monthKey).all<any>();
 
     // Monthly totals
     const totals = await db.prepare(`
@@ -9423,13 +9586,20 @@ app.get('/api/treasury/reports/monthly', requireSameSchoolOrAdmin(), async (c) =
         COALESCE(SUM(CASE WHEN transaction_type = 'expense' AND status = 'active' THEN amount ELSE 0 END), 0) AS total_expense,
         COUNT(CASE WHEN status = 'active' THEN 1 END) AS transaction_count
       FROM treasury_transactions
-      WHERE school_id = ? AND created_at >= ? AND created_at < ?
-    `).bind(targetSchoolId, startTs, endTs).first<any>();
+      WHERE school_id = ? AND substr(business_date, 1, 7) = ?
+    `).bind(targetSchoolId, monthKey).first<any>();
+    const closingCount = await db.prepare(`
+      SELECT COUNT(*) AS count FROM treasury_closings
+      WHERE school_id = ? AND substr(closing_date, 1, 7) = ?
+    `).bind(targetSchoolId, monthKey).first<{ count: number }>();
 
     return c.json({ data: {
       year,
       month,
+      month_key: monthKey,
       school_id: targetSchoolId,
+      business_timezone: FINANCE_BUSINESS_TIME_ZONE,
+      closing_count: closingCount?.count || 0,
       summary: {
         total_income: totals?.total_income || 0,
         total_expense: totals?.total_expense || 0,
@@ -9449,6 +9619,8 @@ app.get('/api/treasury/reports/monthly', requireSameSchoolOrAdmin(), async (c) =
 app.get('/api/treasury/categories', requireSameSchoolOrAdmin(), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext | null;
+  const scope = c.get('scope') as 'all' | 'single';
+  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
 
   if (!user || !canAccessTreasury(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الخزنة' }, 403);
@@ -9457,9 +9629,13 @@ app.get('/api/treasury/categories', requireSameSchoolOrAdmin(), async (c) => {
   try {
     const query = c.req.query();
     const type = query.type || null;
+    const requestedSchoolId = query.school_id ? parseFinancePeriodPart(query.school_id, 1, MAX_SAFE_FINANCE_AMOUNT) : null;
+    const targetSchoolId = scope === 'single' ? resolvedSchoolId : requestedSchoolId;
+    if (!targetSchoolId) return c.json({ error: 'معرف المدرسة مطلوب' }, 400);
+    if (type && !['income', 'expense'].includes(type)) return c.json({ error: 'نوع التصنيف غير صالح' }, 400);
 
-    let sql = `SELECT * FROM treasury_categories WHERE 1=1`;
-    const params: any[] = [];
+    let sql = `SELECT * FROM treasury_categories WHERE (school_id IS NULL OR school_id = ?)`;
+    const params: any[] = [targetSchoolId];
 
     if (type) { sql += ` AND type = ?`; params.push(type); }
     sql += ` ORDER BY type, name`;

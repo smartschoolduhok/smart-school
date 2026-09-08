@@ -17,5 +17,9 @@ export async function assertFinanceSeed(db){
  }
  assert.equal((await db.prepare('SELECT COUNT(*) n FROM finance_fee_readiness WHERE healthy!=1').first()).n,0);
  assert.equal((await db.prepare('SELECT COUNT(*) n FROM finance_treasury_readiness WHERE healthy!=1').first()).n,0);
- return {fees:fees.length,payments:payments.length,accounts:accounts.map(a=>({school_id:a.school_id,balance:a.current_balance,ledger:a.ledger})),fk_clean:true,all_finance_invariants:true};
+ assert.equal((await db.prepare('SELECT COUNT(*) n FROM treasury_transactions WHERE business_date IS NULL').first()).n,0);
+ assert.equal((await db.prepare("SELECT COUNT(*) n FROM treasury_transactions WHERE source_type='manual' AND (client_request_id IS NULL OR request_fingerprint IS NULL)").first()).n,0);
+ assert.equal((await db.prepare('SELECT COUNT(*) n FROM finance_payroll_readiness WHERE healthy!=1').first()).n,0);
+ const salaries=(await db.prepare('SELECT COUNT(*) n FROM finance_payroll_readiness').first()).n;
+ return {fees:fees.length,payments:payments.length,salaries,accounts:accounts.map(a=>({school_id:a.school_id,balance:a.current_balance,ledger:a.ledger})),business_dates_complete:true,payroll_ready:true,fk_clean:true,all_finance_invariants:true};
 }
