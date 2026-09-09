@@ -26,8 +26,8 @@ const studentsSource = source('src/modules/students/StudentsPage.tsx');
 const apiSource = source('src/lib/api.ts');
 const workerSource = source('src/worker.ts');
 
-test('Student Profile route is protected by the existing AcademicRoute', () => {
-  assert.match(appSource, /path="\/students\/:id"[\s\S]*?<AcademicRoute><StudentProfilePage \/><\/AcademicRoute>/);
+test('Student Profile route is protected by resource-view RBAC', () => {
+  assert.match(appSource, /path="\/students\/:id"[\s\S]*?allowedRoles=\{STUDENT_RESOURCE_VIEW_ROLES\}[\s\S]*?<StudentProfilePage \/>/);
 });
 
 test('Students list links the full name and profile action to the canonical student route', () => {
@@ -152,8 +152,8 @@ test('individual Student backend read is tenant-isolated and limited to academic
     workerSource.indexOf("app.get('/api/students/:id'"),
     workerSource.indexOf("app.get('/api/students/:id/enrollments'"),
   );
-  assert.match(studentRoute, /requireAuthEnforced\(\), requireRoles\(ACADEMIC_ACCESS_ROLES\)/);
-  assert.match(studentRoute, /student\.school_id !== user\.school_id/);
+  assert.match(studentRoute, /requireAuthEnforced\(\), requireRoles\(STUDENT_RESOURCE_VIEW_ROLES\)/);
+  assert.match(studentRoute, /canAccessStudentResource\(db, user, Number\(id\)\)/);
   assert.match(studentRoute, /غير مسموح: لا يمكنك الوصول إلى بيانات هذا الطالب/);
 });
 

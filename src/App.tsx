@@ -1,35 +1,7 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import Layout from './components/Layout';
-import LoginPage from './modules/auth/LoginPage';
-import DashboardPage from './modules/dashboard/DashboardPage';
-import SchoolsPage from './modules/schools/SchoolsPage';
-import UsersPage from './modules/users/UsersPage';
-import RolesPage from './modules/roles/RolesPage';
-import StudentsPage from './modules/students/StudentsPage';
-import StudentProfilePage from './modules/students/StudentProfilePage';
-import StudentPromotionPage from './modules/studentPromotion/StudentPromotionPage';
-import TimetablePage from './modules/timetable/TimetablePage';
-import ClassesPage from './modules/classes/ClassesPage';
-import SubjectsPage from './modules/subjects/SubjectsPage';
-import StudentSubjectsPage from './modules/studentSubjects/StudentSubjectsPage';
-import GradesPage from './modules/grades/GradesPage';
-import AnalyticsPage from './modules/analytics/AnalyticsPage';
-import ResultCardsPage from './modules/resultCards/ResultCardsPage';
-import FeesPage from './modules/fees/FeesPage';
-import TreasuryPage from './modules/treasury/TreasuryPage';
-import EmployeesPage from './modules/employees/EmployeesPage';
-import ResultCardVerificationPage from './modules/verification/ResultCardVerificationPage';
-import ReceiptVerificationPage from './modules/verification/ReceiptVerificationPage';
-import OfficialBookVerificationPage from './modules/verification/OfficialBookVerificationPage';
-import OfficialBooksPage from './modules/officialBooks/OfficialBooksPage';
-import PrintRecordsPage from './modules/printRecords/PrintRecordsPage';
-import PrintResultCardPage from './modules/print/PrintResultCardPage';
-import PrintReceiptPage from './modules/print/PrintReceiptPage';
-import PrintOfficialBookPage from './modules/print/PrintOfficialBookPage';
-import ImportExportPage from './modules/importExport/ImportExportPage';
-
-import SettingsPage from './modules/settings/SettingsPage';
 import type { RoleKey } from './types';
 import {
   ACADEMIC_ACCESS_ROLES,
@@ -48,6 +20,35 @@ import {
   USER_DIRECTORY_ROLES,
   hasRole,
 } from './lib/rbac';
+
+const LoginPage = lazy(() => import('./modules/auth/LoginPage'));
+const DashboardPage = lazy(() => import('./modules/dashboard/DashboardPage'));
+const SchoolsPage = lazy(() => import('./modules/schools/SchoolsPage'));
+const UsersPage = lazy(() => import('./modules/users/UsersPage'));
+const RolesPage = lazy(() => import('./modules/roles/RolesPage'));
+const StudentsPage = lazy(() => import('./modules/students/StudentsPage'));
+const StudentProfilePage = lazy(() => import('./modules/students/StudentProfilePage'));
+const StudentPromotionPage = lazy(() => import('./modules/studentPromotion/StudentPromotionPage'));
+const TimetablePage = lazy(() => import('./modules/timetable/TimetablePage'));
+const ClassesPage = lazy(() => import('./modules/classes/ClassesPage'));
+const SubjectsPage = lazy(() => import('./modules/subjects/SubjectsPage'));
+const StudentSubjectsPage = lazy(() => import('./modules/studentSubjects/StudentSubjectsPage'));
+const GradesPage = lazy(() => import('./modules/grades/GradesPage'));
+const AnalyticsPage = lazy(() => import('./modules/analytics/AnalyticsPage'));
+const ResultCardsPage = lazy(() => import('./modules/resultCards/ResultCardsPage'));
+const FeesPage = lazy(() => import('./modules/fees/FeesPage'));
+const TreasuryPage = lazy(() => import('./modules/treasury/TreasuryPage'));
+const EmployeesPage = lazy(() => import('./modules/employees/EmployeesPage'));
+const ResultCardVerificationPage = lazy(() => import('./modules/verification/ResultCardVerificationPage'));
+const ReceiptVerificationPage = lazy(() => import('./modules/verification/ReceiptVerificationPage'));
+const OfficialBookVerificationPage = lazy(() => import('./modules/verification/OfficialBookVerificationPage'));
+const OfficialBooksPage = lazy(() => import('./modules/officialBooks/OfficialBooksPage'));
+const PrintRecordsPage = lazy(() => import('./modules/printRecords/PrintRecordsPage'));
+const PrintResultCardPage = lazy(() => import('./modules/print/PrintResultCardPage'));
+const PrintReceiptPage = lazy(() => import('./modules/print/PrintReceiptPage'));
+const PrintOfficialBookPage = lazy(() => import('./modules/print/PrintOfficialBookPage'));
+const ImportExportPage = lazy(() => import('./modules/importExport/ImportExportPage'));
+const SettingsPage = lazy(() => import('./modules/settings/SettingsPage'));
 
 // ===========================================
 // RBAC Route Guards
@@ -132,11 +133,21 @@ function FinanceRoute({ children }: { children: React.ReactNode }) {
   );
 }
 
+function RouteLoading() {
+  return (
+    <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-gray-500" role="status">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary-600 border-t-transparent" />
+      <p className="text-sm">جاري تحميل الصفحة...</p>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
+        <Suspense fallback={<RouteLoading />}>
+          <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/" element={<Layout><DashboardPage /></Layout>} />
 
@@ -186,8 +197,9 @@ export default function App() {
           <Route path="/print/receipt/:id" element={<PrintReceiptPage />} />
           <Route path="/print/official-book/:id" element={<PrintOfficialBookPage />} />
 
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
       </BrowserRouter>
     </AuthProvider>
   );

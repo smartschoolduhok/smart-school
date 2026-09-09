@@ -126,3 +126,10 @@ test('daily workflows keep rare actions out of the primary tab rows', () => {
   assert.doesNotMatch(settings, /BackupTab|النسخ الاحتياطي/);
   assert.match(settings, /إعدادات متقدمة/);
 });
+
+test('application pages are route-lazy-loaded instead of entering the initial bundle', () => {
+  const app = readFileSync(join(root, 'src/App.tsx'), 'utf8');
+  assert.ok((app.match(/lazy\(\(\) => import\(/g) || []).length >= 25);
+  assert.match(app, /<Suspense fallback=\{<RouteLoading \/>\}>/);
+  assert.doesNotMatch(app, /import FeesPage from|import TimetablePage from|import ImportExportPage from/);
+});
