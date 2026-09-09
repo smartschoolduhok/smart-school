@@ -359,8 +359,6 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
             {card?.id && (
               <a
                 href={`/print/result-card/${card.id}?school_id=${schoolId}`}
-                target="_blank"
-                rel="noreferrer"
                 className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition-colors print:hidden"
               >
                 <Printer size={14} />
@@ -714,8 +712,6 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                             )}
                             <a
                               href={`/print/result-card/${c.id}?school_id=${schoolId}`}
-                              target="_blank"
-                              rel="noreferrer"
                               title="طباعة / تصدير PDF"
                               className="p-1.5 rounded-md hover:bg-indigo-50 text-indigo-600 transition-colors"
                             >

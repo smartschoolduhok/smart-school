@@ -185,6 +185,22 @@ test('representative business and session routes are protected by default', () =
   }
 });
 
+test('authenticated print links keep session-only authentication in the current tab', async () => {
+  const files = await Promise.all([
+    readFile(new URL('../src/modules/resultCards/ResultCardsPage.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/modules/fees/FeesPage.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/modules/officialBooks/OfficialBooksPage.tsx', import.meta.url), 'utf8'),
+  ]);
+
+  for (const source of files) {
+    const protectedPrintLinks = source.match(/<a\s+[\s\S]*?href=\{`\/print\/[\s\S]*?<\/a>/g) || [];
+    assert.ok(protectedPrintLinks.length > 0);
+    for (const link of protectedPrintLinks) {
+      assert.doesNotMatch(link, /target=["']_blank["']/);
+    }
+  }
+});
+
 test('CORS permits configured and explicit local-development origins', () => {
   const production = getAllowedCorsOrigins('https://school.example,https://admin.example', 'production');
   assert.equal(isCorsOriginAllowed('https://school.example', 'https://api.example/api/auth/login', production), true);

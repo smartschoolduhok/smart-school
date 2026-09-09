@@ -962,8 +962,6 @@ export default function FeesPage() {
                             </button>
                             <a
                               href={`/print/receipt/${r.id}`}
-                              target="_blank"
-                              rel="noreferrer"
                               className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg"
                               title="طباعة / تصدير PDF"
                             >
