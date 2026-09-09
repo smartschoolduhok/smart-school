@@ -43,7 +43,8 @@ test('all-section controls and per-section overrides exercise the exact UI draft
 });
 test('scope/year/class navigation and beforeunload protect dirty drafts',()=>{
  assert.match(page,/selectSchool=.*allowMatrixLeave/);assert.match(page,/if \(allowMatrixLeave\(\)\).*setAcademicYearId/);
- assert.match(page,/key === tab \|\| allowMatrixLeave\(\)/);
+ assert.match(page,/nextTab === tab \|\| allowMatrixLeave\(\)/);
+ assert.match(page,/onChange=\{\(event\) => changeTab\(event\.target\.value as TabKey\)\}/);
  assert.match(source,/allowLeave\(\).*setClassId\(null\)/);
  assert.match(source,/window\.addEventListener\('beforeunload'/);
  assert.match(page,/key=\{\`\$\{schoolId\}:\$\{academicYearId\}\`\}/);

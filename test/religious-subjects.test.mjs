@@ -442,7 +442,8 @@ test('assign-one and reactivate preflight a conflicting active religious assignm
 
 test('dedicated GET uses effective placement and filters candidates by tenant, active status, class, and section', () => {
   const route = routeBlock("app.get('/api/students/:id/religious-subject'", 'type ReligiousSubjectSelection');
-  assert.match(route, /requireRoles\(ACADEMIC_ACCESS_ROLES\)/);
+  assert.match(route, /requireRoles\(STUDENT_RESOURCE_VIEW_ROLES\)/);
+  assert.match(route, /canAccessStudentResource\(db, user, studentId\)/);
   assert.match(route, /getStudentWithEffectivePlacement/);
   assert.match(route, /student\.school_id !== schoolId/);
   assert.match(route, /status = 'active'/);

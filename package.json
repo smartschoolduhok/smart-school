@@ -1,6 +1,9 @@
 {
   "name": "webapp",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "overrides": {
     "sharp": "0.35.4"
   },
@@ -27,10 +30,9 @@
     "deploy": "npm run build && wrangler pages deploy",
     "serve": "npx serve dist -l 3000 -s",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "db:create": "wrangler d1 create smart-school-db",
-    "db:migrate": "wrangler d1 migrations apply smart-school-db --local",
-    "db:seed": "wrangler d1 execute smart-school-db --local --file=./seed.sql",
-    "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate && npm run db:seed",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:seed": "wrangler d1 execute DB --local --file=./seed.sql",
+    "db:reset": "node scripts/reset-local-d1.mjs && npm run db:migrate && npm run db:seed",
     "test:api": "curl -s http://localhost:3000/api/schools | head -c 200",
     "test:security": "node --experimental-strip-types --test test/auth-security.test.mjs",
     "test:academic-years": "node --experimental-strip-types --test test/academic-years.test.mjs",

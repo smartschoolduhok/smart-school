@@ -38,6 +38,12 @@ jobs:
       - name: Run regression matrix
         run: npm run test:regressions
 
+      - name: Validate genuine local D1 scenarios
+        run: |
+          npm run test:finance-fees:local
+          npm run test:week-setup:local
+          npm run test:teaching-load-matrix:local
+
       - name: Validate fresh local D1 seed
         run: npm run test:finance-seed:local
 
