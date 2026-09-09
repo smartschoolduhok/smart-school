@@ -1,293 +1,126 @@
-# Smart School System — Project Handoff
+# Smart School — Project Handoff
 
-## 1. Tech Stack
+آخر تحديث: 2026-09-09.
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 19 + Vite + TailwindCSS 4 + React Router DOM |
-| Backend | Hono Framework (Cloudflare Workers/Pages) |
-| Database | Cloudflare D1 (SQLite-compatible) |
-| Auth | JWT Bearer tokens via Web Crypto API |
-| Hosting | Cloudflare Pages (Edge deployment) |
-| QR Codes | qrcode.react |
-| Icons | lucide-react |
+## 1. ملخص الحالة
 
----
+النظام تطبيق عربي RTL متعدد المدارس مبني على React/Hono/Cloudflare D1. الوحدات الفعلية تشمل الإدارة، الطلبة والتسجيلات، المواد والدرجات، النتائج، الجدول، Excel، الكتب الرسمية والطباعة، الأقساط والإيصالات، الخزنة، الموظفين والرواتب، والإعدادات.
 
-## 2. Completed Phases (1–9)
+Phase 20A1 للسلامة المالية مندمجة. دفعة ما بعد التدقيق تضيف migrations `0029`–`0031` وإصلاحات الصلاحيات والذرّية والواجهة. هذه الدفعة لا تُرحّل تلقائيًا إلى STAGING أو Production.
 
-| Phase | Module | Status |
-|-------|--------|--------|
-| 1 | Schools, Users, Roles, Settings | ✅ Active |
-| 2 | Students, Classes, Sections | ✅ Active |
-| 3 | Subjects, Student Subjects | ✅ Active |
-| 4 | Grades & Calculations | ✅ Active |
-| 5 | General Exemption Settings | ✅ Active |
-| 6 | Result Cards + QR Verification | ✅ Active |
-| 7 | Fees, Receipts + QR Verification | ✅ Active |
-| 8 | Treasury (Income/Expenses) | ✅ Active |
-| 9 | Employees & Salaries | ✅ Active |
+## 2. البنية
 
----
+| الجزء | المكان | المسؤولية |
+|---|---|---|
+| Router وguards | `src/App.tsx` | المسارات، lazy loading، وحراسة الأدوار |
+| الواجهة المشتركة | `src/components/` | القائمة، الرأس، اختيار المدرسة والطباعة |
+| صفحات المجال | `src/modules/` | واجهات الوحدات حسب المجال |
+| API client | `src/lib/api.ts` | طلبات الواجهة وعقود الاستجابة |
+| منطق المجال | `src/lib/*.ts` | الحسابات، التخطيط، RBAC، والتحقق |
+| Worker/API | `src/worker.ts` | Hono routes، tenant targeting، معاملات D1 |
+| قاعدة البيانات | `migrations/` | schema، indexes، triggers، readiness |
+| الاختبارات | `test/` و`scripts/` | unit/integration/D1/restore/regression |
 
-## 3. Active Modules (15 Sidebar Routes)
+تدفق الطلب: `React → api.ts → Hono route → domain/DB helpers → D1`.
 
-1. لوحة التحكم (`/`)
-2. المدارس (`/schools`)
-3. المستخدمون (`/users`)
-4. الأدوار والصلاحيات (`/roles`)
-5. الطلاب (`/students`)
-6. الصفوف والشعب (`/classes`)
-7. المواد (`/subjects`)
-8. مواد الطالب (`/student-subjects`)
-9. الدرجات (`/grades`)
-10. التحليل (`/analytics`)
-11. كارتات النتائج (`/result-cards`)
-12. الأقساط (`/fees`)
-13. الخزنة (`/treasury`)
-14. الموظفون (`/employees`)
-15. إعدادات النظام (`/settings`) — placeholder
+## 3. التنقل الحالي
 
----
+القائمة لا تعرض كل الصفحات كأزرار متساوية. توجد لوحة التحكم وست مجموعات قابلة للفتح:
 
-## 4. Future/Disabled Modules (6)
+1. شؤون الطلاب.
+2. التعليم والجدول.
+3. المالية والموظفون.
+4. التقارير والوثائق.
+5. البيانات.
+6. الإدارة والإعدادات.
 
-| Module | Route | Status |
-|--------|-------|--------|
-| الكتب الرسمية | `/official-books` | 🔒 Disabled |
-| السجلات المطبوعة | `/print-records` | 🔒 Disabled |
-| النقل المدرسي | `/transport` | 🔒 Disabled |
-| بوابة المدرس | `/teacher-portal` | 🔒 Disabled |
-| بوابة ولي الأمر | `/parent-portal` | 🔒 Disabled |
-| المساعد الذكي | `/ai-assistant` | 🔒 Disabled |
+العناصر تُفلتر حسب الدور، وتتحول «الطلاب» إلى «أبنائي» لولي الأمر. الميزات المستقبلية غير المنفذة لا تظهر كروابط ميتة.
 
----
+## 4. المصادقة والوصول
 
-## 5. Database Schema (10 Migrations)
+الأدوار الأساسية: `system_admin`, `school_owner`, `principal`, `vice_principal`, `teacher`, `accountant`, `registrar`, `parent`.
 
-### Tables
-- `schools` — المدارس
-- `academic_years` — السنوات الدراسية
-- `users` — المستخدمون
-- `roles` — الأدوار
-- `role_permissions` — صلاحيات الأدوار
-- `modules` — الموديلات
-- `school_modules` — تفعيل الموديلات لكل مدرسة
-- `classes` — الصفوف
-- `sections` — الشعب
-- `students` — الطلاب
-- `subjects` — المواد
-- `student_subjects` — مواد الطالب
-- `grades` — الدرجات (الأشهر + الامتحانات)
-- `general_exemption_settings` — إعدادات الإعفاء العام
-- `result_cards` — كارتات النتائج (مع QR)
-- `student_fees` — أقساط الطلاب
-- `fee_payments` — دفعات الأقساط
-- `fee_receipts` — سندات القبض (مع QR)
-- `treasury_accounts` — حسابات الخزنة
-- `treasury_transactions` — معاملات الخزنة
-- `treasury_closings` — أقفال الخزنة اليومية
-- `treasury_categories` — فئات الخزنة
-- `employees` — الموظفون
-- `employee_salaries` — رواتب الموظفين
-- `token_blacklist` — قائمة تسجيلات الخروج
+- JWT مدته ثماني ساعات، يحمل `jti` و`auth_version`، والخروج يلغي الجلسة.
+- كلمات المرور الجديدة PBKDF2-HMAC-SHA256 مع salt عشوائي؛ legacy SHA-256 يرقّى بعد دخول ناجح.
+- المستخدم المدرسي مقيد بـ`school_id` من الجلسة؛ مدير النظام يحدد المدرسة المستهدفة صراحةً.
+- `parent_student_links` هو مصدر صلاحية ولي الأمر للطالب، دون تخمين من اسم/هاتف.
+- `teacher_employee_links` يربط مستخدم المدرس بسجل الموظف، ثم تحدد الأحمال التدريسية موارده الأكاديمية.
+- لا يكفي إخفاء رابط في UI؛ كل route حرجة تعيد التحقق في الـAPI.
 
----
+## 5. ثوابت الماليات والدرجات
 
-## 6. API Route Groups
+- العمليات الجديدة بالـIQD وبقيم صحيحة ضمن safe integer.
+- الأقساط والدفعات والإيصالات تستخدم idempotency وقيود D1 لمنع التكرار والزيادة.
+- إلغاء الإيصال لا يعكس المال؛ إلغاء الدفعة هو الذي ينشئ الأثر العكسي.
+- دفع/إلغاء الراتب متزامن ذريًا مع قيد الخزنة.
+- إلغاء حركة الخزنة exactly-once حتى مع طلبين متزامنين.
+- `business_date` محسوب بتوقيت `Asia/Baghdad`.
+- اليوم المغلق لا يقبل حركات لاحقة، والرصيد الافتتاحي مشتق من دفتر القيود السابق.
+- تعديل الدرجة وتسجيل audit عملية واحدة؛ `revision` يمنع overwrite من نسخة قديمة.
 
-### Auth (Public)
-- `POST /api/auth/login`
-- `GET /api/auth/me` (Protected)
-- `POST /api/auth/logout` (Protected)
+## 6. الترحيلات
 
-### Schools
-- `GET /api/schools`
-- `POST /api/schools`
-- `PUT /api/schools/:id`
-- `DELETE /api/schools/:id`
+يوجد 32 ملف migration حتى `0031`. المصدر المعتمد للترتيب هو أسماء الملفات داخل `migrations/`، بما فيها ملفا `0014` التاريخيان.
 
-### Users
-- `GET /api/users`
-- `POST /api/users`
-- `PUT /api/users/:id`
-- `DELETE /api/users/:id`
+| المجموعة | النطاق |
+|---|---|
+| `0001`–`0019` | الأساس، الأكاديميات، الأمن، الإعدادات والنتائج |
+| `0020`–`0022` | التسجيلات، ديانة الطالب، ومساقات الديانة |
+| `0023`–`0027` | تأسيس الجدول والقيود والنسخ والاعتماد |
+| `0028` | سلامة الأقساط والدفعات والإيصالات |
+| `0029` | روابط الوصول للموارد |
+| `0030` | revisions وتدقيق الدرجات |
+| `0031` | سلامة الخزنة والرواتب والإقفال |
 
-### Roles
-- `GET /api/roles`
-- `POST /api/roles`
-- `PUT /api/roles/:id`
-- `DELETE /api/roles/:id`
+لا تعدّل migration مطبقًا؛ أضف ملفًا جديدًا واختبر fresh DB وترقية قاعدة populated.
 
-### Students, Classes, Subjects, Student Subjects, Grades
-- Standard CRUD with school scoping
+## 7. التشغيل والجودة
 
-### Result Cards
-- `POST /api/result-cards/generate`
-- `GET /api/result-cards`
-
-### Fees
-- `GET /api/student-fees`
-- `POST /api/student-fees`
-- `POST /api/student-fees/:id/payments`
-- `GET /api/fee-receipts`
-
-### Treasury
-- `GET /api/treasury`
-- `POST /api/treasury/transactions`
-- `PUT /api/treasury/transactions/:id/cancel`
-
-### Employees
-- `GET /api/employees`
-- `POST /api/employees`
-- `PUT /api/employees/:id`
-- `GET /api/employee-salaries`
-- `POST /api/employee-salaries/:id/pay`
-
-### Public Verification (No Auth)
-- `GET /api/verify/result-card/:token`
-- `GET /api/verify/receipt/:token`
-
----
-
-## 7. Auth & RBAC
-
-### Role Keys
-- `system_admin` — مدير النظام (كل المدارس، كل الصلاحيات)
-- `school_owner` — مالك المدرسة (مدرسته فقط، كل الصلاحيات)
-- `principal` — المدير (مدرسته، معظم الصلاحيات)
-- `vice_principal` — نائب المدير
-- `teacher` — معلم (لا يمكنه الوصول للمالية)
-- `accountant` — محاسب (المالية فقط، لا يمكنه تعديل الدرجات)
-- `registrar` — مسجل شؤون الطلاب
-- `parent` — ولي الأمر (مستقبلي)
-
-### Password Hashing
-- New and reset passwords use versioned PBKDF2-HMAC-SHA256 with 210,000 iterations and a random per-password salt.
-- Legacy SHA-256 hashes are accepted only for a successful migration login and are upgraded immediately.
-
-### JWT
-- A validated `JWT_SECRET` is required; missing or placeholder values fail closed.
-- TTL: 8 hours.
-- Logout revokes the session by `jti`; raw bearer tokens are not stored in D1.
-
----
-
-## 8. Deployment Steps
-
-### Local Development
 ```bash
-# 1. Install dependencies
-npm install
-
-# 2. Create local D1 and run migrations
+npm ci
 npm run db:migrate
-
-# 3. Seed demo data
 npm run db:seed
-
-# 4. Start dev server
-npm run preview
+npm run dev
 ```
 
-### Production Deployment
+بوابات الـPR:
+
 ```bash
-# 1. Build frontend + worker
+npm audit --audit-level=low
+npm run typecheck
+npm run test:regressions
+npm run test:finance-seed:local
+npm run test:backup-restore:local
 npm run build
-
-# 2. Create D1 database (first time only)
-npx wrangler d1 create smart-school-db
-
-# 3. Apply migrations to production
-npx wrangler d1 migrations apply smart-school-db --remote
-
-# 4. Do NOT run seed.sql in production; it contains local demo accounts.
-
-# 5. Deploy
-npm run deploy
 ```
 
-### Environment Variables
-```
-JWT_SECRET=<generate-a-random-value-of-at-least-32-characters>
-ALLOWED_ORIGINS=https://school.example.com
-APP_ENV=production
-```
+`test:backup-restore:local` ينشئ مصدرًا وقاعدة استعادة مؤقتين، يصدّر D1 محليًا، يستوردها، يقارن جميع جداول التطبيق، ثم يعيد فحص ثوابت الماليات.
 
----
+## 8. البيئات
 
-## 9. Known Limitations
+- `wrangler.jsonc`: STAGING فقط.
+- scripts المسماة `:local` وأوامر `db:migrate/db:seed`: Local فقط.
+- أي `--remote`: تغيير تشغيلي يحتاج target صريحًا ونسخة احتياطية واعتمادًا.
+- Production: config وأسرار وقرار إصدار منفصلون.
+- `seed.sql`: disposable Local/Demo فقط.
 
-1. **worker.ts is 5335 lines** — needs future refactor into route modules
-2. **Settings page is a placeholder** — inline component in App.tsx, not a real module
-3. **No real-time sync** — no WebSockets, refresh needed for updates
-4. **No bulk import** — cannot import students/subjects from CSV/Excel yet
-5. **No multi-language** — Arabic only, no English toggle
-6. **No SMS/email notifications** — no Twilio/Email integration yet
-7. **Reports are basic** — no PDF export, no advanced reporting
-8. **No backup UI** — D1 backups managed via Cloudflare dashboard
-9. **D1 is SQLite** — no advanced analytics queries, limited concurrency
-10. **Settings is placeholder** — no actual configuration panel
+راجع `ENVIRONMENT.md` و`DEPLOYMENT.md` قبل أي عمل بعيد.
 
----
+## 9. دين تقني باقٍ
 
-## 10. Next Recommended Phases
+1. `src/worker.ts` كبير جدًا (أكثر من 12 ألف سطر) ويحتاج تفكيكًا تدريجيًا حسب المجال مع الحفاظ على العقود والاختبارات.
+2. بعض صفحات المجال ما زالت كبيرة؛ الأفضل استخراج hooks/components عند تعديلها مستقبلًا، لا refactor شاملًا عالي المخاطر.
+3. يلزم QA بصري حي بحسابات الأدوار، خصوصًا الهاتف والطباعة ومسارات العمل المبسطة.
+4. تمرين الاستعادة الحالي محلي؛ يجب التحقق دوريًا من سياسة النسخ الحقيقية والاستعادة في Cloudflare ضمن بيئة غير Production.
+5. لا توجد حاليًا إشعارات خارجية أو تطبيق هاتف أو وضع عمل offline؛ تبقى ميزات مستقبلية لا blockers للاستقرار.
 
-### Phase 11: Settings & Configuration
-- Real settings page (school info, branding, academic year)
-- System configuration panel
-- Email/SMS settings
+## 10. أولويات المستقبل بعد قبول دفعة التثبيت
 
-### Phase 12: Teacher Portal
-- Teacher login with limited view
-- Grade entry per subject
-- View students in their classes
+1. استخراج route modules من `worker.ts` دون تغيير السلوك.
+2. مراقبة تشغيلية للأخطاء والأداء وسجل عمليات إداري قابل للبحث.
+3. مركز مهام وتنبيهات حسب الدور بدل إضافة أزرار جديدة للقائمة.
+4. بوابة ولي الأمر الموسعة وإشعارات الأقساط/النتائج بعد موافقات الخصوصية.
+5. تقارير قابلة للتخصيص وتصدير مجدول.
+6. نسخ احتياطي تشغيلي موثق مع اختبارات استعادة دورية.
 
-### Phase 13: Parent Portal
-- Parent login
-- View child's grades
-- View fee status
-- Download result cards
-
-### Phase 14: Transport
-- Bus routes
-- Student assignment to buses
-- Transport fees
-
-### Phase 15: Official Books & Print Records
-- Government forms
-- Print-ready reports
-- PDF export
-
-### Phase 16: AI Assistant
-- Chatbot for school queries
-- Automated notifications
-- Grade predictions
-
----
-
-## 11. Demo Data
-
-All demo data is in `seed.sql` for **مدرسة النخبة الأهلية** (School 1):
-
-- **Students**: 10 (Classes 1–3)
-- **Subjects**: 20+ across classes
-- **Grades**: Full records for all 10 students
-- **Fees**: 8 fee records (paid/pending/overdue)
-- **Payments**: 8 payment records
-- **Treasury**: 6 transactions (income/expense)
-- **Employees**: 6 staff members
-- **Salaries**: 6 salary records (May 2025)
-
----
-
-## 12. Security Checklist (Verified Phase 10)
-
-- [x] All protected APIs require JWT Bearer token
-- [x] Public routes: login, result-card verify, receipt verify only
-- [x] School scoping enforced (users see their school only)
-- [x] Inactive users cannot login
-- [x] Logout blacklist works
-- [x] RBAC enforced (teacher → no finance, accountant → no grades)
-- [x] Non-admin users cannot access other schools
-- [x] Passwords hashed with SHA-256 + salt
+لا تبدأ ميزة جديدة قبل دمج دفعة التثبيت، تطبيقها على STAGING بخطة منفصلة، وإغلاق ملاحظات QA اليدوي.
