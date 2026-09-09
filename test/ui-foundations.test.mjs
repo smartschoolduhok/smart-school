@@ -21,6 +21,7 @@ const vite = await createServer({
 });
 const { default: SchoolProfileTab } = await vite.ssrLoadModule('/src/modules/settings/SchoolProfileTab.tsx');
 const { default: LoginPage } = await vite.ssrLoadModule('/src/modules/auth/LoginPage.tsx');
+const { default: StudentsPage } = await vite.ssrLoadModule('/src/modules/students/StudentsPage.tsx');
 const { AuthProvider } = await vite.ssrLoadModule('/src/hooks/useAuth.tsx');
 const { NAVIGATION_GROUPS, getVisibleNavigationItems } = await vite.ssrLoadModule('/src/components/Sidebar.tsx');
 const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
@@ -48,6 +49,22 @@ async function input(element, value) {
     descriptor.set.call(element, value);
     element.dispatchEvent(new window.Event('input', { bubbles: true }));
   });
+}
+
+async function select(element, value) {
+  await act(async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+    descriptor.set.call(element, value);
+    element.dispatchEvent(new window.Event('change', { bubbles: true }));
+  });
+}
+
+async function waitForContent(container, content) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (container.textContent.includes(content)) return;
+    await act(async () => new Promise(resolve => setTimeout(resolve, 10)));
+  }
+  assert.fail(`Timed out waiting for ${content}`);
 }
 
 test('school profile fields retain focus while typing', async t => {
@@ -139,4 +156,79 @@ test('accountant navigation keeps finance and salaries without academic analysis
   assert.ok(!paths.includes('/analytics'));
   assert.ok(!paths.includes('/grades'));
   for(const path of ['/students','/fees','/treasury','/employees'])assert.ok(paths.includes(path),path);
+});
+
+test('accountant student directory exposes only finance fields and builds filters from directory rows', async t => {
+  const previousFetch = globalThis.fetch;
+  const requests = [];
+  const accountant = {
+    id: 72,
+    role_key: 'accountant',
+    role_id: 6,
+    school_id: 41,
+    full_name: 'محاسب الاختبار',
+    email: 'accountant@example.test',
+    role_name: 'محاسب',
+    school_name: 'مدرسة الاختبار',
+  };
+  const directoryRows = [
+    { id: 1, school_id: 41, student_number: 'FIN-001', full_name: 'الطالب الأول', class_id: 10, class_name: 'الصف الأول', section_id: 101, section_name: 'أ', status: 'active' },
+    { id: 2, school_id: 41, student_number: 'FIN-002', full_name: 'الطالب الثاني', class_id: 10, class_name: 'الصف الأول', section_id: 102, section_name: 'ب', status: 'active' },
+    { id: 3, school_id: 41, student_number: 'FIN-003', full_name: 'الطالب الثالث', class_id: 20, class_name: 'الصف الثاني', section_id: 201, section_name: 'ج', status: 'active' },
+  ];
+
+  localStorage.clear();
+  sessionStorage.clear();
+  localStorage.setItem('smart_school_token', 'accountant-test-token');
+  localStorage.setItem('smart_school_user', JSON.stringify(accountant));
+  globalThis.fetch = async url => {
+    const path = String(url);
+    requests.push(path);
+    if (path === '/api/auth/me') {
+      return new Response(JSON.stringify({ data: accountant }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (path === '/api/students?school_id=41') {
+      return new Response(JSON.stringify({ data: directoryRows }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    throw new Error(`Unexpected request ${path}`);
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  const container = await render(t, createElement(
+    MemoryRouter,
+    null,
+    createElement(AuthProvider, null, createElement(StudentsPage)),
+  ));
+  await waitForContent(container, 'FIN-003');
+
+  assert.ok(container.textContent.includes('دليل الطلاب المالي'));
+  assert.deepEqual(
+    [...container.querySelectorAll('thead th')].map(cell => cell.textContent.trim()),
+    ['رقم الطالب', 'الاسم', 'الصف', 'الشعبة', 'الحالة'],
+  );
+  assert.equal(container.textContent.includes('أنثى'), false, 'missing gender must not render as female');
+  assert.equal(container.textContent.includes('ولي الأمر'), false);
+  assert.equal(container.querySelectorAll('a[href^="/students/"]').length, 0);
+  assert.equal(container.querySelectorAll('[title="عرض الملف"]').length, 0);
+  assert.deepEqual(requests.sort(), ['/api/auth/me', '/api/students?school_id=41']);
+
+  const filterButton = [...container.querySelectorAll('button')].find(button => button.textContent.trim() === 'التصفية');
+  await act(async () => filterButton.click());
+  const filters = [...container.querySelectorAll('select')];
+  assert.equal(filters.length, 3, 'accountant has status, class, and section filters only');
+  assert.deepEqual([...filters[1].options].map(option => option.textContent), ['كل الصفوف', 'الصف الأول', 'الصف الثاني']);
+
+  await select(filters[1], '10');
+  assert.ok(container.textContent.includes('FIN-001'));
+  assert.ok(container.textContent.includes('FIN-002'));
+  assert.equal(container.textContent.includes('FIN-003'), false);
+  assert.deepEqual([...filters[2].options].map(option => option.textContent), ['كل الشعب', 'أ', 'ب']);
+
+  await select(filters[2], '102');
+  assert.equal(container.textContent.includes('FIN-001'), false);
+  assert.ok(container.textContent.includes('FIN-002'));
 });

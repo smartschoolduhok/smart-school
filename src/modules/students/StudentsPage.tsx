@@ -100,6 +100,7 @@ export default function StudentsPage() {
   const canManageSelectedSchool = canManage && schoolId != null;
   const canBrowseAcademicCatalog = hasRole(user?.role_key, ACADEMIC_ACCESS_ROLES);
   const isParent = user?.role_key === 'parent';
+  const isFinanceDirectory = user?.role_key === 'accountant';
 
   useEffect(() => {
     setStudents([]);
@@ -148,19 +149,48 @@ export default function StudentsPage() {
     if (filterStatus) list = list.filter((s) => s.status === filterStatus);
     if (filterClass) list = list.filter((s) => String(s.class_id) === filterClass);
     if (filterSection) list = list.filter((s) => String(s.section_id) === filterSection);
-    if (filterGender) list = list.filter((s) => s.gender === filterGender);
+    if (!isFinanceDirectory && filterGender) list = list.filter((s) => s.gender === filterGender);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter(
         (s) =>
           s.full_name.toLowerCase().includes(q) ||
           s.student_number.toLowerCase().includes(q) ||
-          (s.father_name && s.father_name.toLowerCase().includes(q)) ||
-          (s.guardian_name && s.guardian_name.toLowerCase().includes(q))
+          (!isFinanceDirectory && (
+            (s.father_name && s.father_name.toLowerCase().includes(q)) ||
+            (s.guardian_name && s.guardian_name.toLowerCase().includes(q))
+          ))
       );
     }
     return list;
-  }, [students, search, filterClass, filterSection, filterGender, filterStatus]);
+  }, [students, search, filterClass, filterSection, filterGender, filterStatus, isFinanceDirectory]);
+
+  const availableClasses = useMemo(() => {
+    if (!isFinanceDirectory) return classes;
+    const unique = new Map<number, ClassRecord>();
+    for (const student of students) {
+      if (student.class_id == null) continue;
+      unique.set(student.class_id, {
+        id: student.class_id,
+        name: student.class_name?.trim() || `#${toArabicDigits(student.class_id)}`,
+      });
+    }
+    return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+  }, [classes, isFinanceDirectory, students]);
+
+  const availableSections = useMemo(() => {
+    if (!isFinanceDirectory) return sections;
+    const unique = new Map<number, SectionRecord>();
+    for (const student of students) {
+      if (student.section_id == null || student.class_id == null) continue;
+      unique.set(student.section_id, {
+        id: student.section_id,
+        class_id: student.class_id,
+        name: student.section_name?.trim() || `#${toArabicDigits(student.section_id)}`,
+      });
+    }
+    return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+  }, [isFinanceDirectory, sections, students]);
 
   function openCreate() {
     if (schoolId == null) return;
@@ -260,9 +290,15 @@ export default function StudentsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{isParent ? 'أبنائي' : 'الطلاب'}</h1>
+          <h1 className="text-2xl font-bold text-gray-900">
+            {isParent ? 'أبنائي' : isFinanceDirectory ? 'دليل الطلاب المالي' : 'الطلاب'}
+          </h1>
           <p className="text-sm text-gray-500 mt-1">
-            {isParent ? 'عرض ملفات الأبناء المرتبطين بحسابك' : 'إدارة بيانات الطلاب والشؤون الأكاديمية'}
+            {isParent
+              ? 'عرض ملفات الأبناء المرتبطين بحسابك'
+              : isFinanceDirectory
+                ? 'بيانات التعريف اللازمة لمتابعة الشؤون المالية'
+                : 'إدارة بيانات الطلاب والشؤون الأكاديمية'}
           </p>
         </div>
         {canManageSelectedSchool && (
@@ -288,7 +324,9 @@ export default function StudentsPage() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="البحث بالاسم أو الرقم أو اسم الأب/ولي الأمر..."
+              placeholder={isFinanceDirectory
+                ? 'البحث بالاسم أو رقم الطالب...'
+                : 'البحث بالاسم أو الرقم أو اسم الأب/ولي الأمر...'}
               className="w-full pr-10 pl-4 py-2.5 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -303,7 +341,7 @@ export default function StudentsPage() {
           </button>
         </div>
         {showFilters && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-3 pt-3 border-t border-gray-100">
+          <div className={`grid grid-cols-1 sm:grid-cols-2 ${isFinanceDirectory ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-3 mt-3 pt-3 border-t border-gray-100`}>
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
@@ -320,7 +358,7 @@ export default function StudentsPage() {
               className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">كل الصفوف</option>
-              {classes.map((c) => (
+              {availableClasses.map((c) => (
                 <option key={c.id} value={String(c.id)}>{c.name}</option>
               ))}
             </select>
@@ -330,21 +368,23 @@ export default function StudentsPage() {
               className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">كل الشعب</option>
-              {sections
+              {availableSections
                 .filter((s) => !filterClass || String(s.class_id) === filterClass)
                 .map((s) => (
                   <option key={s.id} value={String(s.id)}>{s.name}</option>
                 ))}
             </select>
-            <select
-              value={filterGender}
-              onChange={(e) => setFilterGender(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">كل الأجناس</option>
-              <option value="male">ذكر</option>
-              <option value="female">أنثى</option>
-            </select>
+            {!isFinanceDirectory && (
+              <select
+                value={filterGender}
+                onChange={(e) => setFilterGender(e.target.value)}
+                className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">كل الأجناس</option>
+                <option value="male">ذكر</option>
+                <option value="female">أنثى</option>
+              </select>
+            )}
           </div>
         )}
       </div>
@@ -414,33 +454,35 @@ export default function StudentsPage() {
             <table className="w-full text-right">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">#</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">الرقم</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">الاسم الكامل</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">الجنس</th>
+                  {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">#</th>}
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">{isFinanceDirectory ? 'رقم الطالب' : 'الرقم'}</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">{isFinanceDirectory ? 'الاسم' : 'الاسم الكامل'}</th>
+                  {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">الجنس</th>}
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الصف</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الشعبة</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">ولي الأمر</th>
+                  {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">ولي الأمر</th>}
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الحالة</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-gray-600">الإجراءات</th>
+                  {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">الإجراءات</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredStudents.map((s, idx) => (
                   <tr key={s.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-4 py-3 text-sm text-gray-500">{toArabicDigits(idx + 1)}</td>
+                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-500">{toArabicDigits(idx + 1)}</td>}
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
                       <bdi dir="ltr">{s.student_number}</bdi>
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                      <Link to={`/students/${s.id}`} className="text-blue-700 hover:text-blue-900 hover:underline">
-                        {s.full_name}
-                      </Link>
+                      {isFinanceDirectory ? s.full_name : (
+                        <Link to={`/students/${s.id}`} className="text-blue-700 hover:text-blue-900 hover:underline">
+                          {s.full_name}
+                        </Link>
+                      )}
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-600">{s.gender === 'male' ? 'ذكر' : 'أنثى'}</td>
+                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">{s.gender === 'male' ? 'ذكر' : 'أنثى'}</td>}
                     <td className="px-4 py-3 text-sm text-gray-600">{s.class_name || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{s.section_name || '—'}</td>
-                    <td className="px-4 py-3 text-sm text-gray-600">{s.guardian_name || '—'}</td>
+                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">{s.guardian_name || '—'}</td>}
                     <td className="px-4 py-3">
                       <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
                         s.status === 'active' ? 'bg-green-100 text-green-700' :
@@ -450,7 +492,7 @@ export default function StudentsPage() {
                         {s.status === 'active' ? 'نشط' : s.status === 'archived' ? 'مؤرشف' : 'غير نشط'}
                       </span>
                     </td>
-                    <td className="px-4 py-3">
+                    {!isFinanceDirectory && <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <Link
                           to={`/students/${s.id}`}
@@ -471,7 +513,7 @@ export default function StudentsPage() {
                           </>
                         )}
                       </div>
-                    </td>
+                    </td>}
                   </tr>
                 ))}
               </tbody>
