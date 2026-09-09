@@ -8,6 +8,15 @@ export const TIMETABLE_DAY_NAMES = [
   'السبت',
 ] as const;
 
+export function timetableYearBelongsToSchool(
+  schoolId: number | null,
+  academicYearId: number | null,
+  years: readonly { id: number; school_id: number }[],
+): boolean {
+  if (schoolId == null || academicYearId == null) return false;
+  return years.some((year) => Number(year.id) === academicYearId && Number(year.school_id) === schoolId);
+}
+
 export type TimetableSlotType = 'lesson' | 'break';
 export type TimetableLoadStatus = 'active' | 'inactive';
 export type TeacherAvailabilityOverrideStatus = 'unavailable' | 'preferred' | 'avoid';

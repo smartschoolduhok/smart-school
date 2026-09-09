@@ -39,6 +39,7 @@ import {
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import {
   TIMETABLE_DAY_NAMES,
+  timetableYearBelongsToSchool,
   type TimetableDay,
   type TimetableReadinessSummary,
   type TimetableSlot,
@@ -187,6 +188,7 @@ export default function TimetablePage() {
   const [success, setSuccess] = useState('');
   const currentScopeRef = useRef({ schoolId, academicYearId });
   currentScopeRef.current = { schoolId, academicYearId };
+  const academicYearMatchesSchool = timetableYearBelongsToSchool(schoolId, academicYearId, years);
 
   function scopeIsCurrent(expectedSchoolId: number, expectedAcademicYearId: number) {
     return currentScopeRef.current.schoolId === expectedSchoolId
@@ -247,7 +249,7 @@ export default function TimetablePage() {
   }, [captureSchoolRequest, schoolId]);
 
   const reloadYearData = useCallback(async () => {
-    if (schoolId == null || academicYearId == null) return;
+    if (schoolId == null || academicYearId == null || !academicYearMatchesSchool) return;
     const requestGeneration = ++requestGenerationRef.current;
     const isCurrentSchool = captureSchoolRequest();
     setLoading(true);
@@ -271,7 +273,7 @@ export default function TimetablePage() {
     setReadiness(responses[3].data || null);
     setYearDataVersion((value) => value + 1);
     setLoading(false);
-  }, [academicYearId, captureSchoolRequest, schoolId]);
+  }, [academicYearId, academicYearMatchesSchool, captureSchoolRequest, schoolId]);
 
   useEffect(() => {
     requestGenerationRef.current += 1;
@@ -285,8 +287,8 @@ export default function TimetablePage() {
     setSlotForm(null);
     setLoadForm(EMPTY_LOAD);
     setSaving(false);
-    if (academicYearId != null) void reloadYearData();
-  }, [academicYearId, reloadYearData]);
+    if (academicYearMatchesSchool) void reloadYearData();
+  }, [academicYearMatchesSchool, reloadYearData]);
 
   const activeSections = useMemo(
     () => sections.filter((section) => selectedClassId != null && Number(section.class_id) === selectedClassId),
