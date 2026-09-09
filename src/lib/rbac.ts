@@ -78,10 +78,10 @@ export const FINANCE_ACCESS_ROLES: readonly RoleKey[] = [
 // Fee management is a finance responsibility; registrars are intentionally excluded.
 export const FEE_MANAGEMENT_ROLES: readonly RoleKey[] = FINANCE_ACCESS_ROLES;
 
-export const ANALYTICS_ACCESS_ROLES: readonly RoleKey[] = [
-  ...ACADEMIC_ACCESS_ROLES,
-  'accountant',
-];
+// Dashboard counts contain no student grades or academic analysis.
+export const DASHBOARD_ACCESS_ROLES: readonly RoleKey[] = [...ACADEMIC_ACCESS_ROLES, 'accountant'];
+
+export const ANALYTICS_ACCESS_ROLES: readonly RoleKey[] = ACADEMIC_ACCESS_ROLES;
 
 // Accountants need the employee roster for salary workflows, but not record mutation rights.
 export const EMPLOYEE_ACCESS_ROLES: readonly RoleKey[] = [

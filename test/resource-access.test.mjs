@@ -237,3 +237,89 @@ test('bulk grade entry is atomic across every grade and detects a stale row', as
   );
   assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM grade_change_logs').get().count, 0);
 });
+
+async function linkTeacher(fixture) {
+  const response = await api(fixture, 'owner', 'POST', '/api/access-links/teachers', {
+    school_id: 1, teacher_user_id: 3, employee_id: 1,
+  });
+  assert.equal(response.status, 201);
+}
+function secondSubject(fixture) {
+  fixture.database.exec(`
+    UPDATE subjects SET religious_track='islamic' WHERE id=2;
+    INSERT INTO student_subjects(id,school_id,student_id,subject_id,class_id,section_id,assigned_by_user_id)
+    VALUES(4,1,1,2,1,1,1);
+    INSERT INTO grades(id,school_id,student_subject_id,first_month,is_active,updated_by_user_id)
+    VALUES(4,1,4,95,1,1);
+  `);
+}
+
+test('student grade and subject endpoints restrict a teacher to the assigned subject', async t => {
+  const f = createFixture(t); secondSubject(f); await linkTeacher(f);
+  const grades = await api(f, 'teacher', 'GET', '/api/students/1/grades');
+  assert.equal(grades.status, 200);
+  assert.deepEqual(grades.body.data.grades.map(g=>g.id), [1]);
+  const subjects = await api(f, 'teacher', 'GET', '/api/students/1/subjects');
+  assert.equal(subjects.status, 200);
+  assert.deepEqual(subjects.body.data.map(s=>s.subject_id), [1]);
+  assert.ok(!JSON.stringify(subjects.body).includes('islamic'));
+  const assignments = await api(f, 'teacher', 'GET', '/api/student-subjects?school_id=1&student_id=1');
+  assert.equal(assignments.status, 200);
+  assert.deepEqual(assignments.body.data.map(s=>s.subject_id), [1]);
+  assert.ok(!JSON.stringify(assignments.body).includes('islamic'));
+  const summary = await api(f, 'teacher', 'GET', '/api/analytics/student-summary/1');
+  assert.equal(summary.status, 200);
+  assert.deepEqual(summary.body.data.subjects.map(s=>s.subject_id), [1]);
+  await api(f, 'owner', 'POST', '/api/access-links/parents', {school_id:1,parent_user_id:8,student_id:1});
+  for (const role of ['parent','owner']) {
+    assert.deepEqual((await api(f,role,'GET','/api/students/1/grades')).body.data.grades.map(g=>g.id), [1,4]);
+    assert.deepEqual((await api(f,role,'GET','/api/students/1/subjects')).body.data.map(s=>s.subject_id), [1,2]);
+  }
+});
+
+for (const [name,sql] of [
+  ['archived employee', "UPDATE employees SET status='archived' WHERE id=1"],
+  ['employee no longer teacher', "UPDATE employees SET role='staff' WHERE id=1"],
+  ['employee moved school', 'UPDATE employees SET school_id=2 WHERE id=1'],
+  ['missing employee', 'PRAGMA foreign_keys=OFF; DELETE FROM employees WHERE id=1; PRAGMA foreign_keys=ON;'],
+  ['inactive link', "UPDATE teacher_employee_links SET status='inactive' WHERE teacher_user_id=3"],
+  ['inactive load', "UPDATE timetable_teaching_loads SET status='inactive' WHERE id=1"],
+  ['inactive academic year', 'UPDATE academic_years SET is_active=0 WHERE id=1'],
+]) test(`teacher access is revoked immediately: ${name}`, async t => {
+  const f=createFixture(t); await linkTeacher(f);
+  assert.equal((await api(f,'teacher','GET','/api/students/1/grades')).status,200);
+  f.database.exec(sql);
+  for (const path of ['/api/students/1','/api/students/1/grades','/api/students/1/subjects','/api/grades/1/history','/api/analytics/student-summary/1'])
+    assert.equal((await api(f,'teacher','GET',path)).status,403,path);
+  for (const path of ['/api/students?school_id=1','/api/grades?school_id=1','/api/student-subjects?school_id=1'])
+    assert.deepEqual((await api(f,'teacher','GET',path)).body.data,[],path);
+  assert.equal((await api(f,'teacher','GET','/api/analytics/overview?school_id=1')).body.data.total,0);
+  assert.equal((await api(f,'teacher','PUT','/api/grades/1',{school_id:1,first_month:90})).status,403);
+});
+
+for (const bulk of [false,true]) test(`archived grade rejects ${bulk?'bulk':'single'} writes without any field or audit change`, async t=>{
+  const f=createFixture(t);f.database.exec('UPDATE grades SET is_active=0 WHERE id=2');
+  const snapshot=()=>JSON.stringify({grades:f.database.prepare('SELECT * FROM grades ORDER BY id').all(),audit:f.database.prepare('SELECT * FROM grade_change_logs').all()});
+  const before=snapshot();
+  const response=await api(f,'owner',bulk?'POST':'PUT',bulk?'/api/grades/bulk-entry':'/api/grades/2',bulk?{school_id:1,entries:[{grade_id:1,first_month:80},{grade_id:2,first_month:81}]}:{school_id:1,first_month:81,notes:'must not change'});
+  assert.equal(response.status,403);assert.equal(snapshot(),before);
+});
+
+for (const bulk of [false,true]) test(`archival during ${bulk?'bulk':'single'} grade request cannot create a false audit`,async t=>{
+  const f=createFixture(t);f.d1.beforeWrite=()=>f.database.exec('UPDATE grades SET is_active=0 WHERE id=1');
+  const response=await api(f,'owner',bulk?'POST':'PUT',bulk?'/api/grades/bulk-entry':'/api/grades/1',bulk?{school_id:1,entries:[{grade_id:2,first_month:85},{grade_id:1,first_month:90}]}:{school_id:1,first_month:90});
+  assert.equal(response.status,409);
+  assert.equal(f.database.prepare('SELECT first_month FROM grades WHERE id=1').get().first_month,50);
+  assert.equal(f.database.prepare('SELECT first_month FROM grades WHERE id=2').get().first_month,60);
+  assert.equal(f.database.prepare('SELECT COUNT(*) n FROM grade_change_logs').get().n,0);
+});
+
+test('accountant has a minimal finance directory and finance routes, never academic analysis',async t=>{
+  const f=createFixture(t);
+  const directory=await api(f,'accountant','GET','/api/students?school_id=1');assert.equal(directory.status,200);
+  assert.deepEqual(Object.keys(directory.body.data[0]).sort(),['id','school_id','student_number','full_name','class_id','section_id','class_name','section_name','status'].sort());
+  for(const path of ['/api/students/1','/api/students/1/grades','/api/students/1/subjects','/api/grades?school_id=1','/api/analytics/student-summary/1','/api/analytics/overview?school_id=1'])
+    assert.equal((await api(f,'accountant','GET',path)).status,403,path);
+  for(const path of ['/api/dashboard/stats?school_id=1','/api/student-fees?school_id=1','/api/treasury/summary?school_id=1','/api/employees?school_id=1','/api/salaries?school_id=1'])
+    assert.equal((await api(f,'accountant','GET',path)).status,200,path);
+});

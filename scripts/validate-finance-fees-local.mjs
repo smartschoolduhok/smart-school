@@ -5,20 +5,28 @@ import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {getPlatformProxy} from 'wrangler';
 import {createServer} from 'vite';
 import {signJWT} from '../src/lib/jwtSecurity.ts';
 import {root,migrationFiles,financeFixtureSQL,legacyFinanceSQL,feeDraft,paymentDraft} from '../test/helpers/finance-fixture.mjs';
 const directory=mkdtempSync(join(tmpdir(),'smart-school-finance-local-'));
+const xdgConfigHome=join(directory,'xdg-config');mkdirSync(xdgConfigHome);process.env.XDG_CONFIG_HOME=xdgConfigHome;
+const {getPlatformProxy}=await import('wrangler');
 const commands=[],evidence=[];let checks=0;
 function setup(label,through){const path=join(directory,label);mkdirSync(path);mkdirSync(join(path,'migrations'));
  for(const file of migrationFiles.filter(f=>f.slice(0,4)<=through))copyFileSync(join(root,'migrations',file),join(path,'migrations',file));
  const configPath=join(path,'wrangler.json'),state=join(path,'state'),name='finance-'+label+'-local-only';
  writeFileSync(configPath,JSON.stringify({name,compatibility_date:'2026-04-13',compatibility_flags:['nodejs_compat'],d1_databases:[{binding:'DB',database_name:name,database_id:'00000000-0000-0000-0000-000000000028',migrations_dir:'migrations'}]}));return {path,configPath,state,name};}
 function run(env,args,expectedFailure=null){assert.ok(!args.includes('--remote'));const command=[join(root,'node_modules/wrangler/bin/wrangler.js'),'d1',...args,env.name,'--local','--config',env.configPath,'--persist-to',env.state];
- const r=spawnSync(process.execPath,command,{cwd:env.path,encoding:'utf8',windowsHide:true,env:{...process.env,CI:'true',WRANGLER_SEND_METRICS:'false'},timeout:180000,maxBuffer:10_000_000});
- const output=(r.stdout??'')+(r.stderr??'');commands.push(command);writeFileSync(join(env.path,'command-'+commands.length+'.log'),output);
- assert.equal(r.status,expectedFailure?1:0,output);if(expectedFailure)assert.match(output,expectedFailure);return r.stdout;}
+ const startedAt=Date.now();
+ const r=spawnSync(process.execPath,command,{cwd:env.path,encoding:'utf8',windowsHide:true,env:{...process.env,CI:'true',WRANGLER_SEND_METRICS:'false',XDG_CONFIG_HOME:xdgConfigHome},timeout:180000,maxBuffer:10_000_000});
+ const elapsedMs=Date.now()-startedAt,stdout=r.stdout??'',stderr=r.stderr??'',output=stdout+stderr;
+ commands.push(command);const commandNumber=commands.length,logPath=join(env.path,'command-'+commandNumber+'.log');writeFileSync(logPath,output);
+ const safeErrorMessage=r.error?.message?.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,'[redacted token]')??null;
+ const diagnostic={scenario:env.name,status:r.status,signal:r.signal??null,error:{name:r.error?.name??null,code:r.error?.code??null,message:safeErrorMessage},elapsed_ms:elapsedMs,timeout_ms:180000,max_buffer_bytes:10_000_000,stdout_bytes:Buffer.byteLength(stdout),stderr_bytes:Buffer.byteLength(stderr)};
+ writeFileSync(join(env.path,'command-'+commandNumber+'.diagnostic.json'),JSON.stringify(diagnostic,null,2)+'\n');
+ console.log('LOCAL Wrangler subprocess: '+JSON.stringify(diagnostic));
+ assert.equal(r.status,expectedFailure?1:0,'Wrangler subprocess failed; details: '+JSON.stringify(diagnostic)+'; output log: '+logPath);
+ if(expectedFailure)assert.match(output,expectedFailure);return stdout;}
 function fixtures(env,sql){const file=join(env.path,'generated-local-fixtures.sql');writeFileSync(file,sql);run(env,['execute','--file',file]);}
 async function open(env){return getPlatformProxy({configPath:env.configPath,persist:{path:join(env.state,'v3')},remoteBindings:false,envFiles:[]});}
 async function snap(db){const tables=(await db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all()).results;

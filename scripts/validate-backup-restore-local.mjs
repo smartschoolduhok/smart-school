@@ -1,5 +1,7 @@
 // Disposable LOCAL D1 backup/restore drill. Never reads a configured remote DB.
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { prepareLocalRestore, contentSnapshot, assertSameContent, digest } from './lib/local-d1-restore.mjs';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -73,37 +75,59 @@ async function openLocal(environment) {
   });
 }
 
-async function applicationSnapshot(db) {
-  const tables = (await db.prepare(`
-    SELECT name FROM sqlite_schema
-    WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'
-    ORDER BY name
-  `).all()).results;
-  const snapshot = {};
-  for (const { name } of tables) {
-    snapshot[name] = (await db.prepare(`SELECT * FROM "${name}"`).all()).results
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-  }
-  return snapshot;
-}
-
 runLocal(source, ['migrations', 'apply', source.databaseName, '--local'], 'source-migrations');
 runLocal(source, ['execute', source.databaseName, '--local', '--file', join(source.directory, 'seed.sql')], 'source-seed');
+// Generated fixture only: exercise Unicode, SQL quotes, commas and real newlines.
+const fragment = "مدرسة, 'quoted', \"double\"\nnext line; (value), ";
+const largeText = fragment.repeat(Math.ceil(360000 / Buffer.byteLength(fragment)));
+assert.ok(Buffer.byteLength(largeText) >= 360000 && Buffer.byteLength(largeText) < 361000);
+const largeSource = await openLocal(source);
+try {
+  await largeSource.env.DB.prepare(
+    'INSERT INTO import_jobs(school_id,import_type,file_name,status,summary_json,completed_at) VALUES(?,?,?,?,?,?)',
+  ).bind(1, 'students', new Uint8Array([0, 39, 44, 255]), 'completed', largeText, 1788000000.25).run();
+} finally { await largeSource.dispose(); }
 runLocal(source, ['export', source.databaseName, '--local', '--output', backupPath], 'source-export');
 assert.ok(readFileSync(backupPath, 'utf8').length > 1_000, 'backup export is unexpectedly empty');
-runLocal(restored, ['execute', restored.databaseName, '--local', '--file', backupPath], 'restore-import');
+const exportedSql = readFileSync(backupPath, 'utf8');
+const plan = prepareLocalRestore(exportedSql);
+assert.equal(plan.inserts.length, 1, 'The drill must exercise one oversized bound row');
+assert.equal(plan.baseStatementCount, plan.statementCount - 1);
+const basePath = join(drillRoot, 'restore-base.sql');
+writeFileSync(basePath, plan.baseSql);
+runLocal(restored, ['execute', restored.databaseName, '--local', '--file', basePath], 'restore-base-import');
 
 const sourceProxy = await openLocal(source);
 const restoredProxy = await openLocal(restored);
 try {
-  const before = await applicationSnapshot(sourceProxy.env.DB);
-  const after = await applicationSnapshot(restoredProxy.env.DB);
-  assert.deepEqual(after, before, 'restored application tables must exactly match the source export');
+  const read = db => async sql => (await db.prepare(sql).all()).results;
+  for (const insert of plan.inserts) {
+    const result = await restoredProxy.env.DB.prepare(insert.sql).bind(...insert.values).run();
+    assert.equal(result.success, true);
+    assert.equal(result.meta.changes, 1);
+  }
+  const before = await contentSnapshot(read(sourceProxy.env.DB));
+  const after = await contentSnapshot(read(restoredProxy.env.DB));
+  assertSameContent(before, after);
+  const baseline = new DatabaseSync(':memory:');
+  try {
+    baseline.exec(exportedSql);
+    assertSameContent(await contentSnapshot(async sql => baseline.prepare(sql).all()), after);
+  } finally { baseline.close(); }
+  const largeRow = await restoredProxy.env.DB.prepare('SELECT summary_json FROM import_jobs WHERE summary_json = ?').bind(largeText).first();
+  assert.ok(largeRow?.summary_json === largeText, 'Large row must round-trip byte-for-byte');
   const finance = await assertFinanceSeed(restoredProxy.env.DB);
   const evidence = {
     local_only: true,
     migration_count: migrationFiles.length,
-    table_count: Object.keys(after).length,
+    table_count: Object.keys(after.tables).length,
+    schema_hash: digest(after.schema),
+    tables: Object.fromEntries(Object.entries(after.tables).map(([name, t]) => [name, { rows: t.count, hash: t.hash }])),
+    oversized_single_row_restored: true,
+    large_row_bytes: Buffer.byteLength(largeText),
+    large_row_hash: digest(largeText),
+    statements_before: plan.statementCount,
+    restore_base_statements: plan.baseStatementCount,
     backup_bytes: readFileSync(backupPath).byteLength,
     exact_application_snapshot: true,
     finance,

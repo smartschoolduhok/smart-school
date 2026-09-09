@@ -3,6 +3,7 @@ import test, { after } from 'node:test';
 import { createServer } from 'vite';
 import { signJWT } from '../src/lib/jwtSecurity.ts';
 import {
+  root,
   financeFixture,
   feeDraft,
   migrationSQL,
@@ -10,7 +11,7 @@ import {
   snapshot,
 } from './helpers/finance-fixture.mjs';
 
-const vite = await createServer({ root: new URL('../', import.meta.url).pathname, appType: 'custom', server: { middlewareMode: true, hmr: false } });
+const vite = await createServer({ root, appType: 'custom', server: { middlewareMode: true, hmr: false } });
 const { default: app } = await vite.ssrLoadModule('/src/worker.ts');
 after(() => vite.close());
 

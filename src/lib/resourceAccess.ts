@@ -37,6 +37,32 @@ function hasFullAcademicAccess(user: ResourceAccessUser): boolean {
   return FULL_ACADEMIC_ROLES.includes(user.role_key);
 }
 
+export function teacherAssignmentAccessSql(alias: 'assignment' | 'ss'): string {
+  return `${alias}.is_active = 1 AND EXISTS (
+    SELECT 1
+    FROM teacher_employee_links access_link
+    JOIN employees employee
+      ON employee.id = access_link.employee_id
+     AND employee.school_id = access_link.school_id
+     AND employee.status = 'active'
+     AND employee.role = 'teacher'
+    JOIN timetable_teaching_loads teaching_load
+      ON teaching_load.school_id = employee.school_id
+     AND teaching_load.employee_id = employee.id
+     AND teaching_load.status = 'active'
+    JOIN academic_years academic_year
+      ON academic_year.id = teaching_load.academic_year_id
+     AND academic_year.school_id = teaching_load.school_id
+     AND academic_year.is_active = 1
+    WHERE access_link.school_id = ${alias}.school_id
+      AND access_link.teacher_user_id = ?
+      AND access_link.status = 'active'
+      AND teaching_load.subject_id = ${alias}.subject_id
+      AND teaching_load.class_id = ${alias}.class_id
+      AND (teaching_load.section_id IS NULL OR teaching_load.section_id = ${alias}.section_id)
+  )`;
+}
+
 async function teacherCanAccessStudent(
   db: ResourceAccessDb,
   userId: number,
@@ -44,26 +70,9 @@ async function teacherCanAccessStudent(
   studentId: number,
 ): Promise<boolean> {
   const row = await db.prepare(`
-    SELECT 1 AS allowed
-    FROM teacher_employee_links access_link
-    JOIN timetable_teaching_loads teaching_load
-      ON teaching_load.school_id = access_link.school_id
-     AND teaching_load.employee_id = access_link.employee_id
-     AND teaching_load.status = 'active'
-    JOIN academic_years academic_year
-      ON academic_year.id = teaching_load.academic_year_id
-     AND academic_year.school_id = teaching_load.school_id
-     AND academic_year.is_active = 1
-    JOIN student_subjects assignment
-      ON assignment.school_id = teaching_load.school_id
-     AND assignment.student_id = ?
-     AND assignment.subject_id = teaching_load.subject_id
-     AND assignment.class_id = teaching_load.class_id
-     AND assignment.is_active = 1
-     AND (teaching_load.section_id IS NULL OR assignment.section_id = teaching_load.section_id)
-    WHERE access_link.school_id = ?
-      AND access_link.teacher_user_id = ?
-      AND access_link.status = 'active'
+    SELECT 1 AS allowed FROM student_subjects assignment
+    WHERE assignment.student_id = ? AND assignment.school_id = ?
+      AND ${teacherAssignmentAccessSql('assignment')}
     LIMIT 1
   `).bind(studentId, schoolId, userId).first<{ allowed: number }>();
   return row?.allowed === 1;
@@ -129,30 +138,12 @@ export async function canAccessGradeResource(
   if (user.role_key !== 'teacher') return false;
 
   const row = await db.prepare(`
-    SELECT 1 AS allowed
-    FROM grades grade
+    SELECT 1 AS allowed FROM grades grade
     JOIN student_subjects assignment
-      ON assignment.id = grade.student_subject_id
-     AND assignment.school_id = grade.school_id
-     AND assignment.is_active = 1
-    JOIN teacher_employee_links access_link
-      ON access_link.school_id = grade.school_id
-     AND access_link.teacher_user_id = ?
-     AND access_link.status = 'active'
-    JOIN timetable_teaching_loads teaching_load
-      ON teaching_load.school_id = grade.school_id
-     AND teaching_load.employee_id = access_link.employee_id
-     AND teaching_load.subject_id = assignment.subject_id
-     AND teaching_load.class_id = assignment.class_id
-     AND (teaching_load.section_id IS NULL OR teaching_load.section_id = assignment.section_id)
-     AND teaching_load.status = 'active'
-    JOIN academic_years academic_year
-      ON academic_year.id = teaching_load.academic_year_id
-     AND academic_year.school_id = teaching_load.school_id
-     AND academic_year.is_active = 1
-    WHERE grade.id = ?
+      ON assignment.id = grade.student_subject_id AND assignment.school_id = grade.school_id
+    WHERE grade.id = ? AND ${teacherAssignmentAccessSql('assignment')}
     LIMIT 1
-  `).bind(user.id, gradeId).first<{ allowed: number }>();
+  `).bind(gradeId, user.id).first<{ allowed: number }>();
   return row?.allowed === 1;
 }
 
@@ -176,24 +167,8 @@ export async function accessibleStudentIds(
   if (user.role_key === 'teacher') {
     const rows = await db.prepare(`
       SELECT DISTINCT assignment.student_id
-      FROM teacher_employee_links access_link
-      JOIN timetable_teaching_loads teaching_load
-        ON teaching_load.school_id = access_link.school_id
-       AND teaching_load.employee_id = access_link.employee_id
-       AND teaching_load.status = 'active'
-      JOIN academic_years academic_year
-        ON academic_year.id = teaching_load.academic_year_id
-       AND academic_year.school_id = teaching_load.school_id
-       AND academic_year.is_active = 1
-      JOIN student_subjects assignment
-        ON assignment.school_id = teaching_load.school_id
-       AND assignment.subject_id = teaching_load.subject_id
-       AND assignment.class_id = teaching_load.class_id
-       AND assignment.is_active = 1
-       AND (teaching_load.section_id IS NULL OR assignment.section_id = teaching_load.section_id)
-      WHERE access_link.school_id = ?
-        AND access_link.teacher_user_id = ?
-        AND access_link.status = 'active'
+      FROM student_subjects assignment
+      WHERE assignment.school_id = ? AND ${teacherAssignmentAccessSql('assignment')}
     `).bind(schoolId, user.id).all<{ student_id: number }>();
     return new Set((rows.results || []).map(row => row.student_id));
   }
@@ -231,28 +206,9 @@ export async function accessibleGradeIds(
   if (user.role_key === 'teacher') {
     const rows = await db.prepare(`
       SELECT DISTINCT grade.id
-      FROM teacher_employee_links access_link
-      JOIN timetable_teaching_loads teaching_load
-        ON teaching_load.school_id = access_link.school_id
-       AND teaching_load.employee_id = access_link.employee_id
-       AND teaching_load.status = 'active'
-      JOIN academic_years academic_year
-        ON academic_year.id = teaching_load.academic_year_id
-       AND academic_year.school_id = teaching_load.school_id
-       AND academic_year.is_active = 1
-      JOIN student_subjects assignment
-        ON assignment.school_id = teaching_load.school_id
-       AND assignment.subject_id = teaching_load.subject_id
-       AND assignment.class_id = teaching_load.class_id
-       AND assignment.is_active = 1
-       AND (teaching_load.section_id IS NULL OR assignment.section_id = teaching_load.section_id)
-      JOIN grades grade
-        ON grade.school_id = assignment.school_id
-       AND grade.student_subject_id = assignment.id
-       AND grade.is_active = 1
-      WHERE access_link.school_id = ?
-        AND access_link.teacher_user_id = ?
-        AND access_link.status = 'active'
+      FROM student_subjects assignment
+      JOIN grades grade ON grade.student_subject_id = assignment.id AND grade.school_id = assignment.school_id AND grade.is_active = 1
+      WHERE assignment.school_id = ? AND ${teacherAssignmentAccessSql('assignment')}
     `).bind(schoolId, user.id).all<{ id: number }>();
     return new Set((rows.results || []).map(row => row.id));
   }

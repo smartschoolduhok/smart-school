@@ -16,6 +16,7 @@ import {
   ACADEMIC_ACCESS_ROLES,
   ACADEMIC_MANAGEMENT_ROLES,
   ANALYTICS_ACCESS_ROLES,
+  DASHBOARD_ACCESS_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   EMPLOYEE_MANAGEMENT_ROLES,
   EMPLOYEE_SALARY_ROLES,
@@ -36,6 +37,7 @@ import {
   hasRole,
 } from './lib/rbac'
 import {
+  teacherAssignmentAccessSql,
   accessibleGradeIds,
   accessibleStudentIds,
   canAccessGradeResource,
@@ -3978,7 +3980,7 @@ app.delete('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRole
 // ===========================================
 // API ROUTES: Dashboard Stats (RBAC-aware)
 // ===========================================
-app.get('/api/dashboard/stats', requireSameSchoolOrAdmin(), requireRoles(ANALYTICS_ACCESS_ROLES), async (c) => {
+app.get('/api/dashboard/stats', requireSameSchoolOrAdmin(), requireRoles(DASHBOARD_ACCESS_ROLES), async (c) => {
   const db = c.env.DB
   const resolvedSchoolId: number | null = c.get('resolvedSchoolId')
   const scope: 'all' | 'single' = c.get('scope')
@@ -5284,6 +5286,10 @@ app.get('/api/student-subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEM
     if (qSection) { conditions.push('ss.section_id = ?'); binds.push(qSection); }
     if (qSubject) { conditions.push('ss.subject_id = ?'); binds.push(qSubject); }
     if (qActive === '1' || qActive === '0') { conditions.push('ss.is_active = ?'); binds.push(Number(qActive)); }
+    if (user?.role_key === 'teacher') {
+      conditions.push(teacherAssignmentAccessSql('ss'));
+      binds.push(user.id);
+    }
     if (conditions.length > 0) query += ` WHERE ${conditions.join(' AND ')}`;
     query += ` ORDER BY ss.is_active DESC, ss.assigned_at DESC`;
     const { results } = await db.prepare(query).bind(...binds).all();
@@ -5311,8 +5317,9 @@ app.get('/api/students/:id/subjects', requireAuthEnforced(), requireRoles(STUDEN
       LEFT JOIN classes c ON ss.class_id = c.id AND c.school_id = ss.school_id
       LEFT JOIN sections se ON ss.section_id = se.id AND se.school_id = ss.school_id
       WHERE ss.student_id = ? AND ss.school_id = ? AND ss.is_active = 1
+        AND ${user.role_key === 'teacher' ? teacherAssignmentAccessSql('ss') : '1=1'}
       ORDER BY su.order_index, su.id
-    `).bind(id, student.school_id).all();
+    `).bind(id, student.school_id, ...(user.role_key === 'teacher' ? [user.id] : [])).all();
     return c.json({ data: results || [] });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب مواد الطالب', detail: err.message }, 500);
@@ -6180,8 +6187,9 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(GRADE_VI
       JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.school_id = g.school_id
       JOIN subjects s ON ss.subject_id = s.id AND s.school_id = g.school_id
       WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1 AND ss.is_active = 1 AND s.status = 'active'
+        AND ${user.role_key === 'teacher' ? teacherAssignmentAccessSql('ss') : '1=1'}
       ORDER BY s.order_index, s.id
-    `).bind(studentId, student.school_id).all<any>();
+    `).bind(studentId, student.school_id, ...(user.role_key === 'teacher' ? [user.id] : [])).all<any>();
 
     return c.json({ data: { student_name: student.full_name, settings, grades: rows.results || [] } });
   } catch (err: any) {
@@ -6315,7 +6323,7 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     `).bind(gradeId).first<any>();
     if (!gradeRow) return c.json({ error: 'الدرجة غير موجودة' }, 404);
 
-    if (gradeRow.ss_active !== 1 || gradeRow.subject_status !== 'active') {
+    if (gradeRow.is_active !== 1 || gradeRow.ss_active !== 1 || gradeRow.subject_status !== 'active') {
       return c.json({ error: 'المادة غير مفعلة أو غير مسندة للطالب' }, 403);
     }
 
@@ -6381,7 +6389,7 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
             )
             SELECT school_id, id, ?, ?, ?, ?, ?, unixepoch()
             FROM grades
-            WHERE id = ? AND school_id = ? AND revision = ?
+            WHERE id = ? AND school_id = ? AND revision = ? AND is_active = 1
           `).bind(
             field,
             oldVal || null,
@@ -6399,7 +6407,7 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     const updateStatement = db.prepare(`
       UPDATE grades
       SET ${setParts.join(', ')}
-      WHERE id = ? AND school_id = ? AND revision = ?
+      WHERE id = ? AND school_id = ? AND revision = ? AND is_active = 1
       RETURNING *
     `).bind(...bindVals);
     const results = await db.batch<any>([...auditStatements, updateStatement]);
@@ -6458,7 +6466,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       if (gradeRow.school_id !== targetSchool.schoolId) {
         return c.json({ error: `غير مسموح بالدرجة ${gradeId}` }, 403);
       }
-      if (gradeRow.ss_active !== 1 || gradeRow.subject_status !== 'active') {
+      if (gradeRow.is_active !== 1 || gradeRow.ss_active !== 1 || gradeRow.subject_status !== 'active') {
         return c.json({ error: `المادة المرتبطة بالدرجة ${gradeId} غير مفعلة` }, 403);
       }
       if (user?.role_key === 'teacher' && !await canAccessGradeResource(db, user, gradeId)) {
@@ -6523,6 +6531,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
             ON grade.id = CAST(json_extract(expected.value, '$.id') AS INTEGER)
            AND grade.school_id = ?
            AND grade.revision = CAST(json_extract(expected.value, '$.revision') AS INTEGER)
+           AND grade.is_active = 1
         ) = json_array_length(?) THEN 1 ELSE 0 END
       `).bind(requestId, expectedJson, targetSchool.schoolId, expectedJson),
     ];
@@ -6558,7 +6567,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       statements.push(db.prepare(`
         UPDATE grades
         SET ${setParts.join(', ')}
-        WHERE id = ? AND school_id = ? AND revision = ?
+        WHERE id = ? AND school_id = ? AND revision = ? AND is_active = 1
         RETURNING id, revision
       `).bind(...bindValues));
     }
@@ -6653,24 +6662,7 @@ function buildAnalyticsWhere(opts: {
     params.push(opts.subjectId);
   }
   if (opts.user?.role_key === 'teacher') {
-    conditions.push(`EXISTS (
-      SELECT 1
-      FROM teacher_employee_links access_link
-      JOIN timetable_teaching_loads teaching_load
-        ON teaching_load.school_id = access_link.school_id
-       AND teaching_load.employee_id = access_link.employee_id
-       AND teaching_load.subject_id = ss.subject_id
-       AND teaching_load.class_id = ss.class_id
-       AND (teaching_load.section_id IS NULL OR teaching_load.section_id = ss.section_id)
-       AND teaching_load.status = 'active'
-      JOIN academic_years academic_year
-        ON academic_year.id = teaching_load.academic_year_id
-       AND academic_year.school_id = teaching_load.school_id
-       AND academic_year.is_active = 1
-      WHERE access_link.school_id = g.school_id
-        AND access_link.teacher_user_id = ?
-        AND access_link.status = 'active'
-    )`);
+    conditions.push(teacherAssignmentAccessSql('ss'));
     params.push(opts.user.id);
   }
   return { where: conditions.join(' AND '), params };
@@ -7081,7 +7073,7 @@ app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), req
 
     if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
 
-    if (!user || !await canAccessStudentResource(db, user, studentId, { allowAccountant: true })) {
+    if (!user || !await canAccessStudentResource(db, user, studentId)) {
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى تحليل هذا الطالب' }, 403);
     }
 
@@ -7115,9 +7107,10 @@ app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), req
         g.final_exam,
         g.completion_exam
       ${ANALYTICS_APPLICABLE_GRADE_JOINS}
-      WHERE ss.student_id = ? AND g.is_active = 1
+      WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1
+        AND ${user.role_key === 'teacher' ? teacherAssignmentAccessSql('ss') : '1=1'}
       ORDER BY su.order_index, su.id
-    `).bind(studentId).all<any>();
+    `).bind(studentId, student.school_id, ...(user.role_key === 'teacher' ? [user.id] : [])).all<any>();
 
     const subjects = gradeRows.results || [];
     const totalSubjects = subjects.length;

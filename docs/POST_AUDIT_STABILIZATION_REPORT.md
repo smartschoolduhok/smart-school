@@ -6,23 +6,23 @@
 
 **Base:** `main@30099be65ad50de6673dbf6023ba22fa595c960c`
 
-**الحكم الحالي:** جاهز لمراجعة Pull Request والـQA على STAGING، وليس تصريحًا للإنتاج.
+**الحكم الحالي:** migrations 0029–0031 ناجحة على STAGING؛ PR #39 يبقى Draft للمراجعة، دون تصريح Production أو دمج. نتائج دفعة إغلاق فجوات المراجعة موثقة في القسم 9.
 
 ## 1. الملخص التنفيذي
 
 تم تنفيذ دفعات التدقيق بالترتيب: عزل الصلاحيات، ذرّية الدرجات، سلامة الخزنة والرواتب والإقفال، تبسيط التنقل ومسارات العمل، معالجة تعليق مولّد الجدول، تحسين حجم التحميل، تحديث التبعيات، إضافة CI وتمرين استعادة، ثم تصحيح وثائق التشغيل.
 
-النتيجة المحلية النهائية:
+النتيجة المحلية للدفعة الأصلية قبل مراجعة PR #39:
 
 - **1,411/1,411** تنفيذ اختبار في 22 مجموعة، صفر فشل وصفر تخطي.
 - **35/35** فحصًا على D1 محلي حقيقي للأقساط والدفعات والإيصالات.
 - جميع **32 migration** تطبق على قاعدة جديدة مع seed ناجح.
-- تصدير واستعادة محليان متطابقان عبر **51 جدول تطبيق**.
+- تصدير واستعادة محليان متطابقان عبر **51 جدول تطبيق**. التمرين المحدّث يدعم oversized single-row restoration عبر parameter binding ويقارن كذلك sqlite_sequence.
 - `npm audit`: **0 vulnerabilities** بعد أن كان 18 (13 high، 3 moderate، 2 low).
 - typecheck وبناء الواجهة والـWorker ناجحان.
 - الحزمة الابتدائية انخفضت من نحو 1.085MB إلى **278.29KB**، مع فصل صفحات النظام وExcel إلى chunks عند الطلب.
 
-لم يُستخدم Remote D1، ولم تُلمس STAGING أو Production، ولم يُنفذ seed/reset على أي قاعدة بعيدة.
+الدفعة البرمجية الأصلية كانت محلية. بعد تفويض تشغيلي مستقل، طُبقت 0029–0031 على STAGING بنجاح كما في القسم 9. لم تُستخدم Production ولم يُنفّذ seed/reset على STAGING. دفعة إصلاح PR #39 الحالية محلية للكود والاختبارات والوثائق، دون Remote D1 أو إعادة تطبيق migrations.
 
 ## 2. نتائج المشاكل المكتشفة
 
@@ -134,10 +134,10 @@
 هذه ليست أخطاء كود مثبتة، لكنها تمنع إعلان Production:
 
 1. مراجعة PR مستقلة ونجاح GitHub Actions على commit النهائي.
-2. تطبيق migrations `0029`–`0031` على STAGING بخطة منفصلة ونسخة احتياطية وpreflight.
+2. **أُغلقت:** تطبيق migrations `0029`–`0031` على STAGING بعد backup وpreflight ومحاكاة ناجحة؛ لا تُعدّل الملفات المطبقة ولا يُعاد تطبيقها.
 3. QA بصري authenticated على STAGING لسطح المكتب والهاتف والطباعة.
 4. اختبار أدوار مدير/محاسب/مدرس/مسؤول تسجيل/ولي أمر بروابط حقيقية.
-5. تمرين استعادة لنسخة Cloudflare الحقيقية داخل بيئة آمنة غير Production.
+5. **أُغلقت:** استعادة النسخة الحقيقية محليًا، بما فيها import_jobs كبير عبر binding، وإثبات حفظ 47 جدولًا تاريخيًا.
 6. قرار GO مكتوب ومستقل قبل أي وصول إلى Production.
 
 ## 6. تحسينات مستقبلية مقترحة
@@ -173,4 +173,74 @@
 
 ## 8. قرار التسليم
 
-**الكود جاهز محليًا لفتح PR ومراجعة مستقلة.** لا توجد بوابة اختبار محلية فاشلة معروفة. الانتقال إلى STAGING هو تغيير تشغيلي منفصل؛ والانتقال إلى Production غير مصرح به في هذه الدفعة.
+**PR #39 مفتوح كمسودة.** اكتمل تغيير schema المصرّح به على STAGING. تبقى مراجعة الكود وQA البصري واختبارات الأدوار على Branch Preview؛ Production والدمج خارج التفويض.
+
+
+## 9. نتيجة STAGING وإغلاق فجوات مراجعة PR #39 — 2026-09-09
+
+### النتيجة التشغيلية الفعلية السابقة لهذه الدفعة
+
+- الهدف: smart-school-staging-db، ID: 1bdb9c3d-08d6-4023-9cbc-64369d53198a.
+- النسخة الأصلية محفوظة خارج Git في C:\Users\ibrah\Documents\SmartSchoolBackups\staging-20260909T104349Z\smart-school-staging-db-full.sql، بحجم **960,336 bytes**.
+- SHA-256: **99FBF895EE223266327CCC3D359A73A5FBE6338413F638C736F388AD9D618B05**.
+- تعذر استيراد INSERT لصف import_jobs واحد بحجم 360,732 bytes بسبب حد SQL statement. استُعيد الصف كاملًا باستخدام D1 prepared statement و16 parameter؛ حجم قيمه الفعلي 360,514 bytes، دون اختصارها أو إدراجها في SQL.
+- أثبتت المحاكاة التكافؤ الكامل، ثم أثبتت postchecks حفظ الأعمدة والقيم التاريخية في **47 جدولًا** بعد التطبيق.
+- **32 migrations، لا pending**؛ 0029/0030/0031 مسجلة مرة واحدة بالترتيب في 2026-09-09 11:08:07–11:08:08 UTC.
+- PRAGMA foreign_key_check نظيف، وfinance_fee_readiness وfinance_treasury_readiness وfinance_payroll_school_readiness سليمة. لم توجد سجلات رواتب على STAGING قبل أو بعد.
+- **66 tests و7 genuine-D1 checks** ناجحة قبل التطبيق، بما فيها rollback والإلغاء المتزامن دون double reversal والإقفال.
+- لا Production ولا seed/reset في العملية التشغيلية. لم تستورد نسخة backup إلى STAGING؛ الكتابة البعيدة الوحيدة كانت migrations apply الرسمية.
+- مجلد النسخة والتقرير التشغيلي لم يُعدَّلا في دفعة إصلاح PR #39 الحالية، ولم تُستخدم Remote D1 خلالها.
+
+### Red → green لفجوات المراجعة
+
+1. Fixture لطالب له درجتان في مادتين، والمدرس مكلف بواحدة: أثبت الاختبار الأحمر تسرب الدرجة الثانية. تستخدم قوائم مواد الطالب ودرجاته وتحليله الآن predicate موحدًا لتكليف المدرس. ولي الأمر المرتبط والإدارة يحتفظان بالعرض الكامل المخول لهما.
+2. Predicate المدرس يربط employee في المدرسة نفسها وبحالة active ودور teacher، ثم link وteaching load نشطين وسنة أكاديمية نشطة. يُستخدم في الوصول للطالب/الدرجة والقوائم والتحليلات. تشمل اختبارات الإبطال الموظف المؤرشف أو المنقول أو الذي تغير دوره أو حُذف، وتعطيل link/load/year.
+3. single وbulk يرفضان grade.is_active != 1 دون تغيير حقول أو audit. حراسة وقت الكتابة تمنع أيضًا الأرشفة المتزامنة من إنتاج audit كاذب أو دفعة جزئية.
+4. accountant يحصل على دليل الطلاب المالي المحدود فقط، ولا يدخل درجات/تحليل الطالب. رابط التحليل وroute guard يتبعان السياسة نفسها؛ dashboard counts والرسوم والخزنة والموظفون/الرواتب باقية متاحة.
+5. تمرين backup/restore أظهر SQLITE_TOOBIG في المسار القديم ثم نجح بعد fallback محلي صريح لصف import_jobs الكبير. يُنشئ صفًا اصطناعيًا بنص **360,009 bytes** يتضمن Unicode واقتباسات وفواصل وأسطرًا جديدة وفواصل SQL داخل النص؛ يشمل أيضًا NULL وINTEGER وREAL وBLOB.
+6. التمرين يُصدّر D1 محليًا ثم يستعيد restore-base إلى قاعدة أخرى معزولة ويُدخل الصف الكبير عبر placeholders/binding فقط. يقارن المصدر والنسخة المستعادة وSQLite baseline: schema، أعداد الصفوف، canonical SHA-256 وكامل المحتوى والأنواع عبر **52 جدولًا بما فيها sqlite_sequence**، ثم FK/readiness والقيم المالية. سجل الدليل يعرض counts/hashes فقط دون محتوى الصف. يرفض fallback الجداول الكبيرة الأخرى والتحويلات العددية غير lossless وحدود D1، ولا يختصر أي قيمة.
+7. أُصلح مسار Vite في اختبار treasury/payroll باستخدام root المستخرج من fileURLToPath، لكي تعمل المجموعة على Windows دون غلاف خارجي.
+
+### تحقق دفعة الكود
+
+**اكتملت بوابات الكود والمحاكاة المحلية دون تغيير migrations 0029–0031 أو إعادة تطبيقها على STAGING.**
+
+| الفحص | النتيجة |
+|---|---|
+| typecheck | PASS |
+| full regression matrix | **1425/1425**، 22 مجموعة، صفر فشل وصفر تخطٍ |
+| enhanced backup/restore | PASS: صف 360,009 bytes، 52 جدولًا، source/SQLite/D1 متطابقة |
+| frontend build | PASS: initial main chunk 278.29 kB |
+| Worker build | PASS: 615.76 kB |
+| npm audit | صفر ثغرات |
+| git diff --check | PASS |
+| migrations 0029–0031 | لم تتغير، ولا إعادة تطبيق على STAGING |
+| genuine Local D1 finance | PASS مرتين متتاليتين: 32 migrations و35 check في كل مرور |
+| genuine Local D1 teaching-load matrix | PASS: fresh/upgrade وFK والتحويلات والـ500-row set-based cases |
+| genuine Local D1 week setup | PASS: 32 migrations وFK و12 سيناريو production-builder |
+| finance legacy harness | PASS: 40/40، ببيانات اصطناعية محلية فقط |
+
+### تشخيص duplicate-token وتثبيت runner المحلي
+
+الأثر القديم سجل `status=null` فقط، ولم يسجل `signal` أو `r.error` أو المدة؛ لذلك لا يثبت وحده أن السبب `ETIMEDOUT`. بلغ stdout/stderr المحفوظان معًا 87,679 bytes فقط، وهو أقل كثيرًا من `maxBuffer=10,000,000` ويستبعد `ENOBUFS` عمليًا. كما كانت نفس executable والمسارات قد نجحت في الأوامر الستة السابقة، فلا يوجد دليل على `ENOENT` أو `EACCES` في `spawnSync`. توقف خرج Wrangler القديم أثناء تطبيق السلسلة، وكانت الفجوة بين حفظ الأمر السابق وحفظ أمر `duplicate-token` نحو 492 ثانية، مما ينسجم مع تعطل عملية Wrangler/child pipe بعد حد 180 ثانية لكنه لا يكفي لإسناد رمز خطأ لم يُحفظ.
+
+يسجل runner الآن لكل استدعاء، دون stdout/stderr أو بيانات صفوف: اسم السيناريو، status، signal، `error.name/code/message` المنقحة، المدة، timeout، maxBuffer، وحجمي stdout/stderr. كما يعزل `XDG_CONFIG_HOME` داخل مجلد التشغيل المؤقت؛ إعادة الإنتاج كشفت أن registry العام لـWrangler/Miniflare كان عرضة لـ`EPERM` وتعارض الحالة خارج persist directory.
+
+في المرورين الكاملين بعد العزل، كان `duplicate-token` ثابتًا كما يلي:
+
+- المرور الأول: تطبيق 0001–0027: status 0 خلال 29,251ms؛ fixture: status 0 خلال 2,794ms؛ فشل 0028 المقصود: status 1 خلال 4,785ms.
+- المرور الثاني: تطبيق 0001–0027: status 0 خلال 29,349ms؛ fixture: status 0 خلال 2,459ms؛ فشل 0028 المقصود: status 1 خلال 4,608ms.
+- في الأوامر الستة كانت `signal=null` و`error.name/code/message=null`. لم تحدث `ETIMEDOUT` أو `ENOBUFS` أو `ENOENT/EACCES` أو termination signal، وبقي timeout الصريح 180,000ms وmaxBuffer عند 10,000,000 دون زيادة.
+- أثبت كلا المرورين أن فشل قيد duplicate-token المتوقع يعيد schema وmigration history والبيانات بالكامل، مع FK مفعلة و`foreign_key_check` نظيف.
+
+أدلة التشغيل المحلية خارج Git:
+
+- C:\Users\ibrah\AppData\Local\Temp\smart-school-finance-local-hT1Mts
+- C:\Users\ibrah\AppData\Local\Temp\smart-school-finance-local-K875SY
+- C:\Users\ibrah\AppData\Local\Temp\smart-school-finance-regressions-oWpETV\summary.json
+- C:\Users\ibrah\AppData\Local\Temp\smart-school-backup-restore-local-66vuLK\evidence.json
+- C:\Users\ibrah\AppData\Local\Temp\smart-school-finance-legacy-4xzkai
+- C:\Users\ibrah\AppData\Local\Temp\smart-school-phase19b-local-pvWGSq
+- C:\Users\ibrah\AppData\Local\Temp\smart-school-phase19c-local-1jYYI3
+
+لا توجد حاجة إلى migration جديدة معروفة. بقيت كل عمليات D1 في هذه الدفعة محلية ومعزولة؛ لم يحدث وصول Remote D1 أو Production أو deploy أو merge.

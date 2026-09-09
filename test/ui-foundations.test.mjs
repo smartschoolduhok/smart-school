@@ -133,3 +133,10 @@ test('application pages are route-lazy-loaded instead of entering the initial bu
   assert.match(app, /<Suspense fallback=\{<RouteLoading \/>\}>/);
   assert.doesNotMatch(app, /import FeesPage from|import TimetablePage from|import ImportExportPage from/);
 });
+
+test('accountant navigation keeps finance and salaries without academic analysis',()=>{
+  const paths=getVisibleNavigationItems('accountant').map(item=>item.path);
+  assert.ok(!paths.includes('/analytics'));
+  assert.ok(!paths.includes('/grades'));
+  for(const path of ['/students','/fees','/treasury','/employees'])assert.ok(paths.includes(path),path);
+});
