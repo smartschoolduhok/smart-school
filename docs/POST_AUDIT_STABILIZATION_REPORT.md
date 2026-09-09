@@ -267,3 +267,24 @@
 | migrations 0029–0031 | لم تتغير |
 
 لم تستخدم هذه الدفعة Remote D1 أو Production أو seed/reset أو deploy أو merge.
+
+## 11. توحيد تخزين جلسة المصادقة — 2026-09-09
+
+أوقف Manual QA على Branch Preview عند ظهور انحدار مصادقة قابل لإعادة الإنتاج على HEAD `2f2b42707fd460f6ebd290771c74cee1e46d944c`: تسجيل الدخول دون «تذكرني» كان يعرض المستخدم، ثم يفشل أول طلب API بـ401. كان `useAuth.tsx` يحفظ الجلسة الافتراضية في sessionStorage بينما يقرأ `api.ts` الرمز من localStorage فقط.
+
+- أضيف مصدر مركزي لمفاتيح المصادقة يقرأ token وuser بترتيب localStorage ثم sessionStorage، ويحدد التخزين الحالي، ويحفظ جلسة «تذكرني» في localStorage والجلسة الافتراضية في sessionStorage.
+- يمسح انتهاء الجلسة token وuser والمفتاح القديم `smart_school_auth` من التخزينين، ويرسل حدثًا محليًا يجعل `AuthProvider` يسقط المستخدم المصادق عليه فورًا قبل التحويل إلى `/login`.
+- يدمج `fetchApi` رؤوس الطلب المخصصة مع `Accept` و`Content-Type` الافتراضيين، ثم يثبت Authorization من التخزين المركزي حتى لا يستطيع `options.headers` حذفه أو استبداله عرضيًا.
+- لا تسجل الشيفرة أو الاختبارات token أو password. تستخدم اختبارات DOM قيمًا اصطناعية فقط.
+
+| الفحص | النتيجة |
+|---|---|
+| اختبارات المصادقة/UI المستهدفة | **9/9 PASS**: session، remember-me، header merge، ومسح 401 للحالة والتخزينين |
+| full regression matrix | **1428/1428 PASS**، 22 مجموعة، صفر فشل وصفر تخطٍ |
+| typecheck | PASS |
+| frontend build | PASS: 1977 module، initial main chunk 278.56 kB |
+| Worker build | PASS: 615.76 kB |
+| git diff --check | PASS |
+| migrations 0029–0031 | لم تتغير |
+
+سيُعاد Manual QA من البداية على Branch Preview الناتج عن commit `fix: unify session authentication storage`، ويبدأ بتسجيل الدخول دون «تذكرني»، ثم معها وإعادة تحميل الصفحة. لم تستخدم هذه الدفعة Remote D1 أو Production أو seed/reset أو deploy يدوي أو merge.

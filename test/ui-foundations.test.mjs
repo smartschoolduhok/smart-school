@@ -22,7 +22,8 @@ const vite = await createServer({
 const { default: SchoolProfileTab } = await vite.ssrLoadModule('/src/modules/settings/SchoolProfileTab.tsx');
 const { default: LoginPage } = await vite.ssrLoadModule('/src/modules/auth/LoginPage.tsx');
 const { default: StudentsPage } = await vite.ssrLoadModule('/src/modules/students/StudentsPage.tsx');
-const { AuthProvider } = await vite.ssrLoadModule('/src/hooks/useAuth.tsx');
+const { AuthProvider, useAuth } = await vite.ssrLoadModule('/src/hooks/useAuth.tsx');
+const { fetchApi, getDashboardStats } = await vite.ssrLoadModule('/src/lib/api.ts');
 const { NAVIGATION_GROUPS, getVisibleNavigationItems } = await vite.ssrLoadModule('/src/components/Sidebar.tsx');
 const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
 
@@ -101,8 +102,13 @@ test('navigation is grouped, hides future placeholders, and scopes parent destin
 
 test('login uses session storage by default, remember-me uses local storage, and help is honest', async t => {
   const user = { id: 1, role_key: 'school_owner', role_id: 2, school_id: 1, full_name: 'مالك المدرسة', email: 'owner@example.test', role_name: 'مالك المدرسة', school_name: 'مدرسة الاختبار' };
-  globalThis.fetch = async url => {
+  const apiAuthorizations = [];
+  globalThis.fetch = async (url, options) => {
     if (String(url).endsWith('/api/auth/login')) return new Response(JSON.stringify({ data: { token: 'generated-token', user } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (String(url).endsWith('/api/dashboard/stats')) {
+      apiAuthorizations.push(new Headers(options?.headers).get('Authorization'));
+      return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
     throw new Error(`Unexpected request ${url}`);
   };
 
@@ -117,11 +123,92 @@ test('login uses session storage by default, remember-me uses local storage, and
     await input(container.querySelector('#login-password'), 'generated-password');
     if (remember) await act(async () => container.querySelector('input[type="checkbox"]').click());
     await act(async () => container.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
-    return { local: localStorage.getItem('smart_school_token'), session: sessionStorage.getItem('smart_school_token') };
+    const apiResult = await getDashboardStats();
+    assert.equal(apiResult.error, undefined);
+    return {
+      local: localStorage.getItem('smart_school_token'),
+      session: sessionStorage.getItem('smart_school_token'),
+      authorization: apiAuthorizations.at(-1),
+    };
   }
 
-  assert.deepEqual(await login(false), { local: null, session: 'generated-token' });
-  assert.deepEqual(await login(true), { local: 'generated-token', session: null });
+  assert.deepEqual(await login(false), { local: null, session: 'generated-token', authorization: 'Bearer generated-token' });
+  assert.deepEqual(await login(true), { local: 'generated-token', session: null, authorization: 'Bearer generated-token' });
+});
+
+test('API option headers merge without removing stored authorization', async t => {
+  const previousFetch = globalThis.fetch;
+  let receivedHeaders;
+  localStorage.clear();
+  sessionStorage.clear();
+  sessionStorage.setItem('smart_school_token', 'session-api-token');
+  globalThis.fetch = async (_url, options) => {
+    receivedHeaders = new Headers(options?.headers);
+    return new Response(JSON.stringify({ data: { ok: true } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  const result = await fetchApi('/api/header-merge-check', {
+    headers: { Authorization: '', 'X-QA-Header': 'preserved' },
+  });
+
+  assert.deepEqual(result.data, { ok: true });
+  assert.equal(receivedHeaders.get('Authorization'), 'Bearer session-api-token');
+  assert.equal(receivedHeaders.get('X-QA-Header'), 'preserved');
+  assert.equal(receivedHeaders.get('Accept'), 'application/json');
+  assert.equal(receivedHeaders.get('Content-Type'), 'application/json');
+});
+
+test('401 clears both auth stores and removes the authenticated UI state immediately', async t => {
+  function AuthStateProbe() {
+    const { user, isAuthenticated } = useAuth();
+    return createElement('div', null, isAuthenticated && user ? user.full_name : 'SIGNED_OUT');
+  }
+
+  const previousFetch = globalThis.fetch;
+  const previousAlert = globalThis.alert;
+  const user = { id: 2, role_key: 'system_admin', role_id: 1, school_id: null, full_name: 'Staging System Admin', email: 'admin@example.test', role_name: 'مدير النظام', school_name: null };
+  for (const storage of [localStorage, sessionStorage]) {
+    storage.setItem('smart_school_token', `${storage === localStorage ? 'local' : 'session'}-expired-token`);
+    storage.setItem('smart_school_user', JSON.stringify(user));
+    storage.setItem('smart_school_auth', 'legacy-auth-state');
+  }
+  globalThis.alert = () => {};
+  globalThis.fetch = async url => {
+    if (String(url).endsWith('/api/auth/me')) {
+      return new Response(JSON.stringify({ data: user }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (String(url).endsWith('/api/dashboard/stats')) {
+      return new Response(JSON.stringify({ error: 'expired' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    }
+    throw new Error(`Unexpected request ${url}`);
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    if (previousAlert === undefined) delete globalThis.alert;
+    else globalThis.alert = previousAlert;
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  const container = await render(t, createElement(AuthProvider, null, createElement(AuthStateProbe)));
+  await waitForContent(container, 'Staging System Admin');
+  await act(async () => {
+    const result = await getDashboardStats();
+    assert.match(result.error, /غير مسموح/);
+  });
+  await waitForContent(container, 'SIGNED_OUT');
+
+  for (const storage of [localStorage, sessionStorage]) {
+    assert.equal(storage.getItem('smart_school_token'), null);
+    assert.equal(storage.getItem('smart_school_user'), null);
+    assert.equal(storage.getItem('smart_school_auth'), null);
+  }
+  assert.equal(container.textContent.includes('Staging System Admin'), false);
 });
 
 test('daily workflows keep rare actions out of the primary tab rows', () => {

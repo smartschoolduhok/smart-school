@@ -5,6 +5,7 @@
 // ===========================================
 
 import type { AcademicYearRecord } from './academicYears';
+import { clearAuthentication, getStoredAuthToken } from './authStorage';
 import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan } from './weekSetup';
 export function getWeekSetup(scope: Required<WeekScope>) {
   return fetchApi<WeekSnapshot>(`/api/timetable/week-setup?${new URLSearchParams({school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id)})}`);
@@ -69,14 +70,8 @@ import type {
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
-function getToken(): string | null {
-  return localStorage.getItem('smart_school_token');
-}
-
 function clearAuthAndRedirect() {
-  localStorage.removeItem('smart_school_token');
-  localStorage.removeItem('smart_school_user');
-  localStorage.removeItem('smart_school_auth');
+  clearAuthentication();
   window.location.href = '/login';
 }
 
@@ -85,21 +80,21 @@ function showError(message: string) {
   alert(message);
 }
 
-async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string; code?: string; status?: number }> {
+export async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string; code?: string; status?: number }> {
   try {
-    const token = getToken();
-    const headers: Record<string, string> = {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-    };
+    const token = getStoredAuthToken();
+    const { headers: optionHeaders, ...requestOptions } = options || {};
+    const headers = new Headers(optionHeaders);
+    if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
     if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+      headers.set('Authorization', `Bearer ${token}`);
     }
 
     const res = await fetch(`${API_BASE}${path}`, {
+      ...requestOptions,
       headers,
-      ...options,
     });
 
     if (res.status === 401) {

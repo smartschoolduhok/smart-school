@@ -5,9 +5,14 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import type { AuthState, AuthUser } from '../types';
-
-const TOKEN_KEY = 'smart_school_token';
-const USER_KEY = 'smart_school_user';
+import {
+  AUTH_STORAGE_CLEARED_EVENT,
+  clearAuthentication,
+  getStoredAuthToken,
+  getStoredAuthUser,
+  storeAuthentication,
+  updateStoredAuthUser,
+} from '../lib/authStorage';
 
 interface LoginResponse {
   data: {
@@ -32,45 +37,24 @@ interface AuthContextType extends AuthState {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
-}
-
-function getStoredUser(): AuthUser | null {
-  try {
-    const raw = localStorage.getItem(USER_KEY) || sessionStorage.getItem(USER_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function getCurrentAuthStorage(): Storage | null {
-  if (localStorage.getItem(TOKEN_KEY)) return localStorage;
-  if (sessionStorage.getItem(TOKEN_KEY)) return sessionStorage;
-  return null;
-}
-
-function clearAuth() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
-  sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(USER_KEY);
-  // Also remove legacy key if present
-  localStorage.removeItem('smart_school_auth');
-  sessionStorage.removeItem('smart_school_auth');
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({
-    user: getStoredUser(),
-    isAuthenticated: !!getStoredToken(),
+    user: getStoredAuthUser(),
+    isAuthenticated: !!getStoredAuthToken(),
     isLoading: true,
   });
 
+  useEffect(() => {
+    const handleAuthCleared = () => {
+      setState({ user: null, isAuthenticated: false, isLoading: false });
+    };
+    window.addEventListener(AUTH_STORAGE_CLEARED_EVENT, handleAuthCleared);
+    return () => window.removeEventListener(AUTH_STORAGE_CLEARED_EVENT, handleAuthCleared);
+  }, []);
+
   // On mount: validate token with backend
   useEffect(() => {
-    const token = getStoredToken();
+    const token = getStoredAuthToken();
     if (!token) {
       setState(prev => ({ ...prev, isLoading: false }));
       return;
@@ -85,7 +69,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         const body = (await res.json()) as MeResponse;
         if (body.data) {
-          getCurrentAuthStorage()?.setItem(USER_KEY, JSON.stringify(body.data));
+          updateStoredAuthUser(body.data);
           setState({
             user: body.data,
             isAuthenticated: true,
@@ -96,7 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       })
       .catch(() => {
-        clearAuth();
+        clearAuthentication();
         setState({
           user: null,
           isAuthenticated: false,
@@ -129,10 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const body = (await res.json()) as LoginResponse;
       const { token, user } = body.data;
 
-      clearAuth();
-      const storage = rememberMe ? localStorage : sessionStorage;
-      storage.setItem(TOKEN_KEY, token);
-      storage.setItem(USER_KEY, JSON.stringify(user));
+      storeAuthentication(token, user, rememberMe);
 
       setState({
         user,
@@ -147,7 +128,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    const token = getStoredToken();
+    const token = getStoredAuthToken();
     if (token) {
       try {
         await fetch('/api/auth/logout', {
@@ -158,7 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // ignore network errors on logout
       }
     }
-    clearAuth();
+    clearAuthentication();
     setState({
       user: null,
       isAuthenticated: false,
