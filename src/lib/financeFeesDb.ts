@@ -1,7 +1,8 @@
 import type { Context, Hono } from 'hono';
 import type { Bindings, Variables } from '../worker';
 import { FINANCE_ACCESS_ROLES, hasRole } from './rbac';
-import { FinanceError, financeDatabaseError, financeId, financeObject, financeQueryId, financeText, feeStatus, parseFee, parsePayment, parseReceipt, requireFinance } from './financeFees';
+import { businessDate } from './businessTime';
+import { allocateInstallments, FinanceError, financeDatabaseError, financeId, financeObject, financeQueryId, financeText, feeStatus, parseFee, parseInstallmentPlan, parsePayment, parseReceipt, requireFinance } from './financeFees';
 
 type FinanceEnv = { Bindings: Bindings; Variables: Variables };
 type C = Context<FinanceEnv>;
@@ -40,6 +41,116 @@ async function school(c: C, supplied?: unknown) {
 function requiredRow(row: Row | null): asserts row is Row { requireFinance(row,'finance_not_found',404); }
 function resultRow(results: Array<{results?: Row[]}>, index: number): Row | undefined { return results[index].results?.[0]; }
 async function sha256(text: string) { return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text))),b=>b.toString(16).padStart(2,'0')).join(''); }
+function safeMoneySum(values: number[]) {
+  const total=values.reduce((sum,value)=>sum+value,0);
+  requireFinance(Number.isSafeInteger(total),'invalid_finance_amount');
+  return total;
+}
+function ratioBasisPoints(paid: number,net: number) {
+  if(net===0) return 10000;
+  return Math.min(10000,Number((BigInt(paid)*10000n)/BigInt(net)));
+}
+function parsedJson<T>(value: unknown,fallback: T): T {
+  if(typeof value!=='string') return fallback;
+  try { return JSON.parse(value) as T; } catch { return fallback; }
+}
+
+function receiptPayload(row: Row,parentSafe=false) {
+  const hydrated:Row={
+    ...row,
+    payments_snapshot:parsedJson(row.payments_snapshot_json,[]),
+    payment_ids:parsedJson(row.payment_ids_json,[]),
+    settings_snapshot:parsedJson(row.settings_snapshot_json,{}),
+    financial_summary_snapshot:parsedJson(row.financial_summary_snapshot_json,null),
+    installment_plan_snapshot:parsedJson(row.installment_plan_snapshot_json,[]),
+  };
+  if(!parentSafe) return hydrated;
+  const safePayments=(hydrated.payments_snapshot as Row[]).map(payment=>({
+    payment_id:payment.payment_id,student_fee_id:payment.student_fee_id,academic_year_id:payment.academic_year_id,
+    academic_year_name:payment.academic_year_name,amount:payment.amount,payment_method:payment.payment_method,
+    payment_date:payment.payment_date,fee_type:payment.fee_type,currency:payment.currency,
+  }));
+  const safePlans=(hydrated.installment_plan_snapshot as Row[]).map(plan=>({
+    id:plan.id,student_fee_id:plan.student_fee_id,items:plan.items,
+  }));
+  return {
+    id:hydrated.id,school_id:hydrated.school_id,student_id:hydrated.student_id,receipt_number:hydrated.receipt_number,
+    total_amount:hydrated.total_amount,status:hydrated.status,created_at:hydrated.created_at,cancelled_at:hydrated.cancelled_at,
+    verification_token:hydrated.verification_token,receipt_schema_version:hydrated.receipt_schema_version,
+    student_name_snapshot:hydrated.student_name_snapshot,student_number_snapshot:hydrated.student_number_snapshot,
+    class_name_snapshot:hydrated.class_name_snapshot,section_name_snapshot:hydrated.section_name_snapshot,
+    school_name_snapshot:hydrated.school_name_snapshot,academic_year_snapshot:hydrated.academic_year_snapshot,
+    currency_snapshot:hydrated.currency_snapshot,received_by_snapshot:hydrated.received_by_snapshot,
+    replaces_receipt_id:hydrated.replaces_receipt_id,payments_snapshot:safePayments,
+    settings_snapshot:hydrated.settings_snapshot,financial_summary_snapshot:hydrated.financial_summary_snapshot,
+    installment_plan_snapshot:safePlans,
+  };
+}
+
+async function loadActiveInstallmentPlans(db: D1Database,schoolId: number,feeIds: number[],paidByFee: Map<number,number>,asOf=businessDate()) {
+  if(feeIds.length===0) return [];
+  const rows=(await db.prepare(`SELECT p.id plan_id,p.plan_key,p.student_fee_id,p.fee_revision_snapshot,p.notes,p.created_at,
+      i.id item_id,i.sequence_no,i.label,i.amount,i.percentage_basis_points,i.due_date
+    FROM fee_installment_plans p JOIN fee_installment_items i ON i.plan_id=p.id AND i.school_id=p.school_id
+    WHERE p.school_id=? AND p.status='active' AND p.student_fee_id IN(SELECT value FROM json_each(?))
+    ORDER BY p.student_fee_id,i.sequence_no`).bind(schoolId,JSON.stringify(feeIds)).all<Row>()).results??[];
+  const byPlan=new Map<number,Row>();
+  for(const row of rows) {
+    let plan=byPlan.get(row.plan_id);
+    if(!plan) {
+      plan={id:row.plan_id,plan_key:row.plan_key,student_fee_id:row.student_fee_id,fee_revision_snapshot:row.fee_revision_snapshot,
+        notes:row.notes,created_at:row.created_at,items:[]};
+      byPlan.set(row.plan_id,plan);
+    }
+    plan.items.push({id:row.item_id,sequence_no:row.sequence_no,label:row.label,amount:row.amount,
+      percentage_basis_points:row.percentage_basis_points,due_date:row.due_date});
+  }
+  return [...byPlan.values()].map<Row>(plan=>({...plan,items:allocateInstallments(plan.items,paidByFee.get(plan.student_fee_id)??0,asOf)}));
+}
+
+async function loadStudentFinance(db: D1Database,schoolId: number,studentId: number,parentUserId: number|null=null) {
+  const [feeResult,paymentResult,receiptResult,linkedResult]=await Promise.all([
+    db.prepare(feeSelect+' WHERE f.school_id=? AND f.student_id=? ORDER BY coalesce(y.starts_at,\'\') DESC,f.id DESC').bind(schoolId,studentId).all<Row>(),
+    db.prepare(`SELECT p.id,p.student_fee_id,p.amount,p.payment_method,p.payment_date,p.status,p.created_at,
+        p.cancelled_at,f.fee_type,f.currency
+      FROM fee_payments p JOIN student_fees f ON f.id=p.student_fee_id AND f.school_id=p.school_id
+      WHERE p.school_id=? AND p.student_id=? ORDER BY p.payment_date DESC,p.id DESC`).bind(schoolId,studentId).all<Row>(),
+    db.prepare(`SELECT r.id,r.receipt_number,r.total_amount,r.currency_snapshot,r.status,r.created_at,r.cancelled_at,
+        r.verification_token,r.replaces_receipt_id,
+        (SELECT newer.id FROM fee_receipts newer WHERE newer.replaces_receipt_id=r.id LIMIT 1) replaced_by_receipt_id
+      FROM fee_receipts r WHERE r.school_id=? AND r.student_id=? ORDER BY r.id DESC`).bind(schoolId,studentId).all<Row>(),
+    parentUserId!==null
+      ? db.prepare(`SELECT s.id,s.full_name,s.student_number,cl.name class_name,sec.name section_name
+          FROM parent_student_links l JOIN students s ON s.id=l.student_id AND s.school_id=l.school_id AND s.status='active'
+          LEFT JOIN classes cl ON cl.id=s.class_id AND cl.school_id=s.school_id
+          LEFT JOIN sections sec ON sec.id=s.section_id AND sec.school_id=s.school_id AND sec.class_id=s.class_id
+          WHERE l.school_id=? AND l.parent_user_id=? AND l.status='active' ORDER BY s.full_name,s.id`).bind(schoolId,parentUserId).all<Row>()
+      : Promise.resolve({results:[]} as {results:Row[]}),
+  ]);
+  const rawFees=feeResult.results??[];
+  requireFinance(rawFees.every(fee=>fee.currency==='IQD'),'unsupported_finance_currency',409);
+  const paidByFee=new Map(rawFees.map(fee=>[Number(fee.id),Number(fee.paid_amount)]));
+  const plans=await loadActiveInstallmentPlans(db,schoolId,rawFees.map(fee=>Number(fee.id)),paidByFee);
+  const planByFee=new Map(plans.map(plan=>[Number(plan.student_fee_id),plan]));
+  const hydratedFees:Row[]=rawFees.map(fee=>({...fee,remaining_amount:Math.max(0,Number(fee.net_fee??fee.amount)-Number(fee.paid_amount)),installment_plan:planByFee.get(Number(fee.id))??null}));
+  const original=safeMoneySum(hydratedFees.map(fee=>Number(fee.amount)));
+  const discount=safeMoneySum(hydratedFees.map(fee=>Number(fee.discount_amount??0)));
+  const net=safeMoneySum(hydratedFees.map(fee=>Number(fee.net_fee??fee.amount)));
+  const paid=safeMoneySum(hydratedFees.map(fee=>Number(fee.paid_amount)));
+  const fees=parentUserId===null ? hydratedFees : hydratedFees.map(fee=>({
+    id:fee.id,student_id:fee.student_id,academic_year_id:fee.academic_year_id,academic_year_name:fee.academic_year_name,
+    fee_type:fee.fee_type,amount:fee.amount,currency:fee.currency,due_date:fee.due_date,paid_amount:fee.paid_amount,status:fee.status,
+    discount_type:fee.discount_type,discount_value:fee.discount_value,discount_amount:fee.discount_amount,net_fee:fee.net_fee,
+    remaining_amount:fee.remaining_amount,installment_plan:fee.installment_plan?{
+      id:fee.installment_plan.id,student_fee_id:fee.installment_plan.student_fee_id,items:fee.installment_plan.items,
+    }:null,
+  }));
+  return {
+    student_id:studentId,currency:'IQD',business_date:businessDate(),
+    totals:{original_fee:original,discount_amount:discount,net_due:net,paid_amount:paid,remaining_amount:Math.max(0,net-paid),payment_ratio_basis_points:hydratedFees.length===0?0:ratioBasisPoints(paid,net)},
+    fees,payments:paymentResult.results??[],receipts:receiptResult.results??[],linked_students:linkedResult.results??[],
+  };
+}
 export async function findSameFinanceReceipt(db: D1Database, schoolId: number, studentId: number, ids: number[]) {
   return db.prepare(`SELECT r.* FROM fee_receipts r WHERE r.school_id=? AND r.student_id=? AND r.status='active'
     AND (SELECT COUNT(*) FROM fee_receipt_payments l WHERE l.receipt_id=r.id AND l.school_id=r.school_id AND l.is_active=1)=?
@@ -48,9 +159,10 @@ export async function findSameFinanceReceipt(db: D1Database, schoolId: number, s
 }
 
 /** Both opt-in auto receipts and manual receipts use this single engine. */
-export async function createFinanceReceipt(db: D1Database, schoolId: number, studentId: number, ids: number[], userId: number) {
-  const payments = (await db.prepare(`SELECT p.id,p.amount,p.payment_method,p.payment_date,f.fee_type,p.status,f.currency,
-      f.id student_fee_id,f.academic_year_id,y.id validated_year_id,y.name academic_year_name
+export async function createFinanceReceipt(db: D1Database, schoolId: number, studentId: number, ids: number[], userId: number,replacesReceiptId: number|null=null) {
+  const payments = (await db.prepare(`SELECT p.id,p.amount,p.payment_method,p.payment_date,p.notes,f.fee_type,p.status,f.currency,
+      f.id student_fee_id,f.amount fee_amount,f.discount_type,f.discount_value,f.discount_amount,f.net_fee,f.paid_amount,
+      f.academic_year_id,y.id validated_year_id,y.name academic_year_name
     FROM fee_payments p JOIN student_fees f ON f.id=p.student_fee_id AND f.school_id=p.school_id AND f.student_id=p.student_id
     LEFT JOIN academic_years y ON y.id=f.academic_year_id AND y.school_id=f.school_id
     WHERE p.school_id=? AND p.student_id=? AND p.id IN(SELECT value FROM json_each(?)) ORDER BY p.id`).bind(schoolId,studentId,JSON.stringify(ids)).all<Row>()).results ?? [];
@@ -62,26 +174,56 @@ export async function createFinanceReceipt(db: D1Database, schoolId: number, stu
   // year, never the school's currently active year (including legacy null years).
   const yearId=payments[0].academic_year_id;
   requireFinance(payments.every(p=>p.academic_year_id===yearId && (yearId===null || p.validated_year_id===yearId)), 'receipt_academic_year_conflict');
-  const student=await db.prepare(`SELECT s.full_name,cl.name class_name,sec.name section_name,sch.name school_name,sch.logo_url,
-      settings.receipt_footer_text,settings.verification_note_text,settings.use_school_logo_on_docs
+  const student=await db.prepare(`SELECT s.full_name,s.student_number,cl.name class_name,sec.name section_name,sch.name school_name,sch.principal_name,sch.logo_url,sch.official_stamp_url,
+      settings.receipt_footer_text,settings.verification_note_text,settings.use_school_logo_on_docs,settings.use_school_stamp_on_docs,
+      settings.use_arabic_indic_digits,settings.date_format,receiver.full_name received_by_name
     FROM students s JOIN schools sch ON sch.id=s.school_id
     LEFT JOIN classes cl ON cl.id=s.class_id AND cl.school_id=s.school_id
     LEFT JOIN sections sec ON sec.id=s.section_id AND sec.school_id=s.school_id AND sec.class_id=s.class_id
     LEFT JOIN school_settings settings ON settings.school_id=s.school_id
-    WHERE s.id=? AND s.school_id=? AND s.status='active' AND sch.status='active'`).bind(studentId,schoolId).first<Row>();
+    LEFT JOIN users receiver ON receiver.id=? AND receiver.status='active' AND (receiver.school_id=s.school_id OR receiver.school_id IS NULL)
+    WHERE s.id=? AND s.school_id=? AND s.status='active' AND sch.status='active'`).bind(userId,studentId,schoolId).first<Row>();
   requiredRow(student);
+  requireFinance(student.received_by_name,'finance_forbidden',403);
   const token=crypto.randomUUID(),number=`REC-${schoolId}-${crypto.randomUUID()}`;
   const snapshot=payments.map(p=>({payment_id:p.id,student_fee_id:p.student_fee_id,academic_year_id:p.academic_year_id,academic_year_name:p.academic_year_name,
-    amount:p.amount,payment_method:p.payment_method,payment_date:p.payment_date,fee_type:p.fee_type,currency:'IQD'}));
-  const settings={receipt_footer_text:student.receipt_footer_text??null,verification_note_text:student.verification_note_text??null,logo_url:student.use_school_logo_on_docs===1?student.logo_url??null:null,currency:'IQD'};
+    amount:p.amount,payment_method:p.payment_method,payment_date:p.payment_date,notes:p.notes,fee_type:p.fee_type,currency:'IQD'}));
+  const feeRows=[...new Map(payments.map(payment=>[payment.student_fee_id,payment])).values()];
+  const originalFee=safeMoneySum(feeRows.map(fee=>Number(fee.fee_amount)));
+  const discountAmount=safeMoneySum(feeRows.map(fee=>Number(fee.discount_amount??0)));
+  const netDue=safeMoneySum(feeRows.map(fee=>Number(fee.net_fee??fee.fee_amount)));
+  const totalPaid=safeMoneySum(feeRows.map(fee=>Number(fee.paid_amount)));
+  const financialSummary={snapshot_version:1,currency:'IQD',original_fee:originalFee,discount_amount:discountAmount,net_due:netDue,
+    paid_before:Math.max(0,totalPaid-total),this_payment:total,total_paid:totalPaid,remaining_after:Math.max(0,netDue-totalPaid),
+    payment_ratio_basis_points:ratioBasisPoints(totalPaid,netDue),fees:feeRows.map(fee=>({student_fee_id:fee.student_fee_id,fee_type:fee.fee_type,
+      original_fee:fee.fee_amount,discount_type:fee.discount_type,discount_value:fee.discount_value,discount_amount:fee.discount_amount,
+      net_due:fee.net_fee,total_paid:fee.paid_amount,remaining_after:Math.max(0,fee.net_fee-fee.paid_amount)}))};
+  const paidByFee=new Map(feeRows.map(fee=>[Number(fee.student_fee_id),Number(fee.paid_amount)]));
+  const installmentPlans=await loadActiveInstallmentPlans(db,schoolId,feeRows.map(fee=>Number(fee.student_fee_id)),paidByFee);
+  if(replacesReceiptId===null) {
+    const replaced=await db.prepare(`SELECT old.id FROM fee_receipts old
+      WHERE old.school_id=? AND old.student_id=? AND old.status='cancelled'
+        AND json_array_length(old.payment_ids_json)=?
+        AND NOT EXISTS(SELECT 1 FROM json_each(old.payment_ids_json) old_payment WHERE old_payment.value NOT IN(SELECT value FROM json_each(?)))
+        AND NOT EXISTS(SELECT 1 FROM fee_receipts newer WHERE newer.replaces_receipt_id=old.id)
+      ORDER BY old.id DESC LIMIT 1`).bind(schoolId,studentId,ids.length,JSON.stringify(ids)).first<Row>();
+    replacesReceiptId=replaced?.id??null;
+  }
+  const settings={snapshot_version:2,school_name:student.school_name,principal_name:student.principal_name??null,
+    receipt_footer_text:student.receipt_footer_text??null,verification_note:student.verification_note_text??null,
+    logo_url:student.logo_url??null,stamp_url:student.official_stamp_url??null,use_logo:student.use_school_logo_on_docs!==0,
+    use_stamp:student.use_school_stamp_on_docs===1,use_arabic_indic_digits:student.use_arabic_indic_digits!==0,
+    date_format:student.date_format??'dd/MM/yyyy',paper_size:'A4',currency:'IQD'};
   try {
     // Trigger reserves every payment. Uniqueness/conflict failure rolls back the
     // entire document; the final response SELECT is inside the same D1 batch.
     const results=await db.batch([
       db.prepare(`INSERT INTO fee_receipts(school_id,student_id,receipt_number,total_amount,payment_ids_json,payments_snapshot_json,settings_snapshot_json,
-        student_name_snapshot,class_name_snapshot,section_name_snapshot,school_name_snapshot,academic_year_snapshot,verification_token,verification_hash,status,created_by_user_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)`).bind(schoolId,studentId,number,total,JSON.stringify(ids),JSON.stringify(snapshot),JSON.stringify(settings),
-          student.full_name,student.class_name??null,student.section_name??null,student.school_name,payments[0].academic_year_name??null,token,await sha256(token),userId),
+        student_name_snapshot,class_name_snapshot,section_name_snapshot,school_name_snapshot,academic_year_snapshot,verification_token,verification_hash,status,created_by_user_id,
+        receipt_schema_version,student_number_snapshot,currency_snapshot,received_by_snapshot,financial_summary_snapshot_json,installment_plan_snapshot_json,replaces_receipt_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?,2,?,'IQD',?,?,?,?)`).bind(schoolId,studentId,number,total,JSON.stringify(ids),JSON.stringify(snapshot),JSON.stringify(settings),
+          student.full_name,student.class_name??null,student.section_name??null,student.school_name,payments[0].academic_year_name??null,token,await sha256(token),userId,
+          student.student_number,student.received_by_name,JSON.stringify(financialSummary),JSON.stringify(installmentPlans),replacesReceiptId),
       db.prepare('SELECT * FROM fee_receipts WHERE verification_token=? AND school_id=?').bind(token,schoolId),
     ]);
     return resultRow(results,1)!;
@@ -113,6 +255,48 @@ export function registerFinanceRoutes(app: Hono<FinanceEnv>) {
     const rows=await c.env.DB.prepare(feeSelect+' WHERE f.school_id=? AND (? IS NULL OR f.student_id=?) AND (? IS NULL OR f.status=?) ORDER BY f.id DESC')
       .bind(schoolId,student??null,student??null,status??null,status??null).all();
     return c.json({data:rows.results});
+  });
+  route('GET','student-finance/:id',async c=>{
+    const schoolId=await school(c,financeQueryId(c.req.query('school_id'))),studentId=financeQueryId(c.req.param('id'))!,db=c.env.DB;
+    const student=await db.prepare('SELECT id FROM students WHERE id=? AND school_id=?').bind(studentId,schoolId).first<Row>();requiredRow(student);
+    return c.json({data:await loadStudentFinance(db,schoolId,studentId)});
+  });
+  route('GET','student-fees/:id/installment-plan',async c=>{
+    const schoolId=await school(c,financeQueryId(c.req.query('school_id'))),id=financeQueryId(c.req.param('id'))!,db=c.env.DB;
+    const fee=await db.prepare('SELECT id,student_id,net_fee,paid_amount,currency,finance_revision FROM student_fees WHERE id=? AND school_id=?').bind(id,schoolId).first<Row>();requiredRow(fee);
+    const plans=await loadActiveInstallmentPlans(db,schoolId,[id],new Map([[id,Number(fee.paid_amount)]]));
+    return c.json({data:{fee,plan:plans[0]??null,business_date:businessDate()}});
+  });
+  route('PUT','student-fees/:id/installment-plan',async c=>{
+    const raw=await body(c),schoolId=await school(c,raw?.school_id),id=financeQueryId(c.req.param('id'))!,db=c.env.DB,user=c.get('user');
+    const fee=await db.prepare(`SELECT f.id,f.student_id,f.net_fee,f.paid_amount,f.currency,f.finance_revision,
+      (SELECT healthy FROM finance_fee_readiness WHERE id=f.id) fee_ready,
+      (SELECT healthy FROM finance_treasury_readiness WHERE school_id=f.school_id) treasury_ready
+      FROM student_fees f WHERE f.id=? AND f.school_id=?`).bind(id,schoolId).first<Row>();requiredRow(fee);
+    requireFinance(fee.currency==='IQD' && fee.fee_ready===1 && fee.treasury_ready===1,'finance_reconciliation_required',409);
+    const input=parseInstallmentPlan(raw,Number(fee.net_fee));
+    requireFinance(input.expected_fee_revision===fee.finance_revision,'finance_operation_stale',409);
+    const current=await db.prepare("SELECT id FROM fee_installment_plans WHERE school_id=? AND student_fee_id=? AND status='active'").bind(schoolId,id).first<Row>();
+    const key=crypto.randomUUID();
+    const statements:D1PreparedStatement[]=[
+      db.prepare(`INSERT INTO fee_installment_plans(plan_key,school_id,student_fee_id,fee_revision_snapshot,status,notes,replaces_plan_id,created_by_user_id)
+        VALUES(?,?,?,?,'draft',?,?,?)`).bind(key,schoolId,id,fee.finance_revision,input.notes,current?.id??null,user.id),
+      ...input.items.map(item=>db.prepare(`INSERT INTO fee_installment_items(plan_id,school_id,sequence_no,label,amount,percentage_basis_points,due_date)
+        SELECT id,?,?,?,?,?,? FROM fee_installment_plans WHERE plan_key=? AND school_id=?`).bind(schoolId,item.sequence,item.label,item.amount,item.percentage_basis_points,item.due_date,key,schoolId)),
+    ];
+    if(current) statements.push(db.prepare("UPDATE fee_installment_plans SET status='superseded',deactivated_at=unixepoch(),deactivated_by_user_id=?,updated_at=unixepoch() WHERE id=? AND school_id=? AND status='active'").bind(user.id,current.id,schoolId));
+    statements.push(db.prepare("UPDATE fee_installment_plans SET status='active',updated_at=unixepoch() WHERE plan_key=? AND school_id=? AND status='draft'").bind(key,schoolId));
+    await db.batch(statements);
+    const plans=await loadActiveInstallmentPlans(db,schoolId,[id],new Map([[id,Number(fee.paid_amount)]]));
+    requireFinance(plans[0],'finance_operation_stale',409);
+    return c.json({data:{fee,plan:plans[0],business_date:businessDate()}});
+  });
+  route('DELETE','student-fees/:id/installment-plan',async c=>{
+    const raw=financeObject(await body(c),['school_id','expected_plan_id']),schoolId=await school(c,raw.school_id),id=financeQueryId(c.req.param('id'))!,planId=financeId(raw.expected_plan_id),db=c.env.DB;
+    const row=await db.prepare("UPDATE fee_installment_plans SET status='cancelled',deactivated_at=unixepoch(),deactivated_by_user_id=?,updated_at=unixepoch() WHERE id=? AND school_id=? AND student_fee_id=? AND status='active' RETURNING id,status")
+      .bind(c.get('user').id,planId,schoolId,id).first<Row>();
+    requireFinance(row,'finance_operation_stale',409);
+    return c.json({data:row});
   });
   route('POST','student-fees',async c=>{
     const input=parseFee(await body(c)),schoolId=await school(c,input.school_id),db=c.env.DB;
@@ -203,11 +387,11 @@ export function registerFinanceRoutes(app: Hono<FinanceEnv>) {
   route('GET','fee-receipts/:id',async c=>{
     const schoolId=await school(c,financeQueryId(c.req.query('school_id'))),id=financeQueryId(c.req.param('id'))!;
     const row=await c.env.DB.prepare('SELECT * FROM fee_receipts WHERE id=? AND school_id=?').bind(id,schoolId).first<Row>();requiredRow(row);
-    return c.json({data:{...row,payments_snapshot:JSON.parse(row.payments_snapshot_json??'[]'),payment_ids:JSON.parse(row.payment_ids_json),settings_snapshot:JSON.parse(row.settings_snapshot_json??'{}')}});
+    return c.json({data:receiptPayload(row)});
   });
   route('POST','fee-receipts/generate',async c=>{
     const input=parseReceipt(await body(c)),schoolId=await school(c,input.school_id);
-    const receipt=await createFinanceReceipt(c.env.DB,schoolId,input.student_id,input.payment_ids,c.get('user').id);
+    const receipt=await createFinanceReceipt(c.env.DB,schoolId,input.student_id,input.payment_ids,c.get('user').id,input.replaces_receipt_id);
     return c.json({data:{receipt,verification_url:'/verify/receipt/'+receipt.verification_token},message:'تم إنشاء الإيصال بنجاح'});
   });
   route('PUT','fee-receipts/:id/cancel',async c=>{
@@ -229,5 +413,35 @@ export function registerFinanceRoutes(app: Hono<FinanceEnv>) {
       db.prepare("UPDATE fee_receipts SET printed_at=unixepoch(),updated_at=unixepoch() WHERE id=? AND school_id=? AND status='active'").bind(id,schoolId),
       db.prepare('SELECT id,printed_at FROM fee_receipts WHERE id=? AND school_id=?').bind(id,schoolId),
     ]);return c.json({data:resultRow(results,2)});
+  });
+
+  const parentRoute=(path:string,handler:(c:C)=>Promise<Response>)=>app.get('/api/'+path,async c=>{
+    try {
+      const user=c.get('user');
+      requireFinance(user?.role_key==='parent' && user.school_id!=null,'finance_forbidden',403);
+      return await handler(c);
+    } catch(error) {
+      const safe=financeDatabaseError(error);
+      if(safe.status===500) console.error('[parent-finance] operation failed',{code:safe.code});
+      return c.json({error:safe.message,code:safe.code},safe.status);
+    }
+  });
+  parentRoute('parent/students/:id/finance',async c=>{
+    const user=c.get('user'),studentId=financeQueryId(c.req.param('id'))!,db=c.env.DB;
+    const access=await db.prepare(`SELECT s.id,s.school_id FROM students s
+      JOIN parent_student_links l ON l.student_id=s.id AND l.school_id=s.school_id
+      WHERE s.id=? AND s.school_id=? AND s.status='active'
+        AND l.parent_user_id=? AND l.status='active'`).bind(studentId,user.school_id,user.id).first<Row>();
+    requiredRow(access);
+    return c.json({data:await loadStudentFinance(db,access.school_id,studentId,user.id)});
+  });
+  parentRoute('parent/fee-receipts/:id',async c=>{
+    const user=c.get('user'),id=financeQueryId(c.req.param('id'))!,db=c.env.DB;
+    const row=await db.prepare(`SELECT r.* FROM fee_receipts r
+      JOIN students s ON s.id=r.student_id AND s.school_id=r.school_id AND s.status='active'
+      JOIN parent_student_links l ON l.student_id=r.student_id AND l.school_id=r.school_id
+      WHERE r.id=? AND r.school_id=? AND l.parent_user_id=? AND l.status='active'`).bind(id,user.school_id,user.id).first<Row>();
+    requiredRow(row);
+    return c.json({data:receiptPayload(row,true)});
   });
 }

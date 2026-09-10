@@ -17,7 +17,7 @@ async function call(f,method,path,input){const r=await app.request('http://local
 function legacy(t,change=''){
  const f=financeFixture(t,{through:'0027',legacy:legacyFinanceSQL.replaceAll('60000','20000')});
  f.db.exec("UPDATE fee_receipts SET status='cancelled';"+change);
- f.db.exec(migrationSQL('0028_finance_fee_payment_integrity.sql'));return f;
+ for(const file of migrationFiles.filter(file=>file.slice(0,4)>'0027'))f.db.exec(migrationSQL(file));return f;
 }
 test('review 1: exact fresh migrations then repository seed succeeds without weakening triggers',async t=>{
  const db=new DatabaseSync(':memory:');t.after(()=>db.close());db.exec('PRAGMA foreign_keys=ON');
@@ -113,7 +113,7 @@ test('public verification and print retain immutable fee year after active year 
  const verified=await app.request('http://localhost/api/verify/receipt/'+doc.verification_token,{}, {DB:f.d1,APP_ENV:'test'});
  const publicBody=await verified.json();assert.equal(verified.status,200);
  assert.equal(publicBody.academic_year,doc.academic_year_snapshot);
- assert.deepEqual(publicBody.payments,JSON.parse(doc.payments_snapshot_json));
+ assert.equal(Object.hasOwn(publicBody,'payments'),false);
  assert.equal((await call(f,'PUT','fee-receipts/'+doc.id+'/mark-printed',{school_id:1})).status,200);
  const printed=await call(f,'GET','fee-receipts/'+doc.id+'?school_id=1');assert.equal(printed.body.data.academic_year_snapshot,doc.academic_year_snapshot);
  assert.equal(printed.body.data.payments_snapshot_json,doc.payments_snapshot_json);

@@ -25,6 +25,9 @@ export const FINANCE_MESSAGES = {
   future_business_date: 'لا يمكن تسجيل حركة مالية بتاريخ مستقبلي.',
   treasury_day_closed: 'هذه الفترة المالية مقفلة ولا تقبل حركات أو إلغاءات جديدة.',
   receipt_academic_year_conflict: 'يجب أن تنتمي جميع دفعات الإيصال إلى سنة دراسية واحدة للقسط، دون خلط السنوات أو السنة غير المحددة.',
+  installment_plan_invalid: 'خطة التقسيط غير صالحة. راجع المبالغ والتواريخ وترتيب الأقساط.',
+  installment_plan_total_mismatch: 'يجب أن يساوي مجموع الأقساط صافي المبلغ المستحق تمامًا.',
+  installment_plan_active: 'توجد خطة تقسيط فعالة. عدّل الخطة أو عطّلها قبل تغيير صافي القسط.',
   finance_failure: 'تعذر إتمام العملية المالية؛ لم يتم اعتماد عملية جزئية.',
 } as const;
 export type FinanceCode = keyof typeof FINANCE_MESSAGES;
@@ -70,6 +73,97 @@ export function financeTimestamp(value: unknown): number | null {
   requireFinance(typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 253402300799);
   return value;
 }
+
+export function financeBusinessDate(value: unknown): string {
+  requireFinance(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value), 'installment_plan_invalid');
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  requireFinance(!Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value, 'installment_plan_invalid');
+  return value;
+}
+
+export interface InstallmentPlanInputItem {
+  sequence: number;
+  label: string;
+  amount: number;
+  percentage_basis_points: number;
+  due_date: string;
+}
+
+/**
+ * Installments are presentation/scheduling metadata over one canonical fee.
+ * Money continues to live only in fee_payments and the treasury ledger.
+ */
+export function parseInstallmentPlan(value: unknown, netFee: number) {
+  const input = financeObject(value, ['school_id', 'expected_fee_revision', 'notes', 'items']);
+  requireFinance(typeof input.expected_fee_revision === 'number'
+    && Number.isSafeInteger(input.expected_fee_revision)
+    && input.expected_fee_revision >= 0, 'installment_plan_invalid');
+  requireFinance(Array.isArray(input.items) && input.items.length >= 1 && input.items.length <= 24, 'installment_plan_invalid');
+  financeMoney(netFee);
+
+  const rawItems = input.items.map((raw, index) => {
+    const item = financeObject(raw, ['label', 'amount', 'due_date']);
+    return {
+      sequence: index + 1,
+      label: financeText(item.label, 120, true)!,
+      amount: financeMoney(item.amount),
+      due_date: financeBusinessDate(item.due_date),
+    };
+  });
+  requireFinance(rawItems.every((item, index) => index === 0 || rawItems[index - 1].due_date <= item.due_date), 'installment_plan_invalid');
+
+  const total = rawItems.reduce((sum, item) => sum + item.amount, 0);
+  requireFinance(Number.isSafeInteger(total), 'invalid_finance_amount');
+  requireFinance(total === netFee, 'installment_plan_total_mismatch');
+
+  let assignedBasisPoints = 0;
+  const items: InstallmentPlanInputItem[] = rawItems.map((item, index) => {
+    const percentageBasisPoints = index === rawItems.length - 1
+      ? 10000 - assignedBasisPoints
+      : Number((BigInt(item.amount) * 10000n) / BigInt(netFee));
+    assignedBasisPoints += percentageBasisPoints;
+    return { ...item, percentage_basis_points: percentageBasisPoints };
+  });
+
+  return {
+    school_id: input.school_id,
+    expected_fee_revision: input.expected_fee_revision as number,
+    notes: financeText(input.notes, 1000),
+    items,
+  };
+}
+
+export interface InstallmentAllocationSource {
+  id: number;
+  sequence_no: number;
+  label: string;
+  amount: number;
+  percentage_basis_points: number;
+  due_date: string;
+}
+
+export function allocateInstallments<T extends InstallmentAllocationSource>(
+  items: readonly T[],
+  paidAmount: number,
+  businessDate: string,
+) {
+  let unallocated = Math.max(0, paidAmount);
+  return [...items]
+    .sort((a, b) => a.sequence_no - b.sequence_no)
+    .map((item) => {
+      const paid = Math.min(item.amount, unallocated);
+      unallocated -= paid;
+      const remaining = item.amount - paid;
+      const status = remaining === 0
+        ? 'paid'
+        : paid > 0
+          ? 'partial'
+          : item.due_date < businessDate
+            ? 'overdue'
+            : 'upcoming';
+      return { ...item, paid_amount: paid, remaining_amount: remaining, status };
+    });
+}
 export type DiscountType = 'none' | 'fixed' | 'percentage';
 export function calculateFee(amount: number, type: unknown = 'none', value: unknown = 0) {
   financeMoney(amount);
@@ -108,19 +202,22 @@ export function parsePayment(value: unknown) {
     payment_date,notes:financeText(body.notes),client_request_id:body.client_request_id,auto_generate_receipt:body.auto_generate_receipt === true};
 }
 export function parseReceipt(value: unknown) {
-  const body = financeObject(value,['school_id','student_id','payment_ids']);
+  const body = financeObject(value,['school_id','student_id','payment_ids','replaces_receipt_id']);
   requireFinance(Array.isArray(body.payment_ids) && body.payment_ids.length > 0 && body.payment_ids.length <= 100, 'receipt_payment_invalid');
   const ids = body.payment_ids.map(financeId).sort((a,b)=>a-b);
   requireFinance(new Set(ids).size === ids.length,'receipt_payment_invalid');
-  return {school_id:body.school_id,student_id:financeId(body.student_id),payment_ids:ids};
+  return {school_id:body.school_id,student_id:financeId(body.student_id),payment_ids:ids,
+    replaces_receipt_id:body.replaces_receipt_id == null ? null : financeId(body.replaces_receipt_id)};
 }
 export function financeDatabaseError(error: unknown): FinanceError {
   if (error instanceof FinanceError) return error;
   const message = error instanceof Error ? error.message : '';
   for (const code of Object.keys(FINANCE_MESSAGES) as FinanceCode[]) {
-    if (message.includes(code)) return new FinanceError(code, ['duplicate_student_fee','finance_operation_stale','finance_reconciliation_required','payment_idempotency_conflict','receipt_payment_already_receipted','treasury_day_closed'].includes(code) ? 409 : 400);
+    if (message.includes(code)) return new FinanceError(code, ['duplicate_student_fee','finance_operation_stale','finance_reconciliation_required','payment_idempotency_conflict','receipt_payment_already_receipted','treasury_day_closed','installment_plan_active'].includes(code) ? 409 : 400);
   }
   if (message.includes('student_fees.school_id') || message.includes('idx_student_fees_identity')) return new FinanceError('duplicate_student_fee',409);
   if (message.includes('fee_receipt_payments.payment_id')) return new FinanceError('receipt_payment_already_receipted',409);
+  if (message.includes('fee_installment_plans.student_fee_id') || message.includes('idx_fee_installment_plans_active')) return new FinanceError('finance_operation_stale',409);
+  if (message.includes('fee_receipts.replaces_receipt_id') || message.includes('idx_fee_receipts_replacement')) return new FinanceError('finance_operation_stale',409);
   return new FinanceError('finance_failure',500);
 }

@@ -1,7 +1,7 @@
 // Disposable generated LOCAL D1 only. No repository config, env file, remote
 // binding, real school data, credentials or seed.sql are read by this runner.
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,copyFileSync,cpSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -34,8 +34,12 @@ async function snap(db){const tables=(await db.prepare("SELECT name FROM sqlite_
 function preserve(before,after){for(const [table,rows]of Object.entries(before)){if(table==='d1_migrations')continue;assert.equal(after[table].length,rows.length,table);
  const keys=rows.length?Object.keys(rows[0]):[],project=row=>Object.fromEntries(keys.map(k=>[k,row[k]]));const sort=rows=>rows.map(project).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));assert.deepEqual(sort(after[table]),sort(rows),table);}}
 
-// Each adversarial upgrade uses its own genuine 0001..0027 LOCAL D1 chain.
-// Let Wrangler own the transaction/history; never manually repair or roll back.
+// Build one genuine 0001..0027 template, then clone its closed LOCAL persistence
+// directory. Each adversarial upgrade still owns an independent D1 database,
+// while avoiding five identical Wrangler rebuilds of the historical chain.
+const blockerTemplate=setup('blocker-template','0027');
+run(blockerTemplate,['migrations','apply']);
+fixtures(blockerTemplate,financeFixtureSQL+legacyFinanceSQL);
 for(const [label,sql,error]of [
  ['duplicate-fee',"INSERT INTO student_fees(school_id,student_id,academic_year_id,fee_type,amount,currency) VALUES(1,1,1,'رسوم قديمة',100,'IQD')",/UNIQUE constraint failed/],
  ['duplicate-receipt-number',"UPDATE fee_receipts SET receipt_number='same'",/UNIQUE constraint failed/],
@@ -43,7 +47,7 @@ for(const [label,sql,error]of [
  ['duplicate-active-reservation',"UPDATE fee_receipts SET status='active'",/UNIQUE constraint failed/],
  ['missing-payment',"UPDATE fee_receipts SET payment_ids_json='[1,999]' WHERE id=1",/finance_legacy_receipt_review_required/],
 ]){
- const env=setup('blocker-'+label,'0027');run(env,['migrations','apply']);fixtures(env,financeFixtureSQL+legacyFinanceSQL+sql+';');
+ const env=setup('blocker-'+label,'0027');cpSync(blockerTemplate.state,env.state,{recursive:true});fixtures(env,sql+';');
  let proxy=await open(env),before,schema;
  const schemaSQL="SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name";
  try{before=await snap(proxy.env.DB);schema=(await proxy.env.DB.prepare(schemaSQL).all()).results;assert.equal(before.d1_migrations.length,28);}finally{await proxy.dispose();}
@@ -75,13 +79,16 @@ copyFileSync(join(root,'migrations/0028_finance_fee_payment_integrity.sql'),join
 run(upgrade,['migrations','apply']);proxy=await open(upgrade);
 try{const db=proxy.env.DB,after=await snap(db);preserve(before,after);assert.equal(after.fee_payments[0].status,'active');assert.equal(after.fee_receipt_payments.length,2);assert.equal((await db.prepare('PRAGMA foreign_keys').first()).foreign_keys,1);assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);checks++;evidence.push({case:'populated-0027-to-0028',old_tables_compared:Object.keys(before).length-1,all_old_columns_and_rows_equal:true,legacy_usd_preserved:true});}finally{await proxy.dispose();}
 console.log('LOCAL populated upgrade preserved every original column and row.');
-const fresh=setup('fresh','0028');run(fresh,['migrations','apply']);fixtures(fresh,financeFixtureSQL);proxy=await open(fresh);
+// Runtime/API checks must use the complete current schema. The isolated
+// adversarial blocks above intentionally remain scoped to the historical
+// 0027 -> 0028 upgrade contract.
+const fresh=setup('fresh','9999');run(fresh,['migrations','apply']);fixtures(fresh,financeFixtureSQL);proxy=await open(fresh);
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
 try{
  const db=proxy.env.DB,{default:app}=await vite.ssrLoadModule('/src/worker.ts');
  assert.equal(
   (await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,
-  migrationFiles.filter(file => file.slice(0,4) <= '0028').length,
+  migrationFiles.length,
  );
  const secret='generated-local-finance-workerd-test-secret-only',token=await signJWT({email:'owner@matrix.test',auth_version:1},secret);
  async function api(label,method,path,input,{failAt=null,failSql=null,database=db,authToken=token}={}){
@@ -111,6 +118,21 @@ try{
  assert.equal((await db.prepare('SELECT paid_amount FROM student_fees WHERE id=?').bind(raceFee).first()).paid_amount,60000);assert.equal((await db.prepare("SELECT SUM(amount) n FROM fee_payments WHERE student_fee_id=? AND status='active'").bind(raceFee).first()).n,60000);checks++;
  const sameFee=await fee('concurrent-same-key-fee'),same=paymentDraft(sameFee),twins=await Promise.all([api('same-key-A','POST','fee-payments',same),api('same-key-B','POST','fee-payments',same)]);
  assert.deepEqual(twins.map(r=>r.status).sort(),[200,201]);assert.equal(twins[0].body.data.id,twins[1].body.data.id);checks++;
+ const installmentFee=await fee('installment-plan-fee'),installment=await api('installment-plan-create','PUT','student-fees/'+installmentFee+'/installment-plan',{school_id:1,expected_fee_revision:0,notes:'PRIVATE LOCAL D1 PLAN NOTE',items:[
+  {label:'الدفعة الأولى',amount:50000,due_date:'2026-09-01'},{label:'الدفعة الثانية',amount:50000,due_date:'2027-01-01'},
+ ]});
+ assert.equal(installment.status,200,JSON.stringify(installment));assert.equal(installment.body.data.plan.items.length,2);checks++;
+ const installmentPayment=await api('installment-payment','POST','fee-payments',paymentDraft(installmentFee,{amount:25000,notes:'PRIVATE LOCAL D1 PAYMENT NOTE'}));
+ assert.equal(installmentPayment.status,201,JSON.stringify(installmentPayment));
+ const installmentDocument=await api('installment-receipt-v2','POST','fee-receipts/generate',{school_id:1,student_id:1,payment_ids:[installmentPayment.body.data.id]});
+ assert.equal(installmentDocument.status,200,JSON.stringify(installmentDocument));assert.equal(installmentDocument.body.data.receipt.receipt_schema_version,2);
+ assert.equal(JSON.parse(installmentDocument.body.data.receipt.installment_plan_snapshot_json)[0].items[0].paid_amount,25000);checks++;
+ await db.prepare("INSERT INTO parent_student_links(school_id,parent_user_id,student_id,status,created_by_user_id) VALUES(1,8,1,'active',1)").run();
+ const parentToken=await signJWT({email:'parent@matrix.test',auth_version:1},secret),parentFinance=await api('parent-installment-view','GET','parent/students/1/finance',undefined,{authToken:parentToken});
+ assert.equal(parentFinance.status,200,JSON.stringify(parentFinance));const parentFee=parentFinance.body.data.fees.find(fee=>fee.id===installmentFee);assert.equal(parentFee.installment_plan.items[0].paid_amount,25000);
+ assert.ok(!JSON.stringify(parentFinance.body).includes('PRIVATE LOCAL D1 PLAN NOTE'));assert.ok(!JSON.stringify(parentFinance.body).includes('PRIVATE LOCAL D1 PAYMENT NOTE'));checks++;
+ await db.prepare("UPDATE parent_student_links SET status='inactive',updated_at=unixepoch() WHERE school_id=1 AND parent_user_id=8 AND student_id=1").run();
+ const revokedParent=await api('parent-installment-revoked','GET','parent/students/1/finance',undefined,{authToken:parentToken});assert.equal(revokedParent.status,404);checks++;
  const docInput={school_id:1,student_id:1,payment_ids:[p]},docs=await Promise.all([api('receipt-one-A','POST','fee-receipts/generate',docInput),api('receipt-one-B','POST','fee-receipts/generate',docInput)]);
  assert.ok(docs.every(r=>r.status===200),JSON.stringify(docs));assert.equal(docs[0].body.data.receipt.id,docs[1].body.data.receipt.id);const receipt=docs[0].body.data.receipt;checks++;
  for(const [label,path,body]of [['receipt-cancel','fee-receipts/'+receipt.id+'/cancel',{school_id:1,cancel_reason:'Local document correction'}],['payment-cancel','fee-payments/'+p+'/cancel',{school_id:1,cancel_reason:'Local money correction'}]]){

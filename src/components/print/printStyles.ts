@@ -153,6 +153,46 @@ export const PRINT_CSS = `
     page-break-inside: avoid;
   }
 
+  .print-a4.receipt-a4-sheet {
+    width: 180mm !important;
+    min-height: 267mm !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+  }
+
+  .receipt-a4-sheet section,
+  .receipt-a4-sheet header,
+  .receipt-a4-sheet .print-footer {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .receipt-a4-sheet table.print-table {
+    font-size: 10.5px !important;
+    line-height: 1.25;
+  }
+
+  .receipt-a4-sheet table.print-table th,
+  .receipt-a4-sheet table.print-table td {
+    padding: 1.5mm 1mm !important;
+  }
+
+  .receipt-a4-sheet .receipt-table-section {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  .receipt-a4-sheet table.print-table thead {
+    display: table-header-group;
+  }
+
+  .receipt-a4-sheet table.print-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
   .result-card-print-sheet .result-card-document {
     font-size: 10px !important;
   }
@@ -247,6 +287,7 @@ export const PRINT_CSS = `
     background: #e5e7eb;
     min-height: 100vh;
     padding: 1rem;
+    overflow-x: auto;
   }
 
   .print-a4 {
@@ -339,6 +380,10 @@ export const PRINT_CSS = `
 
   .print-a4.result-card-print-sheet .result-card-document {
     min-height: 0 !important;
+  }
+
+  .print-a4.receipt-a4-sheet {
+    overflow: visible;
   }
 }
 `;

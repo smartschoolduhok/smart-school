@@ -8,7 +8,7 @@
     "sharp": "0.35.4"
   },
   "scripts": {
-    "test:finance-fees": "node --experimental-strip-types --test --test-concurrency=1 test/finance-fees.test.mjs test/finance-fees-api.test.mjs test/finance-fees-ui.test.mjs test/finance-review.test.mjs",
+    "test:finance-fees": "node --experimental-strip-types --test --test-concurrency=1 test/finance-fees.test.mjs test/finance-fees-api.test.mjs test/finance-installments-parent.test.mjs test/finance-fees-ui.test.mjs test/finance-review.test.mjs",
     "test:treasury-payroll": "node --experimental-strip-types --test --test-concurrency=1 test/treasury-payroll-integrity.test.mjs test/treasury-payroll-ui.test.mjs",
     "test:finance-seed:local": "node --experimental-strip-types scripts/validate-finance-seed-local.mjs",
     "test:finance-fees:local": "node --experimental-strip-types scripts/validate-finance-fees-local.mjs",

@@ -19,8 +19,8 @@ const payments=[{id:1,student_id:1,amount:100,status:'active',currency:'IQD',act
  {id:2,student_id:1,amount:200,status:'cancelled',currency:'IQD',active_receipt_id:null,payment_date:1788600000},
  {id:3,student_id:1,amount:300,status:'active',currency:'IQD',active_receipt_id:5,payment_date:1788600000},
  {id:4,student_id:1,amount:400,status:'active',currency:'USD',active_receipt_id:null,payment_date:1788600000}];
-async function mount(t,overrides={},component=FeesPage){
- const user={id:1,role_key:'school_owner',school_id:1,full_name:'Generated owner'},calls=[];
+async function mount(t,overrides={},component=FeesPage,userOverrides={}){
+ const user={id:1,role_key:'school_owner',school_id:1,full_name:'Generated owner',...userOverrides},calls=[];
  localStorage.clear();sessionStorage.clear();localStorage.setItem('smart_school_user',JSON.stringify(user));localStorage.setItem('smart_school_token','local-ui-placeholder');
  globalThis.fetch=async(url,init={})=>{const path=String(url).split('?')[0],method=init.method??'GET',input=init.body?JSON.parse(init.body):undefined;calls.push({path,url:String(url),method,input});
   if(overrides[path])return overrides[path](input,method);
@@ -42,6 +42,16 @@ test('rendered zero net stays zero; new fee has only IQD and whole-money inputs'
  assert.equal(row.querySelectorAll('td')[2].textContent,'٠ د.ع');assert.equal(row.querySelectorAll('td')[4].textContent,'٠ د.ع');
  await click(button(u,'إضافة قسط'));const options=[...u.container.querySelectorAll('option')];assert.ok(options.some(o=>o.value==='IQD'));assert.ok(!options.some(o=>['EGP','USD','SAR','AED'].includes(o.value)));
  assert.equal(u.container.querySelector('input[type="number"]').step,'1');
+});
+test('fee list exposes one row action and opens the authoritative account with an exact installment draft',async t=>{
+ const finance={student:{id:1,full_name:'Generated Student',student_number:'FIN-1'},totals:{original_fee:100000,discount_amount:0,net_due:100000,paid_amount:0,remaining_amount:100000},fees:[{...fees[1],finance_revision:7,remaining_amount:100000,due_date:Date.UTC(2027,0,31)/1000,installment_plan:null}],payments:[],receipts:[]};
+ const u=await mount(t,{'/api/student-finance/1':()=>response({data:finance}),'/api/student-fees/2/installment-plan':()=>response({data:{id:9}})}),row=[...u.container.querySelectorAll('tbody tr')].find(r=>r.textContent.includes('Payable'));
+ assert.deepEqual([...row.querySelectorAll('button')].map(element=>element.textContent.trim()),['فتح الحساب']);
+ await click(row.querySelector('button'));assert.match(u.container.querySelector('[aria-label="حساب الطالب المالي"]').textContent,/إجمالي حساب الطالب/);
+ await click(button(u,'إنشاء خطة'));assert.ok(u.container.querySelector('[role="dialog"]'));assert.equal(u.container.querySelectorAll('input[type="number"]').length,3);
+ assert.deepEqual([...u.container.querySelectorAll('input[type="date"]')].map(element=>element.value),['2027-01-31','2027-02-28','2027-03-31']);
+ await click(button(u,'حفظ الخطة'));const request=u.calls.find(call=>call.path==='/api/student-fees/2/installment-plan'&&call.method==='PUT');
+ assert.equal(request.input.expected_fee_revision,7);assert.equal(request.input.items.reduce((sum,item)=>sum+item.amount,0),100000);
 });
 test('receipts first visit loads eligible payments without visiting payments tab, excludes cancelled/reserved/non-IQD',async t=>{
  const u=await mount(t);assert.equal(u.calls.filter(c=>c.path==='/api/fee-payments').length,0);
@@ -82,7 +92,24 @@ test('receipt print route ignores stale same-school document responses',async t=
  const old=deferred(),latest=deferred(),u=await mount(t,{'/api/fee-receipts/1':()=>old.promise,'/api/fee-receipts/2':()=>latest.promise},Page);
  await click(button(u,'Next document'));
  const doc=(id)=>({data:{id,school_id:1,receipt_number:'DOC-'+id,student_name_snapshot:'Generated Student',school_name_snapshot:'Generated School',total_amount:100,status:'active',created_at:1788600000,payments_snapshot:[],settings_snapshot:{currency:'IQD'}}});
- await act(async()=>latest.resolve(response(doc(2))));assert.match(u.container.textContent,/DOC-٢/);
- assert.ok(!u.container.textContent.includes('١٩٧٠'));assert.match(u.container.textContent,/المبلغ الإجمالي: ١٠٠ د.ع/);
- await act(async()=>old.resolve(response(doc(1))));assert.match(u.container.textContent,/DOC-٢/);assert.ok(!u.container.textContent.includes('DOC-١'));
+ await act(async()=>latest.resolve(response(doc(2))));assert.match(u.container.textContent,/DOC-2/);
+ assert.ok(!u.container.textContent.includes('١٩٧٠'));assert.match(u.container.textContent,/هذه الدفعة١٠٠ د.ع/);
+ await act(async()=>old.resolve(response(doc(1))));assert.match(u.container.textContent,/DOC-2/);assert.ok(!u.container.textContent.includes('DOC-1'));
+});
+test('parent finance view is read-only and uses only parent-scoped endpoints',async t=>{
+ const {MemoryRouter}=await vite.ssrLoadModule('react-router-dom'),{default:ParentFinanceSection}=await vite.ssrLoadModule('/src/modules/students/ParentFinanceSection.tsx');
+ const finance={student:{id:1,full_name:'Generated Student'},linked_students:[{id:1,full_name:'Generated Student'}],totals:{original_fee:100000,discount_amount:0,net_due:100000,paid_amount:25000,remaining_amount:75000,payment_ratio_basis_points:2500},fees:[{id:2,fee_type:'رسوم دراسية',net_fee:100000,remaining_amount:75000,due_date:1788600000,installment_plan:{items:[{id:1,label:'الدفعة 1',percentage_basis_points:5000,amount:50000,due_date:'2026-09-01',paid_amount:25000,remaining_amount:25000,status:'partial'}]}}],payments:[{id:3,fee_type:'رسوم دراسية',payment_method:'cash',payment_date:1788600000,amount:25000,status:'active'}],receipts:[{id:5,receipt_number:'FIN-5',created_at:1788600000,total_amount:25000,status:'active',verification_token:'verify-5'}]};
+ function Page(){return createElement(MemoryRouter,null,createElement(ParentFinanceSection,{studentId:1}));}
+ const u=await mount(t,{'/api/parent/students/1/finance':()=>response({data:finance})},Page,{role_key:'parent',full_name:'Generated parent'});
+ assert.match(u.container.textContent,/الأقساط/);assert.match(u.container.textContent,/المتبقي٧٥٬٠٠٠ د.ع/);assert.match(u.container.textContent,/FIN-5/);
+ assert.ok(!/(تحصيل دفعة|تعديل القسط|حذف القسط)/.test(u.container.textContent));
+ assert.ok(u.container.querySelector('a[href="/print/receipt/5"]'));assert.equal(u.calls.filter(call=>call.path==='/api/student-finance/1').length,0);
+});
+test('parent receipt print fetches the parent-safe document and never marks it printed',async t=>{
+ const {MemoryRouter,Routes,Route}=await vite.ssrLoadModule('react-router-dom'),{default:PrintReceiptPage}=await vite.ssrLoadModule('/src/modules/print/PrintReceiptPage.tsx');
+ function Page(){return createElement(MemoryRouter,{initialEntries:['/print/receipt/5']},createElement(Routes,null,createElement(Route,{path:'/print/receipt/:id',element:createElement(PrintReceiptPage)})));}
+ const receipt={id:5,school_id:1,student_id:1,receipt_number:'FIN-5',student_name_snapshot:'Generated Student',school_name_snapshot:'Generated School',total_amount:25000,currency_snapshot:'IQD',status:'active',verification_token:'verify-5',created_at:1788600000,payments_snapshot:[],financial_summary_snapshot:{currency:'IQD',original_fee:100000,discount_amount:0,net_due:100000,paid_before:0,this_payment:25000,total_paid:25000,remaining_after:75000,payment_ratio_basis_points:2500},settings_snapshot:{currency:'IQD'}};
+ const u=await mount(t,{'/api/parent/fee-receipts/5':()=>response({data:receipt})},Page,{role_key:'parent',full_name:'Generated parent'});
+ assert.match(u.container.textContent,/إيصال استلام قسط دراسي/);assert.match(u.container.textContent,/FIN-5/);
+ assert.equal(u.calls.filter(call=>call.path==='/api/parent/fee-receipts/5').length,1);assert.equal(u.calls.filter(call=>call.path.includes('/print')).length,0);assert.equal(u.calls.filter(call=>call.path==='/api/fee-receipts/5').length,0);
 });

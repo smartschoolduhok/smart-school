@@ -41,6 +41,7 @@ import {
   safeStudentProfileValue,
   studentStatusLabel,
 } from '../../lib/studentProfilePresentation';
+import ParentFinanceSection from './ParentFinanceSection';
 
 function InformationItem({ label, value, icon }: { label: string; value: ReactNode; icon?: ReactNode }) {
   return (
@@ -324,6 +325,8 @@ export default function StudentProfilePage() {
               </div>
             )}
           </section>
+
+          {user?.role_key === 'parent' && <ParentFinanceSection studentId={student.id} />}
 
           <section className="rounded-xl border border-amber-200 bg-white p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">

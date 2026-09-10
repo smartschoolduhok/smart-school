@@ -8260,9 +8260,8 @@ app.get('/api/verify/receipt/:token', async (c) => {
 
   try {
     const row = await db.prepare(`
-      SELECT receipt_number, student_name_snapshot, class_name_snapshot, section_name_snapshot,
-             school_name_snapshot, academic_year_snapshot, total_amount, status, created_at,
-             payments_snapshot_json, settings_snapshot_json
+      SELECT receipt_number, student_name_snapshot, school_name_snapshot, academic_year_snapshot,
+             total_amount, currency_snapshot, status, created_at, settings_snapshot_json
       FROM fee_receipts WHERE verification_token = ?
     `).bind(token).first<any>();
 
@@ -8273,6 +8272,11 @@ app.get('/api/verify/receipt/:token', async (c) => {
       }, 404);
     }
 
+    let receiptSettings = null;
+    try {
+      receiptSettings = JSON.parse(row.settings_snapshot_json || '{}');
+    } catch { /* ignore */ }
+
     if (row.status === 'cancelled') {
       return c.json({
         valid: false,
@@ -8281,32 +8285,25 @@ app.get('/api/verify/receipt/:token', async (c) => {
         receipt_number: row.receipt_number,
         student_name: row.student_name_snapshot,
         school_name: row.school_name_snapshot,
+        academic_year: row.academic_year_snapshot,
+        total_amount: row.total_amount,
+        currency: row.currency_snapshot || receiptSettings?.currency || null,
         created_at: row.created_at,
+        status: 'cancelled',
       });
     }
-
-    let payments = [];
-    try {
-      payments = JSON.parse(row.payments_snapshot_json || '[]');
-    } catch { /* ignore */ }
-    let receiptSettings = null;
-    try {
-      receiptSettings = JSON.parse(row.settings_snapshot_json || '{}');
-    } catch { /* ignore */ }
 
     return c.json({
       valid: true,
       receipt_number: row.receipt_number,
       student_name: row.student_name_snapshot,
       school_name: row.school_name_snapshot,
-      class_name: row.class_name_snapshot,
-      section_name: row.section_name_snapshot,
       academic_year: row.academic_year_snapshot,
       total_amount: row.total_amount,
+      currency: row.currency_snapshot || receiptSettings?.currency || null,
       created_at: row.created_at,
       status: row.status,
-      payments,
-      verification_note: receiptSettings?.verification_note_text || null,
+      verification_note: receiptSettings?.verification_note || receiptSettings?.verification_note_text || null,
     });
   } catch (err: any) {
     return c.json({ valid: false, message: 'خطأ في التحقق' }, 500);

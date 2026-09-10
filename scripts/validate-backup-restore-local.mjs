@@ -34,7 +34,7 @@ function environment(directoryName, databaseName) {
     d1_databases: [{
       binding: 'DB',
       database_name: databaseName,
-      database_id: '00000000-0000-0000-0000-000000000031',
+      database_id: '00000000-0000-0000-0000-000000000032',
       migrations_dir: 'migrations',
     }],
   }));
@@ -83,6 +83,16 @@ const largeText = fragment.repeat(Math.ceil(360000 / Buffer.byteLength(fragment)
 assert.ok(Buffer.byteLength(largeText) >= 360000 && Buffer.byteLength(largeText) < 361000);
 const largeSource = await openLocal(source);
 try {
+  const fee = await largeSource.env.DB.prepare("SELECT id,school_id,net_fee,finance_revision FROM student_fees WHERE currency='IQD' AND net_fee>0 ORDER BY id LIMIT 1").first();
+  const creator = await largeSource.env.DB.prepare("SELECT id FROM users WHERE school_id=? AND status='active' ORDER BY id LIMIT 1").bind(fee.school_id).first();
+  const planRow = await largeSource.env.DB.prepare("INSERT INTO fee_installment_plans(plan_key,school_id,student_fee_id,fee_revision_snapshot,status,notes,created_by_user_id) VALUES(?,?,?,?,'draft',?,?) RETURNING id")
+    .bind('backup-restore-plan-0032',fee.school_id,fee.id,fee.finance_revision,'Generated restore plan',creator.id).first();
+  const firstAmount=Math.floor(fee.net_fee/2),secondAmount=fee.net_fee-firstAmount,firstBasis=Number((BigInt(firstAmount)*10000n)/BigInt(fee.net_fee));
+  await largeSource.env.DB.batch([
+    largeSource.env.DB.prepare("INSERT INTO fee_installment_items(plan_id,school_id,sequence_no,label,amount,percentage_basis_points,due_date) VALUES(?,?,?,?,?,?,?)").bind(planRow.id,fee.school_id,1,'Generated first',firstAmount,firstBasis,'2026-09-01'),
+    largeSource.env.DB.prepare("INSERT INTO fee_installment_items(plan_id,school_id,sequence_no,label,amount,percentage_basis_points,due_date) VALUES(?,?,?,?,?,?,?)").bind(planRow.id,fee.school_id,2,'Generated second',secondAmount,10000-firstBasis,'2027-01-01'),
+    largeSource.env.DB.prepare("UPDATE fee_installment_plans SET status='active',updated_at=unixepoch() WHERE id=? AND status='draft'").bind(planRow.id),
+  ]);
   await largeSource.env.DB.prepare(
     'INSERT INTO import_jobs(school_id,import_type,file_name,status,summary_json,completed_at) VALUES(?,?,?,?,?,?)',
   ).bind(1, 'students', new Uint8Array([0, 39, 44, 255]), 'completed', largeText, 1788000000.25).run();
@@ -124,6 +134,7 @@ try {
     schema_hash: digest(after.schema),
     tables: Object.fromEntries(Object.entries(after.tables).map(([name, t]) => [name, { rows: t.count, hash: t.hash }])),
     oversized_single_row_restored: true,
+    installment_plan_rows_restored: after.tables.fee_installment_plans.count === 1 && after.tables.fee_installment_items.count === 2,
     large_row_bytes: Buffer.byteLength(largeText),
     large_row_hash: digest(largeText),
     statements_before: plan.statementCount,

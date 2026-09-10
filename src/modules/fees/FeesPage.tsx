@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { calculateFee, feeRemaining } from '../../lib/financeFees';
+import FeeAccountPanel from './FeeAccountPanel';
 import { businessDate } from '../../lib/businessTime';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
@@ -12,7 +13,7 @@ import {
 import {
   CreditCard, Plus, Search, Trash2, Edit2, Save, X, DollarSign, Calendar,
   CheckCircle, AlertTriangle, XCircle, ArrowRight, Printer, QrCode, FileText,
-  Wallet, GraduationCap, Layers, School, ChevronDown, ChevronUp, Ban
+  Wallet, GraduationCap, Layers, School, ChevronDown, ChevronUp, Ban, Eye
 } from 'lucide-react';
 
 // Arabic-Indic digit converter
@@ -43,6 +44,7 @@ interface FeeRecord {
   discount_type?: string;
   discount_value?: number;
   discount_amount?: number;
+  finance_revision?: number;
 }
 
 interface PaymentRecord {
@@ -97,6 +99,7 @@ export default function FeesPage() {
   const [fees, setFees] = useState<FeeRecord[]>([]);
   const [feeSearch, setFeeSearch] = useState('');
   const [feeStatusFilter, setFeeStatusFilter] = useState('');
+  const [accountFee, setAccountFee] = useState<FeeRecord | null>(null);
 
   // Add tab
   const [selectedStudent, setSelectedStudent] = useState<number | ''>('');
@@ -169,7 +172,11 @@ export default function FeesPage() {
     setLoading(true);
     const res = await getStudentFees({ school_id: schoolId });
     if (!isCurrent() || generation !== loadGeneration.current.fees) return;
-    if (res.data) setFees(res.data as any);
+    if (res.data) {
+      const nextFees=res.data as FeeRecord[];
+      setFees(nextFees);
+      setAccountFee(current=>current ? nextFees.find(fee=>fee.id===current.id)??null : null);
+    }
     setLoading(false);
   }, [schoolId]);
 
@@ -211,6 +218,7 @@ export default function FeesPage() {
     setPaymentBusy(false); setPaymentUncertain(false);
     setSelectedYear('');
     setEditingFee(null);
+    setAccountFee(null);
     setLoading(false);
     setError(null);
     setSuccess(null);
@@ -260,7 +268,7 @@ export default function FeesPage() {
     const res = await deleteStudentFee(id, schoolId);
     if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
-    else { showSuccess('تم حذف القسط'); loadFees(); }
+    else { showSuccess('تم حذف القسط'); setAccountFee(null); loadFees(); }
   }
 
   async function handleUpdateFee(e: React.FormEvent) {
@@ -396,6 +404,7 @@ export default function FeesPage() {
     setPayFeeId(fee.id);
     setPayAmount(String(feeRemaining(fee)));
     setPayDate(businessDate());
+    setAccountFee(null);
     setActiveTab('payments');
   }
 
@@ -500,6 +509,18 @@ export default function FeesPage() {
                 </select>
               </div>
 
+              {accountFee && schoolId != null && (
+                <FeeAccountPanel
+                  fee={accountFee}
+                  schoolId={schoolId}
+                  onClose={() => setAccountFee(null)}
+                  onCollect={openPaymentForFee}
+                  onEdit={(fee) => setEditingFee(fee as FeeRecord)}
+                  onDelete={(id) => void handleDeleteFee(id)}
+                  onChanged={() => void loadFees()}
+                />
+              )}
+
               <div className="overflow-x-auto">
                 <table className="w-full text-sm" dir="rtl">
                   <thead>
@@ -540,19 +561,7 @@ export default function FeesPage() {
                         </td>
                         <td className="px-4 py-3 text-gray-500">{formatDate(fee.due_date)}</td>
                         <td className="px-4 py-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            {fee.currency === 'IQD' && feeRemaining(fee) > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => openPaymentForFee(fee)}
-                                className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
-                              >
-                                تحصيل دفعة
-                              </button>
-                            )}
-                            <button onClick={() => setEditingFee(fee)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg" title="تعديل"><Edit2 size={16} /></button>
-                            <button onClick={() => handleDeleteFee(fee.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg" title="حذف"><Trash2 size={16} /></button>
-                          </div>
+                          <button type="button" onClick={() => setAccountFee(fee)} className="inline-flex items-center gap-2 rounded-lg border border-primary-200 px-3 py-1.5 text-xs font-semibold text-primary-700 hover:bg-primary-50"><Eye size={15}/>فتح الحساب</button>
                         </td>
                       </tr>
                     ))}
