@@ -22,6 +22,7 @@ const vite = await createServer({
 const { default: SchoolProfileTab } = await vite.ssrLoadModule('/src/modules/settings/SchoolProfileTab.tsx');
 const { default: LoginPage } = await vite.ssrLoadModule('/src/modules/auth/LoginPage.tsx');
 const { default: StudentsPage } = await vite.ssrLoadModule('/src/modules/students/StudentsPage.tsx');
+const { default: GradesPage } = await vite.ssrLoadModule('/src/modules/grades/GradesPage.tsx');
 const { AuthProvider, useAuth } = await vite.ssrLoadModule('/src/hooks/useAuth.tsx');
 const { fetchApi, getDashboardStats } = await vite.ssrLoadModule('/src/lib/api.ts');
 const { NAVIGATION_GROUPS, getVisibleNavigationItems } = await vite.ssrLoadModule('/src/components/Sidebar.tsx');
@@ -243,6 +244,69 @@ test('accountant navigation keeps finance and salaries without academic analysis
   assert.ok(!paths.includes('/analytics'));
   assert.ok(!paths.includes('/grades'));
   for(const path of ['/students','/fees','/treasury','/employees'])assert.ok(paths.includes(path),path);
+});
+
+test('teacher section-grade selectors use only scoped student-subject assignments', async t => {
+  const previousFetch = globalThis.fetch;
+  const requests = [];
+  const teacher = {
+    id: 73,
+    role_key: 'teacher',
+    role_id: 5,
+    school_id: 41,
+    full_name: 'مدرس الاختبار',
+    email: 'teacher@example.test',
+    role_name: 'مدرس',
+    school_name: 'مدرسة الاختبار',
+  };
+  const scopedAssignments = [
+    { id: 1, class_id: 10, class_name: 'الصف الأول', section_id: 101, section_name: 'أ', subject_id: 1001, subject_name: 'الحاسوب', is_active: 1 },
+    { id: 2, class_id: 10, class_name: 'الصف الأول', section_id: 102, section_name: 'ب', subject_id: 1002, subject_name: 'الرياضيات', is_active: 1 },
+  ];
+
+  localStorage.clear();
+  sessionStorage.clear();
+  localStorage.setItem('smart_school_token', 'teacher-test-token');
+  localStorage.setItem('smart_school_user', JSON.stringify(teacher));
+  globalThis.fetch = async url => {
+    const path = String(url);
+    requests.push(path);
+    if (path === '/api/auth/me') return new Response(JSON.stringify({ data: teacher }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (path === '/api/students?school_id=41') return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (path === '/api/student-subjects?school_id=41&is_active=1') return new Response(JSON.stringify({ data: scopedAssignments }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (path === '/api/grade-settings?school_id=41') return new Response(JSON.stringify({ data: null }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    throw new Error(`Unexpected request ${path}`);
+  };
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  const container = await render(t, createElement(AuthProvider, null, createElement(GradesPage)));
+  await waitForContent(container, 'إدخال درجات شعبة');
+  const sectionTab = [...container.querySelectorAll('button')].find(button => button.textContent.includes('إدخال درجات شعبة'));
+  await act(async () => sectionTab.click());
+  for (let attempt = 0; attempt < 50 && !requests.includes('/api/student-subjects?school_id=41&is_active=1'); attempt += 1) {
+    await act(async () => new Promise(resolve => setTimeout(resolve, 10)));
+  }
+
+  let filters = [...container.querySelectorAll('select')];
+  assert.deepEqual([...filters[0].options].map(option => option.textContent.trim()), ['— اختر —', 'الصف الأول']);
+  assert.equal(filters[1].disabled, true);
+  assert.equal(filters[2].disabled, true);
+
+  await select(filters[0], '10');
+  filters = [...container.querySelectorAll('select')];
+  assert.deepEqual([...filters[1].options].map(option => option.textContent.trim()), ['— اختر —', 'أ', 'ب']);
+  await select(filters[1], '101');
+  filters = [...container.querySelectorAll('select')];
+  assert.deepEqual([...filters[2].options].map(option => option.textContent.trim()), ['— اختر —', 'الحاسوب']);
+  assert.equal(filters[2].disabled, false);
+
+  assert.equal(requests.some(path => path.startsWith('/api/classes')), false);
+  assert.equal(requests.some(path => path.startsWith('/api/sections')), false);
+  assert.equal(requests.some(path => path.startsWith('/api/subjects')), false);
 });
 
 test('accountant student directory exposes only finance fields and builds filters from directory rows', async t => {

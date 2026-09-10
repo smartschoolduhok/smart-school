@@ -13,3 +13,15 @@ export function businessDate(value: Date = new Date()): string {
 export function businessMonth(value: Date = new Date()): string {
   return businessDate(value).slice(0, 7);
 }
+
+export function formatBusinessUnixDate(
+  value: number | string | null | undefined,
+  fallback = '—',
+): string {
+  if (value === null || value === undefined || value === '') return fallback;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return fallback;
+  const date = new Date(seconds * 1000);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toLocaleDateString('ar-IQ', { timeZone: BUSINESS_TIME_ZONE });
+}

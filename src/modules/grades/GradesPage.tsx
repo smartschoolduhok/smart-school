@@ -8,12 +8,18 @@ import { ACADEMIC_MANAGEMENT_ROLES, GRADE_MANAGEMENT_ROLES, SCHOOL_MANAGEMENT_RO
 import {
   getGrades, getStudentGrades, initializeStudentGrades, initializeSectionGrades,
   updateGrade, bulkUpdateGrades, getGradeHistory, getGradeSettings, updateGradeSettings,
-  getStudents, getClasses, getSections, getSubjects
+  getStudents, getClasses, getSections, getSubjects, getStudentSubjects
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import type { GradeCalculationSettings } from '../../lib/gradeCalculations';
 import { displayGradeStatus } from '../../lib/gradePresentation';
 import { createPerKeyTaskQueue, mergeUpdatedRow } from '../../lib/perKeyTaskQueue';
+import {
+  teacherGradeClassOptions,
+  teacherGradeSectionOptions,
+  teacherGradeSubjectOptions,
+  type TeacherGradeScopeAssignment,
+} from '../../lib/gradeScope';
 import {
   gradeInputColumns,
   gradeSchemeSummary,
@@ -208,7 +214,7 @@ export default function GradesPage() {
       </div>
 
       {effectiveTab === 'student' && <StudentGradesTab schoolId={schoolId} canEdit={canEditGrades} canInitialize={canInitializeGrades} />}
-      {effectiveTab === 'section' && <SectionGradesTab schoolId={schoolId} canInitialize={canInitializeGrades} />}
+      {effectiveTab === 'section' && <SectionGradesTab schoolId={schoolId} canInitialize={canInitializeGrades} userRole={user?.role_key} />}
       {effectiveTab === 'settings' && <SettingsTab schoolId={schoolId} />}
       {effectiveTab === 'history' && <HistoryTab schoolId={schoolId} />}
     </div>
@@ -481,11 +487,13 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize }: { schoolId: numb
 /* ═══════════════════════════════════════
    Tab 2: إدخال درجات شعبة
    ═══════════════════════════════════════ */
-function SectionGradesTab({ schoolId, canInitialize }: { schoolId: number | null; canInitialize: boolean }) {
+function SectionGradesTab({ schoolId, canInitialize, userRole }: { schoolId: number | null; canInitialize: boolean; userRole?: RoleKey }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
+  const isTeacher = userRole === 'teacher';
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [sections, setSections] = useState<SectionRecord[]>([]);
   const [subjects, setSubjects] = useState<SubjectRecord[]>([]);
+  const [teacherScopeAssignments, setTeacherScopeAssignments] = useState<TeacherGradeScopeAssignment[]>([]);
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedSectionId, setSelectedSectionId] = useState('');
   const [selectedSubjectId, setSelectedSubjectId] = useState('');
@@ -500,11 +508,30 @@ function SectionGradesTab({ schoolId, canInitialize }: { schoolId: number | null
   const [showConfirm, setShowConfirm] = useState(false);
 
   const editableFields = useMemo(() => settings ? gradeInputColumns(settings).filter(column => column.editable) : [], [settings]);
+  const availableClasses = useMemo(
+    () => isTeacher ? teacherGradeClassOptions(teacherScopeAssignments) : classes,
+    [classes, isTeacher, teacherScopeAssignments],
+  );
+  const availableSections = useMemo(
+    () => isTeacher
+      ? teacherGradeSectionOptions(teacherScopeAssignments, selectedClassId)
+      : sections,
+    [isTeacher, sections, selectedClassId, teacherScopeAssignments],
+  );
+  const availableSubjects = useMemo(() => {
+    if (!selectedClassId || !selectedSectionId) return [];
+    if (isTeacher) return teacherGradeSubjectOptions(teacherScopeAssignments, selectedClassId, selectedSectionId);
+    return subjects.filter((subject) => (
+      (subject.class_id == null || String(subject.class_id) === selectedClassId)
+      && (subject.section_id == null || String(subject.section_id) === selectedSectionId)
+    ));
+  }, [isTeacher, selectedClassId, selectedSectionId, subjects, teacherScopeAssignments]);
 
   useEffect(() => {
     setClasses([]);
     setSections([]);
     setSubjects([]);
+    setTeacherScopeAssignments([]);
     setSelectedClassId('');
     setSelectedSectionId('');
     setSelectedSubjectId('');
@@ -517,10 +544,13 @@ function SectionGradesTab({ schoolId, canInitialize }: { schoolId: number | null
     setSaveLoading(false);
     setMessage(null);
     setShowConfirm(false);
-    void loadClasses();
-    void loadSubjects();
+    if (isTeacher) void loadTeacherScope();
+    else {
+      void loadClasses();
+      void loadSubjects();
+    }
     void loadSettings();
-  }, [schoolId]);
+  }, [schoolId, isTeacher]);
   useEffect(() => {
     if (!editableFields.some(field => field.key === fieldToEdit)) {
       setFieldToEdit(editableFields[0]?.key || '');
@@ -529,9 +559,21 @@ function SectionGradesTab({ schoolId, canInitialize }: { schoolId: number | null
     }
   }, [editableFields, fieldToEdit]);
   useEffect(() => {
-    if (selectedClassId) loadSections(selectedClassId);
-    else { setSections([]); setSelectedSectionId(''); }
-  }, [selectedClassId]);
+    setSelectedSectionId('');
+    setSelectedSubjectId('');
+    setGrades([]);
+    if (isTeacher) return;
+    if (selectedClassId) void loadSections(selectedClassId);
+    else setSections([]);
+  }, [selectedClassId, isTeacher]);
+
+  async function loadTeacherScope() {
+    if (schoolId == null) { setTeacherScopeAssignments([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getStudentSubjects(schoolId, null, null, null, null, true);
+    if (!isCurrent()) return;
+    setTeacherScopeAssignments((res.data || []) as TeacherGradeScopeAssignment[]);
+  }
 
   async function loadClasses() {
     if (schoolId == null) { setClasses([]); return; }
@@ -678,21 +720,21 @@ function SectionGradesTab({ schoolId, canInitialize }: { schoolId: number | null
           <label className="block text-xs font-medium text-gray-700 mb-1">الصف</label>
           <select value={selectedClassId} onChange={(e) => setSelectedClassId(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
             <option value="">— اختر —</option>
-            {classes.map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
+            {availableClasses.map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
           </select>
         </div>
         <div className="w-40">
           <label className="block text-xs font-medium text-gray-700 mb-1">الشعبة</label>
-          <select value={selectedSectionId} onChange={(e) => { setSelectedSectionId(e.target.value); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!selectedClassId}>
+          <select value={selectedSectionId} onChange={(e) => { setSelectedSectionId(e.target.value); setSelectedSubjectId(''); setGrades([]); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!selectedClassId}>
             <option value="">— اختر —</option>
-            {sections.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+            {availableSections.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
           </select>
         </div>
         <div className="w-56">
           <label className="block text-xs font-medium text-gray-700 mb-1">المادة</label>
-          <select value={selectedSubjectId} onChange={(e) => setSelectedSubjectId(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+          <select value={selectedSubjectId} onChange={(e) => { setSelectedSubjectId(e.target.value); setGrades([]); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!selectedSectionId}>
             <option value="">— اختر —</option>
-            {subjects.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+            {availableSubjects.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
           </select>
         </div>
         <div className="w-40">

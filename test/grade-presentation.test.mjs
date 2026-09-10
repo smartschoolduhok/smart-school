@@ -3,13 +3,68 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { calculateGrades } from '../src/lib/gradeCalculations.ts';
+import { formatBusinessUnixDate } from '../src/lib/businessTime.ts';
 import {
   displayGradeStatus,
   displayIndividualExemptionDetail,
 } from '../src/lib/gradePresentation.ts';
+import {
+  teacherGradeClassOptions,
+  teacherGradeSectionOptions,
+  teacherGradeSubjectOptions,
+} from '../src/lib/gradeScope.ts';
 import { evaluateResultCard } from '../src/lib/resultCards.ts';
 
 const thresholds = { max_grade: 100, passing_grade: 50, exemption_grade: 90 };
+
+test('student-subject timestamps are formatted as Unix seconds instead of 1970 milliseconds', async () => {
+  const timestamp = Date.parse('2026-09-10T09:00:00Z') / 1000;
+  assert.equal(
+    formatBusinessUnixDate(timestamp),
+    new Date(timestamp * 1000).toLocaleDateString('ar-IQ', { timeZone: 'Asia/Baghdad' }),
+  );
+  assert.notEqual(
+    formatBusinessUnixDate(timestamp),
+    new Date(timestamp).toLocaleDateString('ar-IQ', { timeZone: 'Asia/Baghdad' }),
+  );
+  assert.equal(formatBusinessUnixDate(null), '—');
+  assert.equal(formatBusinessUnixDate('not-a-timestamp'), '—');
+
+  const page = await readFile(new URL('../src/modules/studentSubjects/StudentSubjectsPage.tsx', import.meta.url), 'utf8');
+  assert.match(page, /formatBusinessUnixDate\(a\.assigned_at\)/);
+  assert.doesNotMatch(page, /new Date\(a\.assigned_at\)/);
+});
+
+test('teacher grade selectors expose only class, section and subject combinations in scoped assignments', async () => {
+  const assignments = [
+    { class_id: 1, class_name: 'الأول', section_id: 11, section_name: 'أ', subject_id: 101, subject_name: 'الحاسوب' },
+    { class_id: 1, class_name: 'الأول', section_id: 11, section_name: 'أ', subject_id: 101, subject_name: 'الحاسوب' },
+    { class_id: 1, class_name: 'الأول', section_id: 12, section_name: 'ب', subject_id: 102, subject_name: 'الرياضيات' },
+    { class_id: 2, class_name: 'الثاني', section_id: 21, section_name: 'أ', subject_id: 201, subject_name: 'الفيزياء' },
+  ];
+
+  assert.deepEqual(teacherGradeClassOptions(assignments), [
+    { id: 1, name: 'الأول' },
+    { id: 2, name: 'الثاني' },
+  ]);
+  assert.deepEqual(teacherGradeSectionOptions(assignments, 1), [
+    { id: 11, name: 'أ' },
+    { id: 12, name: 'ب' },
+  ]);
+  assert.deepEqual(teacherGradeSubjectOptions(assignments, 1, 11), [
+    { id: 101, name: 'الحاسوب' },
+  ]);
+  assert.deepEqual(teacherGradeSubjectOptions(assignments, 1, 12), [
+    { id: 102, name: 'الرياضيات' },
+  ]);
+  assert.deepEqual(teacherGradeSubjectOptions(assignments, 2, 11), []);
+
+  const page = await readFile(new URL('../src/modules/grades/GradesPage.tsx', import.meta.url), 'utf8');
+  assert.match(page, /userRole=\{user\?\.role_key\}/);
+  assert.match(page, /if \(isTeacher\) void loadTeacherScope\(\)/);
+  assert.match(page, /getStudentSubjects\(schoolId, null, null, null, null, true\)/);
+  assert.match(page, /teacherGradeSubjectOptions\(teacherScopeAssignments, selectedClassId, selectedSectionId\)/);
+});
 
 test('grade presentation maps only an individual exemption to معفو', () => {
   assert.equal(displayGradeStatus('ناجح', 1), 'معفو');
