@@ -1,79 +1,95 @@
-# نظام المدرسة الذكي — Smart School System
+# نظام المدرسة الذكي — Smart School
 
-## Project Overview
-- **Name**: نظام المدرسة الذكي
-- **Goal**: Multi-school SaaS platform for school management with Arabic RTL UI
-- **Features**: Schools, Users, Roles & Permissions, Students, Classes, Sections, Subjects, Student Subjects, Grades & Academic Calculations, Analytics, Result Cards with QR Verification, Fees & Receipts with QR Verification, Treasury, Employees & Salaries
-- **Language**: Arabic (RTL)
-- **Phase**: 10 — Production Readiness
+منصة عربية متعددة المدارس لإدارة الطلبة والتسجيلات والمواد والدرجات وكشوف النتائج والجداول والرسوم والإيصالات والخزنة والموظفين والرواتب.
 
-## URLs
-- **Production**: https://your-project.pages.dev
-- **GitHub**: https://github.com/username/webapp
+## الحالة الحالية
 
-## Data Architecture
-- **Data Models**: Schools, Users, Roles, Permissions, Academic Years, Classes, Sections, Students, Subjects, Student Subjects, Grades, Grade Settings, Result Cards, Student Fees, Fee Payments, Fee Receipts, Treasury Transactions, Daily Closings, Employees, Salaries
-- **Storage Services**: Cloudflare D1 (SQLite)
-- **Data Flow**: React frontend → Hono API → D1 Database
+- Phase 20A1 الخاصة بسلامة الأقساط والدفعات والإيصالات مكتملة ومندمجة وموثقة.
+- فرع التثبيت اللاحق للتدقيق يضيف عزل وصول ولي الأمر والمدرس، ذرّية الدرجات والرواتب والخزنة، سلامة الإقفال اليومي، وتبسيط الواجهة.
+- الترحيلات الجديدة `0029`–`0031` مختبرة محليًا فقط إلى أن تمر مراجعة الـPR وخطة ترحيل STAGING منفصلة.
+- لا تُعد النسخة جاهزة لـProduction بمجرد نجاح الاختبارات المحلية؛ يلزم QA بصري موثّق، نسخة احتياطية حقيقية، وترحيل STAGING قبل قرار الإصدار.
 
-## Tech Stack
-- **Frontend**: React 19 + Vite + TailwindCSS + Lucide React + QRCode.react
-- **Backend**: Hono (Cloudflare Pages Worker)
-- **Database**: Cloudflare D1 (SQLite-compatible)
-- **Auth**: JWT Bearer Token via Web Crypto API (HMAC-SHA-256)
-- **Password Hash**: Versioned PBKDF2-HMAC-SHA256 (210,000 iterations, random salt per password); legacy SHA-256 hashes migrate on successful login
-- **Deploy**: Cloudflare Pages via Wrangler
+## البنية التقنية
 
-## Completed Phases
-- **Phase 1**: Auth, Schools, Users, Roles & Permissions
-- **Phase 2**: Students, Classes, Sections, Subjects, Student Subjects
-- **Phase 3**: Student Subjects assignment workflow
-- **Phase 4**: Grades & Academic Calculations
-- **Phase 5**: Analytics Dashboard
-- **Phase 6**: Result Cards with QR Verification
-- **Phase 7**: Student Fees & Financial Receipts with QR Verification
-- **Phase 8**: Treasury Module (daily closings, compensating rollback)
-- **Phase 9**: Employees & Salaries Module
-- **Phase 10**: Production Readiness, Deployment, Demo Data, Documentation
+| الطبقة | التقنية |
+|---|---|
+| الواجهة | React 19، React Router، Tailwind CSS، Vite |
+| الـAPI | Hono على Cloudflare Pages/Workers |
+| قاعدة البيانات | Cloudflare D1 (SQLite-compatible) |
+| المصادقة | JWT مع PBKDF2-HMAC-SHA256 لكلمات المرور |
+| اللغة | العربية واتجاه RTL |
 
-## Quick Start (Local Development)
+تدفق البيانات: `React → Hono API → D1`.
+
+## التشغيل المحلي
+
+المتطلبات: Node.js 24 أو أحدث وnpm.
 
 ```bash
-# 1. Reset local D1 and seed
-cd /home/user/webapp
-npm run db:reset
-
-# 2. Start dev server
-npm run dev
-
-# 3. Open http://localhost:5173
+git clone https://github.com/smartschoolduhok/smart-school.git
+cd smart-school
+npm ci
 ```
 
-## Demo Login Credentials
+أنشئ ملف `.dev.vars` غير متعقب:
 
-> Local development and QA only. Never seed these demo accounts or reuse these passwords in production.
+```dotenv
+JWT_SECRET=<random-value-at-least-32-characters>
+APP_ENV=development
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+```
 
-| Role | Email | Password |
-|------|-------|----------|
-| System Admin | admin@smart-school.iq | admin123 |
-| Principal (مدرسة النخبة) | principal@nukhba.iq | school123 |
-| Teacher (مدرسة النخبة) | teacher@nukhba.iq | teacher123 |
-| Owner (مدرسة الرافدين) | owner@rafidain.iq | owner123 |
-| Accountant (مدرسة الرافدين) | accountant@rafidain.iq | accountant123 |
-| Registrar (inactive) | registrar@eman.iq | registrar123 |
+ثم جهّز قاعدة محلية وشغّل التطبيق:
 
-## Public Verification Routes (No Login Required)
-- Result Card: `/verify/result-card/:token`
-- Receipt: `/verify/receipt/:token`
-- Official Book: `/verify/official-book/:token`
+```bash
+npm run db:migrate
+npm run db:seed
+npm run dev
+```
 
-## Deployment
-- **Platform**: Cloudflare Pages
-- **Status**: Production Ready
-- **Last Updated**: 2026-05-27
+`db:migrate` و`db:seed` يستخدمان `--local` صراحةً. أمر `db:reset` يحذف فقط حالة D1 المحلية داخل المشروع ثم يعيد الترحيلات والـseed. لا تستخدم `seed.sql` على STAGING أو Production.
 
-## Documentation
-- See `DEPLOYMENT.md` for full deployment steps
-- See `ENVIRONMENT.md` for environment variables and secrets
-- See `DEMO_CHECKLIST.md` for demo walkthrough
-- See `PROJECT_HANDOFF.md` for technical handoff
+## حسابات البيانات التجريبية
+
+هذه الحسابات للـLocal QA فقط، وموجودة داخل `seed.sql`. لا تُنشأ ولا تُستخدم في Production.
+
+| الدور | البريد | كلمة المرور |
+|---|---|---|
+| مدير النظام | `admin@smart-school.iq` | `admin123` |
+| مدير مدرسة | `principal@nukhba.iq` | `school123` |
+| مدرس | `teacher@nukhba.iq` | `teacher123` |
+| مالك مدرسة | `owner@rafidain.iq` | `owner123` |
+| محاسب | `accountant@rafidain.iq` | `accountant123` |
+
+## فحوصات الجودة
+
+```bash
+npm run typecheck
+npm run test:regressions
+npm run test:finance-seed:local
+npm run test:backup-restore:local
+npm run build
+npm audit --audit-level=low
+```
+
+نفس البوابات الأساسية تعمل آليًا في `.github/workflows/quality.yml` لكل Pull Request ولكل push إلى `main`.
+
+## مسارات التحقق العامة
+
+- `/verify/result-card/:token`
+- `/verify/receipt/:token`
+- `/verify/official-book/:token`
+
+باقي بيانات المدرسة محمية بالمصادقة والدور والمدرسة، كما أن وصول المدرس وولي الأمر مقيد بالموارد المرتبطة بهما.
+
+## أمان البيئات
+
+ملف `wrangler.jsonc` المتعقب يعرّف بيئة **STAGING**. الأوامر المحلية لا تصل إلى D1 البعيدة ما لم يُضف `--remote` صراحةً. إعداد Production يجب أن يكون منفصلًا ومحميًا وغير مخلوط بإعداد STAGING.
+
+راجع:
+
+- `ENVIRONMENT.md` للمتغيرات وحدود البيئات.
+- `DEPLOYMENT.md` للإصدار والترحيل الآمن.
+- `TESTING_CHECKLIST.md` لاختبار القبول اليدوي الحالي.
+- `PROJECT_HANDOFF.md` لخريطة النظام وتسليم التطوير.
+- `docs/POST_AUDIT_STABILIZATION_REPORT.md` لنتيجة دفعات ما بعد التدقيق.

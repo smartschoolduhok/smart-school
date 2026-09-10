@@ -30,6 +30,24 @@ export const ACADEMIC_ACCESS_ROLES: readonly RoleKey[] = [
   'registrar',
 ];
 
+// Parents use resource-scoped student/grade routes. Accountants receive only
+// the student directory fields required by finance workflows.
+export const STUDENT_DIRECTORY_ROLES: readonly RoleKey[] = [
+  ...ACADEMIC_ACCESS_ROLES,
+  'accountant',
+  'parent',
+];
+
+export const STUDENT_RESOURCE_VIEW_ROLES: readonly RoleKey[] = [
+  ...ACADEMIC_ACCESS_ROLES,
+  'parent',
+];
+
+export const GRADE_VIEW_ROLES: readonly RoleKey[] = [
+  ...ACADEMIC_ACCESS_ROLES,
+  'parent',
+];
+
 export const ACADEMIC_MANAGEMENT_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,
   'registrar',
@@ -60,10 +78,10 @@ export const FINANCE_ACCESS_ROLES: readonly RoleKey[] = [
 // Fee management is a finance responsibility; registrars are intentionally excluded.
 export const FEE_MANAGEMENT_ROLES: readonly RoleKey[] = FINANCE_ACCESS_ROLES;
 
-export const ANALYTICS_ACCESS_ROLES: readonly RoleKey[] = [
-  ...ACADEMIC_ACCESS_ROLES,
-  'accountant',
-];
+// Dashboard counts contain no student grades or academic analysis.
+export const DASHBOARD_ACCESS_ROLES: readonly RoleKey[] = [...ACADEMIC_ACCESS_ROLES, 'accountant'];
+
+export const ANALYTICS_ACCESS_ROLES: readonly RoleKey[] = ACADEMIC_ACCESS_ROLES;
 
 // Accountants need the employee roster for salary workflows, but not record mutation rights.
 export const EMPLOYEE_ACCESS_ROLES: readonly RoleKey[] = [

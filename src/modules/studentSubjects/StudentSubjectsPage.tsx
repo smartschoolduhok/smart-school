@@ -9,6 +9,7 @@ import {
   deactivateStudentSubject, reactivateStudentSubject, bulkDeactivateStudentSubject
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { formatBusinessUnixDate } from '../../lib/businessTime';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import {
   RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
@@ -32,7 +33,7 @@ interface AssignmentRecord {
   class_id: number;
   section_id: number | null;
   is_active: number;
-  assigned_at: string;
+  assigned_at: number | string;
   removed_at: string | null;
   notes: string | null;
   student_name?: string;
@@ -445,7 +446,7 @@ export default function StudentSubjectsPage() {
                             {a.is_active === 1 ? 'نشط' : 'غير نشط'}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-500">{a.assigned_at ? toArabicDigits(new Date(a.assigned_at).toLocaleDateString('ar-IQ')) : '—'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-500">{toArabicDigits(formatBusinessUnixDate(a.assigned_at))}</td>
                         <td className="px-4 py-3">
                           {canManageSelectedSchool && a.is_active === 1 && (
                             <button onClick={() => handleDeactivate(a.id)} className="px-2 py-1 text-xs bg-red-50 text-red-700 border border-red-200 rounded hover:bg-red-100 transition-colors">إلغاء التعيين</button>

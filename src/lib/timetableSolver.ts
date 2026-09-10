@@ -606,6 +606,40 @@ function scoreProposal(input: {
   const constraintsByTeacher = new Map(input.constraints.map((item) => [Number(item.employee_id), item]));
   const activeDays = activeTimetableDays(input.days);
   const activeDayNumbers = activeDays.map((day) => Number(day.day_of_week));
+  const preferredTeacherIds = new Set(input.availability
+    .filter((item) => item.status === 'preferred')
+    .map((item) => Number(item.employee_id)));
+  const lessonSlotsByDay = new Map<number, TimetableSlot[]>();
+  for (const slot of input.slots) {
+    if (slot.slot_type !== 'lesson' || Number(slot.is_active) !== 1) continue;
+    const day = Number(slot.day_of_week);
+    const daySlots = lessonSlotsByDay.get(day) || [];
+    daySlots.push(slot);
+    lessonSlotsByDay.set(day, daySlots);
+  }
+  const slotPositionsByDay = new Map<number, Map<number, number>>();
+  for (const [day, daySlots] of lessonSlotsByDay) {
+    daySlots.sort((left, right) => left.start_time.localeCompare(right.start_time) || left.slot_index - right.slot_index || left.id - right.id);
+    slotPositionsByDay.set(day, new Map(daySlots.map((slot, index) => [Number(slot.id), index])));
+  }
+  const entriesByTeacher = new Map<number, InternalEntry[]>();
+  const placementDayCounts = new Map<string, Map<number, number>>();
+  for (const entry of input.entries) {
+    const load = loadsById.get(Number(entry.teaching_load_id));
+    const slot = slotsById.get(Number(entry.slot_id));
+    if (!load || !slot) continue;
+    if (load.employee_id != null) {
+      const teacherId = Number(load.employee_id);
+      const teacherEntries = entriesByTeacher.get(teacherId) || [];
+      teacherEntries.push(entry);
+      entriesByTeacher.set(teacherId, teacherEntries);
+    }
+    const placement = `${Number(load.class_id)}:${load.section_id == null ? 'none' : Number(load.section_id)}`;
+    const counts = placementDayCounts.get(placement) || new Map<number, number>();
+    const day = Number(slot.day_of_week);
+    counts.set(day, (counts.get(day) || 0) + 1);
+    placementDayCounts.set(placement, counts);
+  }
   let preferredSlotsUsed = 0;
 
   for (const entry of input.entries) {
@@ -614,15 +648,10 @@ function scoreProposal(input: {
     const slot = slotsById.get(Number(entry.slot_id));
     if (!load || !slot || load.employee_id == null) continue;
     const status = availabilityByTeacherSlot.get(`${Number(load.employee_id)}:${Number(slot.id)}`);
-    const preferredExists = input.availability.some((item) => (
-      Number(item.employee_id) === Number(load.employee_id) && item.status === 'preferred'
-    ));
     if (status === 'avoid') penalties.avoid_slots += 5;
     if (status === 'preferred') preferredSlotsUsed += 1;
-    else if (preferredExists) penalties.outside_preferred_slots += 2;
-    const daySlots = input.slots
-      .filter((item) => Number(item.day_of_week) === Number(slot.day_of_week) && item.slot_type === 'lesson' && Number(item.is_active) === 1)
-      .sort((left, right) => left.start_time.localeCompare(right.start_time) || left.slot_index - right.slot_index || left.id - right.id);
+    else if (preferredTeacherIds.has(Number(load.employee_id))) penalties.outside_preferred_slots += 2;
+    const daySlots = lessonSlotsByDay.get(Number(slot.day_of_week)) || [];
     const constraint = constraintsByTeacher.get(Number(load.employee_id));
     if (constraint?.avoid_first_period === 1 && Number(daySlots[0]?.id) === Number(slot.id)) penalties.first_period_preferences += 2;
     if (constraint?.avoid_last_period === 1 && Number(daySlots[daySlots.length - 1]?.id) === Number(slot.id)) penalties.last_period_preferences += 2;
@@ -656,14 +685,12 @@ function scoreProposal(input: {
   const teacherIds = new Set(input.loads.filter((load) => load.employee_id != null).map((load) => Number(load.employee_id)));
   for (const teacherId of teacherIds) {
     safetyCheck?.();
-    const teacherEntries = input.entries.filter((entry) => Number(loadsById.get(Number(entry.teaching_load_id))?.employee_id) === teacherId);
+    const teacherEntries = entriesByTeacher.get(teacherId) || [];
     for (const dayOfWeek of activeDayNumbers) {
-      const daySlots = input.slots
-        .filter((slot) => Number(slot.day_of_week) === dayOfWeek && slot.slot_type === 'lesson' && Number(slot.is_active) === 1)
-        .sort((left, right) => left.start_time.localeCompare(right.start_time) || left.slot_index - right.slot_index || left.id - right.id);
+      const slotPositions = slotPositionsByDay.get(dayOfWeek) || new Map<number, number>();
       const occupied = teacherEntries
-        .map((entry) => daySlots.findIndex((slot) => Number(slot.id) === Number(entry.slot_id)))
-        .filter((position) => position >= 0)
+        .map((entry) => slotPositions.get(Number(entry.slot_id)))
+        .filter((position): position is number => position != null)
         .sort((left, right) => left - right);
       if (occupied.length < 2) continue;
       const occupiedSet = new Set(occupied);
@@ -679,13 +706,8 @@ function scoreProposal(input: {
   const placements = new Set(input.loads.map((load) => `${Number(load.class_id)}:${load.section_id == null ? 'none' : Number(load.section_id)}`));
   for (const placement of placements) {
     safetyCheck?.();
-    const dailyCounts = activeDayNumbers.map((dayOfWeek) => input.entries.filter((entry) => {
-      const load = loadsById.get(Number(entry.teaching_load_id));
-      const slot = slotsById.get(Number(entry.slot_id));
-      return load != null && slot != null
-        && `${Number(load.class_id)}:${load.section_id == null ? 'none' : Number(load.section_id)}` === placement
-        && Number(slot.day_of_week) === dayOfWeek;
-    }).length);
+    const counts = placementDayCounts.get(placement);
+    const dailyCounts = activeDayNumbers.map((dayOfWeek) => counts?.get(dayOfWeek) || 0);
     if (dailyCounts.length > 0) penalties.class_daily_imbalance += Math.max(...dailyCounts) - Math.min(...dailyCounts);
   }
 
@@ -828,8 +850,28 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
     Number(entry.teaching_load_id),
     (fixedCountByLoad.get(Number(entry.teaching_load_id)) || 0) + 1,
   );
+  const individualSearchCapacity = (load: TimetableTeachingLoad): number => {
+    const availableSlots = scheduleSlots.filter((slot) => (
+      load.employee_id == null
+      || availabilityByTeacherSlot.get(`${Number(load.employee_id)}:${Number(slot.id)}`) !== 'unavailable'
+    ));
+    if (load.employee_id == null) return availableSlots.length;
+    const constraint = constraintsByTeacher.get(Number(load.employee_id));
+    if (!constraint?.max_periods_per_day && !constraint?.max_working_days) return availableSlots.length;
+    const capacityByDay = activeDays.map((day) => {
+      const count = availableSlots.filter((slot) => Number(slot.day_of_week) === Number(day.day_of_week)).length;
+      return constraint.max_periods_per_day == null ? count : Math.min(count, Number(constraint.max_periods_per_day));
+    }).sort((left, right) => right - left);
+    const workingDays = constraint.max_working_days == null
+      ? capacityByDay.length
+      : Math.min(capacityByDay.length, Number(constraint.max_working_days));
+    return capacityByDay.slice(0, workingDays).reduce((sum, count) => sum + count, 0);
+  };
   const demandUnits = orderedLoads.flatMap((load) => Array.from(
-    { length: Math.max(0, Number(load.weekly_periods) - (fixedCountByLoad.get(Number(load.id)) || 0)) },
+    { length: Math.min(
+      Math.max(0, Number(load.weekly_periods) - (fixedCountByLoad.get(Number(load.id)) || 0)),
+      Math.max(0, individualSearchCapacity(load) - (fixedCountByLoad.get(Number(load.id)) || 0)),
+    ) },
     (_, occurrence) => ({ load, occurrence }),
   ));
 

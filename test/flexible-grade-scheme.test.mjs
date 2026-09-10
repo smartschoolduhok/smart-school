@@ -723,7 +723,10 @@ test('single-grade PUT recalculates and returns the complete tenant-scoped row w
     assert.match(route, new RegExp(`updates\\.${field} = derived\\.${field}`), field);
   }
   assert.match(route, /INSERT INTO grade_change_logs/);
-  assert.match(route, /SELECT \* FROM grades WHERE id = \? AND school_id = \?/);
+  assert.match(route, /revision = revision \+ 1/);
+  assert.match(route, /WHERE id = \? AND school_id = \? AND revision = \?/);
+  assert.match(route, /RETURNING \*/);
+  assert.match(route, /db\.batch<any>\(\[\.\.\.auditStatements, updateStatement\]\)/);
   assert.match(route, /return c\.json\(\{ data: updated \}\)/);
 });
 

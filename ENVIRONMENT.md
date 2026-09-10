@@ -1,71 +1,80 @@
-# ENVIRONMENT.md — Smart School System
+# بيئات Smart School ومتغيراتها
 
-## Required Environment Variables
+## قاعدة الأمان
+
+`wrangler.jsonc` الموجود في المستودع مرتبط بـ **STAGING**:
+
+| الحقل | القيمة المتعقبة |
+|---|---|
+| Pages project | `smart-school-staging` |
+| D1 binding | `DB` |
+| D1 database | `smart-school-staging-db` |
+
+وجود هذا الربط لا يعني أن أوامر التطوير تصل إلى STAGING. أوامر `db:migrate` و`db:seed` تستخدم `--local` صراحةً. لا يصل Wrangler إلى القاعدة البعيدة إلا بأمر صريح يحتوي `--remote`.
+
+Production يحتاج إعدادًا منفصلًا ومحميًا؛ لا تستبدل بيانات STAGING داخل الملف المتعقب ولا تضع أسرارًا فيه.
+
+## المتغيرات المطلوبة
 
 ### `JWT_SECRET`
-- **Required**: Yes; authentication fails closed when missing or unsafe.
-- **Type**: High-entropy string, at least 32 characters.
-- **Purpose**: Signing key for eight-hour HS256 JWT sessions.
-- **Default**: None.
-- **Set locally**: Create an untracked `.dev.vars` file.
-- **Set in production**: `npx wrangler pages secret put JWT_SECRET`.
-- Never put the real value in `wrangler.jsonc`, documentation, or source control.
 
-### `ALLOWED_ORIGINS`
-- **Required for cross-origin browser deployments**: Yes.
-- **Type**: Comma-separated HTTP(S) origins without paths.
-- **Example**: `https://school.example,https://admin.school.example`.
-- Same-origin requests do not require this variable.
+- مفتاح عالي العشوائية بطول 32 حرفًا على الأقل.
+- لا توجد قيمة افتراضية؛ المصادقة تفشل بشكل مغلق إن كان مفقودًا أو ضعيفًا.
+- جلسة JWT صالحة لثماني ساعات وتحتوي `jti` قابلًا للإلغاء.
+- محليًا: يوضع في `.dev.vars` غير المتعقب.
+- في Cloudflare: يوضع كـSecret في البيئة المقصودة، وليس في الكود أو Git.
 
 ### `APP_ENV`
-- Set to `production` in Cloudflare.
-- Values `development`, `test`, and `local` additionally allow the explicit localhost origins used by local development.
 
-## Optional / Configurable
+- محليًا: `development` أو `local`.
+- STAGING: `staging`.
+- Production: `production`.
 
-### `DATABASE_NAME`
-- Currently hardcoded in `wrangler.jsonc` as `smart-school-db`.
-- Change it in both `wrangler.jsonc` and package scripts if renamed.
+### `ALLOWED_ORIGINS`
 
-## Local Development Files
+- قائمة origins كاملة مفصولة بفواصل، بلا مسارات.
+- مطلوبة عندما تكون الواجهة والـAPI على origins مختلفة.
+- الطلبات same-origin لا تحتاجها.
+- لا تستخدم `*` مع بيانات اعتماد أو في بيئة حقيقية.
 
-### `.dev.vars`
-Not committed to git. Create locally with your own values:
+مثال محلي في `.dev.vars`:
 
-`JWT_SECRET=<generate-a-random-value-of-at-least-32-characters>`
-`APP_ENV=development`
-`ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000`
+```dotenv
+JWT_SECRET=<generate-a-random-value-of-at-least-32-characters>
+APP_ENV=development
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000
+```
 
-Obvious placeholders are rejected, so replace the example value before starting the worker.
+## ملفات محلية لا تُرفع إلى Git
 
-### `.wrangler/state/v3/d1/`
-Auto-generated local SQLite database. It can be recreated by applying migrations and the local demo seed.
-
-## Files That MUST NOT Be Committed
-
-- `node_modules/`
-- `.wrangler/`
 - `.dev.vars`
+- `.wrangler/`
+- `node_modules/`
 - `dist/`
-- logs, backups, and editor state
+- نسخ D1 وملفات SQL المصدّرة والسجلات التي قد تحتوي بيانات تشغيلية
 
-## Production Checklist
+## حدود الأوامر
 
-- [ ] `JWT_SECRET` set with `wrangler pages secret put`
-- [ ] `APP_ENV=production`
-- [ ] `ALLOWED_ORIGINS` contains only approved origins
-- [ ] `wrangler.jsonc` has the real D1 database ID but no secret
-- [ ] All migrations through `0016_auth_security.sql` applied
-- [ ] `seed.sql` was **not** loaded into the production database
-
-## Database Bindings
-
-| Binding | Service | Database |
+| الأمر | البيئة | مسموح تلقائيًا؟ |
 |---|---|---|
-| `DB` | Cloudflare D1 | `smart-school-db` |
+| `npm run db:migrate` | Local D1 | نعم |
+| `npm run db:seed` | Local D1 | نعم، بيانات تجريبية |
+| `npm run db:reset` | Local D1 داخل المشروع | نعم، مع الانتباه أنه يحذف الحالة المحلية |
+| `npm run test:backup-restore:local` | قاعدتان محليتان مؤقتتان | نعم |
+| Wrangler مع `--remote` | STAGING/Production حسب config | لا؛ يحتاج خطة وترخيصًا صريحًا |
+| تشغيل `seed.sql` مع `--remote` | أي قاعدة بعيدة | ممنوع |
 
-No KV or R2 bindings are currently used.
+## قائمة ما قبل أي إصدار بعيد
 
-## CORS behavior
+- [ ] تحديد البيئة بالاسم وعدم الاعتماد على الافتراض.
+- [ ] نسخة احتياطية قابلة للاستعادة ومؤرخة قبل الترحيل.
+- [ ] مراجعة قائمة الترحيلات غير المطبقة ونتيجة preflight للبيانات.
+- [ ] ضبط `JWT_SECRET` و`APP_ENV` و`ALLOWED_ORIGINS` في البيئة الصحيحة.
+- [ ] تطبيق الترحيلات على STAGING أولًا ومراجعة readiness وforeign keys.
+- [ ] تنفيذ QA يدوي بحسابات الأدوار الحقيقية.
+- [ ] قرار مستقل ومكتوب قبل Production.
+- [ ] عدم تشغيل seed/reset على STAGING أو Production.
 
-The worker uses an explicit origin policy. Approved origins receive their exact origin in `Access-Control-Allow-Origin`; unknown origins receive 403 without a permissive CORS header. Wildcard origins and credentialed CORS are not combined.
+## قاعدة البيانات والترحيلات
+
+يحتوي المستودع حاليًا 32 ملف migration مرتبة حتى `0031_treasury_payroll_integrity.sql`. لا تفترض أن نجاح Local يعني أنها مطبقة عن بعد؛ سجل D1 في كل بيئة هو المصدر الفعلي لحالة الترحيل.

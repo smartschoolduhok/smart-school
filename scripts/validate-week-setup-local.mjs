@@ -39,7 +39,7 @@ const proxy=await getPlatformProxy({configPath,persist:{path:join(state,'v3')},r
 const evidence=[];let schemaCount=0;
 try{
  const db=proxy.env.DB;
- assert.equal((await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,28);
+ assert.equal((await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,migrationFiles.length);
  assert.equal((await db.prepare('PRAGMA foreign_keys').first()).foreign_keys,1);
  const schema=(await db.prepare("SELECT name,type FROM sqlite_schema WHERE type IN ('trigger','index') ORDER BY name").all()).results;
  const expected=['trg_timetable_slots_validate_insert','trg_timetable_slots_validate_update','trg_timetable_slots_preserve_entries','trg_timetable_slots_preserve_teacher_availability','trg_timetable_revision_assertions_validate_insert','trg_timetable_schedule_versions_immutable_update','trg_timetable_loads_validate_teacher_reassignment'];

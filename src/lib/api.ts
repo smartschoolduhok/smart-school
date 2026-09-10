@@ -5,6 +5,7 @@
 // ===========================================
 
 import type { AcademicYearRecord } from './academicYears';
+import { clearAuthentication, getStoredAuthToken } from './authStorage';
 import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan } from './weekSetup';
 export function getWeekSetup(scope: Required<WeekScope>) {
   return fetchApi<WeekSnapshot>(`/api/timetable/week-setup?${new URLSearchParams({school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id)})}`);
@@ -69,14 +70,8 @@ import type {
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
-function getToken(): string | null {
-  return localStorage.getItem('smart_school_token');
-}
-
 function clearAuthAndRedirect() {
-  localStorage.removeItem('smart_school_token');
-  localStorage.removeItem('smart_school_user');
-  localStorage.removeItem('smart_school_auth');
+  clearAuthentication();
   window.location.href = '/login';
 }
 
@@ -85,21 +80,21 @@ function showError(message: string) {
   alert(message);
 }
 
-async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string; code?: string; status?: number }> {
+export async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string; code?: string; status?: number }> {
   try {
-    const token = getToken();
-    const headers: Record<string, string> = {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-    };
+    const token = getStoredAuthToken();
+    const { headers: optionHeaders, ...requestOptions } = options || {};
+    const headers = new Headers(optionHeaders);
+    if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
     if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+      headers.set('Authorization', `Bearer ${token}`);
     }
 
     const res = await fetch(`${API_BASE}${path}`, {
+      ...requestOptions,
       headers,
-      ...options,
     });
 
     if (res.status === 401) {
@@ -179,6 +174,27 @@ export function updateUserStatus(id: number | string, status: 'active' | 'inacti
 
 export function resetUserPassword(id: number | string, password: string) {
   return fetchApi<Record<string, any>>(`/api/users/${id}/reset-password`, { method: 'PUT', body: JSON.stringify({ password }) });
+}
+
+// Resource-scoped access links for parents and teacher accounts.
+export function getAccessLinks(schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/access-links?school_id=${schoolId}`);
+}
+
+export function linkParentStudent(data: { school_id: number; parent_user_id: number; student_id: number; relationship?: string }) {
+  return fetchApi<Record<string, any>>('/api/access-links/parents', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function unlinkParentStudent(id: number, schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/access-links/parents/${id}?school_id=${schoolId}`, { method: 'DELETE' });
+}
+
+export function linkTeacherEmployee(data: { school_id: number; teacher_user_id: number; employee_id: number }) {
+  return fetchApi<Record<string, any>>('/api/access-links/teachers', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function unlinkTeacherEmployee(id: number, schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/access-links/teachers/${id}?school_id=${schoolId}`, { method: 'DELETE' });
 }
 
 // ===========================================
@@ -1224,7 +1240,7 @@ export function getPrintRecords(filters?: Record<string, any>, schoolId?: number
 export function getTreasuryClosings(schoolId?: number | null) { const qs = schoolId != null ? `?school_id=${schoolId}` : ''; return fetchApi<Array<Record<string, any>>>(`/api/treasury/daily-closings${qs}`); }
 export function closeTreasuryDay(data: Record<string, any>) { return fetchApi<Record<string, any>>('/api/treasury/daily-closings/close-day', { method: 'POST', body: JSON.stringify(data) }); }
 export function getTreasuryDailyReport(schoolId?: number | null, date?: string) { const params = new URLSearchParams(); if (schoolId != null) params.append('school_id', String(schoolId)); if (date != null) params.append('date', date); const qs = params.toString() ? `?${params.toString()}` : ''; return fetchApi<Record<string, any>>(`/api/treasury/reports/daily${qs}`); }
-export function getTreasuryMonthlyReport(schoolId?: number | null, month?: string) { const params = new URLSearchParams(); if (schoolId != null) params.append('school_id', String(schoolId)); if (month != null) params.append('month', month); const qs = params.toString() ? `?${params.toString()}` : ''; return fetchApi<Record<string, any>>(`/api/treasury/reports/monthly${qs}`); }
+export function getTreasuryMonthlyReport(schoolId?: number | null, month?: string, year?: string) { const params = new URLSearchParams(); if (schoolId != null) params.append('school_id', String(schoolId)); if (month != null) params.append('month', month); if (year != null) params.append('year', year); const qs = params.toString() ? `?${params.toString()}` : ''; return fetchApi<Record<string, any>>(`/api/treasury/reports/monthly${qs}`); }
 export function getSchoolSettings(schoolId?: number | null) { const qs = schoolId != null ? `?school_id=${schoolId}` : ''; return fetchApi<{ school: Record<string, any>; settings: Record<string, any> | null }>(`/api/settings/school${qs}`); }
 export function getDocumentSettings(schoolId?: number | null) { const qs = schoolId != null ? `?school_id=${schoolId}` : ''; return fetchApi<Record<string, any>>(`/api/settings/document${qs}`); }
 export function getSystemSettings(schoolId?: number | null) { const qs = schoolId != null ? `?school_id=${schoolId}` : ''; return fetchApi<Record<string, any>>(`/api/settings/system${qs}`); }

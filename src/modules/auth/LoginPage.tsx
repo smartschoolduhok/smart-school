@@ -7,6 +7,8 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [showPasswordHelp, setShowPasswordHelp] = useState(false);
   const [error, setError] = useState('');
   const { login, isLoading } = useAuth();
   const navigate = useNavigate();
@@ -20,11 +22,11 @@ export default function LoginPage() {
       return;
     }
 
-    const success = await login(email, password);
-    if (success) {
+    const result = await login(email.trim(), password, rememberMe);
+    if (result.success) {
       navigate('/');
     } else {
-      setError('البريد الإلكتروني أو كلمة المرور غير صحيحة');
+      setError(result.error || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
     }
   };
 
@@ -50,10 +52,12 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">البريد الإلكتروني</label>
+              <label htmlFor="login-email" className="block text-sm font-medium text-gray-700 mb-2">البريد الإلكتروني</label>
               <div className="relative">
                 <Mail size={18} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
+                  id="login-email"
+                  name="email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -65,10 +69,12 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">كلمة المرور</label>
+              <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-2">كلمة المرور</label>
               <div className="relative">
                 <Lock size={18} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
+                  id="login-password"
+                  name="password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -80,6 +86,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
@@ -88,13 +95,29 @@ export default function LoginPage() {
 
             <div className="flex items-center justify-between text-sm">
               <label className="flex items-center gap-2 text-gray-600 cursor-pointer">
-                <input type="checkbox" className="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={event => setRememberMe(event.target.checked)}
+                  className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                />
                 <span>تذكرني</span>
               </label>
-              <button type="button" className="text-primary-600 hover:text-primary-700 font-medium">
+              <button
+                type="button"
+                onClick={() => setShowPasswordHelp(open => !open)}
+                aria-expanded={showPasswordHelp}
+                className="text-primary-600 hover:text-primary-700 font-medium"
+              >
                 نسيت كلمة المرور؟
               </button>
             </div>
+
+            {showPasswordHelp && (
+              <div role="status" className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm leading-6 text-blue-800">
+                تواصل مع مدير النظام أو إدارة المدرسة لإعادة تعيين كلمة المرور بأمان.
+              </div>
+            )}
 
             <button
               type="submit"

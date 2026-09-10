@@ -54,9 +54,10 @@ function inspect(c){
 const fresh=config('fresh',migrationFiles);
 run(fresh,['d1','migrations','apply','phase19b-local-only']);
 console.log('Fresh local chain applied:',inspect(fresh).count);
-assert.equal(inspect(fresh).count,28);assert.deepEqual(inspect(fresh).fk,[]);
+assert.equal(inspect(fresh).count,migrationFiles.length);assert.deepEqual(inspect(fresh).fk,[]);
 
-const upgrade=config('upgrade',migrationFiles.filter(f=>!f.startsWith('0027')));
+const upgradeFiles=migrationFiles.filter(f=>f.slice(0,4)<='0026');
+const upgrade=config('upgrade',upgradeFiles);
 run(upgrade,['d1','migrations','apply','phase19b-local-only']);
 const fixturePath=join(upgrade.path,'disposable-fixtures.sql');
 writeFileSync(fixturePath,fixtureSQL+`
@@ -67,11 +68,11 @@ INSERT INTO timetable_schedule_versions(id,version_key,school_id,academic_year_i
 INSERT INTO timetable_schedule_version_entries(version_id,school_id,academic_year_id,slot_id,teaching_load_id,is_locked) VALUES(1,1,1,1,1,1),(1,1,1,2,2,0);
 `);
 run(upgrade,['d1','execute','phase19b-local-only','--file',fixturePath]);
-const before=inspect(upgrade);assert.equal(before.count,27);
+const before=inspect(upgrade);assert.equal(before.count,upgradeFiles.length);
 copyFileSync(join(root,'migrations','0027_timetable_safe_teacher_reassignment.sql'),join(upgrade.path,'migrations','0027_timetable_safe_teacher_reassignment.sql'));
 run(upgrade,['d1','migrations','apply','phase19b-local-only']);
 const after=inspect(upgrade);
-assert.equal(after.count,28);assert.deepEqual(after.data,before.data);assert.deepEqual(after.fk,[]);
+assert.equal(after.count,upgradeFiles.length+1);assert.deepEqual(after.data,before.data);assert.deepEqual(after.fk,[]);
 assert.deepEqual(after.schema.filter(s=>s.type==='index'),before.schema.filter(s=>s.type==='index'));
 for(const name of ['trg_timetable_loads_preserve_entries','trg_timetable_loads_validate_teacher_reassignment'])assert.ok(after.schema.some(s=>s.name===name));
 // Exercise both originally blocked transitions on actual local workerd/D1.
@@ -91,7 +92,7 @@ const proxy=await getPlatformProxy({configPath:upgrade.configPath,persist:{path:
 const setBased={};
 try {
  const db=proxy.env.DB;
- assert.equal((await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,28);
+ assert.equal((await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,upgradeFiles.length+1);
  const liveSnapshot=async()=>{
   const {results:tables}=await db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all();
   const rows=await db.batch(tables.map(t=>db.prepare(`SELECT * FROM "${t.name}"`)));
@@ -140,7 +141,7 @@ try {
  assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
  setBased.foreign_key_check=[];
 } finally {await proxy.dispose();}
-const report={directory:resolve(directory),fresh_migrations:28,upgrade_before:27,upgrade_after:28,unchanged_tables:Object.keys(before.data).length,
+const report={directory:resolve(directory),fresh_migrations:migrationFiles.length,upgrade_before:upgradeFiles.length,upgrade_after:upgradeFiles.length+1,unchanged_tables:Object.keys(before.data).length,
  preserved_loads:after.data.timetable_teaching_loads.length,preserved_entries:after.data.timetable_entries.length,preserved_versions:after.data.timetable_schedule_versions.length,
  preserved_locks:after.data.timetable_entries.filter(e=>e.is_locked===1).length,foreign_key_check:after.fk,
  platform_metadata_before:before.platformMetadata,platform_metadata_after:after.platformMetadata,

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { timetableYearBelongsToSchool } from '../src/lib/timetable.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -157,6 +158,15 @@ test('school/year changes clear dependent state and stale responses are rejected
   }
   assert.match(pageSource, /currentScopeRef\.current\.schoolId === expectedSchoolId/);
   assert.ok((pageSource.match(/scopeIsCurrent\(requestSchoolId, requestAcademicYearId\)/g) || []).length >= 5);
+});
+
+test('switching the system-admin school never requests the previous school academic year', () => {
+  const previousSchoolYears = [{ id: 3, school_id: 2 }];
+  assert.equal(timetableYearBelongsToSchool(1, 3, previousSchoolYears), false);
+  assert.equal(timetableYearBelongsToSchool(2, 3, previousSchoolYears), true);
+  assert.equal(timetableYearBelongsToSchool(1, null, previousSchoolYears), false);
+  assert.match(pageSource, /if \(schoolId == null \|\| academicYearId == null \|\| !academicYearMatchesSchool\) return/);
+  assert.match(pageSource, /if \(academicYearMatchesSchool\) void reloadYearData\(\)/);
 });
 
 test('week, load and readiness operations reload all summaries after mutation', () => {

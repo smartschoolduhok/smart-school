@@ -293,7 +293,7 @@ test('enrollment history is ordered by newest academic year first', async () => 
   database.close();
 });
 
-test('history is school-scoped and the route requires explicit system-admin targeting', async () => {
+test('history is school- and resource-scoped with explicit system-admin targeting', async () => {
   const { database, adapter, ids } = createFixture();
   const studentId = insertStudent(database, ids);
   insertEnrollment(database, ids, studentId);
@@ -302,7 +302,8 @@ test('history is school-scoped and the route requires explicit system-admin targ
   const marker = "app.get('/api/students/:id/enrollments'";
   const route = workerSource.slice(workerSource.indexOf(marker), workerSource.indexOf(marker) + 2200);
   assert.match(route, /requireSameSchoolOrAdmin\(\)/);
-  assert.match(route, /requireRoles\(ACADEMIC_ACCESS_ROLES\)/);
+  assert.match(route, /requireRoles\(STUDENT_RESOURCE_VIEW_ROLES\)/);
+  assert.match(route, /canAccessStudentResource\(db, user, id\)/);
   assert.match(route, /resolvedSchoolId == null/);
   assert.match(route, /student\.school_id !== resolvedSchoolId/);
   assert.match(route, /سجل طالب في مدرسة أخرى/);

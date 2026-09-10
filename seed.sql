@@ -360,13 +360,16 @@ INSERT INTO fee_payments (id, school_id, student_fee_id, student_id, amount, pay
 -- Payment triggers have created the account and treasury IDs 1..8. Keep manual
 -- demo identities separate. Construct their opening cache from the exact ledger;
 -- this is local fixture construction, never production reconciliation.
-INSERT INTO treasury_transactions (id, school_id, transaction_type, category, amount, currency, description, source_type, source_id, status, created_by, created_at) VALUES
-  (1001, 1, 'income', 'tuition_fee', 1500000, 'IQD', 'قسط دراسي - الفصل الأول', 'manual', 1001, 'active', 2, unixepoch()),
-  (1002, 1, 'income', 'other_income', 500000, 'IQD', 'تبرع أولياء الأمور', 'manual', 1002, 'active', 2, unixepoch()),
-  (1003, 1, 'expense', 'rent', 600000, 'IQD', 'إيجار المبنى - شهر', 'manual', 1003, 'active', 2, unixepoch()),
-  (1004, 1, 'expense', 'salary', 1200000, 'IQD', 'رواتب الموظفين - شهر', 'manual', 1004, 'active', 2, unixepoch()),
-  (1005, 1, 'expense', 'supplies', 200000, 'IQD', 'مستلزمات مدرسية وقرطاسية', 'manual', 1005, 'active', 2, unixepoch()),
-  (1006, 1, 'expense', 'bills', 150000, 'IQD', 'فاتورة كهرباء وإنترنت', 'manual', 1006, 'active', 2, unixepoch());
+INSERT INTO treasury_transactions
+  (id, school_id, transaction_type, category, amount, currency, description,
+   source_type, source_id, status, created_by, created_at, business_date,
+   client_request_id, request_fingerprint) VALUES
+  (1001, 1, 'income', 'tuition_fee', 1500000, 'IQD', 'قسط دراسي - الفصل الأول', 'manual', NULL, 'active', 2, unixepoch(), date('now', '+3 hours'), 'LOCAL-DEMO-TREASURY-1001', '1001100110011001100110011001100110011001100110011001100110011001'),
+  (1002, 1, 'income', 'other_income', 500000, 'IQD', 'تبرع أولياء الأمور', 'manual', NULL, 'active', 2, unixepoch(), date('now', '+3 hours'), 'LOCAL-DEMO-TREASURY-1002', '1002100210021002100210021002100210021002100210021002100210021002'),
+  (1003, 1, 'expense', 'rent', 600000, 'IQD', 'إيجار المبنى - شهر', 'manual', NULL, 'active', 2, unixepoch(), date('now', '+3 hours'), 'LOCAL-DEMO-TREASURY-1003', '1003100310031003100310031003100310031003100310031003100310031003'),
+  (1004, 1, 'expense', 'salary', 1200000, 'IQD', 'رواتب الموظفين - شهر', 'manual', NULL, 'active', 2, unixepoch(), date('now', '+3 hours'), 'LOCAL-DEMO-TREASURY-1004', '1004100410041004100410041004100410041004100410041004100410041004'),
+  (1005, 1, 'expense', 'supplies', 200000, 'IQD', 'مستلزمات مدرسية وقرطاسية', 'manual', NULL, 'active', 2, unixepoch(), date('now', '+3 hours'), 'LOCAL-DEMO-TREASURY-1005', '1005100510051005100510051005100510051005100510051005100510051005'),
+  (1006, 1, 'expense', 'bills', 150000, 'IQD', 'فاتورة كهرباء وإنترنت', 'manual', NULL, 'active', 2, unixepoch(), date('now', '+3 hours'), 'LOCAL-DEMO-TREASURY-1006', '1006100610061006100610061006100610061006100610061006100610061006');
 UPDATE treasury_accounts SET current_balance=(SELECT SUM(CASE WHEN transaction_type='income' THEN CAST(amount AS INTEGER) ELSE -CAST(amount AS INTEGER) END)
   FROM treasury_transactions WHERE school_id=1 AND currency='IQD' AND status='active') WHERE school_id=1;
 
@@ -385,9 +388,9 @@ INSERT OR IGNORE INTO employees (id, school_id, full_name, employee_number, phon
 -- Demo: Employee Salaries (May 2025)
 -- ============================================
 INSERT OR IGNORE INTO employee_salaries (id, school_id, employee_id, month, year, base_salary, bonus_amount, deduction_amount, net_salary, status, paid_at, paid_by_user_id, treasury_transaction_id, created_by_user_id) VALUES
-  (1, 1, 1, 5, 2025, 1500000, 100000, 0, 1600000, 'paid', unixepoch(), 2, NULL, 2),
-  (2, 1, 2, 5, 2025, 900000, 50000, 0, 950000, 'paid', unixepoch(), 2, NULL, 2),
-  (3, 1, 3, 5, 2025, 850000, 50000, 0, 900000, 'paid', unixepoch(), 2, NULL, 2),
-  (4, 1, 4, 5, 2025, 800000, 0, 0, 800000, 'paid', unixepoch(), 2, NULL, 2),
-  (5, 1, 5, 5, 2025, 700000, 0, 0, 700000, 'paid', unixepoch(), 2, NULL, 2),
-  (6, 1, 6, 5, 2025, 500000, 0, 0, 500000, 'paid', unixepoch(), 2, NULL, 2);
+  (1, 1, 1, 5, 2025, 1500000, 100000, 0, 1600000, 'unpaid', NULL, NULL, NULL, 2),
+  (2, 1, 2, 5, 2025, 900000, 50000, 0, 950000, 'unpaid', NULL, NULL, NULL, 2),
+  (3, 1, 3, 5, 2025, 850000, 50000, 0, 900000, 'unpaid', NULL, NULL, NULL, 2),
+  (4, 1, 4, 5, 2025, 800000, 0, 0, 800000, 'unpaid', NULL, NULL, NULL, 2),
+  (5, 1, 5, 5, 2025, 700000, 0, 0, 700000, 'unpaid', NULL, NULL, NULL, 2),
+  (6, 1, 6, 5, 2025, 500000, 0, 0, 500000, 'unpaid', NULL, NULL, NULL, 2);

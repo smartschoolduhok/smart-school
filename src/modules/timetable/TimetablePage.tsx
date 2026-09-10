@@ -39,6 +39,7 @@ import {
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import {
   TIMETABLE_DAY_NAMES,
+  timetableYearBelongsToSchool,
   type TimetableDay,
   type TimetableReadinessSummary,
   type TimetableSlot,
@@ -56,6 +57,7 @@ import { WeekSetupTab } from './WeekSetupTab';
 import { WEEK_LEAVE_MESSAGE } from '../../lib/weekSetup';
 
 type TabKey = 'grid' | 'master' | 'automatic' | 'versions' | 'week' | 'loads' | 'availability' | 'readiness';
+type WorkflowKey = 'current' | 'setup' | 'history';
 
 interface SubjectOption {
   id: number;
@@ -159,6 +161,12 @@ export default function TimetablePage() {
     if (matrixDirty.current && !window.confirm(MATRIX_LEAVE_MESSAGE)) return false;
     return !weekDirty.current || window.confirm(WEEK_LEAVE_MESSAGE);
   }
+  function changeTab(nextTab: TabKey) {
+    if (nextTab === tab || allowMatrixLeave()) {
+      setAdvancedLoads(false);
+      setTab(nextTab);
+    }
+  }
   const [years, setYears] = useState<AcademicYearRecord[]>([]);
   const [academicYearId, setAcademicYearId] = useState<number | null>(null);
   const [classes, setClasses] = useState<Class[]>([]);
@@ -180,6 +188,7 @@ export default function TimetablePage() {
   const [success, setSuccess] = useState('');
   const currentScopeRef = useRef({ schoolId, academicYearId });
   currentScopeRef.current = { schoolId, academicYearId };
+  const academicYearMatchesSchool = timetableYearBelongsToSchool(schoolId, academicYearId, years);
 
   function scopeIsCurrent(expectedSchoolId: number, expectedAcademicYearId: number) {
     return currentScopeRef.current.schoolId === expectedSchoolId
@@ -240,7 +249,7 @@ export default function TimetablePage() {
   }, [captureSchoolRequest, schoolId]);
 
   const reloadYearData = useCallback(async () => {
-    if (schoolId == null || academicYearId == null) return;
+    if (schoolId == null || academicYearId == null || !academicYearMatchesSchool) return;
     const requestGeneration = ++requestGenerationRef.current;
     const isCurrentSchool = captureSchoolRequest();
     setLoading(true);
@@ -264,7 +273,7 @@ export default function TimetablePage() {
     setReadiness(responses[3].data || null);
     setYearDataVersion((value) => value + 1);
     setLoading(false);
-  }, [academicYearId, captureSchoolRequest, schoolId]);
+  }, [academicYearId, academicYearMatchesSchool, captureSchoolRequest, schoolId]);
 
   useEffect(() => {
     requestGenerationRef.current += 1;
@@ -278,8 +287,8 @@ export default function TimetablePage() {
     setSlotForm(null);
     setLoadForm(EMPTY_LOAD);
     setSaving(false);
-    if (academicYearId != null) void reloadYearData();
-  }, [academicYearId, reloadYearData]);
+    if (academicYearMatchesSchool) void reloadYearData();
+  }, [academicYearMatchesSchool, reloadYearData]);
 
   const activeSections = useMemo(
     () => sections.filter((section) => selectedClassId != null && Number(section.class_id) === selectedClassId),
@@ -441,6 +450,31 @@ export default function TimetablePage() {
     await reloadYearData();
   }
 
+  const currentTabs = [
+    ['grid', 'الجدول الأسبوعي', CalendarDays],
+    ['master', 'الجدول الكامل', LayoutGrid],
+  ] as const;
+  const setupTabs = [
+    ['week', 'إعداد الأسبوع', Clock3],
+    ['loads', 'نصاب المواد والمدرسين', BookOpenCheck],
+    ['availability', 'توفر المدرسين والقيود', UserRoundCheck],
+    ['readiness', 'التحقق من الجاهزية', CheckCircle2],
+    ['automatic', 'التوليد التلقائي', Sparkles],
+  ] as const;
+  const historyTabs = [
+    ['versions', 'إصدارات الجدول', History],
+  ] as const;
+  const activeWorkflow: WorkflowKey = tab === 'versions'
+    ? 'history'
+    : tab === 'grid' || tab === 'master'
+      ? 'current'
+      : 'setup';
+  const contextualTabs = activeWorkflow === 'current'
+    ? currentTabs
+    : activeWorkflow === 'setup'
+      ? setupTabs
+      : historyTabs;
+
   return (
     <div className="space-y-6" dir="rtl">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -479,21 +513,43 @@ export default function TimetablePage() {
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-center text-amber-800">اختر سنة دراسية لعرض إعدادات الجدول.</div>
           ) : (
             <>
-              <div className="flex flex-wrap gap-2 border-b border-gray-200">
-                {([
-                  ['grid', 'الجدول الأسبوعي', CalendarDays],
-                  ['master', 'الجدول الكامل', LayoutGrid],
-                  ['automatic', 'التوليد التلقائي', Sparkles],
-                  ['versions', 'إصدارات الجدول', History],
-                  ['week', 'إعداد الأسبوع', Clock3],
-                  ['loads', 'نصاب المواد والمدرسين', BookOpenCheck],
-                  ['availability', 'توفر المدرسين والقيود', UserRoundCheck],
-                  ['readiness', 'التحقق من الجاهزية', CheckCircle2],
-                ] as const).map(([key, label, Icon]) => (
-                  <button key={key} onClick={() => { if (key === tab || allowMatrixLeave()) setTab(key); }} className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold ${tab === key ? 'border-primary-600 text-primary-700' : 'border-transparent text-gray-500 hover:text-gray-800'}`}>
-                    <Icon size={18} />{label}
-                  </button>
-                ))}
+              <div className="rounded-xl border border-gray-200 bg-white p-3">
+                <div className="grid gap-2 sm:grid-cols-3" aria-label="مراحل عمل الجدول">
+                  {([
+                    ['current', 'الجدول الحالي', CalendarDays, 'grid'],
+                    ['setup', 'إعداد وتوليد', Sparkles, 'week'],
+                    ['history', 'السجل والإصدارات', History, 'versions'],
+                  ] as const).map(([workflow, label, Icon, defaultTab]) => (
+                    <button
+                      type="button"
+                      key={workflow}
+                      onClick={() => { if (workflow !== activeWorkflow) changeTab(defaultTab); }}
+                      className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold ${activeWorkflow === workflow ? 'bg-primary-600 text-white shadow-sm' : 'bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+                    >
+                      <Icon size={18} />{label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-800">
+                      {activeWorkflow === 'current' ? 'عرض الجدول المعتمد وتحريره' : activeWorkflow === 'setup' ? 'أكمل الإعدادات بالترتيب ثم افحص الجاهزية وولّد المعاينة' : 'مراجعة الإصدارات السابقة واستعادتها للمخولين'}
+                    </p>
+                    {activeWorkflow === 'setup' && <p className="mt-0.5 text-xs text-gray-500">الأسبوع ← النصاب ← توفر المدرسين ← الجاهزية ← التوليد</p>}
+                  </div>
+                  {contextualTabs.length > 1 && (
+                    <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                      الخطوة
+                      <select
+                        value={tab}
+                        onChange={(event) => changeTab(event.target.value as TabKey)}
+                        className="min-w-56 rounded-lg border border-gray-300 bg-white px-3 py-2"
+                      >
+                        {contextualTabs.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                      </select>
+                    </label>
+                  )}
+                </div>
               </div>
 
               {loading && <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-500">جاري تحميل إعدادات الجدول...</div>}

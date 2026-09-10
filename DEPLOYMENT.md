@@ -1,144 +1,142 @@
-# DEPLOYMENT.md — Smart School System
+# نشر وترحيل Smart School
 
-## Prerequisites
-- Node.js 20+ and npm
-- Cloudflare account with Pages & D1 enabled
-- Wrangler CLI authenticated (`npx wrangler login`)
+هذا المستند يصف مسارًا آمنًا من Local إلى STAGING ثم Production. لا يعتبر نجاح البناء إذنًا لتطبيق migrations أو نشر Production.
 
-## 1. Cloudflare D1 Setup (Production)
+## المتطلبات
 
-```bash
-# Create production D1 database (one time)
-npx wrangler d1 create smart-school-db
+- Node.js 24 أو أحدث وnpm.
+- حساب Cloudflare وصلاحيات محددة للبيئة المقصودة.
+- Wrangler مصادق عليه للحساب الصحيح.
+- نسخة احتياطية وخطة rollback قبل أي تغيير بعيد.
 
-# Copy the returned database_id into wrangler.jsonc:
-# "database_id": "YOUR-REAL-DATABASE-ID"
-```
+## 1. بوابات Local وCI
 
-**Important**: The `wrangler.jsonc` currently has a placeholder ID:
-```jsonc
-"database_id": "00000000-0000-0000-0000-000000000000"
-```
-Replace with your real production ID before deploying.
-
-## 2. Environment Variables
-
-Create an untracked `.dev.vars` for local development with a generated, non-placeholder secret:
-```
-JWT_SECRET=<random-value-at-least-32-characters>
-APP_ENV=development
-ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-```
-
-Set the production signing key only through Wrangler:
-```bash
-npx wrangler pages secret put JWT_SECRET
-```
-
-Configure `APP_ENV=production` and the comma-separated `ALLOWED_ORIGINS` in the Cloudflare Pages environment. Never put the real signing key in `wrangler.jsonc`.
-
-## 3. Run Migrations (Local)
+من checkout نظيف:
 
 ```bash
-# Clean reset: delete local DB, re-apply migrations, seed data
-npm run db:reset
-
-# Or step by step:
-npm run db:migrate   # Apply all migrations in migrations/
-npm run db:seed      # Run seed.sql demo data
+npm ci
+npm audit --audit-level=low
+npm run typecheck
+npm run test:regressions
+npm run test:finance-seed:local
+npm run test:backup-restore:local
+npm run build
 ```
 
-## 4. Run Migrations (Production)
+لا تتجاوز بوابة فاشلة. GitHub Actions يعيد هذه الفحوصات لكل PR ولكل push إلى `main`.
+
+## 2. تشغيل محلي
 
 ```bash
-# Apply migrations to production D1
-npx wrangler d1 migrations apply smart-school-db
-
-# Never run seed.sql against a production database.
-# It contains documented demo credentials and is for disposable local/demo D1 only.
-```
-
-## 5. Local Development
-
-```bash
-# Option A: Vite dev server (frontend only, no D1)
+npm run db:migrate
+npm run db:seed
 npm run dev
-
-# Option B: Full local Cloudflare Pages (frontend + D1 worker)
-npx wrangler pages dev dist --d1=smart-school-db --local --ip 0.0.0.0 --port 3000
-
-# Option C: Build first, then serve with wrangler
-npm run build
-npx wrangler pages dev dist --d1=smart-school-db --local --ip 0.0.0.0 --port 3000
 ```
 
-## 6. Build for Production
+كل أوامر قاعدة البيانات أعلاه Local فقط. لإعادة إنشائها من الصفر:
+
+```bash
+npm run db:reset
+```
+
+يحذف `db:reset` فقط `.wrangler/state/v3/d1` داخل checkout الحالي، ثم يطبق migrations ويشغّل بيانات العرض. لا تشغّل `seed.sql` على قاعدة بعيدة.
+
+## 3. بناء حزمة الإصدار
 
 ```bash
 npm run build
 ```
 
-This runs:
-1. `vite build` — builds the React SPA frontend into `dist/`
-2. `vite build --config vite.worker.config.ts` — builds the Hono worker into `dist/_worker.js`
+ينتج الأمر:
 
-## 7. Deploy to Cloudflare Pages
+1. واجهة React داخل `dist/`.
+2. Worker API داخل `dist/_worker.js`.
+
+للمعاينة الكاملة محليًا بعد البناء:
 
 ```bash
-# Deploy the dist/ directory
-npx wrangler pages deploy dist
+npm run preview
 ```
 
-Or using the npm script:
+## 4. وضع STAGING الحالي
+
+ملف `wrangler.jsonc` المتعقب خاص بـSTAGING (`smart-school-staging` و`smart-school-staging-db`). لا تستخدمه كإعداد Production.
+
+قبل أي migration بعيد، نفّذ الإجراءات التالية ضمن نافذة تغيير مصرح بها:
+
+1. تحقق من الحساب والمشروع وقاعدة D1 المستهدفة.
+2. راجع `git diff` وSHA المرشح للإصدار.
+3. صدّر نسخة احتياطية مؤرخة وخزّنها في مكان محمي.
+4. نفّذ preflight للبيانات ومقارنة schema/migration history.
+5. اعرض قائمة migrations المنتظرة قبل التطبيق.
+6. طبّقها على STAGING فقط.
+7. تحقق من migration history وforeign keys وreadiness views وسلامة البيانات.
+8. نفّذ QA يدويًا حسب `TESTING_CHECKLIST.md`.
+
+أمثلة الأوامر البعيدة التالية **ليست أوامر تلقائية**؛ شغّلها فقط بعد اعتماد الهدف والنسخة الاحتياطية:
+
+```bash
+npx wrangler d1 migrations list DB --remote --config wrangler.jsonc
+npx wrangler d1 export DB --remote --output <dated-staging-backup.sql> --config wrangler.jsonc
+npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
+```
+
+لنشر الحزمة على مشروع STAGING المتعقب بعد نجاح migration وQA:
+
 ```bash
 npm run deploy
 ```
 
-## 8. Verify Deployment
+## 5. Production
 
-1. Visit `https://<your-project>.pages.dev/login`.
-2. Sign in with a production administrator created through the approved provisioning process. The documented demo credentials are local/demo only.
-3. Check authenticated `/api/auth/me` returns user data and unauthenticated access returns 401.
-4. Verify authenticated `/api/schools` returns the permitted school list.
-5. Test a public verification route with an invalid token; it may return not found but must not return an authentication 401.
-6. Confirm an unapproved `Origin` receives no permissive CORS header.
+Production يحتاج قرار GO مستقلًا وإعداد Wrangler منفصلًا ومراجعًا يشير صراحةً إلى مشروع وقاعدة Production. لا تنسخ `database_id` فوق إعداد STAGING ولا تعتمد على اسم ضمني.
 
-## 9. Migration Files (in order)
+الحد الأدنى قبل Production:
 
-| File | Description |
-|------|-------------|
-| `migrations/0001_initial_schema.sql` | Core tables: schools, users, roles, permissions, modules, academic_years |
-| `migrations/0002_phase2_academic_tables.sql` | Classes, sections, students, subjects |
-| `migrations/0003_student_subjects.sql` | Student subject assignments |
-| `migrations/0004_phase4_grades.sql` | Grades, grade settings, calculations |
-| `migrations/0005_general_exemption_settings.sql` | General exemption configuration |
-| `migrations/0006_result_cards_qr.sql` | Result cards with QR verification |
-| `migrations/0007_fees_receipts.sql` | Student fees, payments, receipts |
-| `migrations/0008_fees_discount.sql` | Fee discount support |
-| `migrations/0009_treasury.sql` | Treasury transactions, daily closings |
-| `migrations/0010_employees.sql` | Employees, salaries, salary payments |
-| `migrations/0011_settings_school_profile.sql` | School profile and settings |
-| `migrations/0012_receipt_settings_snapshot.sql` | Receipt settings snapshots |
-| `migrations/0013_official_books.sql` | Official books and templates |
-| `migrations/0014_excel_import_export.sql` | Excel import/export jobs |
-| `migrations/0014_print_records_extend.sql` | Extended print records |
-| `migrations/0015_add_missing_columns.sql` | Missing user/school columns |
-| `migrations/0016_auth_security.sql` | Revoked JWT identifiers and login throttles |
+- [ ] PR مدمج وSHA الإصدار ثابت.
+- [ ] جميع checks على SHA نفسه خضراء.
+- [ ] STAGING على migrations نفسها ونتيجة QA موثقة.
+- [ ] نسخة Production الاحتياطية تم التحقق منها ويمكن استعادتها.
+- [ ] الأسرار والمتغيرات مضبوطة في Production نفسها.
+- [ ] خطة مراقبة وrollback ومسؤول قرار واضحون.
+- [ ] لا seed ولا reset ولا بيانات اعتماد تجريبية.
 
-## 10. Database Reset (Danger — Local Only)
+يجب أن تحتوي أوامر Production على config المعتمد صراحةً، مثل:
 
 ```bash
-npm run db:reset
+npx wrangler d1 migrations list DB --remote --config <approved-production-config>
+npx wrangler d1 migrations apply DB --remote --config <approved-production-config>
+npx wrangler pages deploy dist --config <approved-production-config>
 ```
 
-This:
-1. Deletes `.wrangler/state/v3/d1/`
-2. Re-applies all numbered migrations
-3. Runs seed.sql with demo data
+لا تنفذ هذه الأوامر اعتمادًا على هذا المستند وحده.
 
-## Known Deployment Limitations
-- `database_id` in wrangler.jsonc must be updated for production
-- `JWT_SECRET` must be set as a Pages secret before first deploy; missing or placeholder values fail closed
-- `ALLOWED_ORIGINS` and `APP_ENV=production` must be configured for cross-origin browser deployments
-- D1 is SQLite — no `AUTO_INCREMENT` (use `INTEGER PRIMARY KEY`)
-- First migration may need `--skip-execution` if database already has tables
+## 6. الترحيلات الحالية
+
+المصدر المعتمد للترتيب هو مجلد `migrations/`. يوجد حاليًا 32 ملفًا حتى `0031`، مع وجود ملفين تاريخيين يحملان بادئة `0014` ويُطبّقان بترتيب الاسم الكامل.
+
+أحدث الترحيلات:
+
+| الملف | الغرض |
+|---|---|
+| `0028_finance_fee_payment_integrity.sql` | سلامة الأقساط والدفعات والإيصالات |
+| `0029_resource_access_links.sql` | روابط ولي الأمر/الطالب والمدرس/الموظف لعزل الموارد |
+| `0030_grade_revision.sql` | revision وتدقيق ذري لتحديث الدرجات |
+| `0031_treasury_payroll_integrity.sql` | ذرّية الخزنة والرواتب، business date، والإقفال |
+
+لا تعدّل migration مطبقًا. أي تغيير لاحق يكون في ملف جديد مع اختبار ترقية بيانات قديمة واختبار قاعدة جديدة.
+
+## 7. التحقق بعد النشر
+
+- تسجيل الدخول والخروج وانتهاء الجلسة.
+- رفض مستخدم غير مصادق عليه لمسارات الأعمال.
+- فحص الدور والمدرسة وحدود ولي الأمر والمدرس.
+- التدفقات الحرجة: تحصيل/إلغاء دفعة، إيصال، راتب، حركة خزنة، إقفال يوم، حفظ درجة، واعتماد جدول.
+- تطابق رصيد الخزنة المخزن مع دفتر القيود.
+- readiness views سليمة و`foreign_key_check` نظيف.
+- مسارات QR العامة لا تكشف بيانات خاصة عند token غير صالح.
+- سجلات Cloudflare خالية من زيادة 4xx/5xx غير المتوقعة.
+
+## 8. الأسرار
+
+ضع `JWT_SECRET` كـCloudflare Secret في البيئة الصحيحة، واضبط `APP_ENV` و`ALLOWED_ORIGINS` من إعدادات البيئة. لا تضع قيمة حقيقية في `.dev.vars` المتعقب أو `wrangler.jsonc` أو GitHub logs.

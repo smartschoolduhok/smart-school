@@ -9,6 +9,7 @@ import {
   getSalaries, generateSalary, generateAllSalaries, paySalary, cancelSalary,
   getSalaryMonthlyReport,
 } from '../../lib/api';
+import { BUSINESS_TIME_ZONE_LABEL, businessDate, businessMonth } from '../../lib/businessTime';
 import {
   Users, Plus, Search, Trash2, X, DollarSign, Calendar,
   CheckCircle, AlertTriangle, ArrowRight, BarChart3, Wallet,
@@ -73,6 +74,7 @@ interface SalaryRecord {
   paid_at: number | null;
   cancel_reason: string | null;
   treasury_transaction_id: number | null;
+  payment_business_date?: string | null;
 }
 
 interface ReportRow {
@@ -114,19 +116,20 @@ export default function EmployeesPage() {
   });
   const [editEmployee, setEditEmployee] = useState<Record<string, any> | null>(null);
 
+  const initialPeriod = businessMonth().split('-');
   const [genPayload, setGenPayload] = useState<Record<string, any>>({
-    employee_id: '', month: new Date().getMonth() + 1, year: new Date().getFullYear(),
+    employee_id: '', month: Number(initialPeriod[1]), year: Number(initialPeriod[0]),
     base_salary: '', bonus_amount: 0, deduction_amount: 0,
   });
   const [genAllPayload, setGenAllPayload] = useState<Record<string, any>>({
-    month: new Date().getMonth() + 1, year: new Date().getFullYear(),
+    month: Number(initialPeriod[1]), year: Number(initialPeriod[0]),
     bonus_amount: 0, deduction_amount: 0,
   });
   const [paySalaryId, setPaySalaryId] = useState<string>('');
-  const [payDate, setPayDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [payDate, setPayDate] = useState<string>(businessDate());
   const [cancelPayload, setCancelPayload] = useState<{ id: string; reason: string }>({ id: '', reason: '' });
   const [reportFilters, setReportFilters] = useState<{ month: string; year: string }>({
-    month: String(new Date().getMonth() + 1), year: String(new Date().getFullYear()),
+    month: initialPeriod[1], year: initialPeriod[0],
   });
 
   const showError = useCallback((msg: string) => {
@@ -253,7 +256,8 @@ export default function EmployeesPage() {
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم توليد الراتب بنجاح');
-      setGenPayload({ employee_id: '', month: new Date().getMonth() + 1, year: new Date().getFullYear(), base_salary: '', bonus_amount: 0, deduction_amount: 0 });
+      const [year, month] = businessMonth().split('-');
+      setGenPayload({ employee_id: '', month: Number(month), year: Number(year), base_salary: '', bonus_amount: 0, deduction_amount: 0 });
       setActiveTab('salaries');
       loadSalaries();
     }
@@ -291,7 +295,7 @@ export default function EmployeesPage() {
     else {
       showSuccess('تم دفع الراتب بنجاح');
       setPaySalaryId('');
-      setPayDate(new Date().toISOString().split('T')[0]);
+      setPayDate(businessDate());
       setActiveTab('salaries');
       loadSalaries();
     }
@@ -319,10 +323,7 @@ export default function EmployeesPage() {
 
   const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
     { key: 'list', label: 'الموظفون', icon: <Users size={18} /> },
-    ...(isManageEmployee && hasSelectedSchool ? [{ key: 'add' as TabKey, label: 'إضافة موظف', icon: <Plus size={18} /> }] : []),
     { key: 'salaries', label: 'الرواتب الشهرية', icon: <DollarSign size={18} /> },
-    ...(isManageSalary && hasSelectedSchool ? [{ key: 'generate' as TabKey, label: 'توليد الرواتب', icon: <Calendar size={18} /> }] : []),
-    ...(isManageSalary && hasSelectedSchool ? [{ key: 'pay' as TabKey, label: 'دفع راتب', icon: <Wallet size={18} /> }] : []),
     { key: 'reports', label: 'تقارير الرواتب', icon: <BarChart3 size={18} /> },
   ];
 
@@ -371,7 +372,7 @@ export default function EmployeesPage() {
 
       {!loading && activeTab === 'list' && (
         <div className="space-y-4">
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Search className="absolute right-3 top-2.5 text-gray-400" size={18} />
               <input
@@ -381,10 +382,19 @@ export default function EmployeesPage() {
                 onChange={e => setSearch(e.target.value)}
               />
             </div>
+            {isManageEmployee && hasSelectedSchool && (
+              <button
+                type="button"
+                onClick={() => { setSelectedEmployee(null); setEditEmployee(null); setActiveTab('add'); }}
+                className="flex items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white"
+              >
+                <Plus size={17} /> إضافة موظف
+              </button>
+            )}
           </div>
 
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+            <table className="min-w-[760px] w-full text-sm">
               <thead className="bg-gray-50 text-gray-600">
                 <tr>
                   <th className="px-4 py-3 text-right font-medium">الاسم</th>
@@ -448,6 +458,9 @@ export default function EmployeesPage() {
 
       {!loading && activeTab === 'add' && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-2xl">
+          <button type="button" onClick={() => { setEditEmployee(null); setSelectedEmployee(null); setActiveTab('list'); }} className="mb-4 flex items-center gap-1 text-sm text-gray-600">
+            <ArrowRight size={16} /> العودة إلى الموظفين
+          </button>
           <h2 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
             {editEmployee ? <ArrowRight size={18} /> : <Plus size={18} />}
             {editEmployee ? 'تعديل موظف' : 'إضافة موظف جديد'}
@@ -497,6 +510,7 @@ export default function EmployeesPage() {
                 <input
                   type="number"
                   min={0}
+                  step={1}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                   value={editEmployee ? editEmployee.salary_amount : newEmployee.salary_amount}
                   onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, salary_amount: e.target.value }) : setNewEmployee({ ...newEmployee, salary_amount: e.target.value })}
@@ -554,8 +568,14 @@ export default function EmployeesPage() {
 
       {!loading && activeTab === 'salaries' && (
         <div className="space-y-4">
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
+          {isManageSalary && hasSelectedSchool && (
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => setActiveTab('generate')} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white"><Calendar size={17} /> توليد الرواتب</button>
+              <button type="button" onClick={() => { setPaySalaryId(''); setActiveTab('pay'); }} className="flex items-center gap-2 rounded-lg border border-primary-200 bg-white px-4 py-2 text-sm font-medium text-primary-700"><Wallet size={17} /> دفع أو إلغاء راتب</button>
+            </div>
+          )}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+            <table className="min-w-[900px] w-full text-sm">
               <thead className="bg-gray-50 text-gray-600">
                 <tr>
                   <th className="px-4 py-3 text-right font-medium">الموظف</th>
@@ -565,6 +585,7 @@ export default function EmployeesPage() {
                   <th className="px-4 py-3 text-right font-medium">الاستقطاع</th>
                   <th className="px-4 py-3 text-right font-medium">الصافي</th>
                   <th className="px-4 py-3 text-right font-medium">الحالة</th>
+                  {isManageSalary && hasSelectedSchool && <th className="px-4 py-3 text-right font-medium">الإجراء</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -584,11 +605,22 @@ export default function EmployeesPage() {
                         {s.status === 'paid' ? <CheckCircle size={12} /> : s.status === 'cancelled' ? <X size={12} /> : <AlertTriangle size={12} />}
                         {s.status === 'paid' ? 'مدفوع' : s.status === 'cancelled' ? 'ملغى' : 'غير مدفوع'}
                       </span>
+                      {s.payment_business_date && <div className="mt-1 text-xs text-gray-500">{s.payment_business_date}</div>}
                     </td>
+                    {isManageSalary && hasSelectedSchool && (
+                      <td className="px-4 py-3">
+                        {s.status !== 'cancelled' && (
+                          <div className="flex gap-2">
+                            {s.status === 'unpaid' && <button type="button" onClick={() => { setPaySalaryId(String(s.id)); setActiveTab('pay'); }} className="rounded-lg bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700">دفع</button>}
+                            <button type="button" onClick={() => { setCancelPayload({ id: String(s.id), reason: '' }); setActiveTab('pay'); }} className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700">إلغاء</button>
+                          </div>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
                 {salaries.length === 0 && (
-                  <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500">لا يوجد رواتب مسجلة</td></tr>
+                  <tr><td colSpan={isManageSalary && hasSelectedSchool ? 8 : 7} className="px-4 py-8 text-center text-gray-500">لا يوجد رواتب مسجلة</td></tr>
                 )}
               </tbody>
             </table>
@@ -597,7 +629,9 @@ export default function EmployeesPage() {
       )}
 
       {!loading && activeTab === 'generate' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="space-y-4">
+          <button type="button" onClick={() => setActiveTab('salaries')} className="flex items-center gap-1 text-sm text-gray-600"><ArrowRight size={16} /> العودة إلى الرواتب</button>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <h3 className="text-base font-bold text-gray-900 mb-4 flex items-center gap-2">
               <UserCheck size={18} /> توليد راتب فردي
@@ -607,6 +641,8 @@ export default function EmployeesPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">معرف الموظف <span className="text-red-500">*</span></label>
                 <input
                   type="number"
+                  min={1}
+                  step={1}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                   value={genPayload.employee_id}
                   onChange={e => setGenPayload({ ...genPayload, employee_id: e.target.value })}
@@ -617,7 +653,7 @@ export default function EmployeesPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">الشهر</label>
                   <input
-                    type="number" min={1} max={12}
+                    type="number" min={1} max={12} step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genPayload.month}
                     onChange={e => setGenPayload({ ...genPayload, month: e.target.value })}
@@ -627,6 +663,9 @@ export default function EmployeesPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">السنة</label>
                   <input
                     type="number"
+                    min={2000}
+                    max={2200}
+                    step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genPayload.year}
                     onChange={e => setGenPayload({ ...genPayload, year: e.target.value })}
@@ -637,7 +676,7 @@ export default function EmployeesPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">راتب أساسي (اختياري)</label>
                   <input
-                    type="number" min={0}
+                    type="number" min={0} step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genPayload.base_salary}
                     onChange={e => setGenPayload({ ...genPayload, base_salary: e.target.value })}
@@ -647,7 +686,7 @@ export default function EmployeesPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">مكافأة</label>
                   <input
-                    type="number" min={0}
+                    type="number" min={0} step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genPayload.bonus_amount}
                     onChange={e => setGenPayload({ ...genPayload, bonus_amount: e.target.value })}
@@ -656,7 +695,7 @@ export default function EmployeesPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">استقطاع</label>
                   <input
-                    type="number" min={0}
+                    type="number" min={0} step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genPayload.deduction_amount}
                     onChange={e => setGenPayload({ ...genPayload, deduction_amount: e.target.value })}
@@ -678,7 +717,7 @@ export default function EmployeesPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">الشهر</label>
                   <input
-                    type="number" min={1} max={12}
+                    type="number" min={1} max={12} step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genAllPayload.month}
                     onChange={e => setGenAllPayload({ ...genAllPayload, month: e.target.value })}
@@ -688,6 +727,9 @@ export default function EmployeesPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">السنة</label>
                   <input
                     type="number"
+                    min={2000}
+                    max={2200}
+                    step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genAllPayload.year}
                     onChange={e => setGenAllPayload({ ...genAllPayload, year: e.target.value })}
@@ -698,7 +740,7 @@ export default function EmployeesPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">مكافأة جماعية</label>
                   <input
-                    type="number" min={0}
+                    type="number" min={0} step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genAllPayload.bonus_amount}
                     onChange={e => setGenAllPayload({ ...genAllPayload, bonus_amount: e.target.value })}
@@ -707,7 +749,7 @@ export default function EmployeesPage() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">استقطاع جماعي</label>
                   <input
-                    type="number" min={0}
+                    type="number" min={0} step={1}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     value={genAllPayload.deduction_amount}
                     onChange={e => setGenAllPayload({ ...genAllPayload, deduction_amount: e.target.value })}
@@ -719,11 +761,15 @@ export default function EmployeesPage() {
               </button>
             </form>
           </div>
+          </div>
         </div>
       )}
 
       {!loading && activeTab === 'pay' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="space-y-4">
+          <button type="button" onClick={() => setActiveTab('salaries')} className="flex items-center gap-1 text-sm text-gray-600"><ArrowRight size={16} /> العودة إلى الرواتب</button>
+          <p className="text-sm text-gray-500">تاريخ الدفع المالي حسب {BUSINESS_TIME_ZONE_LABEL}. دفع الراتب أو إلغاؤه يحدّث الخزنة والراتب معاً.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <h3 className="text-base font-bold text-gray-900 mb-4 flex items-center gap-2">
               <Wallet size={18} /> دفع راتب
@@ -733,6 +779,8 @@ export default function EmployeesPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">معرف الراتب <span className="text-red-500">*</span></label>
                 <input
                   type="number"
+                  min={1}
+                  step={1}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                   value={paySalaryId}
                   onChange={e => setPaySalaryId(e.target.value)}
@@ -743,6 +791,7 @@ export default function EmployeesPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">تاريخ الدفع</label>
                 <input
                   type="date"
+                  max={businessDate()}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                   value={payDate}
                   onChange={e => setPayDate(e.target.value)}
@@ -763,6 +812,8 @@ export default function EmployeesPage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">معرف الراتب <span className="text-red-500">*</span></label>
                 <input
                   type="number"
+                  min={1}
+                  step={1}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                   value={cancelPayload.id}
                   onChange={e => setCancelPayload({ ...cancelPayload, id: e.target.value })}
@@ -784,6 +835,7 @@ export default function EmployeesPage() {
               </button>
             </form>
           </div>
+          </div>
         </div>
       )}
 
@@ -793,7 +845,7 @@ export default function EmployeesPage() {
             <div className="flex-1">
               <label className="block text-sm font-medium text-gray-700 mb-1">الشهر</label>
               <input
-                type="number" min={1} max={12}
+                type="number" min={1} max={12} step={1}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                 value={reportFilters.month}
                 onChange={e => setReportFilters({ ...reportFilters, month: e.target.value })}
@@ -803,6 +855,9 @@ export default function EmployeesPage() {
               <label className="block text-sm font-medium text-gray-700 mb-1">السنة</label>
               <input
                 type="number"
+                min={2000}
+                max={2200}
+                step={1}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                 value={reportFilters.year}
                 onChange={e => setReportFilters({ ...reportFilters, year: e.target.value })}
@@ -815,8 +870,8 @@ export default function EmployeesPage() {
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+            <table className="min-w-[850px] w-full text-sm">
               <thead className="bg-gray-50 text-gray-600">
                 <tr>
                   <th className="px-4 py-3 text-right font-medium">الشهر/السنة</th>
