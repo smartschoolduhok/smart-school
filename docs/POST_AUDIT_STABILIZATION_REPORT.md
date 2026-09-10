@@ -321,4 +321,45 @@
 | git diff --check | PASS |
 | migrations 0029–0031 | لم تتغير ولم يُعد تطبيقها |
 
-يلزم Branch Preview جديد من commit هذه الدفعة للتحقق البصري النهائي من التاريخ وخيارات المدرس قبل تحويل PR #39 من Draft. لا تمنح هذه النتائج تصريح Production أو merge، ولم يحدث Remote D1 أو seed/reset أو وصول إلى Production.
+اكتمل Branch Preview النهائي للكود المراجع عند `59df8701ea3df126abb29a8cea347fec05d446ce`: نجحت GitHub Quality Gates وCloudflare Pages، ونجح التحقق البصري من التاريخ ونطاق المدرس. لا تمنح هذه النتائج تصريح Production أو merge.
+
+## 13. الإغلاق النهائي وتنظيف حسابات QA على STAGING — 2026-09-10
+
+### نتيجة الكود والـManual QA
+
+- commit الكود النهائي المراجع: `59df8701ea3df126abb29a8cea347fec05d446ce`.
+- GitHub Quality Gates: **PASS**.
+- Cloudflare Pages: **PASS** للكود نفسه.
+- Branch Preview: https://90465c29.smart-school-staging.pages.dev
+- Teacher scope Manual QA: **PASS**؛ ظهر للمدرس `الصف الاول → أ → الحاسوب` فقط.
+- Date rendering: **PASS**؛ ظهر `22/08/2026` ولم يظهر تاريخ من يناير 1970.
+
+### النسخة الاحتياطية والمحاكاة المحلية
+
+- الهدف الوحيد: `smart-school-staging-db`، ID: `1bdb9c3d-08d6-4023-9cbc-64369d53198a`.
+- النسخة الكاملة الجديدة: `C:\Users\ibrah\Documents\SmartSchoolBackups\staging-20260910T142038Z\smart-school-staging-db-full.sql`.
+- الحجم: **999,670 bytes**.
+- SHA-256: `6F0C0ACBCB4CC1A339582CD168AF04DFD5D0AD41962929A262A8E67D7E47BC3C`.
+- استُعيدت النسخة محليًا عبر مسار parameter binding الموجود لصف `import_jobs` الكبير: صف واحد، وقيم مرتبطة بحجم 360,514 bytes. نجح اختبار rollback المتعمد، وبقي `foreign_key_check` نظيفًا وكل readiness views سليمة.
+- أثبتت مقارنة export قبل التنظيف وبعده أن جدول `import_jobs` والصف الكبير ID `3` لم يتغيرا، وأن الأدلة الأكاديمية والمالية التاريخية لم تتغير.
+
+### نتيجة soft-disable/archive
+
+- المستخدمون IDs `4، 5، 6، 7`: أربعة سجلات بالضبط، أصبحت `inactive` للأدوار accountant وteacher وregistrar وparent.
+- الطلاب IDs `30، 31`: سجلان بالضبط، أصبحا `archived`.
+- موظف المدرس ID `24`: أصبح `archived`.
+- `parent_student_links` ID `1`: أصبح `inactive`.
+- `teacher_employee_links` ID `1`: أصبح `inactive`.
+- `timetable_teaching_loads` ID `148`: أصبح `inactive` بعد إثبات عدم وجود أي timetable entry مرتبطة به. رفع trigger النظام `timetable_revisions` للسنة ID `2` من `3` إلى `4` كما هو متوقع.
+- `student_subjects` IDs `339، 340`: بقيا محفوظين مع `is_active = 0` وبقيت timestamps دون تغيير.
+- لم يتغير أي سجل مستخدم أو طالب أو موظف غير مستهدف، ولم تُحذف أي صفوف.
+
+### Postchecks وحفظ الأدلة
+
+- `foreign_key_check`: **PASS**، بلا مخالفات.
+- readiness: `finance_fee_readiness` و`finance_treasury_readiness` و`finance_payroll_school_readiness` سليمة، ولا صفوف غير سليمة في `finance_payroll_readiness`.
+- migration count: **32**؛ migrations `0029` و`0030` و`0031` ما زالت مسجلة مرة واحدة وبالقيم نفسها.
+- grade ID `336` بقيت قيمته `78` ومراجعته `2`، وبقي سجلا التدقيق IDs `36، 37` محفوظين.
+- student fee ID `2`: **10,000 IQD**، المدفوع `0`، المتبقي `10,000`، والحالة `pending`.
+- fee payment ID `2` وreceipt ID `3` بقيا `cancelled`، وبقي treasury reversal المرتبط مرة واحدة بالضبط.
+- لم يحدث وصول إلى Production، ولم يُستخدم seed/reset أو `DELETE` أو نشر يدوي أو force-push أو merge.
