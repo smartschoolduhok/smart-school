@@ -1,14 +1,32 @@
 # Phase 20B — Student finance accounts, installments, receipts and parent view
 
-## Current decision — 2026-09-11
+## Final acceptance — 2026-09-11
+
+**Status: ACCEPTED / MERGED / DEPLOYED TO STAGING**
+
+- PR [#40](https://github.com/smartschoolduhok/smart-school/pull/40) was merged into `main` on 2026-09-11.
+- Final PR head: `7434b90e776f6fac425e1c5fe5038ebf44b3ce6f`.
+- Merge commit: `a294d4f97cc858c3c2765d9e656dc2aebd3871b4`; `main` points to this commit.
+- Post-merge GitHub Quality Gates passed on [run 34651605067](https://github.com/smartschoolduhok/smart-school/actions/runs/34651605067).
+- Cloudflare Pages passed for the same merge commit. Immutable STAGING deployment: `https://1649673f.smart-school-staging.pages.dev/`.
+- Migration `0032_fee_installments_receipt_snapshots.sql` had already been applied successfully to STAGING before merge. STAGING contains 33 distinct migrations with none pending; 0032 was not reapplied after merge.
+- Production was not accessed or deployed. No remote seed/reset, SQL `DELETE`, hard deletion, or force-push occurred.
+
+Phase 20B is closed and accepted. The next gates are a short authenticated smoke test on the merged STAGING deployment and a real pilot with another school staff member before new feature work or any separate Production GO decision.
+
+---
+
+> **Historical pre-merge evidence below:** The remaining sections preserve the branch, migration and functional-QA record as it existed before PR #40 was merged. Statements that the PR was Draft or unmerged are historical checkpoints superseded by the Final acceptance section above.
+
+## Pre-merge decision — 2026-09-11 (historical)
 
 **Implementation, CI, Cloudflare Preview, STAGING migration rehearsal, migration, functional QA and soft cleanup: PASS.**
 
 The branch adds a student-centered finance workflow, optional versioned installment schedules, a professional A4 tuition receipt, and a strictly read-only parent finance view. Migration `0032_fee_installments_receipt_snapshots.sql` is additive and does not move money, rewrite historical financial values, or modify migrations `0029`–`0031`.
 
-Draft PR #40 remains open and unmerged for review. Production remains outside this delivery; no Production access or deployment was performed.
+At this checkpoint, Draft PR #40 remained open and unmerged for review. Production was outside the delivery; no Production access or deployment was performed.
 
-## Final STAGING acceptance — 2026-09-11
+## Pre-merge STAGING acceptance — 2026-09-11 (historical evidence)
 
 ### Branch, CI and Preview
 
@@ -65,7 +83,7 @@ Draft PR #40 remains open and unmerged for review. Production remains outside th
 
 - Migrations 0029–0032 were not edited. Their SHA-256 values are respectively `EF3AC3C…4524`, `577B16A6…B042`, `4DCE4C0E…93C5`, and `3E35733A…AF47`.
 - No Production access/deployment, remote seed/reset, SQL `DELETE`, hard deletion, force-push or merge occurred.
-- PR #40 intentionally remains Draft and unmerged; completion of these gates does not imply merge authorization.
+- **Historical checkpoint:** PR #40 intentionally remained Draft and unmerged; completion of those gates did not imply merge authorization at that time.
 
 ## Scope and product decisions
 
@@ -205,4 +223,4 @@ After a successful STAGING migration:
 - No remote seed/reset or hard deletion is authorized.
 - Migrations `0029`–`0032` must remain byte-for-byte unchanged.
 - Migration 0032 must never be edited after it has been successfully applied remotely; any later correction requires a new migration.
-- The database gates are complete, but PR #40 remains Draft and unmerged pending human review; no merge was requested or performed.
+- **Historical checkpoint:** The database gates were complete while PR #40 remained Draft and unmerged pending human review. This condition was later superseded by the accepted merge recorded at the top of this report.
