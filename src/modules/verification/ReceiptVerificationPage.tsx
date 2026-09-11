@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { verifyReceipt } from '../../lib/api';
-import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Shield, School, GraduationCap, Layers, Calendar, DollarSign, Receipt } from 'lucide-react';
+import { formatFinanceDate, formatIqd } from '../../lib/financePresentation';
+import { CheckCircle, XCircle, AlertTriangle, ArrowRight, School, GraduationCap, Calendar, Receipt } from 'lucide-react';
 
 interface VerifyReceiptResult {
   valid: boolean;
@@ -13,15 +14,9 @@ interface VerifyReceiptResult {
   section_name?: string;
   academic_year?: string;
   total_amount?: number;
-  created_at?: string;
+  currency?: string | null;
+  created_at?: number;
   status?: string;
-  payments?: Array<{
-    payment_id: number;
-    amount: number;
-    payment_method: string;
-    payment_date: number;
-    fee_type: string;
-  }>;
 }
 
 export default function ReceiptVerificationPage() {
@@ -83,7 +78,7 @@ export default function ReceiptVerificationPage() {
   }
 
   const isValid = result.valid && result.status !== 'cancelled';
-  const isCancelled = result.status === 'cancelled';
+  const isCancelled = result.cancelled === true || result.status === 'cancelled';
 
   return (
     <div dir="rtl" className="min-h-screen bg-gray-50 py-12 px-4">
@@ -143,18 +138,6 @@ export default function ReceiptVerificationPage() {
 
                 <div className="flex items-start gap-3">
                   <div className="w-9 h-9 bg-primary-50 rounded-lg flex items-center justify-center shrink-0">
-                    <Layers size={18} className="text-primary-600" />
-                  </div>
-                  <div>
-                    <p className="text-xs text-gray-500">الصف والشعبة</p>
-                    <p className="font-bold text-gray-900">
-                      {result.class_name || '---'} {result.section_name ? `- ${result.section_name}` : ''}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-3">
-                  <div className="w-9 h-9 bg-primary-50 rounded-lg flex items-center justify-center shrink-0">
                     <Calendar size={18} className="text-primary-600" />
                   </div>
                   <div>
@@ -172,7 +155,9 @@ export default function ReceiptVerificationPage() {
                 <div className="text-center p-3 bg-emerald-50 rounded-xl">
                   <p className="text-xs text-emerald-600 mb-1">المبلغ الإجمالي</p>
                   <p className="font-mono font-bold text-emerald-700 text-lg">
-                    {result.total_amount !== undefined ? result.total_amount.toLocaleString('ar-SA', { minimumFractionDigits: 2 }) : '---'}
+                    {result.total_amount !== undefined
+                      ? result.currency === 'IQD' ? formatIqd(result.total_amount) : `${result.total_amount.toLocaleString('ar-IQ')} ${result.currency || ''}`
+                      : '---'}
                   </p>
                 </div>
                 <div className="text-center p-3 bg-gray-50 rounded-xl">
@@ -183,38 +168,11 @@ export default function ReceiptVerificationPage() {
                 </div>
               </div>
 
-              {/* Payments Detail */}
-              {result.payments && result.payments.length > 0 && (
-                <div className="border-t border-gray-100 pt-4">
-                  <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
-                    <DollarSign size={16} className="text-primary-600" />
-                    تفاصيل المدفوعات
-                  </h3>
-                  <div className="space-y-2">
-                    {result.payments.map((p, i) => (
-                      <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                        <div className="flex items-center gap-3">
-                          <span className="w-6 h-6 bg-primary-100 text-primary-700 rounded-full flex items-center justify-center text-xs font-bold">{i + 1}</span>
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{p.fee_type || p.payment_method}</p>
-                            <p className="text-xs text-gray-500">
-                              {p.payment_method === 'cash' ? 'نقدي' : p.payment_method === 'bank_transfer' ? 'تحويل بنكي' : p.payment_method === 'cheque' ? 'شيك' : p.payment_method === 'credit_card' ? 'بطاقة ائتمان' : p.payment_method === 'debit_card' ? 'بطاقة خصم' : p.payment_method === 'mobile_payment' ? 'محفظة إلكترونية' : 'أخرى'}
-                            </p>
-                          </div>
-                        </div>
-                        <p className="font-mono font-bold text-gray-900">
-                          {p.amount.toLocaleString('ar-SA', { minimumFractionDigits: 2 })}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               <div className="border-t border-gray-100 pt-4 text-center">
                 <p className="text-xs text-gray-400">
-                  تم إصدار الإيصال: {result.created_at ? new Date(result.created_at).toLocaleString('ar-SA') : '---'}
+                  تم إصدار الإيصال: {formatFinanceDate(result.created_at)}
                 </p>
+                <p className="mt-1 text-xs text-gray-400">تعرض صفحة التحقق الحد الأدنى من بيانات المستند لحماية خصوصية الطالب.</p>
               </div>
             </div>
           </div>

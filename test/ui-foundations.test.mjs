@@ -221,7 +221,8 @@ test('daily workflows keep rare actions out of the primary tab rows', () => {
   const feePrimaryTabs = fees.slice(fees.indexOf('const tabs:'), fees.indexOf('function openPaymentForFee'));
   for (const label of ['قائمة الأقساط', 'المدفوعات', 'الإيصالات']) assert.ok(feePrimaryTabs.includes(label), label);
   for (const contextual of ['إضافة قسط', 'اختبار التحقق']) assert.equal(feePrimaryTabs.includes(contextual), false, contextual);
-  assert.match(fees, /openPaymentForFee\(fee\)/);
+  assert.match(fees, /<FeeAccountPanel[\s\S]*?onCollect=\{openPaymentForFee\}/);
+  assert.match(fees, /setAccountFee\(fee\)/);
   assert.match(fees, /وسيصبح المتبقي/);
 
   assert.match(grades, /entryTabs = visibleTabs\.filter/);

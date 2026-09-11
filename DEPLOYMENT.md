@@ -113,7 +113,7 @@ npx wrangler pages deploy dist --config <approved-production-config>
 
 ## 6. الترحيلات الحالية
 
-المصدر المعتمد للترتيب هو مجلد `migrations/`. يوجد حاليًا 32 ملفًا حتى `0031`، مع وجود ملفين تاريخيين يحملان بادئة `0014` ويُطبّقان بترتيب الاسم الكامل.
+المصدر المعتمد للترتيب هو مجلد `migrations/`. يوجد حاليًا 33 ملفًا حتى `0032`، مع وجود ملفين تاريخيين يحملان بادئة `0014` ويُطبّقان بترتيب الاسم الكامل.
 
 أحدث الترحيلات:
 
@@ -123,6 +123,7 @@ npx wrangler pages deploy dist --config <approved-production-config>
 | `0029_resource_access_links.sql` | روابط ولي الأمر/الطالب والمدرس/الموظف لعزل الموارد |
 | `0030_grade_revision.sql` | revision وتدقيق ذري لتحديث الدرجات |
 | `0031_treasury_payroll_integrity.sql` | ذرّية الخزنة والرواتب، business date، والإقفال |
+| `0032_fee_installments_receipt_snapshots.sql` | خطط التقسيط المحفوظة وsnapshots إيصالات الإصدار 2 |
 
 لا تعدّل migration مطبقًا. أي تغيير لاحق يكون في ملف جديد مع اختبار ترقية بيانات قديمة واختبار قاعدة جديدة.
 

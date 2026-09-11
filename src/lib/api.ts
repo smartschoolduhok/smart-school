@@ -1066,6 +1066,34 @@ export function deleteStudentFee(id: number | string, schoolId: number) {
   return fetchApi<Record<string, any>>(`/api/student-fees/${id}`, { method: 'DELETE', body: JSON.stringify({ school_id: schoolId }) });
 }
 
+export function getStudentFinance(studentId: number | string, schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/student-finance/${studentId}?school_id=${schoolId}`);
+}
+
+export function getFeeInstallmentPlan(id: number | string, schoolId: number) {
+  return fetchApi<Record<string, any>>(`/api/student-fees/${id}/installment-plan?school_id=${schoolId}`);
+}
+
+export function saveFeeInstallmentPlan(id: number | string, data: {
+  school_id: number;
+  expected_fee_revision: number;
+  notes?: string | null;
+  items: Array<{ label: string; amount: number; due_date: string }>;
+}) {
+  return fetchApi<Record<string, any>>(`/api/student-fees/${id}/installment-plan`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function disableFeeInstallmentPlan(id: number | string, schoolId: number, expectedPlanId: number) {
+  return fetchApi<Record<string, any>>(`/api/student-fees/${id}/installment-plan`, {
+    method: 'DELETE',
+    body: JSON.stringify({ school_id: schoolId, expected_plan_id: expectedPlanId }),
+  });
+}
+
+export function getParentStudentFinance(studentId: number | string) {
+  return fetchApi<Record<string, any>>(`/api/parent/students/${studentId}/finance`);
+}
+
 export function getFeePayments(filters?: {
   school_id?: number | null;
   student_id?: number | null;
@@ -1098,7 +1126,11 @@ export function getFeeReceipt(id: number | string, schoolId: number) {
   return fetchApi<Record<string, any>>(`/api/fee-receipts/${id}?school_id=${schoolId}`);
 }
 
-export function generateFeeReceipt(data: { school_id: number; student_id: number; payment_ids: number[] }) {
+export function getParentFeeReceipt(id: number | string) {
+  return fetchApi<Record<string, any>>(`/api/parent/fee-receipts/${id}`);
+}
+
+export function generateFeeReceipt(data: { school_id: number; student_id: number; payment_ids: number[]; replaces_receipt_id?: number | null }) {
   return fetchApi<Record<string, any>>('/api/fee-receipts/generate', { method: 'POST', body: JSON.stringify(data) });
 }
 
