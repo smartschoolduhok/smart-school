@@ -12,8 +12,14 @@ export const RECALCULATE_SCHOOL_GRADES_SQL = `
       g.mid_year_exam,
       g.final_exam,
       g.completion_exam,
-      gs.passing_grade,
-      gs.exemption_grade,
+      COALESCE(policy.pass_mark, gs.passing_grade) AS passing_grade,
+      COALESCE(policy.individual_exemption_grade, gs.exemption_grade) AS exemption_grade,
+      CASE
+        WHEN policy.policy_kind='terminal' THEN 0
+        WHEN policy.id IS NOT NULL THEN policy.exemption_enabled
+        ELSE 1
+      END AS exemption_enabled,
+      COALESCE(policy.minimum_monthly_exams_per_term, 2) AS minimum_monthly_exams_per_term,
       gs.first_term_input_mode,
       gs.second_term_input_mode,
       gs.mid_year_exam_enabled,
@@ -21,9 +27,12 @@ export const RECALCULATE_SCHOOL_GRADES_SQL = `
       gs.completion_exam_enabled,
       CASE
         WHEN gs.first_term_input_mode = 'monthly'
-          AND g.first_month IS NOT NULL
-          AND g.second_month IS NOT NULL
-          THEN ROUND((g.first_month + g.second_month) / 2.0)
+          AND ((COALESCE(policy.minimum_monthly_exams_per_term, 2)=1
+                AND (g.first_month IS NOT NULL OR g.second_month IS NOT NULL))
+               OR (g.first_month IS NOT NULL AND g.second_month IS NOT NULL))
+          THEN ROUND((COALESCE(g.first_month,0) + COALESCE(g.second_month,0)) /
+            CAST((CASE WHEN g.first_month IS NOT NULL THEN 1 ELSE 0 END
+                + CASE WHEN g.second_month IS NOT NULL THEN 1 ELSE 0 END) AS REAL))
         WHEN gs.first_term_input_mode = 'direct'
           AND g.first_term_grade IS NOT NULL
           THEN ROUND(g.first_term_grade)
@@ -31,9 +40,12 @@ export const RECALCULATE_SCHOOL_GRADES_SQL = `
       END AS first_term_average,
       CASE
         WHEN gs.second_term_input_mode = 'monthly'
-          AND g.third_month IS NOT NULL
-          AND g.fourth_month IS NOT NULL
-          THEN ROUND((g.third_month + g.fourth_month) / 2.0)
+          AND ((COALESCE(policy.minimum_monthly_exams_per_term, 2)=1
+                AND (g.third_month IS NOT NULL OR g.fourth_month IS NOT NULL))
+               OR (g.third_month IS NOT NULL AND g.fourth_month IS NOT NULL))
+          THEN ROUND((COALESCE(g.third_month,0) + COALESCE(g.fourth_month,0)) /
+            CAST((CASE WHEN g.third_month IS NOT NULL THEN 1 ELSE 0 END
+                + CASE WHEN g.fourth_month IS NOT NULL THEN 1 ELSE 0 END) AS REAL))
         WHEN gs.second_term_input_mode = 'direct'
           AND g.second_term_grade IS NOT NULL
           THEN ROUND(g.second_term_grade)
@@ -41,6 +53,15 @@ export const RECALCULATE_SCHOOL_GRADES_SQL = `
       END AS second_term_average
     FROM grades AS g
     JOIN grade_settings AS gs ON gs.school_id = g.school_id
+    JOIN student_subjects AS assignment
+      ON assignment.id=g.student_subject_id AND assignment.school_id=g.school_id
+    LEFT JOIN academic_years AS active_year
+      ON active_year.school_id=g.school_id AND active_year.is_active=1
+    LEFT JOIN academic_grade_policies AS policy
+      ON policy.school_id=g.school_id
+     AND policy.academic_year_id=active_year.id
+     AND policy.class_id=assignment.class_id
+     AND policy.is_current=1 AND policy.status IN ('approved','locked')
     WHERE g.school_id = ? AND g.is_active = 1
   ),
   annual_values AS (
@@ -73,7 +94,8 @@ export const RECALCULATE_SCHOOL_GRADES_SQL = `
     SELECT
       *,
       CASE
-        WHEN final_exam_enabled = 1
+        WHEN exemption_enabled = 1
+          AND final_exam_enabled = 1
           AND annual_effort IS NOT NULL
           AND annual_effort >= exemption_grade
           THEN 1
@@ -82,7 +104,7 @@ export const RECALCULATE_SCHOOL_GRADES_SQL = `
       CASE
         WHEN annual_effort IS NULL THEN NULL
         WHEN final_exam_enabled = 0 THEN annual_effort
-        WHEN annual_effort >= exemption_grade THEN annual_effort
+        WHEN exemption_enabled = 1 AND annual_effort >= exemption_grade THEN annual_effort
         WHEN final_exam IS NULL THEN NULL
         ELSE ROUND((annual_effort + final_exam) / 2.0)
       END AS final_grade

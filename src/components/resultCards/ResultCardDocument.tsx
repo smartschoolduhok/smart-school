@@ -134,12 +134,21 @@ export function ResultCardDocument({
 
   const summaryItems = [
     { label: 'النتيجة العامة', value: overallStatus, primary: true },
+    summary.academic_status && summary.academic_status !== overallStatus
+      ? { label: 'حالة السعي والقرار', value: String(summary.academic_status), primary: false }
+      : null,
     displaySettings.show_overall_average && summary.overall_average !== null &&
       summary.overall_average !== undefined
       ? { label: 'المعدل', value: displayValue(summary.overall_average), primary: false }
       : null,
     generalExemption
       ? { label: 'الإعفاء العام', value: 'معفى عام', primary: false }
+      : null,
+    summary.ministerial_eligibility && summary.ministerial_eligibility_code !== 'not_applicable'
+      ? { label: 'الدخول الوزاري', value: String(summary.ministerial_eligibility), primary: false }
+      : null,
+    Number(summary.decision_points_used || 0) > 0
+      ? { label: 'درجات القرار المستخدمة', value: displayValue(summary.decision_points_used), primary: false }
       : null,
     displaySettings.show_appreciation && summary.appreciation
       ? { label: 'التقدير', value: String(summary.appreciation), primary: false }

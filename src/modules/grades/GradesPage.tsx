@@ -8,12 +8,14 @@ import { ACADEMIC_MANAGEMENT_ROLES, GRADE_MANAGEMENT_ROLES, SCHOOL_MANAGEMENT_RO
 import {
   getGrades, getStudentGrades, initializeStudentGrades, initializeSectionGrades,
   updateGrade, bulkUpdateGrades, getGradeHistory, getGradeSettings, updateGradeSettings,
-  getStudents, getClasses, getSections, getSubjects, getStudentSubjects
+  getStudents, getClasses, getSections, getSubjects, getStudentSubjects, getStudentAcademicOutcome,
+  saveStudentDecisionPoints
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import type { GradeCalculationSettings } from '../../lib/gradeCalculations';
 import { displayGradeStatus } from '../../lib/gradePresentation';
 import { createPerKeyTaskQueue, mergeUpdatedRow } from '../../lib/perKeyTaskQueue';
+import { GradePoliciesTab } from './GradePoliciesTab';
 import {
   teacherGradeClassOptions,
   teacherGradeSectionOptions,
@@ -120,7 +122,7 @@ interface AuditRecord {
   created_at: string;
 }
 
-type TabKey = 'student' | 'section' | 'settings' | 'history';
+type TabKey = 'student' | 'section' | 'policies' | 'settings' | 'history';
 
 const DEFAULT_GRADE_SETTINGS_FORM = {
   max_grade: '100',
@@ -138,6 +140,7 @@ const DEFAULT_GRADE_SETTINGS_FORM = {
 const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode; roles?: readonly RoleKey[] }[] = [
   { key: 'student', label: 'إدخال درجات طالب', icon: <User size={18} /> },
   { key: 'section', label: 'إدخال درجات شعبة', icon: <Users size={18} />, roles: GRADE_MANAGEMENT_ROLES },
+  { key: 'policies', label: 'السياسات السنوية', icon: <BookOpen size={18} />, roles: SCHOOL_MANAGEMENT_ROLES },
   { key: 'settings', label: 'إعدادات الدرجات', icon: <Settings size={18} />, roles: SCHOOL_MANAGEMENT_ROLES },
   { key: 'history', label: 'سجل تعديل الدرجات', icon: <History size={18} />, roles: GRADE_MANAGEMENT_ROLES },
 ];
@@ -153,9 +156,10 @@ export default function GradesPage() {
   const { schoolId } = schoolScope;
   const canEditGrades = hasRole(user?.role_key, GRADE_MANAGEMENT_ROLES);
   const canInitializeGrades = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
+  const canManagePolicies = hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES);
   const visibleTabs = TAB_CONFIG.filter((tab) => canAccessTab(user?.role_key, tab.roles));
   const entryTabs = visibleTabs.filter((tab) => tab.key === 'student' || tab.key === 'section');
-  const managementTabs = visibleTabs.filter((tab) => tab.key === 'settings' || tab.key === 'history');
+  const managementTabs = visibleTabs.filter((tab) => tab.key === 'policies' || tab.key === 'settings' || tab.key === 'history');
   const [activeTab, setActiveTab] = useState<TabKey>('student');
   // Reset to first visible tab if current tab becomes hidden
   const effectiveTab = visibleTabs.find((t) => t.key === activeTab) ? activeTab : visibleTabs[0]?.key || 'student';
@@ -213,8 +217,9 @@ export default function GradesPage() {
         ))}
       </div>
 
-      {effectiveTab === 'student' && <StudentGradesTab schoolId={schoolId} canEdit={canEditGrades} canInitialize={canInitializeGrades} />}
+      {effectiveTab === 'student' && <StudentGradesTab schoolId={schoolId} canEdit={canEditGrades} canInitialize={canInitializeGrades} canManagePolicies={canManagePolicies} />}
       {effectiveTab === 'section' && <SectionGradesTab schoolId={schoolId} canInitialize={canInitializeGrades} userRole={user?.role_key} />}
+      {effectiveTab === 'policies' && <GradePoliciesTab schoolId={schoolId} />}
       {effectiveTab === 'settings' && <SettingsTab schoolId={schoolId} />}
       {effectiveTab === 'history' && <HistoryTab schoolId={schoolId} />}
     </div>
@@ -224,12 +229,16 @@ export default function GradesPage() {
 /* ═══════════════════════════════════════
    Tab 1: إدخال درجات طالب
    ═══════════════════════════════════════ */
-function StudentGradesTab({ schoolId, canEdit, canInitialize }: { schoolId: number | null; canEdit: boolean; canInitialize: boolean }) {
+function StudentGradesTab({ schoolId, canEdit, canInitialize, canManagePolicies }: { schoolId: number | null; canEdit: boolean; canInitialize: boolean; canManagePolicies: boolean }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [grades, setGrades] = useState<GradeRecord[]>([]);
   const [settings, setSettings] = useState<GradeSettings | null>(null);
+  const [academicOutcome, setAcademicOutcome] = useState<any>(null);
+  const [decisionAllocations, setDecisionAllocations] = useState<Record<number, number>>({});
+  const [decisionReason, setDecisionReason] = useState('');
+  const [decisionBusy, setDecisionBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [initLoading, setInitLoading] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
@@ -242,6 +251,9 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize }: { schoolId: numb
     setSelectedStudentId('');
     setGrades([]);
     setSettings(null);
+    setAcademicOutcome(null);
+    setDecisionAllocations({});
+    setDecisionReason('');
     setStudentName('');
     setLoading(false);
     setInitLoading(false);
@@ -266,6 +278,9 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize }: { schoolId: numb
     if (res.data) {
       setGrades((res.data.grades || []) as GradeRecord[]);
       setSettings((res.data.settings || null) as GradeSettings | null);
+      setAcademicOutcome(res.data.academic_outcome || null);
+      setDecisionAllocations(res.data.academic_outcome?.decision_set?.allocations || {});
+      setDecisionReason(res.data.academic_outcome?.decision_set?.reason || '');
       setStudentName(res.data.student_name || '');
     }
     setLoading(false);
@@ -324,12 +339,36 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize }: { schoolId: numb
 
         const updated = { ...res.data, id: Number(res.data.id) } as Partial<GradeRecord> & Pick<GradeRecord, 'id'>;
         setGrades((current) => mergeUpdatedRow(current, updated));
+        const refreshed = await getStudentAcademicOutcome(Number(selectedStudentId));
+        if (isCurrent() && refreshed.data) setAcademicOutcome(refreshed.data);
       });
     } catch {
       if (!isCurrent()) return;
       setMessage({ text: 'فشل حفظ الدرجة، يرجى المحاولة مرة أخرى', type: 'error' });
       setTimeout(() => setMessage(null), 3000);
     }
+  }
+
+  async function saveManualDecisionPoints() {
+    const policy = academicOutcome?.policy;
+    if (schoolId == null || !selectedStudentId || !policy?.id) return;
+    if (!decisionReason.trim()) {
+      setMessage({ text: 'سبب توزيع درجات القرار مطلوب', type: 'error' });
+      return;
+    }
+    setDecisionBusy(true);
+    const res = await saveStudentDecisionPoints(Number(policy.id), Number(selectedStudentId), {
+      school_id: schoolId,
+      expected_version: Number(academicOutcome?.decision_set?.version || 0),
+      allocations: decisionAllocations,
+      reason: decisionReason.trim(),
+    });
+    setDecisionBusy(false);
+    if (res.error) return setMessage({ text: res.error, type: 'error' });
+    setAcademicOutcome(res.data || null);
+    setDecisionAllocations(res.data?.decision_set?.allocations || {});
+    setDecisionReason(res.data?.decision_set?.reason || decisionReason.trim());
+    setMessage({ text: 'حُفظ توزيع درجات القرار في سجل غير قابل للحذف', type: 'success' });
   }
 
   function fieldNameArabic(field: string): string {
@@ -396,7 +435,37 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize }: { schoolId: numb
       )}
 
       {!loading && grades.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="space-y-3">
+          {academicOutcome?.outcome && (
+            <div className="grid gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div><p className="text-xs text-blue-700">النتيجة الرسمية</p><p className="font-bold text-blue-950">{academicOutcome.labels?.academic_status || '—'}</p></div>
+              <div><p className="text-xs text-blue-700">الدخول الوزاري</p><p className="font-bold text-blue-950">{academicOutcome.labels?.ministerial_eligibility || '—'}</p></div>
+              <div><p className="text-xs text-blue-700">مواد الإكمال بعد القرار</p><p className="font-bold text-blue-950">{toArabicDigits(String(academicOutcome.outcome.adjusted_failed_subjects ?? 0))}</p></div>
+              <div><p className="text-xs text-blue-700">درجات القرار المستخدمة</p><p className="font-bold text-blue-950">{toArabicDigits(String(academicOutcome.outcome.decision_points_used ?? 0))}</p></div>
+              <p className="text-xs text-blue-800 sm:col-span-2 lg:col-span-4">السياسة: الإصدار {toArabicDigits(String(academicOutcome.policy?.version || 1))} — {academicOutcome.outcome.ministerial_reason}</p>
+            </div>
+          )}
+          {canManagePolicies && academicOutcome?.policy?.decision_allocation_mode === 'manual' && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <h3 className="font-bold text-amber-950">التوزيع اليدوي لدرجات القرار</h3>
+              <p className="mt-1 text-xs text-amber-800">الرصيد الكلي {toArabicDigits(String(academicOutcome.outcome.decision_points_available || 0))}. أدخل النقاط للمواد الراسبة فقط؛ السياسة تتحقق من الرصيد ومن أثر القرار.</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {(academicOutcome.outcome.subjects || []).filter((subject: any) => Number(subject.deficit_to_pass || 0) > 0).map((subject: any) => (
+                  <label key={subject.subject_id} className="rounded-lg border border-amber-200 bg-white p-3 text-sm">
+                    <span className="font-medium">{subject.subject_name}</span>
+                    <span className="mr-2 text-xs text-gray-500">الدرجة {toArabicDigits(String(subject.source_grade))}، يحتاج {toArabicDigits(String(subject.deficit_to_pass))}</span>
+                    <input type="number" min="0" max={subject.deficit_to_pass} step="0.01" value={decisionAllocations[subject.subject_id] || 0} onChange={event => setDecisionAllocations(current => ({ ...current, [subject.subject_id]: Number(event.target.value) }))} className="mt-2 w-full rounded-lg border px-3 py-2 text-center" />
+                  </label>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <input value={decisionReason} onChange={event => setDecisionReason(event.target.value)} maxLength={500} placeholder="سبب القرار / رقم الكتاب" className="flex-1 rounded-lg border px-3 py-2 text-sm" />
+                <button type="button" onClick={saveManualDecisionPoints} disabled={decisionBusy || !decisionReason.trim()} className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{decisionBusy ? 'جاري الحفظ...' : 'حفظ القرار'}</button>
+              </div>
+              {academicOutcome.decision_set && <p className="mt-2 text-xs text-amber-700">نسخة القرار الحالية: {toArabicDigits(String(academicOutcome.decision_set.version))} — يبقى كل إصدار سابق محفوظًا.</p>}
+            </div>
+          )}
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-gray-900">درجات الطالب: {studentName}</h3>
@@ -478,6 +547,7 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize }: { schoolId: numb
             <p>{gradeSchemeSummary(settings)}</p>
             <p>لا تُحسب النتائج حتى تكتمل جميع مكونات النظام المفعّلة. الحقول الرمادية تُحسب تلقائيًا.</p>
           </div>
+        </div>
         </div>
       )}
     </div>
