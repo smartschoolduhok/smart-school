@@ -8,6 +8,7 @@
 - دفعة التثبيت اللاحقة للتدقيق مندمجة؛ migrations `0029`–`0031` مطبقة على STAGING، مع عزل وصول ولي الأمر والمدرس وذرّية الدرجات والرواتب والخزنة وتبسيط الواجهة.
 - Phase 20B مكتملة ومندمجة؛ أضافت حساب الطالب المالي، خطط التقسيط الاختيارية، إيصال A4 محسّنًا وعرض ولي الأمر للقراءة فقط. Migration `0032` مطبقة على STAGING، وسجلها يحتوي 33 migration فريدة بلا migrations معلّقة.
 - اجتازت Phase 20B النسخ والاستعادة والـpreflight وQA الوظيفي على STAGING، لكن هذا لا يُعد تصريحًا لـProduction؛ يلزم قرار GO وإعداد ونشر مستقلان.
+- Phase 20C قيد المراجعة: تضيف سياسات درجات سنوية مرنة versioned للنجاح والإكمال والإعفاء والدخول الوزاري ودرجات القرار. بوابات الكود والمحاكاة المحلية ناجحة؛ migration `0033` لم تُطبق بعد على STAGING أو Production.
 
 ## البنية التقنية
 
@@ -94,3 +95,4 @@ npm audit --audit-level=low
 - `PROJECT_HANDOFF.md` لخريطة النظام وتسليم التطوير.
 - `docs/POST_AUDIT_STABILIZATION_REPORT.md` لنتيجة دفعات ما بعد التدقيق.
 - `docs/PHASE_20B_FINANCE_ACCOUNTS_INSTALLMENTS_RECEIPTS_QA.md` لعقود Phase 20B وبوابات قبولها.
+- `docs/PHASE_20C_ACADEMIC_GRADE_POLICIES_QA.md` لعقود سياسات الدرجات السنوية ودليل التحقق المحلي وبوابة STAGING.

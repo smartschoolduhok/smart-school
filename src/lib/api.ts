@@ -888,6 +888,61 @@ export function updateGradeSettings(data: Record<string, any>, schoolId?: number
   return fetchApi<Record<string, any>>('/api/grade-settings', { method: 'PUT', body: JSON.stringify(payload) });
 }
 
+// Versioned annual grade policies and student-level academic outcomes.
+export function getGradePolicies(filters: { school_id: number; academic_year_id?: number | null; class_id?: number | null }) {
+  const params = new URLSearchParams({ school_id: String(filters.school_id) });
+  if (filters.academic_year_id != null) params.set('academic_year_id', String(filters.academic_year_id));
+  if (filters.class_id != null) params.set('class_id', String(filters.class_id));
+  return fetchApi<Array<Record<string, any>>>(`/api/grade-policies?${params}`);
+}
+
+export function createGradePolicy(data: Record<string, any>) {
+  return fetchApi<Record<string, any>>('/api/grade-policies', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateGradePolicy(id: number, data: Record<string, any>) {
+  return fetchApi<Record<string, any>>(`/api/grade-policies/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+}
+
+export function transitionGradePolicy(id: number, action: 'approve' | 'lock', data: Record<string, any>) {
+  return fetchApi<Record<string, any>>(`/api/grade-policies/${id}/${action}`, { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function amendGradePolicy(id: number, data: Record<string, any>) {
+  return fetchApi<Record<string, any>>(`/api/grade-policies/${id}/amend`, { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function getGradePolicyHistory(id: number) {
+  return fetchApi<Array<Record<string, any>>>(`/api/grade-policies/${id}/history`);
+}
+
+export function getStudentDecisionPointHistory(policyId: number, studentId: number) {
+  return fetchApi<Array<Record<string, any>>>(`/api/grade-policies/${policyId}/students/${studentId}/decision-points`);
+}
+
+export function saveStudentDecisionPoints(policyId: number, studentId: number, data: Record<string, any>) {
+  return fetchApi<Record<string, any>>(`/api/grade-policies/${policyId}/students/${studentId}/decision-points`, {
+    method: 'PUT', body: JSON.stringify(data),
+  });
+}
+
+export function previewStudentGradePolicy(data: Record<string, any>) {
+  return fetchApi<Record<string, any>>('/api/grade-policies/preview-student', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function getStudentAcademicOutcome(studentId: number, academicYearId?: number | null) {
+  const qs = academicYearId != null ? `?academic_year_id=${academicYearId}` : '';
+  return fetchApi<Record<string, any>>(`/api/academic-outcomes/students/${studentId}${qs}`);
+}
+
+export function getAcademicOutcomeSummary(filters: { school_id: number; academic_year_id?: number | null; class_id?: number | null; section_id?: number | null }) {
+  const params = new URLSearchParams({ school_id: String(filters.school_id) });
+  if (filters.academic_year_id != null) params.set('academic_year_id', String(filters.academic_year_id));
+  if (filters.class_id != null) params.set('class_id', String(filters.class_id));
+  if (filters.section_id != null) params.set('section_id', String(filters.section_id));
+  return fetchApi<Record<string, any>>(`/api/academic-outcomes/summary?${params}`);
+}
+
 // ===========================================
 // Analytics (Phase 5)
 // ===========================================

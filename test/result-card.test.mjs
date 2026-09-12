@@ -152,6 +152,37 @@ test('partial card accepts missing enabled fields without hard failure', () => {
   assert.ok(result.incomplete_subjects[0].missing_fields.includes('second_month'));
 });
 
+test('result card accepts one monthly exam when the annual policy allows it', () => {
+  const settings = { ...monthlySettings, minimum_monthly_exams_per_term: 1 };
+  const result = evaluateResultCard(
+    [subject(1)],
+    [monthlyGrade(1, { second_month: null, third_month: null })],
+    settings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.card_mode, 'complete');
+  assert.deepEqual(result.incomplete_subjects, []);
+});
+
+test('terminal result card policy never grants general exemption', () => {
+  const settings = {
+    ...monthlySettings,
+    exemption_enabled: 0,
+    general_exemption_average_grade: 85,
+    general_exemption_min_subject_grade: 75,
+  };
+  const result = evaluateResultCard(
+    [subject(1)],
+    [monthlyGrade(1, { annual_effort: 99, final_exam: null, final_grade: null, effective_grade: null, result_status: null })],
+    settings,
+    academicYear,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.general_exemption_eligible, false);
+  assert.equal(result.card_mode, 'partial');
+});
+
 test('active subject without a grade record becomes a partial blank row', () => {
   const result = evaluateResultCard([subject(1), subject(2, 'Missing')], [monthlyGrade(1)], monthlySettings, academicYear);
   assert.equal(result.ok, true);
@@ -1285,12 +1316,15 @@ test('snapshot builder freezes order, branding, note, display settings and verif
   const start = worker.indexOf('async function buildResultCardSnapshot');
   const end = worker.indexOf('async function createResultCardForStudent', start);
   const builder = worker.slice(start, end);
-  assert.match(builder, /schema_version: 4/);
+  assert.match(builder, /schema_version: 5/);
   assert.match(builder, /const visibleColumns = buildResultCardColumns\(settings, displaySettings\)/);
   assert.match(builder, /const columnAverages = calculateResultCardColumnAverages\(/);
   assert.match(builder, /visible_columns: visibleColumns/);
   assert.match(builder, /column_averages: columnAverages/);
-  assert.match(builder, /subjects: evaluation\.grades/);
+  assert.match(builder, /subjects: resultCardSubjects/);
+  assert.match(builder, /academic_policy: policy/);
+  assert.match(builder, /decision_points_used/);
+  assert.match(builder, /ministerial_eligibility/);
   assert.match(builder, /display_subject_ids: evaluation\.grades\.map/);
   assert.match(builder, /counted_subject_ids: evaluation\.counted_grades\.map/);
   assert.match(builder, /decision_note: options\.decisionNote/);

@@ -223,6 +223,31 @@ test('plans a real-scale 13-sheet by 26-student workbook without report rows', (
   assert.ok(plan.warnings.some(item => item.field === 'annual_effort'));
 });
 
+test('grade import calculations use the approved settings of the student class', () => {
+  const context = baseContext({ studentCount: 1 });
+  context.settings = {
+    ...context.settings,
+    first_term_input_mode: 'monthly', second_term_input_mode: 'monthly',
+    mid_year_exam_enabled: 0, final_exam_enabled: 0, completion_exam_enabled: 0,
+    minimum_monthly_exams_per_term: 2,
+  };
+  context.settingsByClass = {
+    10: { ...context.settings, minimum_monthly_exams_per_term: 1 },
+  };
+  const subject = context.subjects[0];
+  const rows = [{ _excel_row_number: 2, 'column:0': '5/001', 'column:2': 80, 'column:3': 60 }];
+  const plan = buildGradeImportPlan({
+    grade_sheets: [payloadSheet(subject, rows, {
+      student_number: 'column:0', first_month: 'column:2', third_month: 'column:3',
+    })],
+  }, context);
+  assert.equal(plan.errors.length, 0);
+  assert.equal(plan.records[0].calculated.first_term_average, 80);
+  assert.equal(plan.records[0].calculated.second_term_average, 60);
+  assert.equal(plan.records[0].calculated.annual_effort, 70);
+  assert.equal(plan.records[0].calculated.effective_grade, 70);
+});
+
 test('defaults to updating an existing grade and preserves mapped blank cells', () => {
   const context = baseContext({ studentCount: 1 });
   const assignment = context.assignments[0];
