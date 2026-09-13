@@ -153,6 +153,11 @@ export default function AnalyticsPage() {
   const [blockersData, setBlockersData] = useState<any[]>([]);
   const [studentSummaryData, setStudentSummaryData] = useState<any>(null);
   const [officialOutcomesData, setOfficialOutcomesData] = useState<any>(null);
+  const [officialOutcomeMode, setOfficialOutcomeMode] = useState<'published' | 'live'>('published');
+  const [officialStatusFilter, setOfficialStatusFilter] = useState('');
+  const [officialExemptionFilter, setOfficialExemptionFilter] = useState('');
+  const [officialMinisterialFilter, setOfficialMinisterialFilter] = useState('');
+  const [officialTransitionFilter, setOfficialTransitionFilter] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -332,6 +337,23 @@ export default function AnalyticsPage() {
     );
   }
 
+  const officialOutcomeSource = officialOutcomeMode === 'published'
+    ? officialOutcomesData?.published
+    : officialOutcomesData?.live || officialOutcomesData;
+  const officialOutcomeStudents = (officialOutcomeSource?.students || []).filter((student: any) => (
+    (!officialStatusFilter || student.academic_status === officialStatusFilter)
+    && (!officialExemptionFilter || student.exemption_status === officialExemptionFilter)
+    && (!officialMinisterialFilter || student.ministerial_eligibility === officialMinisterialFilter)
+    && (
+      officialOutcomeMode !== 'published'
+      || !officialTransitionFilter
+      || (officialTransitionFilter === 'pending'
+        && !student.transition_action
+        && (student.academic_status === 'pass' || student.academic_status === 'fail'))
+      || student.transition_action === officialTransitionFilter
+    )
+  ));
+
   // ---- Render ----
   return (
     <div className="space-y-6" dir="rtl">
@@ -360,12 +382,14 @@ export default function AnalyticsPage() {
             onChange={(v) => setFilters((f) => ({ ...f, sectionId: v }))}
             options={sections}
           />
-          <FilterSelect
-            label="المادة"
-            value={filters.subjectId}
-            onChange={(v) => setFilters((f) => ({ ...f, subjectId: v }))}
-            options={subjects}
-          />
+          {activeTab !== 'official-outcomes' && activeTab !== 'student-summary' && (
+            <FilterSelect
+              label="المادة"
+              value={filters.subjectId}
+              onChange={(v) => setFilters((f) => ({ ...f, subjectId: v }))}
+              options={subjects}
+            />
+          )}
           {activeTab === 'student-summary' && (
             <FilterSelect
               label="الطالب"
@@ -436,27 +460,60 @@ export default function AnalyticsPage() {
           {!loading && !error && activeTab === 'official-outcomes' && officialOutcomesData && (
             <div className="space-y-4">
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs leading-6 text-blue-900">
-                هذه أعداد طلاب، وليست أعداد سجلات مواد. تُحسب من السياسة المعتمدة لكل صف، مع فصل النتيجة الدراسية عن أهلية الدخول الوزاري.
+                النتائج المنشورة مصدرها كارت النتيجة الرسمي الثابت. النتائج المحسوبة معاينة حية من الدرجات والسياسة الحالية وقد تتغير قبل النشر.
               </div>
+
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2">
+                <button type="button" onClick={() => setOfficialOutcomeMode('published')} className={`rounded-md px-3 py-2 text-sm font-bold ${officialOutcomeMode === 'published' ? 'bg-blue-700 text-white' : 'bg-white text-gray-700 hover:bg-gray-100'}`}>النتائج الرسمية المنشورة</button>
+                <button type="button" onClick={() => setOfficialOutcomeMode('live')} className={`rounded-md px-3 py-2 text-sm font-bold ${officialOutcomeMode === 'live' ? 'bg-amber-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-100'}`}>المعاينة المحسوبة حاليًا</button>
+              </div>
+
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <Card title="الطلاب المقيمون" value={officialOutcomesData.evaluated_students || 0} />
-                <Card title="ناجح" value={officialOutcomesData.pass_count || 0} colorClass="bg-emerald-50" />
-                <Card title="مكمل" value={officialOutcomesData.completion_count || 0} colorClass="bg-amber-50" />
-                <Card title="راسب" value={officialOutcomesData.fail_count || 0} colorClass="bg-red-50" />
-                <Card title="غير مكتمل" value={officialOutcomesData.incomplete_count || 0} />
-                <Card title="إعفاء عام" value={officialOutcomesData.general_exemption_count || 0} colorClass="bg-indigo-50" />
-                <Card title="مؤهل وزاريًا" value={(officialOutcomesData.ministerial_eligible_count || 0) + (officialOutcomesData.ministerial_comprehensive_count || 0)} colorClass="bg-blue-50" />
-                <Card title="غير مؤهل وزاريًا" value={officialOutcomesData.ministerial_not_eligible_count || 0} colorClass="bg-rose-50" />
+                <Card title={officialOutcomeMode === 'published' ? 'الطلاب المنشورة نتائجهم' : 'الطلاب المحسوبة نتائجهم'} value={officialOutcomeSource?.published_students ?? officialOutcomeSource?.evaluated_students ?? 0} />
+                <Card title="ناجح" value={officialOutcomeSource?.pass_count || 0} colorClass="bg-emerald-50" />
+                <Card title="مكمل" value={officialOutcomeSource?.completion_count || 0} colorClass="bg-amber-50" />
+                <Card title="راسب" value={officialOutcomeSource?.fail_count || 0} colorClass="bg-red-50" />
+                <Card title="غير مكتمل" value={officialOutcomeSource?.incomplete_count || 0} />
+                <Card title="إعفاء عام" value={officialOutcomeSource?.general_exemption_count || 0} colorClass="bg-indigo-50" />
+                <Card title="إعفاء فردي" value={officialOutcomeSource?.individual_exemption_count || 0} colorClass="bg-violet-50" />
+                <Card title="دخول شامل" value={officialOutcomeSource?.ministerial_comprehensive_count || 0} colorClass="bg-cyan-50" />
+                <Card title="مؤهل وزاريًا" value={officialOutcomeSource?.ministerial_eligible_count || 0} colorClass="bg-blue-50" />
+                <Card title="غير مؤهل وزاريًا" value={officialOutcomeSource?.ministerial_not_eligible_count || 0} colorClass="bg-rose-50" />
+                {(officialOutcomeSource?.ministerial_pending_count || 0) > 0 && <Card title="بانتظار الدرجات" value={officialOutcomeSource.ministerial_pending_count} colorClass="bg-amber-50" />}
               </div>
-              {(officialOutcomesData.missing_policy_class_ids || []).length > 0 && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">توجد صفوف بلا سياسة معتمدة؛ لم تُخمن نتائجها: {officialOutcomesData.missing_policy_class_ids.map((id: number) => toArabicDigits(id)).join('، ')}</div>
+
+              {officialOutcomeMode === 'published' && (
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <Card title="مترفع" value={officialOutcomeSource?.promoted_count || 0} colorClass="bg-emerald-50" />
+                  <Card title="معيد" value={officialOutcomeSource?.repeated_count || 0} colorClass="bg-red-50" />
+                  <Card title="متخرج" value={officialOutcomeSource?.graduated_count || 0} colorClass="bg-blue-50" />
+                  <Card title="بانتظار القرار السنوي" value={officialOutcomeSource?.awaiting_transition_count || 0} colorClass="bg-amber-50" />
+                </div>
               )}
+
+              {officialOutcomeMode === 'live' && (officialOutcomesData.live?.missing_policy_class_ids || []).length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">توجد صفوف بلا سياسة معتمدة؛ لم تُخمن نتائجها: {officialOutcomesData.live.missing_policy_class_ids.map((id: number) => toArabicDigits(id)).join('، ')}</div>
+              )}
+
+              <div className="grid gap-3 rounded-lg border border-gray-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-4">
+                <select aria-label="تصفية حسب النتيجة" value={officialStatusFilter} onChange={(event) => setOfficialStatusFilter(event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm"><option value="">كل النتائج</option><option value="pass">ناجح</option><option value="completion">مكمل</option><option value="fail">راسب</option><option value="incomplete">غير مكتمل</option></select>
+                <select aria-label="تصفية حسب الإعفاء" value={officialExemptionFilter} onChange={(event) => setOfficialExemptionFilter(event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm"><option value="">كل حالات الإعفاء</option><option value="general">إعفاء عام</option><option value="individual">إعفاء فردي</option><option value="none">غير معفى</option><option value="not_applicable">غير مطبق</option></select>
+                <select aria-label="تصفية حسب الدخول الوزاري" value={officialMinisterialFilter} onChange={(event) => setOfficialMinisterialFilter(event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm"><option value="">كل حالات الدخول الوزاري</option><option value="comprehensive">دخول شامل</option><option value="eligible">مؤهل</option><option value="not_eligible">غير مؤهل</option><option value="pending">بانتظار الدرجات</option><option value="not_applicable">غير مطبق</option></select>
+                {officialOutcomeMode === 'published' && <select aria-label="تصفية حسب القرار السنوي" value={officialTransitionFilter} onChange={(event) => setOfficialTransitionFilter(event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm"><option value="">كل القرارات السنوية</option><option value="promoted">مترفع</option><option value="repeated">معيد</option><option value="graduated">متخرج</option><option value="pending">بانتظار القرار</option></select>}
+              </div>
+
               <div className="overflow-x-auto rounded-lg border">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-gray-600"><tr><th className="px-3 py-2 text-right">الطالب</th><th className="px-3 py-2 text-right">الصف / الشعبة</th><th className="px-3 py-2 text-center">النتيجة</th><th className="px-3 py-2 text-center">الدخول الوزاري</th><th className="px-3 py-2 text-center">مواد الإكمال</th><th className="px-3 py-2 text-center">درجات القرار</th><th className="px-3 py-2 text-center">الإصدار</th></tr></thead>
+                <table className="w-full min-w-[980px] text-sm">
+                  <thead className="bg-gray-50 text-gray-600"><tr><th className="px-3 py-2 text-right">الطالب</th><th className="px-3 py-2 text-right">الصف / الشعبة</th><th className="px-3 py-2 text-center">النتيجة</th><th className="px-3 py-2 text-center">الإعفاء</th><th className="px-3 py-2 text-center">الدخول الوزاري</th><th className="px-3 py-2 text-center">مواد الإكمال/الرسوب</th><th className="px-3 py-2 text-center">درجات القرار</th><th className="px-3 py-2 text-center">الكارت/السياسة</th>{officialOutcomeMode === 'published' && <th className="px-3 py-2 text-center">القرار السنوي</th>}</tr></thead>
                   <tbody className="divide-y">
-                    {(officialOutcomesData.students || []).map((student: any) => <tr key={student.student_id} className="hover:bg-gray-50"><td className="px-3 py-2 font-medium">{student.student_name}<div className="text-xs text-gray-400">{student.student_number}</div></td><td className="px-3 py-2">{student.class_name}{student.section_name ? ` / ${student.section_name}` : ''}</td><td className="px-3 py-2 text-center"><span className={`rounded-full px-2 py-1 text-xs font-bold ${statusBadge(student.academic_status_label)}`}>{student.academic_status_label}</span></td><td className="px-3 py-2 text-center text-xs">{student.ministerial_eligibility_label}</td><td className="px-3 py-2 text-center">{toArabicDigits(student.adjusted_failed_subjects || 0)}</td><td className="px-3 py-2 text-center">{toArabicDigits(student.decision_points_used || 0)}</td><td className="px-3 py-2 text-center">{toArabicDigits(student.policy_version || 1)}</td></tr>)}
-                    {(officialOutcomesData.students || []).length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">لا توجد نتائج قابلة للحساب بعد</td></tr>}
+                    {officialOutcomeStudents.map((student: any) => {
+                      const outcomeNames = student.completion_subject_names?.length > 0
+                        ? student.completion_subject_names
+                        : student.failed_subject_names || [];
+                      const exemptionLabel = student.exemption_status_label || ({ general: 'إعفاء عام', individual: 'إعفاء فردي', not_applicable: 'غير مطبق', none: 'لا يوجد' } as Record<string, string>)[student.exemption_status] || '—';
+                      return <tr key={`${student.student_id}-${student.result_card_id || student.policy_id || 'live'}`} className="hover:bg-gray-50"><td className="px-3 py-2 font-medium">{student.student_name}<div className="text-xs text-gray-400">{student.student_number}</div></td><td className="px-3 py-2">{student.class_name}{student.section_name ? ` / ${student.section_name}` : ''}</td><td className="px-3 py-2 text-center"><span className={`rounded-full px-2 py-1 text-xs font-bold ${statusBadge(student.academic_status_label)}`}>{student.academic_status_label}</span></td><td className="px-3 py-2 text-center text-xs" title={(student.exempt_subject_names || []).join('، ')}>{exemptionLabel}</td><td className="px-3 py-2 text-center text-xs" title={student.ministerial_reason || ''}>{student.ministerial_eligibility_label}</td><td className="px-3 py-2 text-center text-xs">{outcomeNames.length > 0 ? outcomeNames.join('، ') : toArabicDigits(student.adjusted_failed_subjects || 0)}</td><td className="px-3 py-2 text-center">{toArabicDigits(student.decision_points_used || 0)}</td><td className="px-3 py-2 text-center text-xs">{officialOutcomeMode === 'published' ? student.result_card_number : `v${toArabicDigits(student.policy_version || 1)}`}</td>{officialOutcomeMode === 'published' && <td className="px-3 py-2 text-center text-xs font-bold">{student.transition_action_label}</td>}</tr>;
+                    })}
+                    {officialOutcomeStudents.length === 0 && <tr><td colSpan={officialOutcomeMode === 'published' ? 9 : 8} className="px-3 py-8 text-center text-gray-400">{officialOutcomeMode === 'published' ? 'لا توجد نتائج رسمية منشورة مطابقة للفلاتر' : 'لا توجد نتائج محسوبة مطابقة للفلاتر'}</td></tr>}
                   </tbody>
                 </table>
               </div>

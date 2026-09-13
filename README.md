@@ -11,7 +11,8 @@
 - Phase 20C مكتملة ومندمجة ومنشورة على STAGING؛ تضيف سياسات درجات سنوية مرنة versioned للنجاح والإكمال والإعفاء والدخول الوزاري ودرجات القرار. Migration `0033` مطبقة على STAGING مرة واحدة. بعد تنظيف QA لا توجد سياسة حقيقية معتمدة تلقائيًا؛ يجب إدخال مرجع قرار الوزارة وسياسة كل صف وسنة قبل اعتماد النتائج الرسمية.
 - اجتازت Phase 20C المحاكاة المحلية وSTAGING QA وQuality Gates ونشر Cloudflare بعد الدمج. هذا لا يُعد تصريحًا لـProduction؛ يلزم قرار GO وإعداد ونشر مستقلان.
 - Phase 20D.1 مكتملة ومندمجة في `main` عبر PR `#43` وcommit `87419ea53d36344033221046cd1c76f6f1361a9b`: تضيف دورة نشر وسحب موثقة لكروت النتائج، وتعرض لولي الأمر النتائج المنشورة فقط. Migration `0034` مطبقة على STAGING مرة واحدة.
-- Phase 20D.2 اكتمل تنفيذها وQA على STAGING عبر [PR #44](https://github.com/smartschoolduhok/smart-school/pull/44)، دون دمج: تربط الترفيع والإعادة والتخرج بنسخة محددة من نتيجة رسمية منشورة، وتشتق القرار تلقائيًا. طُبّقت `0035` وحدها بعد backup وتطابق الاستعادة؛ STAGING الآن `36/36` migration بلا pending، مع FK/readiness سليمة. نجحت `1491/1491` regression وQA API والهاتف/RTL والكيبورد، وأُرشفت سجلات QA مع حفظ القرارات النهائية. [تقرير الأدلة](docs/PHASE_20D2_OFFICIAL_PROMOTION_QA.md). Production لم تُستخدم.
+- Phase 20D.2 مكتملة ومندمجة في `main` عبر [PR #44](https://github.com/smartschoolduhok/smart-school/pull/44) وcommit `333df1b8845772a643bd35e4f5611f0cab79bfbf`: تربط الترفيع والإعادة والتخرج بنسخة محددة من نتيجة رسمية منشورة، وتشتق القرار تلقائيًا. طُبّقت `0035` وحدها بعد backup وتطابق الاستعادة؛ STAGING عند إغلاقها `36/36` migration بلا pending، مع FK/readiness سليمة. [تقرير الأدلة](docs/PHASE_20D2_OFFICIAL_PROMOTION_QA.md). Production لم تُستخدم.
+- Phase 20D.3 منفذة محليًا على فرع مستقل وتنتظر PR/Preview: تضيف Result Card v6 عربي/إنكليزي بقالبين للصفوف المنتهية وغير المنتهية، وتُظهر درجات القرار وأسماء مواد الإكمال/الرسوب/الإعفاء وسبب الدخول الوزاري. كما تجعل التحليل الإداري يختار النتائج الرسمية المنشورة افتراضيًا ويفصلها عن المعاينة الحية. لا توجد migration جديدة؛ نجحت `1500/1500` regression وفحوص D1 والاستعادة والبناء. [تقرير الأدلة](docs/PHASE_20D3_RESULT_CARD_ANALYTICS_QA.md).
 
 ## البنية التقنية
 
@@ -102,3 +103,4 @@ npm audit --audit-level=low
 - `docs/PHASE_20C_ACADEMIC_GRADE_POLICIES_QA.md` لعقود سياسات الدرجات السنوية ودليل التحقق المحلي وبوابة STAGING.
 - `docs/PHASE_20D_RESULT_PUBLICATION_QA.md` لدورة نشر النتائج ووصول ولي الأمر وأدلة النسخ والاستعادة وSTAGING QA المصادق عليه.
 - `docs/PHASE_20D2_OFFICIAL_PROMOTION_QA.md` لعقد ربط النتيجة الرسمية بالترفيع والإعادة والتخرج ودليل التحقق المحلي.
+- `docs/PHASE_20D3_RESULT_CARD_ANALYTICS_QA.md` لقالب Result Card v6 والتحليل الرسمي المنشور وأدلة التحقق المحلي.

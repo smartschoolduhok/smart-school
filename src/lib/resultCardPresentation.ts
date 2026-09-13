@@ -135,12 +135,17 @@ export type ResultCardColumnKey =
   | 'annual_effort'
   | 'final_grade'
   | 'effective_grade'
+  | 'policy_source_grade'
+  | 'decision_points'
+  | 'adjusted_grade'
+  | 'academic_status'
   | 'result_status'
   | 'exemption_detail';
 
 export interface ResultCardColumnDescriptor {
   key: ResultCardColumnKey;
   label: string;
+  label_en?: string;
 }
 
 export const RESULT_CARD_NUMERIC_COLUMN_KEYS = [
@@ -180,9 +185,44 @@ const RESULT_CARD_DERIVED_COLUMN_LABELS: Record<Exclude<ResultCardColumnKey, Raw
   annual_effort: 'السعي السنوي',
   final_grade: 'الدرجة النهائية',
   effective_grade: 'الدرجة الفعّالة',
+  policy_source_grade: 'الدرجة المعتمدة',
+  decision_points: 'درجات القرار',
+  adjusted_grade: 'بعد القرار',
+  academic_status: 'الحالة',
   result_status: 'الحالة',
   exemption_detail: 'الإعفاء',
 };
+
+export const RESULT_CARD_COLUMN_ENGLISH_LABELS: Record<ResultCardColumnKey, string> = {
+  subject_name: 'Subject',
+  first_term_grade: 'First term',
+  first_month: 'Month 1',
+  second_month: 'Month 2',
+  first_term_average: 'Term 1 effort',
+  mid_year_exam: 'Mid-year',
+  second_term_grade: 'Second term',
+  third_month: 'Month 3',
+  fourth_month: 'Month 4',
+  second_term_average: 'Term 2 effort',
+  annual_effort: 'Annual effort',
+  final_exam: 'Final exam',
+  completion_exam: 'Supplementary',
+  final_grade: 'Final grade',
+  effective_grade: 'Effective grade',
+  policy_source_grade: 'Policy grade',
+  decision_points: 'Decision points',
+  adjusted_grade: 'Adjusted grade',
+  academic_status: 'Status',
+  result_status: 'Status',
+  exemption_detail: 'Exemption',
+};
+
+function descriptor(key: ResultCardColumnKey): ResultCardColumnDescriptor {
+  const label = key in RAW_GRADE_FIELD_LABELS
+    ? RAW_GRADE_FIELD_LABELS[key as RawGradeField]
+    : RESULT_CARD_DERIVED_COLUMN_LABELS[key as Exclude<ResultCardColumnKey, RawGradeField>];
+  return { key, label, label_en: RESULT_CARD_COLUMN_ENGLISH_LABELS[key] };
+}
 
 export const LEGACY_RESULT_CARD_COLUMNS: readonly ResultCardColumnDescriptor[] = [
   { key: 'subject_name', label: 'المادة' },
@@ -192,6 +232,46 @@ export const LEGACY_RESULT_CARD_COLUMNS: readonly ResultCardColumnDescriptor[] =
   { key: 'result_status', label: 'الحالة' },
   { key: 'exemption_detail', label: 'الإعفاء' },
 ];
+
+/**
+ * Official v6 cards intentionally use a compact decision-focused table.
+ * Raw monthly inputs remain available in grade screens and legacy/custom
+ * snapshots, while the issued A4 card shows the values that explain the
+ * annual decision without shrinking an unbounded number of columns.
+ */
+export function buildOfficialResultCardColumns(
+  schemeInput: GradeSchemeSettingsInput,
+  displayInput: unknown,
+  policyKind: 'terminal' | 'non_terminal' | null,
+): ResultCardColumnDescriptor[] {
+  if (!policyKind) return buildResultCardColumns(schemeInput, displayInput);
+  const scheme = normalizeGradeSchemeSettings(schemeInput);
+  const display = normalizeResultCardDisplaySettings(displayInput);
+  const keys: ResultCardColumnKey[] = ['subject_name'];
+
+  if (policyKind === 'terminal') {
+    keys.push('policy_source_grade', 'decision_points', 'adjusted_grade', 'academic_status');
+    return keys.map(descriptor);
+  }
+
+  if (display.show_first_term_average && scheme.first_term_input_mode !== 'disabled') {
+    keys.push('first_term_average');
+  }
+  if (display.show_mid_year_exam && scheme.mid_year_exam_enabled === 1) {
+    keys.push('mid_year_exam');
+  }
+  if (display.show_second_term_average && scheme.second_term_input_mode !== 'disabled') {
+    keys.push('second_term_average');
+  }
+  if (display.show_annual_effort) keys.push('annual_effort');
+  if (display.show_final_exam && scheme.final_exam_enabled === 1) keys.push('final_exam');
+  if (display.show_completion_exam && scheme.completion_exam_enabled === 1) {
+    keys.push('completion_exam');
+  }
+  keys.push('decision_points', 'adjusted_grade', 'academic_status');
+  if (display.show_exemption_detail) keys.push('exemption_detail');
+  return keys.map(descriptor);
+}
 
 export function buildResultCardColumns(
   schemeInput: GradeSchemeSettingsInput,
@@ -271,6 +351,10 @@ const RESULT_CARD_COLUMN_KEYS = new Set<ResultCardColumnKey>([
   'annual_effort',
   'final_grade',
   'effective_grade',
+  'policy_source_grade',
+  'decision_points',
+  'adjusted_grade',
+  'academic_status',
   'result_status',
   'exemption_detail',
 ]);
@@ -285,7 +369,14 @@ export function snapshotResultCardColumns(input: unknown): ResultCardColumnDescr
     const fallbackLabel = key in RAW_GRADE_FIELD_LABELS
       ? RAW_GRADE_FIELD_LABELS[key as RawGradeField]
       : RESULT_CARD_DERIVED_COLUMN_LABELS[key as Exclude<ResultCardColumnKey, RawGradeField>];
-    return [{ key, label: typeof record.label === 'string' && record.label.trim() ? record.label : fallbackLabel }];
+    const column: ResultCardColumnDescriptor = {
+      key,
+      label: typeof record.label === 'string' && record.label.trim() ? record.label : fallbackLabel,
+    };
+    if (typeof record.label_en === 'string' && record.label_en.trim()) {
+      column.label_en = record.label_en;
+    }
+    return [column];
   });
   return columns.length > 0 ? columns : [...LEGACY_RESULT_CARD_COLUMNS];
 }

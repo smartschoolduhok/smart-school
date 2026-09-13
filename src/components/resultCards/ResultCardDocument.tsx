@@ -9,6 +9,7 @@ import {
   isResultCardNumericColumnKey,
   normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
+  RESULT_CARD_COLUMN_ENGLISH_LABELS,
   snapshotResultCardColumnAverages,
   snapshotResultCardColumns,
   type ResultCardColumnKey,
@@ -39,8 +40,18 @@ interface ResultCardDocumentProps {
 
 interface StudentInfoItem {
   label: string;
+  labelEn: string;
   value: string;
   prominent?: boolean;
+}
+
+function BilingualLabel({ ar, en }: { ar: string; en: string }) {
+  return (
+    <span className="inline-flex flex-col leading-tight">
+      <span>{ar}</span>
+      <span dir="ltr" className="text-[0.72em] font-semibold tracking-wide text-slate-500">{en}</span>
+    </span>
+  );
 }
 
 function displayValue(value: unknown): string {
@@ -48,8 +59,32 @@ function displayValue(value: unknown): string {
   return toArabicDigits(String(value));
 }
 
+function bilingualAcademicStatus(value: unknown): string {
+  const raw = String(value || '');
+  const english = ({
+    'ناجح': 'Pass',
+    'مكمل': 'Supplementary',
+    'راسب': 'Fail',
+    'غير مكتمل': 'Incomplete',
+    'معفو': 'Exempt',
+    'معفى عام': 'Generally exempt',
+  } as Record<string, string>)[raw];
+  return english ? `${raw} / ${english}` : raw || '—';
+}
+
 function renderSubjectCell(row: Record<string, any>, key: ResultCardColumnKey) {
   if (key === 'subject_name') return row.subject_name || row.name || '—';
+  if (key === 'academic_status') {
+    const raw = String(row.academic_status || row.result_status || '');
+    return ({
+      pass: 'ناجح / Pass',
+      fail: 'راسب / Fail',
+      completion: 'مكمل / Supplementary',
+      incomplete: 'غير مكتمل / Incomplete',
+      exempt_individual: 'معفى فرديًا / Individually exempt',
+      exempt_general: 'معفى عامًا / Generally exempt',
+    } as Record<string, string>)[raw] || displayGradeStatus(row.result_status, row.exemption_status) || '—';
+  }
   if (key === 'result_status') {
     return displayGradeStatus(row.result_status, row.exemption_status) ?? '—';
   }
@@ -85,7 +120,7 @@ export function ResultCardDocument({
     card.overall_result_status === 'غير مكتمل';
   const overallStatus = isPartial
     ? 'غير مكتمل'
-    : summary.overall_result_status || card.overall_result_status || '—';
+    : summary.academic_status || summary.overall_result_status || card.overall_result_status || '—';
   const generalExemption = summary.general_exemption_eligible === true ||
     card.general_exemption_status === true || card.general_exemption_status === 1;
   const schoolName = school.name || card.school_name_snapshot || 'المدرسة';
@@ -94,6 +129,7 @@ export function ResultCardDocument({
   const academicYear = data?.academic_year?.name || card.academic_year_snapshot || null;
   const studentName = student.name || card.student_name_snapshot || '—';
   const studentGender = normalizeResultCardGender(student.gender);
+  const templateKind = data?.template_kind || data?.academic_policy?.policy_kind || 'legacy';
   const note = typeof data?.decision_note === 'string' ? data.decision_note.trim() : '';
   const showDecisionNote = displaySettings.show_notes_decisions && note.length > 0;
   const logoUrl = displaySettings.show_school_logo && documentSettings.logo_url
@@ -106,7 +142,7 @@ export function ResultCardDocument({
     displaySettings.show_email_website && school.website ? school.website : null,
   ].filter(Boolean);
   const studentIdentityItems: StudentInfoItem[] = [
-    { label: 'اسم الطالب', value: studentName, prominent: true },
+    { label: 'اسم الطالب', labelEn: 'Student name', value: studentName, prominent: true },
   ];
   if (
     displaySettings.show_student_number &&
@@ -114,60 +150,74 @@ export function ResultCardDocument({
     student.student_number !== undefined &&
     student.student_number !== ''
   ) {
-    studentIdentityItems.push({ label: 'رقم الطالب', value: displayValue(student.student_number) });
+    studentIdentityItems.push({ label: 'رقم الطالب', labelEn: 'Student number', value: displayValue(student.student_number) });
   }
   if (card.status !== 'preview' && card.card_number) {
-    studentIdentityItems.push({ label: 'رقم الكارت', value: displayValue(card.card_number) });
+    studentIdentityItems.push({ label: 'رقم الكارت', labelEn: 'Card number', value: displayValue(card.card_number) });
   }
 
   const academicPlacementItems: StudentInfoItem[] = [];
-  if (className) academicPlacementItems.push({ label: 'الصف', value: className });
-  if (sectionName) academicPlacementItems.push({ label: 'الشعبة', value: sectionName });
+  if (className) academicPlacementItems.push({ label: 'الصف', labelEn: 'Grade', value: className });
+  if (sectionName) academicPlacementItems.push({ label: 'الشعبة', labelEn: 'Section', value: sectionName });
 
   const optionalStudentInfoItems: StudentInfoItem[] = [];
   if (displaySettings.show_exam_number && student.exam_number) {
-    optionalStudentInfoItems.push({ label: 'الرقم الامتحاني', value: displayValue(student.exam_number) });
+    optionalStudentInfoItems.push({ label: 'الرقم الامتحاني', labelEn: 'Exam number', value: displayValue(student.exam_number) });
   }
   if (displaySettings.show_gender && studentGender) {
-    optionalStudentInfoItems.push({ label: 'الجنس', value: studentGender });
+    optionalStudentInfoItems.push({ label: 'الجنس', labelEn: 'Gender', value: studentGender });
   }
 
   const summaryItems = [
-    { label: 'النتيجة العامة', value: overallStatus, primary: true },
+    { label: 'النتيجة العامة', labelEn: 'Overall result', value: bilingualAcademicStatus(overallStatus), primary: true },
     summary.academic_status && summary.academic_status !== overallStatus
-      ? { label: 'حالة السعي والقرار', value: String(summary.academic_status), primary: false }
+      ? { label: 'حالة السعي والقرار', labelEn: 'Academic decision', value: String(summary.academic_status), primary: false }
       : null,
     displaySettings.show_overall_average && summary.overall_average !== null &&
       summary.overall_average !== undefined
-      ? { label: 'المعدل', value: displayValue(summary.overall_average), primary: false }
+      ? { label: 'المعدل', labelEn: 'Average', value: displayValue(summary.overall_average), primary: false }
       : null,
     generalExemption
-      ? { label: 'الإعفاء العام', value: 'معفى عام', primary: false }
+      ? { label: 'الإعفاء العام', labelEn: 'General exemption', value: 'معفى عام / Generally exempt', primary: false }
+      : null,
+    summary.exemption_status === 'individual'
+      ? { label: 'الإعفاء الفردي', labelEn: 'Individual exemption', value: 'يوجد إعفاء فردي / Applied', primary: false }
       : null,
     summary.ministerial_eligibility && summary.ministerial_eligibility_code !== 'not_applicable'
-      ? { label: 'الدخول الوزاري', value: String(summary.ministerial_eligibility), primary: false }
+      ? { label: 'الدخول الوزاري', labelEn: 'Ministerial entry', value: String(summary.ministerial_eligibility), primary: false }
       : null,
     Number(summary.decision_points_used || 0) > 0
-      ? { label: 'درجات القرار المستخدمة', value: displayValue(summary.decision_points_used), primary: false }
+      ? { label: 'درجات القرار المستخدمة', labelEn: 'Decision points used', value: displayValue(summary.decision_points_used), primary: false }
       : null,
     displaySettings.show_appreciation && summary.appreciation
-      ? { label: 'التقدير', value: String(summary.appreciation), primary: false }
+      ? { label: 'التقدير', labelEn: 'Appreciation', value: String(summary.appreciation), primary: false }
       : null,
-  ].filter((item): item is { label: string; value: string; primary: boolean } => item !== null);
+  ].filter((item): item is { label: string; labelEn: string; value: string; primary: boolean } => item !== null);
 
   const countItems = isPartial
     ? []
     : [
         summary.pass_count !== null && summary.pass_count !== undefined
-          ? `ناجح: ${displayValue(summary.pass_count)}`
+          ? `ناجح / Pass: ${displayValue(summary.pass_count)}`
           : null,
         summary.completion_count !== null && summary.completion_count !== undefined
-          ? `مكمل: ${displayValue(summary.completion_count)}`
+          ? `مكمل / Supplementary: ${displayValue(summary.completion_count)}`
           : null,
         summary.fail_count !== null && summary.fail_count !== undefined
-          ? `راسب: ${displayValue(summary.fail_count)}`
+          ? `راسب / Fail: ${displayValue(summary.fail_count)}`
           : null,
       ].filter((item): item is string => item !== null);
+  const outcomeSubjectNotes = [
+    Array.isArray(summary.completion_subject_names) && summary.completion_subject_names.length > 0
+      ? `مواد الإكمال / Supplementary subjects: ${summary.completion_subject_names.join('، ')}`
+      : null,
+    Array.isArray(summary.failed_subject_names) && summary.failed_subject_names.length > 0
+      ? `مواد الرسوب / Failed subjects: ${summary.failed_subject_names.join('، ')}`
+      : null,
+    Array.isArray(summary.exempt_subject_names) && summary.exempt_subject_names.length > 0
+      ? `مواد الإعفاء / Exempt subjects: ${summary.exempt_subject_names.join('، ')}`
+      : null,
+  ].filter((item): item is string => item !== null);
 
   const showStamp = displaySettings.show_signatures_block && (
     documentSettings.official_stamp_url || displaySettings.show_school_stamp_placeholder
@@ -192,13 +242,16 @@ export function ResultCardDocument({
           )}
           <div className="min-w-0 text-center">
             <h1 className="text-xl font-black leading-tight tracking-tight sm:text-2xl">{schoolName}</h1>
+            {school.name_en && (
+              <p dir="ltr" className="mt-0.5 text-xs font-bold tracking-wide text-slate-600 sm:text-sm">{school.name_en}</p>
+            )}
             {displaySettings.show_school_subtitle && documentSettings.result_card_header_text && (
               <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600 sm:text-sm">
                 {documentSettings.result_card_header_text}
               </p>
             )}
             <div className="mt-2 inline-flex items-center border-y-2 border-slate-700 px-6 py-0.5 text-base font-black tracking-wide">
-              كارت النتيجة
+              <BilingualLabel ar="كارت النتيجة" en="RESULT CARD" />
             </div>
             {!logoUrl && academicYear && (
               <p
@@ -229,43 +282,67 @@ export function ResultCardDocument({
             {contactItems.map((item) => <span key={String(item)}>{item}</span>)}
           </div>
         )}
+        <div className="mt-2 flex flex-wrap justify-center gap-2 text-[9px] font-bold uppercase tracking-wide text-slate-600">
+          <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5">
+            {templateKind === 'terminal'
+              ? 'صف منتهٍ / Terminal grade'
+              : templateKind === 'non_terminal'
+                ? 'صف غير منتهٍ / Non-terminal grade'
+                : 'سجل دراسي / Academic record'}
+          </span>
+          {data?.exam_round && (
+            <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5">
+              الدور / Round: {String(data.exam_round)}
+            </span>
+          )}
+        </div>
       </header>
 
       <section className="result-card-student-info rounded-lg border border-slate-300 bg-slate-50/70 px-3 py-2.5">
-        <div className={`grid gap-3 ${academicPlacementItems.length > 0 ? 'sm:grid-cols-2' : ''}`}>
-          <div className="space-y-2 sm:pl-3">
-            {studentIdentityItems.map((item) => (
-              <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
-                <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]">{item.label}</div>
-                <div className={`break-words text-xs leading-snug text-slate-900 sm:text-sm ${item.prominent ? 'font-black' : 'font-bold'}`}>
-                  {item.value}
-                </div>
-              </div>
-            ))}
-          </div>
-          {academicPlacementItems.length > 0 && (
-            <div className="space-y-2 border-t border-slate-300 pt-3 sm:border-r sm:border-t-0 sm:pr-4 sm:pt-0">
-              {academicPlacementItems.map((item) => (
-                <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
-                  <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]">{item.label}</div>
-                  <div className="break-words text-xs font-bold leading-snug text-slate-900 sm:text-sm">
-                    {item.value}
+        <div className={`grid gap-3 ${student.photo_url ? 'grid-cols-[1fr_4.5rem]' : ''}`}>
+          <div>
+            <div className={`grid gap-3 ${academicPlacementItems.length > 0 ? 'sm:grid-cols-2' : ''}`}>
+              <div className="space-y-2 sm:pl-3">
+                {studentIdentityItems.map((item) => (
+                  <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
+                    <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
+                    <div className={`break-words text-xs leading-snug text-slate-900 sm:text-sm ${item.prominent ? 'font-black' : 'font-bold'}`}>
+                      {item.value}
+                    </div>
                   </div>
+                ))}
+              </div>
+              {academicPlacementItems.length > 0 && (
+                <div className="space-y-2 border-t border-slate-300 pt-3 sm:border-r sm:border-t-0 sm:pr-4 sm:pt-0">
+                  {academicPlacementItems.map((item) => (
+                    <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
+                      <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
+                      <div className="break-words text-xs font-bold leading-snug text-slate-900 sm:text-sm">
+                        {item.value}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+            </div>
+            {optionalStudentInfoItems.length > 0 && (
+              <div className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
+                {optionalStudentInfoItems.map((item) => (
+                  <div key={item.label} className="min-w-0">
+                    <span className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} />: </span>
+                    <span className="text-xs font-bold text-slate-800 sm:text-sm">{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {student.photo_url && (
+            <div className="flex flex-col items-center justify-center gap-1">
+              <img src={student.photo_url} alt="صورة الطالب" className="h-20 w-16 rounded border border-slate-300 bg-white object-cover" />
+              <span className="text-[8px] font-bold text-slate-500">الصورة / Photo</span>
             </div>
           )}
         </div>
-        {optionalStudentInfoItems.length > 0 && (
-          <div className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
-            {optionalStudentInfoItems.map((item) => (
-              <div key={item.label} className="min-w-0">
-                <span className="text-[9px] font-bold text-slate-500 sm:text-[10px]">{item.label}: </span>
-                <span className="text-xs font-bold text-slate-800 sm:text-sm">{item.value}</span>
-              </div>
-            ))}
-          </div>
-        )}
       </section>
 
       {card.status === 'cancelled' && (
@@ -295,7 +372,7 @@ export function ResultCardDocument({
                     column.key === 'subject_name' ? 'text-right' : 'text-center'
                   }`}
                 >
-                  {column.label}
+                  <BilingualLabel ar={column.label} en={column.label_en || RESULT_CARD_COLUMN_ENGLISH_LABELS[column.key]} />
                 </th>
               ))}
             </tr>
@@ -344,11 +421,11 @@ export function ResultCardDocument({
 
       <section className={`result-card-summary grid gap-3 ${showDecisionNote ? 'sm:grid-cols-2' : ''}`}>
         <div className="rounded-lg border-2 border-slate-700 p-3">
-          <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black">الخلاصة العامة</h2>
+          <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black"><BilingualLabel ar="الخلاصة العامة" en="Overall summary" /></h2>
           <div className="grid grid-cols-2 gap-2">
             {summaryItems.map((item) => (
               <div key={item.label} className={item.primary ? 'col-span-2 sm:col-span-1' : ''}>
-                <div className="text-[10px] font-bold text-slate-500">{item.label}</div>
+                <div className="text-[10px] font-bold text-slate-500"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
                 <div className={`text-sm ${item.primary ? 'font-black' : 'font-bold'}`}>{item.value}</div>
               </div>
             ))}
@@ -357,11 +434,22 @@ export function ResultCardDocument({
                 {countItems.map((item) => <span key={item}>{item}</span>)}
               </div>
             )}
+            {outcomeSubjectNotes.length > 0 && (
+              <div className="col-span-2 space-y-1 border-t border-slate-200 pt-2 text-[10px] font-bold leading-relaxed text-slate-700">
+                {outcomeSubjectNotes.map(item => <p key={item}>{item}</p>)}
+              </div>
+            )}
+            {summary.ministerial_reason && summary.ministerial_eligibility_code !== 'not_applicable' && (
+              <div className="col-span-2 border-t border-slate-200 pt-2 text-[10px] leading-relaxed text-slate-600">
+                <span className="font-bold">سبب قرار الدخول الوزاري / Ministerial-entry basis: </span>
+                {String(summary.ministerial_reason)}
+              </div>
+            )}
           </div>
         </div>
         {showDecisionNote && (
           <div className="rounded-lg border border-slate-400 p-3">
-            <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black">الملاحظات والقرارات</h2>
+            <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black"><BilingualLabel ar="الملاحظات والقرارات" en="Notes and decisions" /></h2>
             <p className="result-card-note-body min-h-12 whitespace-pre-line text-sm leading-relaxed text-slate-700">{note}</p>
           </div>
         )}
@@ -373,7 +461,8 @@ export function ResultCardDocument({
             {displaySettings.show_signatures_block && (
               <>
                 <p className="font-black">إدارة المدرسة</p>
-                <p className="mx-auto mt-12 max-w-32 border-t border-slate-500 pt-1 text-[10px]">التوقيع</p>
+                <p dir="ltr" className="text-[9px] font-semibold text-slate-500">School administration</p>
+                <p className="mx-auto mt-10 max-w-32 border-t border-slate-500 pt-1 text-[10px]">التوقيع / Signature</p>
               </>
             )}
           </div>
@@ -382,11 +471,11 @@ export function ResultCardDocument({
               documentSettings.official_stamp_url ? (
                 <>
                   <img src={documentSettings.official_stamp_url} alt="الختم الرسمي" className="h-20 w-20 object-contain" />
-                  <p className="mt-1 text-[9px] text-slate-500">الختم الرسمي</p>
+                  <p className="mt-1 text-[9px] text-slate-500">الختم الرسمي / Official stamp</p>
                 </>
               ) : (
                 <div className="flex h-20 w-20 items-center justify-center rounded-full border-2 border-dashed border-slate-400 px-2 text-[9px] font-semibold text-slate-500">
-                  موضع الختم الرسمي
+                  الختم الرسمي<br />Official stamp
                 </div>
               )
             )}
@@ -397,7 +486,7 @@ export function ResultCardDocument({
                 <QRCodeSVG value={verificationUrl} size={100} level="M" />
               ) : card.status === 'preview' ? (
                 <div className="flex h-[100px] w-[100px] items-center justify-center rounded border-2 border-dashed border-slate-300 px-2 text-[9px] font-semibold leading-relaxed text-slate-500">
-                  يُنشأ رمز QR عند إصدار الكارت
+                  يُنشأ رمز QR عند إصدار الكارت<br />Issued with final card
                 </div>
               ) : null
             )}
@@ -409,7 +498,7 @@ export function ResultCardDocument({
           </div>
         </div>
         <div className="result-card-footer-meta mt-3 space-y-1 border-t border-slate-200 pt-2 text-[9px] leading-relaxed text-slate-500">
-          <p>تاريخ الإصدار: {toArabicDigits(formatUnixSecondsDate(card.generated_at))}</p>
+          <p>تاريخ الإصدار / Issue date: {toArabicDigits(formatUnixSecondsDate(card.generated_at))}</p>
           {documentSettings.result_card_footer_text && <p className="whitespace-pre-line">{documentSettings.result_card_footer_text}</p>}
           {documentSettings.verification_note_text && <p className="whitespace-pre-line">{documentSettings.verification_note_text}</p>}
         </div>
