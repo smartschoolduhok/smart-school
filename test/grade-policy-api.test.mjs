@@ -280,6 +280,35 @@ test('approved policies drive terminal allocation, exemption and student-level a
   assert.match(summary.body.data.published.students[0].result_card_number, /^RC-/);
 });
 
+test('published analytics keeps malformed legacy JSON incomplete without failing valid cards', async t => {
+  const f = gradeFixture(t);
+  const insert = f.db.prepare(`
+    INSERT INTO result_cards(
+      school_id,student_id,class_id,academic_year_id,card_number,verification_token,
+      verification_hash,student_name_snapshot,card_data_json,publication_status,
+      publication_revision,published_at
+    ) VALUES(1,?, ?,1,?,?,?,'Legacy Student',?,'published',1,1789297100)
+  `);
+  insert.run(1, 1, 'RC-BROKEN', 'legacy-broken-token', 'legacy-broken-hash', '{broken');
+  insert.run(2, 2, 'RC-VALID', 'legacy-valid-token', 'legacy-valid-hash', JSON.stringify({
+    student: { student_number: 'N-1' },
+    summary: { academic_status_code: 'pass' },
+  }));
+
+  const response = await api(f, 'owner', 'GET', '/api/academic-outcomes/summary?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  const published = response.body.data.published;
+  assert.equal(published.published_students, 2);
+  assert.equal(published.pass_count, 1);
+  assert.equal(published.incomplete_count, 1);
+  assert.equal(published.awaiting_transition_count, 1);
+  const malformed = published.students.find(student => student.student_id === 1);
+  assert.equal(malformed.academic_status, 'incomplete');
+  assert.equal(malformed.ministerial_eligibility, 'not_applicable');
+  assert.equal(malformed.student_number, null);
+  assert.equal(published.students.find(student => student.student_id === 2).student_number, 'N-1');
+});
+
 test('draft policies are visible but never affect official student outcomes', async t => {
   const f = gradeFixture(t);
   const created = await api(f, 'owner', 'POST', '/api/grade-policies', terminalDraft);

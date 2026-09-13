@@ -6745,7 +6745,9 @@ async function loadPublishedAcademicOutcomeSummary(
   let sql = `
     SELECT
       rc.id, rc.student_id, rc.student_name_snapshot,
-      json_extract(rc.card_data_json,'$.student.student_number') AS student_number,
+      CASE WHEN json_valid(rc.card_data_json)
+        THEN json_extract(rc.card_data_json,'$.student.student_number')
+        ELSE NULL END AS student_number,
       rc.class_id, rc.class_name_snapshot, rc.section_id, rc.section_name_snapshot,
       rc.academic_year_id, rc.academic_year_snapshot, rc.card_number,
       rc.publication_revision, rc.published_at, rc.card_data_json

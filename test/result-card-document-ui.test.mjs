@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const vite = await createServer({ root, appType: 'custom', server: { middlewareMode: true, hmr: false } });
 const { ResultCardDocument } = await vite.ssrLoadModule('/src/components/resultCards/ResultCardDocument.tsx');
 after(() => vite.close());
