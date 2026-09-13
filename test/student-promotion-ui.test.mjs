@@ -36,6 +36,8 @@ function baseSelection(overrides = {}) {
     targetAcademicYearId: 4,
     targetClassId: 4,
     targetSectionId: 6,
+    officialResultCardId: 91,
+    officialResultPublicationRevision: 1,
     ...overrides,
   };
 }
@@ -63,6 +65,8 @@ test('graduation payload omits every target placement field', () => {
     school_id: 2,
     source_enrollment_id: 28,
     action: 'graduated',
+    official_result_card_id: 91,
+    official_result_publication_revision: 1,
   });
   assert.equal(Object.hasOwn(request, 'target_academic_year_id'), false);
   assert.equal(Object.hasOwn(request, 'target_class_id'), false);
@@ -79,6 +83,8 @@ test('promotion and repetition payloads require explicit year and class and pres
     target_academic_year_id: 4,
     target_class_id: 4,
     target_section_id: 6,
+    official_result_card_id: 91,
+    official_result_publication_revision: 1,
   });
 });
 
@@ -176,8 +182,8 @@ function bulkSelection(overrides = {}) {
     sourceSectionId: 3,
     targetAcademicYearId: 4,
     rows: [
-      { sourceEnrollmentId: 28, action: 'promoted', targetClassId: 4, targetSectionId: 6 },
-      { sourceEnrollmentId: 29, action: 'graduated', targetClassId: null, targetSectionId: null },
+      { sourceEnrollmentId: 28, action: 'promoted', targetClassId: 4, targetSectionId: 6, officialResultCardId: 91, officialResultPublicationRevision: 1 },
+      { sourceEnrollmentId: 29, action: 'graduated', targetClassId: null, targetSectionId: null, officialResultCardId: 92, officialResultPublicationRevision: 1 },
     ],
     ...overrides,
   };
@@ -191,8 +197,8 @@ test('bulk payload has one explicit target year and keeps per-student decisions 
     source_section_id: 3,
     target_academic_year_id: 4,
     rows: [
-      { source_enrollment_id: 28, action: 'promoted', target_class_id: 4, target_section_id: 6 },
-      { source_enrollment_id: 29, action: 'graduated' },
+      { source_enrollment_id: 28, action: 'promoted', official_result_card_id: 91, official_result_publication_revision: 1, target_class_id: 4, target_section_id: 6 },
+      { source_enrollment_id: 29, action: 'graduated', official_result_card_id: 92, official_result_publication_revision: 1 },
     ],
   });
   assert.equal(buildBulkPromotionRequest(bulkSelection({ targetAcademicYearId: null })), null);
@@ -224,18 +230,15 @@ test('bulk UI provides explicit source cohort, common year, row decisions, previ
     'الصف المصدر',
     'الشعبة المصدر (اختياري)',
     'السنة المستهدفة',
-    'تعيين الكل مترفعين',
-    'تعيين الكل معيدين',
-    'مسح القرارات',
+    'استعادة كل القرارات الرسمية الجاهزة',
+    'النتيجة الرسمية',
     'بحث بالاسم أو الرقم',
     'معاينة إلزامية',
     'تأكيد تنفيذ الترفيع الجماعي',
   ]) {
     assert.match(bulkPageSource, new RegExp(text.replace(/[()]/g, '\\$&')));
   }
-  assert.match(bulkPageSource, /option value="promoted">مترفع/);
-  assert.match(bulkPageSource, /option value="repeated">معيد/);
-  assert.match(bulkPageSource, /option value="graduated">متخرج/);
+  assert.match(bulkPageSource, /row\.officialDecision\?\.required_action/);
   assert.match(bulkPageSource, /option value="skipped">تخطي/);
   assert.match(bulkPageSource, /لن تُحفظ أي كتابة جزئية/);
 });
@@ -249,7 +252,7 @@ test('bulk UI fails closed for limits and stale school or selection responses', 
   assert.match(bulkPageSource, /disabled=\{!canPreview \|\| previewing\}/);
   assert.match(bulkPageSource, /disabled=\{!canExecute \|\| executing\}/);
   assert.match(bulkPageSource, /setPreview\(null\)[\s\S]*setPreviewFingerprint\(null\)[\s\S]*\}, \[fingerprint\]\)/);
-  assert.match(bulkPageSource, /setDecisions\(cohort\.map[\s\S]*\}, \[cohort\]\)/);
+  assert.match(bulkPageSource, /const initialRows = cohort\.map[\s\S]*getOfficialPromotionDecisions/);
   assert.match(bulkPageSource, /setSourceClassId[\s\S]*setSourceSectionId\(null\)/);
   assert.match(bulkUiSource, /current_enrollment_status === 'active'/);
   assert.match(bulkUiSource, /current_promotion_status === 'pending'/);
@@ -265,8 +268,8 @@ test('bulk UI preserves RTL while isolating academic years and student numbers a
 test('bulk search only changes visible rows and never removes hidden decisions from the payload', () => {
   const selection = bulkSelection({
     rows: [
-      { sourceEnrollmentId: 28, action: 'promoted', targetClassId: 4, targetSectionId: 6, fullName: 'أحمد علي', studentNumber: 'QA-001' },
-      { sourceEnrollmentId: 29, action: 'graduated', targetClassId: null, targetSectionId: null, fullName: 'سارة محمد', studentNumber: 'QA-002' },
+      { sourceEnrollmentId: 28, action: 'promoted', targetClassId: 4, targetSectionId: 6, officialResultCardId: 91, officialResultPublicationRevision: 1, fullName: 'أحمد علي', studentNumber: 'QA-001' },
+      { sourceEnrollmentId: 29, action: 'graduated', targetClassId: null, targetSectionId: null, officialResultCardId: 92, officialResultPublicationRevision: 1, fullName: 'سارة محمد', studentNumber: 'QA-002' },
     ],
   });
   const payloadBeforeSearch = buildBulkPromotionRequest(selection);
@@ -308,7 +311,7 @@ test('bulk cohort selection rebuilds from current source scope and excludes fina
   assert.deepEqual(selectBulkPromotionCohort(students, 3, 8, null).map((item) => item.id), [1, 2]);
   assert.deepEqual(selectBulkPromotionCohort(students, 3, 8, 81).map((item) => item.id), [1]);
   assert.deepEqual(selectBulkPromotionCohort(students, 3, 9, null), []);
-  assert.match(bulkPageSource, /setDecisions\(cohort\.map/);
+  assert.match(bulkPageSource, /const initialRows = cohort\.map/);
   assert.match(bulkPageSource, /setTargetAcademicYearId\(null\)[\s\S]*setDefaultTargetClassId\(null\)[\s\S]*setDefaultTargetSectionId\(null\)/);
 });
 

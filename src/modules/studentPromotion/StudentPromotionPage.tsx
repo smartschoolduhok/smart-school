@@ -15,12 +15,14 @@ import { useTenantSchool } from '../../hooks/useTenantSchool';
 import {
   getAcademicYears,
   getClasses,
+  getOfficialPromotionDecisions,
   getSections,
   getStudents,
   previewStudentPromotion,
   promoteStudent,
 } from '../../lib/api';
 import type { AcademicYearRecord } from '../../lib/academicYears';
+import type { OfficialPromotionDecision } from '../../lib/officialPromotion';
 import type { StudentPromotionAction, StudentPromotionData, StudentPromotionPreviewData } from '../../lib/studentPromotion';
 import {
   buildStudentPromotionRequest,
@@ -95,6 +97,9 @@ export default function StudentPromotionPage() {
   const [sourceAcademicYearId, setSourceAcademicYearId] = useState<number | null>(null);
   const [studentId, setStudentId] = useState<number | null>(null);
   const [action, setAction] = useState<StudentPromotionAction | null>(null);
+  const [officialDecision, setOfficialDecision] = useState<OfficialPromotionDecision | null>(null);
+  const [officialDecisionLoading, setOfficialDecisionLoading] = useState(false);
+  const [officialDecisionError, setOfficialDecisionError] = useState('');
   const [targetAcademicYearId, setTargetAcademicYearId] = useState<number | null>(null);
   const [targetClassId, setTargetClassId] = useState<number | null>(null);
   const [targetSectionId, setTargetSectionId] = useState<number | null>(null);
@@ -118,6 +123,9 @@ export default function StudentPromotionPage() {
     setSourceAcademicYearId(null);
     setStudentId(null);
     setAction(null);
+    setOfficialDecision(null);
+    setOfficialDecisionLoading(false);
+    setOfficialDecisionError('');
     setTargetAcademicYearId(null);
     setTargetClassId(null);
     setTargetSectionId(null);
@@ -172,6 +180,49 @@ export default function StudentPromotionPage() {
     });
   }, [captureSchoolRequest, requestedStudentId, schoolId]);
 
+  const activeYear = useMemo(
+    () => academicYears.find((year) => year.id === sourceAcademicYearId) ?? null,
+    [academicYears, sourceAcademicYearId],
+  );
+  const selectedStudent = useMemo(
+    () => students.find((student) => student.id === studentId) ?? null,
+    [studentId, students],
+  );
+
+  useEffect(() => {
+    setOfficialDecision(null);
+    setOfficialDecisionError('');
+    setAction(null);
+    setTargetAcademicYearId(null);
+    setTargetClassId(null);
+    setTargetSectionId(null);
+    const sourceEnrollmentId = selectedStudent?.current_enrollment_id;
+    const sourceClassId = selectedStudent?.class_id ?? null;
+    const sourceSectionId = selectedStudent?.section_id ?? null;
+    if (schoolId == null || sourceEnrollmentId == null) {
+      setOfficialDecisionLoading(false);
+      return;
+    }
+    const isCurrentRequest = captureSchoolRequest();
+    setOfficialDecisionLoading(true);
+    void getOfficialPromotionDecisions(schoolId, [sourceEnrollmentId]).then((response) => {
+      if (!isCurrentRequest()) return;
+      setOfficialDecisionLoading(false);
+      if (response.error || !response.data?.[0]) {
+        setOfficialDecisionError(response.error || 'تعذر قراءة النتيجة الرسمية للطالب');
+        return;
+      }
+      const decision = response.data[0];
+      setOfficialDecision(decision);
+      if (!decision.ready || !decision.required_action) return;
+      setAction(decision.required_action);
+      if (decision.required_action === 'repeated' && sourceClassId != null) {
+        setTargetClassId(sourceClassId);
+        setTargetSectionId(sourceSectionId);
+      }
+    });
+  }, [captureSchoolRequest, schoolId, selectedStudent]);
+
   useEffect(() => {
     sectionRequestIdRef.current += 1;
     const requestId = sectionRequestIdRef.current;
@@ -202,14 +253,6 @@ export default function StudentPromotionPage() {
     });
   }, [schoolId, targetClassId]);
 
-  const activeYear = useMemo(
-    () => academicYears.find((year) => year.id === sourceAcademicYearId) ?? null,
-    [academicYears, sourceAcademicYearId],
-  );
-  const selectedStudent = useMemo(
-    () => students.find((student) => student.id === studentId) ?? null,
-    [studentId, students],
-  );
   const targetYears = useMemo(() => academicYears.filter((year) => (
     year.is_active === 0
     && activeYear != null
@@ -223,7 +266,9 @@ export default function StudentPromotionPage() {
     targetAcademicYearId: action === 'graduated' ? null : targetAcademicYearId,
     targetClassId: action === 'graduated' ? null : targetClassId,
     targetSectionId: action === 'graduated' ? null : targetSectionId,
-  }), [action, schoolId, selectedStudent, targetAcademicYearId, targetClassId, targetSectionId]);
+    officialResultCardId: officialDecision?.official_result?.result_card_id ?? null,
+    officialResultPublicationRevision: officialDecision?.official_result?.publication_revision ?? null,
+  }), [action, officialDecision, schoolId, selectedStudent, targetAcademicYearId, targetClassId, targetSectionId]);
   const selectionFingerprint = promotionSelectionFingerprint(selection);
   const currentFingerprintRef = useRef(selectionFingerprint);
   currentFingerprintRef.current = selectionFingerprint;
@@ -253,17 +298,6 @@ export default function StudentPromotionPage() {
   const canPreview = request != null
     && selectedStudent?.current_academic_year_id === sourceAcademicYearId
     && sectionSelectionReady;
-
-  function changeAction(nextAction: StudentPromotionAction | null) {
-    setAction(nextAction);
-    setTargetAcademicYearId(null);
-    setTargetSectionId(null);
-    if (nextAction === 'repeated' && selectedStudent?.class_id != null) {
-      setTargetClassId(selectedStudent.class_id);
-    } else {
-      setTargetClassId(null);
-    }
-  }
 
   async function requestPreview() {
     const payload = buildStudentPromotionRequest(selection);
@@ -356,7 +390,7 @@ export default function StudentPromotionPage() {
               </div>
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">الطالب</label>
-                <select value={studentId ?? ''} onChange={(event) => { setStudentId(event.target.value ? Number(event.target.value) : null); changeAction(null); }} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <select value={studentId ?? ''} onChange={(event) => setStudentId(event.target.value ? Number(event.target.value) : null)} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                   <option value="">اختر طالبًا</option>
                   {students.map((student) => (
                     <option key={student.id} value={student.id}>{student.full_name} — {student.student_number}</option>
@@ -382,15 +416,28 @@ export default function StudentPromotionPage() {
           <section className="rounded-xl border border-gray-200 bg-white p-6">
             <div className="mb-4 flex items-center gap-2">
               <ArrowLeftRight className="text-blue-600" size={21} />
-              <h2 className="text-lg font-bold text-gray-900">ب) القرار</h2>
+              <h2 className="text-lg font-bold text-gray-900">ب) القرار المستخرج من النتيجة الرسمية</h2>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              {(['promoted', 'repeated', 'graduated'] as StudentPromotionAction[]).map((item) => (
-                <button key={item} type="button" disabled={!selectedStudent?.current_enrollment_id} onClick={() => changeAction(item)} className={`rounded-xl border p-4 text-sm font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${action === item ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-gray-200 text-gray-700 hover:border-blue-300'}`}>
-                  {actionLabel(item)}
-                </button>
-              ))}
-            </div>
+            {!selectedStudent ? (
+              <p className="rounded-lg bg-gray-50 p-4 text-sm text-gray-600">اختر طالبًا لقراءة آخر نتيجة رسمية منشورة.</p>
+            ) : officialDecisionLoading ? (
+              <p className="rounded-lg bg-blue-50 p-4 text-sm text-blue-800">جاري التحقق من النتيجة الرسمية...</p>
+            ) : officialDecisionError ? (
+              <p className="rounded-lg bg-red-50 p-4 text-sm text-red-700">{officialDecisionError}</p>
+            ) : officialDecision?.ready && officialDecision.official_result && action ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <ValueCard label="رقم الكارت" value={officialDecision.official_result.result_card_number} />
+                <ValueCard label="الدور" value={officialDecision.official_result.exam_round} />
+                <ValueCard label="النتيجة" value={officialDecision.official_result.academic_status} />
+                <ValueCard label="نوع الصف" value={officialDecision.official_result.policy_kind === 'terminal' ? 'منتهٍ' : 'غير منتهٍ'} />
+                <ValueCard label="القرار المطلوب" value={actionLabel(action)} />
+              </div>
+            ) : (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                {officialDecision?.blocking_error || 'لا توجد نتيجة رسمية منشورة تسمح بقرار سنوي نهائي.'}
+              </p>
+            )}
+            <p className="mt-3 text-xs text-gray-500">لا يمكن تغيير نوع القرار يدويًا. لتصحيح القرار يجب سحب النتيجة قبل استخدامها ثم إصدار ونشر كارت صحيح.</p>
           </section>
 
           {action && (
@@ -413,10 +460,10 @@ export default function StudentPromotionPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">الصف المستهدف</label>
-                    <select value={targetClassId ?? ''} onChange={(event) => setTargetClassId(event.target.value ? Number(event.target.value) : null)} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm">
+                    <label className="mb-1 block text-sm font-medium text-gray-700">الصف المستهدف{action === 'repeated' ? ' — ثابت للمعيد' : ''}</label>
+                    <select value={targetClassId ?? ''} onChange={(event) => setTargetClassId(event.target.value ? Number(event.target.value) : null)} disabled={action === 'repeated'} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm disabled:bg-gray-100">
                       <option value="">اختر الصف صراحةً</option>
-                      {classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      {classes.filter((item) => action === 'repeated' || item.id !== selectedStudent?.class_id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                     </select>
                   </div>
                   <div>

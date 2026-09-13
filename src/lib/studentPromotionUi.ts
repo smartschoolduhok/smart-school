@@ -10,6 +10,8 @@ export interface StudentPromotionSelection {
   targetAcademicYearId: number | null;
   targetClassId: number | null;
   targetSectionId: number | null;
+  officialResultCardId?: number | null;
+  officialResultPublicationRevision?: number | null;
 }
 
 export function promotionSelectionFingerprint(selection: StudentPromotionSelection): string {
@@ -20,6 +22,8 @@ export function promotionSelectionFingerprint(selection: StudentPromotionSelecti
     selection.targetAcademicYearId,
     selection.targetClassId,
     selection.targetSectionId,
+    selection.officialResultCardId ?? null,
+    selection.officialResultPublicationRevision ?? null,
   ]);
 }
 
@@ -38,6 +42,8 @@ export function buildStudentPromotionRequest(
     selection.schoolId == null
     || selection.sourceEnrollmentId == null
     || selection.action == null
+    || selection.officialResultCardId == null
+    || selection.officialResultPublicationRevision == null
   ) {
     return null;
   }
@@ -47,6 +53,8 @@ export function buildStudentPromotionRequest(
       school_id: selection.schoolId,
       source_enrollment_id: selection.sourceEnrollmentId,
       action: selection.action,
+      official_result_card_id: selection.officialResultCardId,
+      official_result_publication_revision: selection.officialResultPublicationRevision,
     };
   }
 
@@ -58,6 +66,8 @@ export function buildStudentPromotionRequest(
     target_academic_year_id: selection.targetAcademicYearId,
     target_class_id: selection.targetClassId,
     target_section_id: selection.targetSectionId,
+    official_result_card_id: selection.officialResultCardId,
+    official_result_publication_revision: selection.officialResultPublicationRevision,
   };
 }
 

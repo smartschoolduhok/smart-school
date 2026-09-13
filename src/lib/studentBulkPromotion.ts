@@ -2,6 +2,7 @@ import {
   createTransitionClaimSentinel,
   inspectStudentPromotions,
   type SourceEnrollmentRecord,
+  type OfficialPromotionEvidence,
   type StudentPromotionAction,
   type StudentPromotionDatabase,
   type StudentPromotionInspection,
@@ -9,6 +10,7 @@ import {
   type StudentPromotionPreviewData,
   type StudentPromotionRequest,
 } from './studentPromotion.ts';
+import type { OfficialPromotionDecision } from './officialPromotion.ts';
 
 // One Iraqi classroom-sized cohort: this matches the project's default section capacity.
 // The implementation sends JSON bind values and at most six fixed D1 statements, so
@@ -31,6 +33,8 @@ export interface BulkStudentPromotionRowRequest {
   target_class_id?: unknown;
   target_section_id?: unknown;
   target_academic_year_id?: unknown;
+  official_result_card_id?: unknown;
+  official_result_publication_revision?: unknown;
 }
 
 interface ValidatedBulkRow {
@@ -61,6 +65,7 @@ export interface BulkStudentPromotionPreviewRow {
   target: StudentPromotionPreviewData['target'];
   target_enrollment_exists: boolean | null;
   already_applied: boolean;
+  official_result?: OfficialPromotionEvidence;
 }
 
 export interface BulkStudentPromotionSummary {
@@ -252,7 +257,10 @@ function studentPreview(source: SourceEnrollmentRecord | undefined): BulkStudent
   return { id: source.student_id, student_number: source.student_number, full_name: source.student_full_name };
 }
 
-function validPreviewRow(inspection: StudentPromotionInspection): BulkStudentPromotionPreviewRow {
+function validPreviewRow(
+  inspection: StudentPromotionInspection,
+  officialResult?: OfficialPromotionEvidence,
+): BulkStudentPromotionPreviewRow {
   const { source, request, targetYear, targetClass, targetSection, existingTarget, alreadyApplied } = inspection;
   return {
     source_enrollment_id: source.id,
@@ -275,6 +283,7 @@ function validPreviewRow(inspection: StudentPromotionInspection): BulkStudentPro
     } : null,
     target_enrollment_exists: existingTarget != null,
     already_applied: alreadyApplied,
+    ...(officialResult ? { official_result: officialResult } : {}),
   };
 }
 
@@ -334,6 +343,7 @@ async function buildBulkPlan(
   db: StudentPromotionDatabase,
   schoolId: number,
   input: BulkStudentPromotionRequest,
+  officialDecisions?: Map<number, OfficialPromotionDecision>,
 ): Promise<{ ok: true; value: BulkPlan } | { ok: false; error: string }> {
   const validation = validateBulkRequest(input);
   if (!validation.ok) return validation;
@@ -363,8 +373,21 @@ async function buildBulkPlan(
       inspections.push(null);
       return invalidPreviewRow(row, inspection.error, source);
     }
+    const officialDecision = officialDecisions?.get(row.sourceEnrollmentId);
+    if (officialDecisions && (
+      !officialDecision?.ready
+      || !officialDecision.official_result
+      || officialDecision.required_action !== row.action
+    )) {
+      inspections.push(null);
+      return invalidPreviewRow(
+        row,
+        officialDecision?.blocking_error || 'القرار لا يطابق النتيجة الرسمية المنشورة',
+        source,
+      );
+    }
     inspections.push(inspection.value);
-    return validPreviewRow(inspection.value);
+    return validPreviewRow(inspection.value, officialDecision?.official_result ?? undefined);
   });
   const summary = summarize(previewRows);
   return {
@@ -387,8 +410,9 @@ export async function previewBulkStudentPromotion(
   db: StudentPromotionDatabase,
   schoolId: number,
   input: BulkStudentPromotionRequest,
+  officialDecisions?: Map<number, OfficialPromotionDecision>,
 ): Promise<BulkStudentPromotionPreviewResult> {
-  const plan = await buildBulkPlan(db, schoolId, input);
+  const plan = await buildBulkPlan(db, schoolId, input, officialDecisions);
   if (!plan.ok) return { ok: false, status: 400, code: 'invalid_input', error: plan.error };
   return { ok: true, data: plan.value.preview };
 }
@@ -421,6 +445,7 @@ function buildAtomicBulkStatements(
   request: ValidatedBulkRequest,
   inspections: StudentPromotionInspection[],
   alreadyAppliedInspections: StudentPromotionInspection[],
+  officialDecisions?: Map<number, OfficialPromotionDecision>,
 ) {
   // D1Database.batch() is one transaction. The assertion INSERTs intentionally
   // violate the enrollment status CHECK if a concurrent change prevents an exact
@@ -428,6 +453,46 @@ function buildAtomicBulkStatements(
   const payload = bulkMutationPayload(inspections);
   const assertionSource = inspections[0].source;
   const statements = [];
+  if (officialDecisions && inspections.length > 0) {
+    const officialPayload = JSON.stringify(inspections.map((inspection) => {
+      const evidence = officialDecisions.get(inspection.source.id)?.official_result as OfficialPromotionEvidence;
+      return {
+        source_enrollment_id: inspection.source.id,
+        result_card_id: evidence.result_card_id,
+        result_card_publication_revision: evidence.publication_revision,
+        result_card_number: evidence.result_card_number,
+        policy_kind: evidence.policy_kind,
+        academic_status_code: evidence.academic_status_code,
+        decision_action: inspection.request.action,
+        target_academic_year_id: inspection.request.targetAcademicYearId,
+        target_class_id: inspection.request.targetClassId,
+        target_section_id: inspection.request.targetSectionId,
+      };
+    }));
+    statements.push(db.prepare(`
+      INSERT INTO student_promotion_result_decisions (
+        school_id, source_enrollment_id, result_card_id,
+        result_card_publication_revision, result_card_number,
+        policy_kind, academic_status_code, decision_action,
+        target_academic_year_id, target_class_id, target_section_id,
+        actor_user_id
+      )
+      SELECT
+        ?,
+        CAST(json_extract(value,'$.source_enrollment_id') AS INTEGER),
+        CAST(json_extract(value,'$.result_card_id') AS INTEGER),
+        CAST(json_extract(value,'$.result_card_publication_revision') AS INTEGER),
+        json_extract(value,'$.result_card_number'),
+        json_extract(value,'$.policy_kind'),
+        json_extract(value,'$.academic_status_code'),
+        json_extract(value,'$.decision_action'),
+        CAST(json_extract(value,'$.target_academic_year_id') AS INTEGER),
+        CAST(json_extract(value,'$.target_class_id') AS INTEGER),
+        CAST(json_extract(value,'$.target_section_id') AS INTEGER),
+        ?
+      FROM json_each(?)
+    `).bind(schoolId, userId, officialPayload));
+  }
   if (alreadyAppliedInspections.length > 0) {
     const idempotentPayload = bulkIdempotentPayload(alreadyAppliedInspections);
     statements.push(db.prepare(`
@@ -720,8 +785,9 @@ export async function executeBulkStudentPromotion(
   schoolId: number,
   userId: number,
   input: BulkStudentPromotionRequest,
+  officialDecisions?: Map<number, OfficialPromotionDecision>,
 ): Promise<BulkStudentPromotionExecutionResult> {
-  const planResult = await buildBulkPlan(db, schoolId, input);
+  const planResult = await buildBulkPlan(db, schoolId, input, officialDecisions);
   if (!planResult.ok) {
     return { ok: false, status: 400, code: 'invalid_input', error: planResult.error };
   }
@@ -758,6 +824,7 @@ export async function executeBulkStudentPromotion(
         plan.request,
         pendingInspections,
         alreadyAppliedInspections,
+        officialDecisions,
       ));
     } catch {
       return {
@@ -769,7 +836,7 @@ export async function executeBulkStudentPromotion(
     }
   }
 
-  const refreshed = await buildBulkPlan(db, schoolId, input);
+  const refreshed = await buildBulkPlan(db, schoolId, input, officialDecisions);
   if (!refreshed.ok || !refreshed.value.preview.valid) {
     return {
       ok: false,

@@ -170,8 +170,15 @@ import {
   updateStudentPlacementAtomically,
   type StudentWriteValues,
 } from './lib/studentEnrollments'
-import { executeStudentPromotion, previewStudentPromotion } from './lib/studentPromotion'
-import { executeBulkStudentPromotion, previewBulkStudentPromotion } from './lib/studentBulkPromotion'
+import {
+  executeOfficialStudentPromotion,
+  listOfficialPromotionDecisions,
+  previewOfficialStudentPromotion,
+} from './lib/officialPromotion'
+import {
+  executeOfficialBulkStudentPromotion,
+  previewOfficialBulkStudentPromotion,
+} from './lib/officialBulkPromotion'
 import { ANALYTICS_APPLICABLE_GRADE_JOINS } from './lib/subjectApplicability'
 import {
   STUDENT_RELIGION_HEADER_ALIASES,
@@ -4364,13 +4371,33 @@ app.post('/api/student-enrollments/promotion/preview', requireSameSchoolOrAdmin(
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
-    const result = await previewStudentPromotion(db, targetSchool.schoolId, body)
+    const result = await previewOfficialStudentPromotion(db, targetSchool.schoolId, body)
     if (!result.ok) {
       return c.json({ error: result.error, code: result.code, data: result.data }, result.status)
     }
     return c.json({ data: result.data })
   } catch {
     return c.json({ error: 'فشل في معاينة الانتقال السنوي للطالب' }, 500)
+  }
+})
+
+app.post('/api/student-enrollments/promotion/official-decisions', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB
+  const user = c.get('user') as UserContext
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات الاستعلام عن القرارات الرسمية غير صالحة' }, 400)
+    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
+    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+    const result = await listOfficialPromotionDecisions(
+      db,
+      targetSchool.schoolId,
+      body.source_enrollment_ids,
+    )
+    if (!result.ok) return c.json({ error: result.error }, 400)
+    return c.json({ data: result.data })
+  } catch {
+    return c.json({ error: 'فشل في جلب القرارات المرتبطة بالنتائج الرسمية' }, 500)
   }
 })
 
@@ -4384,7 +4411,7 @@ app.post('/api/student-enrollments/promotion/bulk-preview', requireSameSchoolOrA
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
-    const result = await previewBulkStudentPromotion(db, targetSchool.schoolId, body)
+    const result = await previewOfficialBulkStudentPromotion(db, targetSchool.schoolId, body)
     if (!result.ok) {
       return c.json({ error: result.error, code: result.code }, result.status)
     }
@@ -4404,7 +4431,7 @@ app.post('/api/student-enrollments/promotion/bulk', requireSameSchoolOrAdmin(), 
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
-    const result = await executeBulkStudentPromotion(db, targetSchool.schoolId, user.id, body)
+    const result = await executeOfficialBulkStudentPromotion(db, targetSchool.schoolId, user.id, body)
     if (!result.ok) {
       return c.json({ error: result.error, code: result.code, data: result.data }, result.status)
     }
@@ -4424,7 +4451,7 @@ app.post('/api/student-enrollments/promotion', requireSameSchoolOrAdmin(), requi
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
-    const result = await executeStudentPromotion(db, targetSchool.schoolId, user.id, body)
+    const result = await executeOfficialStudentPromotion(db, targetSchool.schoolId, user.id, body)
     if (!result.ok) return c.json({ error: result.error, code: result.code }, result.status)
     return c.json({ data: result.data })
   } catch {
@@ -8288,6 +8315,9 @@ function resultCardPublicationError(error: unknown): {
   }
   if (detail.includes('published_result_card_requires_withdrawal')) {
     return { status: 409, code: 'published_result_card_requires_withdrawal', error: 'يجب سحب النتيجة المنشورة بسبب موثق بدل إلغائها مباشرة' };
+  }
+  if (detail.includes('official_result_already_applied')) {
+    return { status: 409, code: 'official_result_already_applied', error: 'استُخدمت هذه النتيجة في قرار سنوي نهائي؛ لا يمكن سحبها قبل معالجة القرار المرتبط بإجراء إداري مستقل' };
   }
   return { status: 500, code: 'result_card_publication_failed', error: 'فشل في تحديث حالة نشر النتيجة' };
 }

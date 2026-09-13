@@ -23,6 +23,20 @@ export interface StudentPromotionRequest {
   target_academic_year_id?: unknown;
   target_class_id?: unknown;
   target_section_id?: unknown;
+  official_result_card_id?: unknown;
+  official_result_publication_revision?: unknown;
+}
+
+export interface OfficialPromotionEvidence {
+  result_card_id: number;
+  result_card_number: string;
+  publication_revision: number;
+  published_at: number;
+  exam_round: string | null;
+  policy_kind: 'terminal' | 'non_terminal';
+  academic_status_code: 'pass' | 'fail';
+  academic_status: string;
+  required_action: StudentPromotionAction;
 }
 
 export interface ValidatedPromotionRequest {
@@ -95,6 +109,7 @@ export interface StudentPromotionData {
   target_enrollment_id: number | null;
   target_academic_year_id: number | null;
   already_applied: boolean;
+  official_result?: OfficialPromotionEvidence;
 }
 
 export interface StudentPromotionPreviewData {
@@ -133,6 +148,7 @@ export interface StudentPromotionPreviewData {
   } | null;
   target_enrollment_exists: boolean;
   already_applied: boolean;
+  official_result?: OfficialPromotionEvidence;
 }
 
 export interface InvalidStudentPromotionPreviewData {
@@ -164,7 +180,14 @@ export type StudentPromotionResult =
         | 'target_section_required'
         | 'target_section_inactive'
         | 'target_section_mismatch'
-        | 'target_enrollment_conflict';
+        | 'target_enrollment_conflict'
+        | 'official_result_required'
+        | 'official_result_not_published'
+        | 'official_result_incomplete'
+        | 'official_result_completion_pending'
+        | 'official_result_invalid'
+        | 'official_result_stale'
+        | 'official_result_action_mismatch';
       error: string;
     };
 
@@ -375,6 +398,7 @@ function successData(
   action: StudentPromotionAction,
   target: TargetEnrollmentRecord | null,
   alreadyApplied: boolean,
+  officialResult?: OfficialPromotionEvidence,
 ): StudentPromotionResult {
   return {
     ok: true,
@@ -386,6 +410,7 @@ function successData(
       target_enrollment_id: target?.id ?? null,
       target_academic_year_id: target?.academic_year_id ?? null,
       already_applied: alreadyApplied,
+      ...(officialResult ? { official_result: officialResult } : {}),
     },
   };
 }
@@ -881,6 +906,7 @@ export function buildTransitionBatch(
   request: ValidatedPromotionRequest,
   userId: number,
   claimSentinel: number,
+  officialResult?: OfficialPromotionEvidence,
 ): StudentPromotionPreparedStatement[] {
   const targetAcademicYearId = request.targetAcademicYearId as number;
   const targetClassId = request.targetClassId as number;
@@ -1060,7 +1086,36 @@ export function buildTransitionBatch(
     claimSentinel,
   );
 
-  return [finalizeSource, createTarget, normalizeSource];
+  if (!officialResult) return [finalizeSource, createTarget, normalizeSource];
+
+  const recordOfficialDecision = db.prepare(`
+    INSERT INTO student_promotion_result_decisions (
+      school_id, source_enrollment_id, result_card_id,
+      result_card_publication_revision, result_card_number,
+      policy_kind, academic_status_code, decision_action,
+      target_academic_year_id, target_class_id, target_section_id,
+      actor_user_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    source.school_id,
+    source.id,
+    officialResult.result_card_id,
+    officialResult.publication_revision,
+    officialResult.result_card_number,
+    officialResult.policy_kind,
+    officialResult.academic_status_code,
+    request.action,
+    request.targetAcademicYearId,
+    request.targetClassId,
+    request.targetSectionId,
+    userId,
+  );
+
+  return [recordOfficialDecision, finalizeSource, createTarget, normalizeSource];
+}
+
+export interface ExecuteStudentPromotionOptions {
+  officialResult?: OfficialPromotionEvidence;
 }
 
 export async function executeStudentPromotion(
@@ -1068,6 +1123,7 @@ export async function executeStudentPromotion(
   schoolId: number,
   userId: number,
   input: StudentPromotionRequest,
+  options: ExecuteStudentPromotionOptions = {},
 ): Promise<StudentPromotionResult> {
   // Rebuild the transition from fresh database state on every execution.
   // A successful preview is intentionally never trusted as authorization to write.
@@ -1076,10 +1132,10 @@ export async function executeStudentPromotion(
   const { request, source, existingTarget, alreadyApplied } = inspection.value;
 
   if (alreadyApplied) {
-    return successData(source, request.action, existingTarget, true);
+    return successData(source, request.action, existingTarget, true, options.officialResult);
   }
 
-  if (request.action === 'graduated') {
+  if (request.action === 'graduated' && !options.officialResult) {
     const mutation = await db.prepare(`
       UPDATE student_enrollments AS source
       SET status = 'completed',
@@ -1135,12 +1191,83 @@ export async function executeStudentPromotion(
     return sourceLifecycleConflict(finalized ?? source);
   }
 
+  if (request.action === 'graduated') {
+    const officialResult = options.officialResult as OfficialPromotionEvidence;
+    const recordOfficialDecision = db.prepare(`
+      INSERT INTO student_promotion_result_decisions (
+        school_id, source_enrollment_id, result_card_id,
+        result_card_publication_revision, result_card_number,
+        policy_kind, academic_status_code, decision_action,
+        target_academic_year_id, target_class_id, target_section_id,
+        actor_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'graduated', NULL, NULL, NULL, ?)
+    `).bind(
+      source.school_id,
+      source.id,
+      officialResult.result_card_id,
+      officialResult.publication_revision,
+      officialResult.result_card_number,
+      officialResult.policy_kind,
+      officialResult.academic_status_code,
+      userId,
+    );
+    const finalize = db.prepare(`
+      UPDATE student_enrollments AS source
+      SET status='completed', promotion_status='graduated',
+          completed_at=unixepoch(), updated_by_user_id=?
+      WHERE source.id=? AND source.school_id=? AND source.academic_year_id=?
+        AND source.status='active' AND source.promotion_status='pending'
+        AND EXISTS (
+          SELECT 1 FROM students student
+          WHERE student.id=source.student_id
+            AND student.school_id=source.school_id
+            AND student.status='active'
+        )
+        AND EXISTS (
+          SELECT 1 FROM academic_years source_year
+          WHERE source_year.id=source.academic_year_id
+            AND source_year.school_id=source.school_id
+            AND source_year.is_active=1
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM student_enrollments later_enrollment
+          INNER JOIN academic_years later_year
+            ON later_year.id=later_enrollment.academic_year_id
+           AND later_year.school_id=later_enrollment.school_id
+          INNER JOIN academic_years source_year
+            ON source_year.id=source.academic_year_id
+           AND source_year.school_id=source.school_id
+          WHERE later_enrollment.school_id=source.school_id
+            AND later_enrollment.student_id=source.student_id
+            AND later_year.starts_at>source_year.starts_at
+        )
+    `).bind(userId, source.id, source.school_id, source.academic_year_id);
+    try {
+      await db.batch([recordOfficialDecision, finalize]);
+    } catch (error) {
+      throw error;
+    }
+    const finalized = await loadSourceEnrollment(db, source.id);
+    if (finalized?.status==='completed' && finalized.promotion_status==='graduated') {
+      return successData(finalized, request.action, null, false, officialResult);
+    }
+    return sourceLifecycleConflict(finalized ?? source);
+  }
+
   const targetAcademicYearId = request.targetAcademicYearId as number;
 
   const claimSentinel = createTransitionClaimSentinel();
   let batchResults: StudentPromotionMutationResult[];
   try {
-    batchResults = await db.batch(buildTransitionBatch(db, source, request, userId, claimSentinel));
+    batchResults = await db.batch(buildTransitionBatch(
+      db,
+      source,
+      request,
+      userId,
+      claimSentinel,
+      options.officialResult,
+    ));
   } catch (error) {
     const concurrentSource = await loadSourceEnrollment(db, source.id);
     const concurrentTarget = await loadTargetEnrollment(
@@ -1153,7 +1280,7 @@ export async function executeStudentPromotion(
       ? await hasLaterEnrollment(db, concurrentSource)
       : false;
     if (concurrentSource && exactTargetMatches(concurrentSource, concurrentTarget, request)) {
-      return successData(concurrentSource, request.action, concurrentTarget, true);
+      return successData(concurrentSource, request.action, concurrentTarget, true, options.officialResult);
     }
     if (
       concurrentTarget
@@ -1183,14 +1310,15 @@ export async function executeStudentPromotion(
     return failure(409, 'target_enrollment_conflict', 'لم تُمتلك عملية الانتقال أو تغير تسجيل الطالب بالتزامن');
   }
 
-  const claimChanges = batchResults[0]?.meta?.changes;
-  const insertChanges = batchResults[1]?.meta?.changes;
-  const normalizeChanges = batchResults[2]?.meta?.changes;
+  const mutationOffset = options.officialResult ? 1 : 0;
+  const claimChanges = batchResults[mutationOffset]?.meta?.changes;
+  const insertChanges = batchResults[mutationOffset + 1]?.meta?.changes;
+  const normalizeChanges = batchResults[mutationOffset + 2]?.meta?.changes;
   if (claimChanges === 0) {
-    return successData(finalizedSource, request.action, createdTarget, true);
+    return successData(finalizedSource, request.action, createdTarget, true, options.officialResult);
   }
   if (insertChanges === 0 || normalizeChanges === 0) {
     return failure(409, 'lifecycle_conflict', 'لم تكتمل عملية الانتقال السنوي بالحالة المتوقعة');
   }
-  return successData(finalizedSource, request.action, createdTarget, false);
+  return successData(finalizedSource, request.action, createdTarget, false, options.officialResult);
 }

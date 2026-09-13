@@ -8,6 +8,8 @@ export interface BulkPromotionUiRow {
   action: BulkStudentPromotionAction;
   targetClassId: number | null;
   targetSectionId: number | null;
+  officialResultCardId?: number | null;
+  officialResultPublicationRevision?: number | null;
 }
 
 export interface BulkPromotionUiSelection {
@@ -74,6 +76,8 @@ export function bulkPromotionSelectionFingerprint(selection: BulkPromotionUiSele
       action: row.action,
       target_class_id: row.targetClassId,
       target_section_id: row.targetSectionId,
+      official_result_card_id: row.officialResultCardId ?? null,
+      official_result_publication_revision: row.officialResultPublicationRevision ?? null,
     })),
   });
 }
@@ -94,6 +98,10 @@ export function buildBulkPromotionRequest(
     row.action === 'promoted' || row.action === 'repeated'
   ));
   if (needsTargetYear && selection.targetAcademicYearId == null) return null;
+  if (selection.rows.some((row) => (
+    row.action !== 'skipped'
+    && (row.officialResultCardId == null || row.officialResultPublicationRevision == null)
+  ))) return null;
 
   return {
     school_id: selection.schoolId,
@@ -104,6 +112,10 @@ export function buildBulkPromotionRequest(
     rows: selection.rows.map((row) => ({
       source_enrollment_id: row.sourceEnrollmentId,
       action: row.action,
+      ...(row.action !== 'skipped' ? {
+        official_result_card_id: row.officialResultCardId,
+        official_result_publication_revision: row.officialResultPublicationRevision,
+      } : {}),
       ...(row.action === 'promoted' || row.action === 'repeated'
         ? {
             target_class_id: row.targetClassId,

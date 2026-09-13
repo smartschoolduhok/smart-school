@@ -623,6 +623,19 @@ export function getStudentEnrollments(studentId: number | string, schoolId: numb
   return fetchApi<StudentEnrollmentHistoryRecord[]>(`/api/students/${studentId}/enrollments?${params.toString()}`);
 }
 
+export function getOfficialPromotionDecisions(schoolId: number, sourceEnrollmentIds: number[]) {
+  return fetchApi<import('./officialPromotion').OfficialPromotionDecision[]>(
+    '/api/student-enrollments/promotion/official-decisions',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        school_id: schoolId,
+        source_enrollment_ids: sourceEnrollmentIds,
+      }),
+    },
+  );
+}
+
 export function previewStudentPromotion(data: StudentPromotionRequest & { school_id: number }) {
   return fetchApi<StudentPromotionPreviewData | InvalidStudentPromotionPreviewData>('/api/student-enrollments/promotion/preview', {
     method: 'POST',
