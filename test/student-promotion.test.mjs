@@ -2064,9 +2064,9 @@ test('promotion preview and execute APIs are management-only and resolve an expl
     assert.match(route, /requireSameSchoolOrAdmin\(\), requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/);
     assert.match(route, /resolveActiveWriteSchool\(db, user, body\.school_id\)/);
   }
-  assert.match(previewRoute, /previewStudentPromotion\(db, targetSchool\.schoolId, body\)/);
+  assert.match(previewRoute, /previewOfficialStudentPromotion\(db, targetSchool\.schoolId, body\)/);
   assert.doesNotMatch(previewRoute, /\.run\(\)|\.batch\(/);
-  assert.match(executeRoute, /executeStudentPromotion\(db, targetSchool\.schoolId, user\.id, body\)/);
+  assert.match(executeRoute, /executeOfficialStudentPromotion\(db, targetSchool\.schoolId, user\.id, body\)/);
   assert.doesNotMatch(executeRoute, /students\.(?:class_id|section_id)|UPDATE students/);
 });
 
@@ -2082,8 +2082,8 @@ test('bulk promotion APIs share management RBAC, explicit tenant resolution, and
     assert.match(route, /requireSameSchoolOrAdmin\(\), requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/);
     assert.match(route, /resolveActiveWriteSchool\(db, user, body\.school_id\)/);
   }
-  assert.match(previewRoute, /previewBulkStudentPromotion\(db, targetSchool\.schoolId, body\)/);
-  assert.match(executeRoute, /executeBulkStudentPromotion\(db, targetSchool\.schoolId, user\.id, body\)/);
+  assert.match(previewRoute, /previewOfficialBulkStudentPromotion\(db, targetSchool\.schoolId, body\)/);
+  assert.match(executeRoute, /executeOfficialBulkStudentPromotion\(db, targetSchool\.schoolId, user\.id, body\)/);
   assert.doesNotMatch(previewRoute, /\.run\(\)|\.batch\(/);
   assert.doesNotMatch(executeRoute, /UPDATE students|students\.(?:class_id|section_id)/);
 });

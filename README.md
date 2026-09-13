@@ -6,11 +6,12 @@
 
 - Phase 20A1 الخاصة بسلامة الأقساط والدفعات والإيصالات مكتملة ومندمجة وموثقة.
 - دفعة التثبيت اللاحقة للتدقيق مندمجة؛ migrations `0029`–`0031` مطبقة على STAGING، مع عزل وصول ولي الأمر والمدرس وذرّية الدرجات والرواتب والخزنة وتبسيط الواجهة.
-- Phase 20B مكتملة ومندمجة؛ أضافت حساب الطالب المالي، خطط التقسيط الاختيارية، إيصال A4 محسّنًا وعرض ولي الأمر للقراءة فقط. Migration `0032` مطبقة على STAGING، وسجلها يحتوي 33 migration فريدة بلا migrations معلّقة.
+- Phase 20B مكتملة ومندمجة؛ أضافت حساب الطالب المالي، خطط التقسيط الاختيارية، إيصال A4 محسّنًا وعرض ولي الأمر للقراءة فقط. Migration `0032` مطبقة على STAGING؛ كان السجل عند إغلاقها 33 migration فريدة بلا migrations معلّقة.
 - اجتازت Phase 20B النسخ والاستعادة والـpreflight وQA الوظيفي على STAGING، لكن هذا لا يُعد تصريحًا لـProduction؛ يلزم قرار GO وإعداد ونشر مستقلان.
-- Phase 20C مكتملة ومندمجة ومنشورة على STAGING؛ تضيف سياسات درجات سنوية مرنة versioned للنجاح والإكمال والإعفاء والدخول الوزاري ودرجات القرار. Migration `0033` مطبقة على STAGING مرة واحدة وأخيرة، ولا توجد migrations معلّقة. بعد تنظيف QA لا توجد سياسة حقيقية معتمدة تلقائيًا؛ يجب إدخال مرجع قرار الوزارة وسياسة كل صف وسنة قبل اعتماد النتائج الرسمية.
+- Phase 20C مكتملة ومندمجة ومنشورة على STAGING؛ تضيف سياسات درجات سنوية مرنة versioned للنجاح والإكمال والإعفاء والدخول الوزاري ودرجات القرار. Migration `0033` مطبقة على STAGING مرة واحدة. بعد تنظيف QA لا توجد سياسة حقيقية معتمدة تلقائيًا؛ يجب إدخال مرجع قرار الوزارة وسياسة كل صف وسنة قبل اعتماد النتائج الرسمية.
 - اجتازت Phase 20C المحاكاة المحلية وSTAGING QA وQuality Gates ونشر Cloudflare بعد الدمج. هذا لا يُعد تصريحًا لـProduction؛ يلزم قرار GO وإعداد ونشر مستقلان.
-- Phase 20D.1 مكتملة على PR `#43` وجاهزة للمراجعة دون دمج تلقائي: تضيف دورة نشر وسحب موثقة لكروت النتائج، وتعرض لولي الأمر النتائج المنشورة فقط. نجحت Quality Gates وCloudflare Branch Preview والنسخ والاستعادة وSTAGING QA المصادق عليه؛ migration `0034` مطبقة على STAGING مرة واحدة وأخيرة بلا pending وبـFK/readiness سليمة. لم يُمس Production.
+- Phase 20D.1 مكتملة ومندمجة في `main` عبر PR `#43` وcommit `87419ea53d36344033221046cd1c76f6f1361a9b`: تضيف دورة نشر وسحب موثقة لكروت النتائج، وتعرض لولي الأمر النتائج المنشورة فقط. Migration `0034` مطبقة على STAGING مرة واحدة.
+- Phase 20D.2 اكتمل تنفيذها وQA على STAGING عبر [PR #44](https://github.com/smartschoolduhok/smart-school/pull/44)، دون دمج: تربط الترفيع والإعادة والتخرج بنسخة محددة من نتيجة رسمية منشورة، وتشتق القرار تلقائيًا. طُبّقت `0035` وحدها بعد backup وتطابق الاستعادة؛ STAGING الآن `36/36` migration بلا pending، مع FK/readiness سليمة. نجحت `1491/1491` regression وQA API والهاتف/RTL والكيبورد، وأُرشفت سجلات QA مع حفظ القرارات النهائية. [تقرير الأدلة](docs/PHASE_20D2_OFFICIAL_PROMOTION_QA.md). Production لم تُستخدم.
 
 ## البنية التقنية
 
@@ -71,6 +72,7 @@ npm run typecheck
 npm run test:regressions
 npm run test:finance-seed:local
 npm run test:backup-restore:local
+npm run test:official-promotion:local
 npm run build
 npm audit --audit-level=low
 ```
@@ -99,3 +101,4 @@ npm audit --audit-level=low
 - `docs/PHASE_20B_FINANCE_ACCOUNTS_INSTALLMENTS_RECEIPTS_QA.md` لعقود Phase 20B وبوابات قبولها.
 - `docs/PHASE_20C_ACADEMIC_GRADE_POLICIES_QA.md` لعقود سياسات الدرجات السنوية ودليل التحقق المحلي وبوابة STAGING.
 - `docs/PHASE_20D_RESULT_PUBLICATION_QA.md` لدورة نشر النتائج ووصول ولي الأمر وأدلة النسخ والاستعادة وSTAGING QA المصادق عليه.
+- `docs/PHASE_20D2_OFFICIAL_PROMOTION_QA.md` لعقد ربط النتيجة الرسمية بالترفيع والإعادة والتخرج ودليل التحقق المحلي.

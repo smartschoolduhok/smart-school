@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Search, ShieldCheck, UsersRound } from 'lucide-react';
 import {
   getSections,
+  getOfficialPromotionDecisions,
   previewBulkStudentPromotion,
   promoteStudentsBulk,
 } from '../../lib/api';
 import type { AcademicYearRecord } from '../../lib/academicYears';
+import type { OfficialPromotionDecision } from '../../lib/officialPromotion';
 import {
   MAX_BULK_PROMOTION_ROWS,
   type BulkStudentPromotionAction,
@@ -23,7 +25,6 @@ import {
   type BulkPromotionUiSelection,
 } from '../../lib/studentBulkPromotionUi';
 import type { EffectiveStudentRecord } from '../../lib/studentEnrollments';
-import { enrollmentStatusLabel, promotionStatusLabel } from '../../lib/studentProfilePresentation';
 import type { Class, Section } from '../../types';
 
 interface Props {
@@ -43,6 +44,7 @@ interface StudentDecision extends BulkPromotionUiRow {
   sourceSectionName: string | null;
   enrollmentStatus: string | null;
   promotionStatus: string | null;
+  officialDecision: OfficialPromotionDecision | null;
 }
 
 function actionLabel(action: BulkStudentPromotionAction): string {
@@ -76,6 +78,8 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
   const [executing, setExecuting] = useState(false);
   const [executionError, setExecutionError] = useState('');
   const [executionResult, setExecutionResult] = useState<BulkStudentPromotionExecutionData | null>(null);
+  const [officialDecisionsLoading, setOfficialDecisionsLoading] = useState(false);
+  const [officialDecisionsError, setOfficialDecisionsError] = useState('');
 
   const activeYear = useMemo(
     () => academicYears.find((year) => Number(year.is_active) === 1) ?? null,
@@ -125,7 +129,8 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
   ), [activeYear?.id, sourceClassId, sourceSectionId, students]);
 
   useEffect(() => {
-    setDecisions(cohort.map((student) => ({
+    let cancelled = false;
+    const initialRows = cohort.map((student) => ({
       studentId: student.id,
       studentNumber: student.student_number,
       fullName: student.full_name,
@@ -136,15 +141,53 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
       sourceSectionName: student.section_name,
       enrollmentStatus: student.current_enrollment_status,
       promotionStatus: student.current_promotion_status,
+      officialDecision: null,
       action: 'skipped',
       targetClassId: null,
       targetSectionId: null,
-    })));
+      officialResultCardId: null,
+      officialResultPublicationRevision: null,
+    } satisfies StudentDecision));
+    setDecisions(initialRows);
     setTargetAcademicYearId(null);
     setDefaultTargetClassId(null);
     setDefaultTargetSectionId(null);
     setSearch('');
-  }, [cohort]);
+    setOfficialDecisionsError('');
+    if (initialRows.length === 0) {
+      setOfficialDecisionsLoading(false);
+      return () => { cancelled = true; };
+    }
+    setOfficialDecisionsLoading(true);
+    void getOfficialPromotionDecisions(
+      schoolId,
+      initialRows.map(row => row.sourceEnrollmentId),
+    ).then((response) => {
+      if (cancelled) return;
+      setOfficialDecisionsLoading(false);
+      if (response.error || !response.data) {
+        setOfficialDecisionsError(response.error || 'تعذر قراءة النتائج الرسمية للمجموعة');
+        return;
+      }
+      const bySource = new Map(response.data.map(item => [item.source_enrollment_id, item]));
+      setDecisions(initialRows.map((row) => {
+        const official = bySource.get(row.sourceEnrollmentId) ?? null;
+        const action = official?.ready && official.required_action
+          ? official.required_action
+          : 'skipped';
+        return {
+          ...row,
+          officialDecision: official,
+          action,
+          targetClassId: action === 'repeated' ? row.sourceClassId : null,
+          targetSectionId: action === 'repeated' ? row.sourceSectionId : null,
+          officialResultCardId: official?.official_result?.result_card_id ?? null,
+          officialResultPublicationRevision: official?.official_result?.publication_revision ?? null,
+        };
+      }));
+    });
+    return () => { cancelled = true; };
+  }, [cohort, schoolId]);
 
   const selection = useMemo<BulkPromotionUiSelection>(() => ({
     schoolId,
@@ -157,6 +200,8 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
       action: row.action,
       targetClassId: row.targetClassId,
       targetSectionId: row.targetSectionId,
+      officialResultCardId: row.officialResultCardId,
+      officialResultPublicationRevision: row.officialResultPublicationRevision,
     })),
   }), [activeYear?.id, decisions, schoolId, sourceClassId, sourceSectionId, targetAcademicYearId]);
   const fingerprint = bulkPromotionSelectionFingerprint(selection);
@@ -186,6 +231,8 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
   const canPreview = request != null
     && selectedCount > 0
     && cohortWithinLimit
+    && !officialDecisionsLoading
+    && !officialDecisionsError
     && !sectionsLoading
     && !sectionsError
     && rowTargetsReady;
@@ -202,6 +249,8 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
 
   function setRowAction(sourceEnrollmentId: number, action: BulkStudentPromotionAction) {
     updateDecision(sourceEnrollmentId, (row) => {
+      const required = row.officialDecision?.required_action;
+      if (action !== 'skipped' && action !== required) return row;
       if (action === 'promoted') {
         return { ...row, action, targetClassId: defaultTargetClassId, targetSectionId: defaultTargetSectionId };
       }
@@ -212,8 +261,11 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
     });
   }
 
-  function applyToAll(action: BulkStudentPromotionAction) {
+  function restoreOfficialDecisions() {
     setDecisions((current) => current.map((row) => {
+      const action = row.officialDecision?.ready
+        ? row.officialDecision.required_action ?? 'skipped'
+        : 'skipped';
       if (action === 'promoted') {
         return { ...row, action, targetClassId: defaultTargetClassId, targetSectionId: defaultTargetSectionId };
       }
@@ -222,6 +274,25 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
       }
       return { ...row, action, targetClassId: null, targetSectionId: null };
     }));
+  }
+
+  function setDefaultPromotedClass(value: number | null) {
+    setDefaultTargetClassId(value);
+    setDefaultTargetSectionId(null);
+    setDecisions(current => current.map(row => (
+      row.action === 'promoted'
+        ? { ...row, targetClassId: value, targetSectionId: null }
+        : row
+    )));
+  }
+
+  function setDefaultPromotedSection(value: number | null) {
+    setDefaultTargetSectionId(value);
+    setDecisions(current => current.map(row => (
+      row.action === 'promoted' && row.targetClassId === defaultTargetClassId
+        ? { ...row, targetSectionId: value }
+        : row
+    )));
   }
 
   async function requestPreview() {
@@ -309,24 +380,24 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
               </div>
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">الصف الافتراضي للمترفعين</label>
-                <select value={defaultTargetClassId ?? ''} onChange={(event) => { setDefaultTargetClassId(event.target.value ? Number(event.target.value) : null); setDefaultTargetSectionId(null); }} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm">
+                <select value={defaultTargetClassId ?? ''} onChange={(event) => setDefaultPromotedClass(event.target.value ? Number(event.target.value) : null)} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm">
                   <option value="">اختر الصف صراحةً</option>
-                  {classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  {classes.filter((item) => item.id !== sourceClassId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
               </div>
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">الشعبة الافتراضية</label>
-                <select value={defaultTargetSectionId ?? ''} onChange={(event) => setDefaultTargetSectionId(event.target.value ? Number(event.target.value) : null)} disabled={defaultTargetClassId == null || defaultTargetSections.length === 0} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm disabled:bg-gray-100">
+                <select value={defaultTargetSectionId ?? ''} onChange={(event) => setDefaultPromotedSection(event.target.value ? Number(event.target.value) : null)} disabled={defaultTargetClassId == null || defaultTargetSections.length === 0} className="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm disabled:bg-gray-100">
                   <option value="">{defaultTargetSections.length ? 'اختر الشعبة صراحةً' : 'لا توجد شعب فعالة'}</option>
                   {defaultTargetSections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}
                 </select>
               </div>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" onClick={() => applyToAll('promoted')} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white">تعيين الكل مترفعين</button>
-              <button type="button" onClick={() => applyToAll('repeated')} className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white">تعيين الكل معيدين</button>
-              <button type="button" onClick={() => applyToAll('skipped')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700">مسح القرارات</button>
+              <button type="button" onClick={restoreOfficialDecisions} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white">استعادة كل القرارات الرسمية الجاهزة</button>
             </div>
+            {officialDecisionsLoading && <p className="mt-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-800">جاري قراءة النتائج الرسمية المنشورة للمجموعة...</p>}
+            {officialDecisionsError && <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{officialDecisionsError}</p>}
           </section>
 
           <section className="rounded-xl border border-gray-200 bg-white p-6">
@@ -342,7 +413,7 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
             </div>
             <div className="mt-4 overflow-x-auto">
               <table className="min-w-[1050px] w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600"><tr><th className="p-3 text-right">الطالب</th><th className="p-3 text-right">الموقع الحالي</th><th className="p-3 text-right">حالة التسجيل / القرار الحالي</th><th className="p-3 text-right">القرار الجديد</th><th className="p-3 text-right">الصف المستهدف</th><th className="p-3 text-right">الشعبة المستهدفة</th><th className="p-3 text-right">حالة المعاينة</th></tr></thead>
+                <thead className="bg-gray-50 text-gray-600"><tr><th className="p-3 text-right">الطالب</th><th className="p-3 text-right">الموقع الحالي</th><th className="p-3 text-right">النتيجة الرسمية</th><th className="p-3 text-right">القرار</th><th className="p-3 text-right">الصف المستهدف</th><th className="p-3 text-right">الشعبة المستهدفة</th><th className="p-3 text-right">حالة المعاينة</th></tr></thead>
                 <tbody className="divide-y divide-gray-100">
                   {visibleRows.map((row) => {
                     const rowPreview = previewCurrent ? preview?.rows.find((item) => item.source_enrollment_id === row.sourceEnrollmentId) : null;
@@ -352,9 +423,9 @@ export default function BulkStudentPromotionPanel({ schoolId, academicYears, cla
                       <tr key={row.sourceEnrollmentId} className={rowPreview?.state === 'invalid' ? 'bg-red-50/60' : ''}>
                         <td className="p-3"><p className="font-medium text-gray-900">{row.fullName}</p><bdi dir="ltr" className="text-xs text-gray-500">{row.studentNumber}</bdi></td>
                         <td className="p-3">{row.sourceClassName}{row.sourceSectionName ? ` / ${row.sourceSectionName}` : ''}</td>
-                        <td className="p-3">{enrollmentStatusLabel(row.enrollmentStatus)} / {promotionStatusLabel(row.promotionStatus)}</td>
-                        <td className="p-3"><select value={row.action} onChange={(event) => setRowAction(row.sourceEnrollmentId, event.target.value as BulkStudentPromotionAction)} className="rounded-lg border border-gray-200 px-2 py-2"><option value="skipped">تخطي</option><option value="promoted">مترفع</option><option value="repeated">معيد</option><option value="graduated">متخرج</option></select></td>
-                        <td className="p-3"><select value={row.targetClassId ?? ''} onChange={(event) => updateDecision(row.sourceEnrollmentId, (current) => ({ ...current, targetClassId: event.target.value ? Number(event.target.value) : null, targetSectionId: null }))} disabled={!needsTarget} className="w-full rounded-lg border border-gray-200 px-2 py-2 disabled:bg-gray-100"><option value="">—</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></td>
+                        <td className="p-3">{row.officialDecision?.ready && row.officialDecision.official_result ? <><p className="font-medium text-gray-900">{row.officialDecision.official_result.academic_status}</p><p className="text-xs text-gray-500">{row.officialDecision.official_result.result_card_number} / {row.officialDecision.official_result.exam_round || '—'}</p></> : <p className="max-w-56 text-xs text-amber-800">{row.officialDecision?.blocking_error || (officialDecisionsLoading ? 'جاري التحقق...' : 'لا توجد نتيجة جاهزة')}</p>}</td>
+                        <td className="p-3"><select value={row.action} onChange={(event) => setRowAction(row.sourceEnrollmentId, event.target.value as BulkStudentPromotionAction)} disabled={!row.officialDecision?.ready} className="rounded-lg border border-gray-200 px-2 py-2 disabled:bg-gray-100"><option value="skipped">تخطي</option>{row.officialDecision?.required_action && <option value={row.officialDecision.required_action}>{actionLabel(row.officialDecision.required_action)}</option>}</select></td>
+                        <td className="p-3"><select value={row.targetClassId ?? ''} onChange={(event) => updateDecision(row.sourceEnrollmentId, (current) => ({ ...current, targetClassId: event.target.value ? Number(event.target.value) : null, targetSectionId: null }))} disabled={row.action !== 'promoted'} title={row.action === 'repeated' ? 'يبقى المعيد في الصف نفسه' : undefined} className="w-full rounded-lg border border-gray-200 px-2 py-2 disabled:bg-gray-100"><option value="">—</option>{classes.filter((item) => row.action === 'repeated' || item.id !== row.sourceClassId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></td>
                         <td className="p-3"><select value={row.targetSectionId ?? ''} onChange={(event) => updateDecision(row.sourceEnrollmentId, (current) => ({ ...current, targetSectionId: event.target.value ? Number(event.target.value) : null }))} disabled={!needsTarget || row.targetClassId == null || targetSections.length === 0} className="w-full rounded-lg border border-gray-200 px-2 py-2 disabled:bg-gray-100"><option value="">—</option>{targetSections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select></td>
                         <td className="p-3">{rowPreview ? <div className={rowPreview.skipped ? 'text-gray-500' : rowPreview.valid ? 'text-green-700' : 'text-red-700'}><p className="font-medium">{rowPreview.skipped ? 'متخطى' : rowPreview.already_applied ? 'مطبق مسبقًا' : rowPreview.valid ? 'صالح' : 'يحتاج مراجعة'}</p>{rowPreview.blocking_errors.map((error) => <p key={error} className="mt-1 text-xs">{error}</p>)}{rowPreview.warnings.map((warning) => <p key={warning} className="mt-1 text-xs">{warning}</p>)}</div> : <span className="text-gray-400">بانتظار المعاينة</span>}</td>
                       </tr>
