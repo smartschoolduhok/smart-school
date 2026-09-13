@@ -6,6 +6,7 @@ import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSel
 import {
   getResultCards, getResultCard, generateStudentResultCard,
   generateSectionResultCards, markResultCardPrinted, cancelResultCard,
+  publishResultCard, withdrawResultCard,
   previewStudentResultCard, verifyResultCard,
   getStudents, getClasses, getSections
 } from '../../lib/api';
@@ -19,7 +20,7 @@ import {
 import type { RoleKey } from '../../types';
 import {
   FileText, Printer, Search, User, Users, CheckCircle, AlertCircle,
-  Loader2, QrCode, XCircle, Eye, CheckSquare, Globe
+  Loader2, QrCode, XCircle, Eye, CheckSquare, Globe, Send, Undo2
 } from 'lucide-react';
 
 /* ─── Helpers ─── */
@@ -58,6 +59,16 @@ function resultStatusBadge(status: string | null) {
   return <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${cls}`}>{status}</span>;
 }
 
+function publicationStatusBadge(status: string | null) {
+  const cls = status === 'published'
+    ? 'bg-blue-100 text-blue-700'
+    : status === 'withdrawn'
+      ? 'bg-red-100 text-red-700'
+      : 'bg-amber-100 text-amber-800';
+  const label = status === 'published' ? 'منشورة' : status === 'withdrawn' ? 'مسحوبة' : 'مسودة';
+  return <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${cls}`}>{label}</span>;
+}
+
 /* ─── Types ─── */
 type TabKey = 'generate-student' | 'generate-section' | 'list' | 'verify';
 
@@ -76,6 +87,11 @@ interface CardRecord {
   printed_at: number | null;
   status: string;
   verification_token: string | null;
+  publication_status: 'draft' | 'published' | 'withdrawn';
+  publication_revision: number;
+  published_at?: number | null;
+  withdrawn_at?: number | null;
+  withdrawal_reason?: string | null;
   card_data_parsed?: Record<string, any>;
 }
 
@@ -200,7 +216,7 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
     } else {
-      setMessage({ text: (res.data as any)?.message || 'تم إنشاء الكارت بنجاح', type: 'success' });
+      setMessage({ text: (res.data as any)?.message || 'تم إنشاء الكارت كمسودة للمراجعة', type: 'success' });
       setCard(res.data?.card || null);
       if (res.data?.card?.id) {
         const d = await getResultCard(res.data.card.id, schoolId);
@@ -566,14 +582,14 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState(false);
-  const [filters, setFilters] = useState<{ status: string; student_id: string }>({ status: '', student_id: '' });
+  const [filters, setFilters] = useState<{ status: string; publication_status: string; student_id: string }>({ status: '', publication_status: '', student_id: '' });
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [students, setStudents] = useState<StudentOption[]>([]);
 
   useEffect(() => {
     setCards([]);
     setStudents([]);
-    setFilters({ status: '', student_id: '' });
+    setFilters({ status: '', publication_status: '', student_id: '' });
     setLoading(false);
     setMessage(null);
     void loadCards();
@@ -587,6 +603,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
     const res = await getResultCards({
       school_id: schoolId,
       status: filters.status || null,
+      publication_status: (filters.publication_status || null) as 'draft' | 'published' | 'withdrawn' | null,
       student_id: filters.student_id ? Number(filters.student_id) : null,
     });
     if (!isCurrent()) return;
@@ -612,9 +629,32 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
     setTimeout(() => setMessage(null), 3000);
   }
 
+  async function handlePublish(card: CardRecord) {
+    if (schoolId == null || card.id == null) return;
+    if (!window.confirm('نشر هذه النتيجة سيجعلها ظاهرة لولي الأمر وقابلة للتحقق العام. هل تريد المتابعة؟')) return;
+    const isCurrent = captureSchoolRequest();
+    const res = await publishResultCard(card.id, schoolId, card.publication_revision);
+    if (!isCurrent()) return;
+    if (res.error) setMessage({ text: res.error, type: 'error' });
+    else { setMessage({ text: 'تم نشر النتيجة رسميًا', type: 'success' }); void loadCards(); }
+    setTimeout(() => setMessage(null), 4000);
+  }
+
+  async function handleWithdraw(card: CardRecord) {
+    if (schoolId == null || card.id == null) return;
+    const reason = window.prompt('اكتب سبب سحب النتيجة المنشورة. سيُحفظ السبب في سجل التدقيق:')?.trim();
+    if (!reason) return;
+    const isCurrent = captureSchoolRequest();
+    const res = await withdrawResultCard(card.id, schoolId, card.publication_revision, reason);
+    if (!isCurrent()) return;
+    if (res.error) setMessage({ text: res.error, type: 'error' });
+    else { setMessage({ text: 'تم سحب النتيجة المنشورة وحفظ السبب', type: 'success' }); void loadCards(); }
+    setTimeout(() => setMessage(null), 4000);
+  }
+
   async function handleCancel(id: number) {
     if (schoolId == null) return;
-    if (!window.confirm('هل أنت متأكد من إلغاء هذا الكارت؟')) return;
+    if (!window.confirm('هل أنت متأكد من إلغاء مسودة هذا الكارت؟')) return;
     const isCurrent = captureSchoolRequest();
     const res = await cancelResultCard(id, schoolId);
     if (!isCurrent()) return;
@@ -649,6 +689,15 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
             <option value="cancelled">ملغى</option>
           </select>
         </div>
+        <div className="w-40">
+          <label className="block text-sm font-medium text-gray-700 mb-1">حالة النشر</label>
+          <select value={filters.publication_status} onChange={(e) => setFilters((f) => ({ ...f, publication_status: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+            <option value="">الكل</option>
+            <option value="draft">مسودة</option>
+            <option value="published">منشورة</option>
+            <option value="withdrawn">مسحوبة</option>
+          </select>
+        </div>
         <button onClick={loadCards} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-50">
           {loading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
           بحث
@@ -676,6 +725,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                   <th className="px-3 py-2 text-right font-medium border-b border-gray-200">الصف / الشعبة</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">السنة</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">الحالة</th>
+                  <th className="px-3 py-2 text-center font-medium border-b border-gray-200">النشر</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">النتيجة</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">الإعفاء</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">تاريخ الإنشاء</th>
@@ -690,6 +740,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                     <td className="px-3 py-2 border-b border-gray-100 text-gray-600 text-xs">{c.class_name_snapshot}{c.section_name_snapshot ? ` / ${c.section_name_snapshot}` : ''}</td>
                     <td className="px-3 py-2 border-b border-gray-100 text-center text-gray-600 text-xs">{c.academic_year_snapshot || '—'}</td>
                     <td className="px-3 py-2 border-b border-gray-100 text-center">{statusBadge(c.status)}</td>
+                    <td className="px-3 py-2 border-b border-gray-100 text-center">{publicationStatusBadge(c.publication_status)}</td>
                     <td className="px-3 py-2 border-b border-gray-100 text-center">{resultStatusBadge(c.overall_result_status)}</td>
                     <td className="px-3 py-2 border-b border-gray-100 text-center">
                       {c.general_exemption_status ? (
@@ -703,7 +754,21 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                     </td>
                     <td className="px-3 py-2 border-b border-gray-100 text-center">
                       <div className="flex items-center justify-center gap-1">
-                        {c.status === 'active' && (
+                        {c.status === 'active' && c.publication_status === 'draft' && (
+                          <>
+                            {hasRole(user?.role_key, RESULT_CARD_MANAGEMENT_ROLES) && (
+                              <button onClick={() => handlePublish(c)} title="نشر النتيجة" className="p-1.5 rounded-md hover:bg-emerald-50 text-emerald-700 transition-colors">
+                                <Send size={14} />
+                              </button>
+                            )}
+                            {hasRole(user?.role_key, RESULT_CARD_MANAGEMENT_ROLES) && (
+                              <button onClick={() => handleCancel(c.id!)} title="إلغاء المسودة" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
+                                <XCircle size={14} />
+                              </button>
+                            )}
+                          </>
+                        )}
+                        {c.status === 'active' && c.publication_status === 'published' && (
                           <>
                             {hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && (
                               <button onClick={() => handleMarkPrinted(c.id!)} title="تعليم كمطبوع" className="p-1.5 rounded-md hover:bg-blue-50 text-blue-600 transition-colors">
@@ -718,21 +783,23 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                               <Printer size={14} />
                             </a>
                             {hasRole(user?.role_key, RESULT_CARD_MANAGEMENT_ROLES) && (
-                              <button onClick={() => handleCancel(c.id!)} title="إلغاء" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
-                                <XCircle size={14} />
+                              <button onClick={() => handleWithdraw(c)} title="سحب النتيجة" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
+                                <Undo2 size={14} />
                               </button>
                             )}
                           </>
                         )}
-                        <a
-                          href={`/verify/result-card/${c.verification_token}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="فتح صفحة التحقق"
-                          className="p-1.5 rounded-md hover:bg-emerald-50 text-emerald-600 transition-colors"
-                        >
-                          <Globe size={14} />
-                        </a>
+                        {c.publication_status === 'published' && (
+                          <a
+                            href={`/verify/result-card/${c.verification_token}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="فتح صفحة التحقق"
+                            className="p-1.5 rounded-md hover:bg-emerald-50 text-emerald-600 transition-colors"
+                          >
+                            <Globe size={14} />
+                          </a>
+                        )}
                       </div>
                     </td>
                   </tr>

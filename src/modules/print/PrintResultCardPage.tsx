@@ -25,6 +25,7 @@ interface CardRecord extends ResultCardDocumentRecord {
   school_id: number;
   card_number: string;
   status: string;
+  publication_status: 'draft' | 'published' | 'withdrawn';
   verification_token: string;
   card_data_parsed?: Record<string, any>;
 }
@@ -73,7 +74,15 @@ export default function PrintResultCardPage() {
     setError(null);
     const res = await getResultCard(id, explicitSchoolId);
     if (res.error) setError(res.error);
-    else if (res.data) setCard(res.data as CardRecord);
+    else if (res.data) {
+      const loaded = res.data as CardRecord;
+      if (loaded.publication_status !== 'published') {
+        setCard(null);
+        setError('لا يمكن طباعة كارت النتيجة رسميًا قبل نشره');
+      } else {
+        setCard(loaded);
+      }
+    }
     setLoading(false);
   }, [explicitSchoolId, id]);
 
