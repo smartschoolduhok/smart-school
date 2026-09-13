@@ -8310,6 +8310,7 @@ async function loadResultCardEvaluation(
     calculatedGradeRows,
     settings,
     academicYear,
+    policy?.policy_kind === 'terminal' ? 'annual_effort' : 'effective_grade',
   );
   const academicOutcome = policy && evaluation.ok
     ? evaluateStudentAcademicPolicy(policy, (subjectRows.results || []).map(subject => {
@@ -8326,11 +8327,23 @@ async function loadResultCardEvaluation(
       }), decisionSet ? { manual_allocations: decisionSet.allocations } : undefined)
     : null;
 
+  const visiblePolicySubjects = evaluation.ok
+    ? academicOutcome?.subjects.filter(subject =>
+        evaluation.grades.some(grade => grade.subject_id === subject.subject_id)
+      ) || []
+    : [];
   const effectiveEvaluation = evaluation.ok && academicOutcome
     ? {
         ...evaluation,
         summary: {
           ...evaluation.summary,
+          ...(policy?.policy_kind === 'terminal' ? {
+            pass_count: visiblePolicySubjects.filter(subject => subject.status === 'pass').length,
+            completion_count: academicOutcome.academic_status === 'completion'
+              ? visiblePolicySubjects.filter(subject => subject.status === 'fail').length : 0,
+            fail_count: academicOutcome.academic_status === 'fail'
+              ? visiblePolicySubjects.filter(subject => subject.status === 'fail').length : 0,
+          } : {}),
           general_exemption_eligible: academicOutcome.general_exemption_eligible,
           overall_result_status: evaluation.card_mode === 'complete'
             ? academicStatusLabel(academicOutcome.academic_status) as any

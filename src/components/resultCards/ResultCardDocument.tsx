@@ -230,9 +230,9 @@ export function ResultCardDocument({
       style={{ maxWidth: '210mm', minHeight: compact ? undefined : '277mm', margin: '0 auto' }}
     >
       <header className="result-card-header rounded-xl border-2 border-slate-700 px-4 py-3 sm:px-5">
-        <div className={`grid items-center gap-3 ${logoUrl ? 'grid-cols-[6rem_1fr_6rem]' : 'grid-cols-1'}`}>
+        <div className={`grid items-center gap-3 ${logoUrl ? 'grid-cols-1 sm:grid-cols-[6rem_1fr_6rem] print:grid-cols-[6rem_1fr_6rem]' : 'grid-cols-1'}`}>
           {logoUrl && (
-            <div className="flex h-20 w-20 items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5">
+            <div className="flex h-20 w-20 justify-self-center items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5">
               <img
                 src={logoUrl}
                 alt="شعار المدرسة"
@@ -352,7 +352,7 @@ export function ResultCardDocument({
       )}
 
       <section className="result-card-table-wrap overflow-x-auto rounded-lg border border-slate-500">
-        <table aria-label="درجات مواد الطالب" className="result-card-table w-full table-fixed border-collapse text-[11px] leading-snug">
+        <table aria-label="درجات مواد الطالب" className="result-card-table w-full table-fixed min-w-[36rem] border-collapse text-[11px] leading-snug print:min-w-0">
           <colgroup>
             {columns.map((column) => (
               <col

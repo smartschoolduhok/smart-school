@@ -256,6 +256,7 @@ export function evaluateResultCard(
   grades: ResultCardGrade[],
   settingsInput: ResultCardSettings,
   academicYear: ResultCardAcademicYear | null,
+  gradeBasis: 'effective_grade' | 'annual_effort' = 'effective_grade',
 ): ResultCardEvaluation {
   if (!academicYear) {
     return { ok: false, code: 'no_active_academic_year' };
@@ -268,7 +269,7 @@ export function evaluateResultCard(
   const scheme = normalizeGradeSchemeSettings(settingsInput);
   const settings: ResultCardSettings = { ...settingsInput, ...scheme };
   const requiredFields = enabledRawGradeFields(settings).filter(
-    (field) => field !== 'completion_exam',
+    (field) => field !== 'completion_exam' && (gradeBasis !== 'annual_effort' || field !== 'final_exam'),
   );
   const gradesBySubject = new Map(grades.map((grade) => [grade.subject_id, grade]));
   const { displaySubjects, countedSubjects } = partitionResultCardSubjects(
@@ -295,7 +296,8 @@ export function evaluateResultCard(
     : [];
   const annualEffortAverage = annualDataComplete ? roundedAverage(annualEfforts) : null;
   const minAnnualEffort = annualDataComplete ? Math.min(...annualEfforts) : null;
-  const exemptionEnabled = settings.exemption_enabled !== false && settings.exemption_enabled !== 0;
+  const exemptionEnabled = gradeBasis !== 'annual_effort' &&
+    settings.exemption_enabled !== false && settings.exemption_enabled !== 0;
   const generalExemptionEligible = !exemptionEnabled
     ? false
     : annualDataComplete
@@ -331,6 +333,13 @@ export function evaluateResultCard(
     if (!gradesBySubject.has(grade.subject_id)) missingFields.push('grade_record');
     missingFields.push(...missingAnnualGradeFields(grade, settings));
     if (!isFiniteNumber(grade.annual_effort)) missingFields.push('annual_effort');
+    // Terminal policies decide from annual effort; final-exam fields remain
+    // untouched and must not turn an otherwise complete annual card partial.
+    if (gradeBasis === 'annual_effort') {
+      return missingFields.length > 0
+        ? [{ subject_id: grade.subject_id, subject_name: grade.subject_name, missing_fields: [...new Set(missingFields)] }]
+        : [];
+    }
     if (
       scheme.final_exam_enabled === 1 &&
       grade.exemption_status !== 1 &&
@@ -368,8 +377,13 @@ export function evaluateResultCard(
   const incompleteCountedSubjects = incompleteForGrades(countedEvaluatedGrades);
 
   const cardMode: ResultCardMode = incompleteSubjects.length > 0 ? 'partial' : 'complete';
-  const hasFailure = displayGrades.some((grade) => grade.result_status === 'راسب');
-  const hasCompletion = displayGrades.some((grade) => grade.result_status === 'مكمل');
+  const statusAtBasis = (grade: ResultCardGrade): ResultCardAcademicStatus | null => {
+    if (gradeBasis !== 'annual_effort') return grade.result_status;
+    if (!isFiniteNumber(grade.annual_effort)) return null;
+    return grade.annual_effort >= settings.passing_grade ? 'ناجح' : 'مكمل';
+  };
+  const hasFailure = displayGrades.some((grade) => statusAtBasis(grade) === 'راسب');
+  const hasCompletion = displayGrades.some((grade) => statusAtBasis(grade) === 'مكمل');
   const overallResultStatus: ResultCardOverallStatus = cardMode === 'partial'
     ? 'غير مكتمل'
     : hasFailure
@@ -378,7 +392,7 @@ export function evaluateResultCard(
         ? 'مكمل'
         : 'ناجح';
   const effectiveGrades = countedEvaluatedGrades
-    .map((grade) => grade.effective_grade)
+    .map((grade) => grade[gradeBasis])
     .filter(isFiniteNumber);
   const overallAverage = countedEvaluatedGrades.length > 0 &&
     incompleteCountedSubjects.length === 0 &&
@@ -396,9 +410,9 @@ export function evaluateResultCard(
     incomplete_subjects: incompleteSubjects,
     summary: {
       total_subjects: displayGrades.length,
-      pass_count: displayGrades.filter((grade) => grade.result_status === 'ناجح').length,
-      completion_count: displayGrades.filter((grade) => grade.result_status === 'مكمل').length,
-      fail_count: displayGrades.filter((grade) => grade.result_status === 'راسب').length,
+      pass_count: displayGrades.filter((grade) => statusAtBasis(grade) === 'ناجح').length,
+      completion_count: displayGrades.filter((grade) => statusAtBasis(grade) === 'مكمل').length,
+      fail_count: displayGrades.filter((grade) => statusAtBasis(grade) === 'راسب').length,
       exempt_count: displayGrades.filter((grade) => grade.exemption_status === 1).length,
       annual_effort_average: annualEffortAverage,
       min_annual_effort: minAnnualEffort,
