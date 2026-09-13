@@ -4,7 +4,7 @@
 
 ## الحالة الحالية
 
-**التنفيذ والمحاكاة المحلية: PASS. STAGING والدمج: لم يُنفذا.**
+**التنفيذ والمحاكاة المحلية وSTAGING QA: PASS. PR `#43`: جاهز للمراجعة. الدمج وProduction: لم يُنفذا.**
 
 تضيف هذه الدفعة دورة رسمية تفصل بين إنشاء كارت النتيجة ونشره. الكارت الجديد يبدأ مسودة لا تظهر لولي الأمر ولا تعمل في صفحة التحقق العامة. بعد مراجعة الإدارة يمكن نشره صراحةً، وعند وجود خطأ يُسحب بسبب إلزامي مع حفظ سجل تدقيق غير قابل للتغيير.
 
@@ -98,21 +98,84 @@
 
 تحذير Vite المعروف حول chunk `xlsx` الأكبر من 500 kB بقي تحذير أداء غير مانع ولم ينشأ من دورة نشر النتائج.
 
-## حدود التنفيذ والبوابة التالية
+## دليل تنفيذ STAGING قبل المراجعة
 
-- الفرع: `codex/phase-20d-result-publication` من `main` عند `5856e615bcf48af4d43a1bd86043a2e4533cf4e7`.
-- commit التنفيذ المحلي: `8fcb1ef`.
-- migrations `0029`–`0033` لم تتغير.
-- لم يُستخدم Remote D1 أو STAGING أو Production.
-- لم يُنفذ seed/reset بعيد أو deploy أو merge.
+### الفرع والبوابات الأولية
 
-قبل الدمج يلزم:
+- حزمة التسليم: `phase20d-delivery.zip`، حجمها `26,870` bytes وبصمتها SHA-256 هي `6D3FC125CD574772D250E2A418804C123B35C3454E4B2C814CB4074FA766C368`.
+- استوردت patches الثلاثة بالترتيب من base `5856e615bcf48af4d43a1bd86043a2e4533cf4e7` عبر `git am` على الفرع `codex/phase-20d-result-publication`.
+- تسلسل commits المستورد هو `8fcb1ef` ثم `a3e2ad4` ثم HEAD المتوقع `1dc1e29cf69897ca3e5b315958b5ddc42a81695a`.
+- نجح `git show --check` لكل commit وللنطاق كاملًا. لم تتغير migrations `0029`–`0033`، و`0034` بقيت مطابقة للـpatch دون تعديل بعد الاستيراد.
+- Draft PR: `#43` بعنوان `feat(academics): publish official results to parents`.
+- GitHub Quality Gates: **PASS**، run `34750780864`، job `103706833469`، خلال `4m47s`.
+- Cloudflare Branch Preview: **PASS**، deployment `99b3d324-459a-4b20-87eb-5d4b565868fe`، والرابط `https://99b3d324.smart-school-staging.pages.dev` من HEAD نفسه.
 
-1. دفع الفرع وفتح PR إلى `main`.
-2. نجاح GitHub Quality Gates وCloudflare Branch Preview لنفس HEAD.
-3. backup كامل لـSTAGING وpreflight وrestore rehearsal.
-4. تطبيق `0034` وحدها على STAGING إذا كانت البوابة سليمة.
-5. QA مصادق عليه لأدوار الإدارة وولي الأمر: مسودة مخفية، نشر ظاهر، تحقق وطباعة ناجحان، سحب بسبب، اختفاء فوري، وسلامة FK/readiness.
-6. تعطيل/أرشفة سجلات QA دون `DELETE`، ثم توثيق النتائج.
+### النسخة وpreflight والاستعادة المحلية
 
-لا يُسمح بالوصول إلى Production ضمن هذه الدفعة. Phase 20D.2، التي تربط النتيجة الرسمية المنشورة بقرار الترحيل/الإعادة/التخرج، تبدأ فقط بعد قبول ودمج Phase 20D.1.
+النسخة الكاملة السابقة لـ`0034` محفوظة خارج المستودع في:
+
+`C:\Users\ibrah\Documents\SmartSchoolBackups\phase20d-staging-20260913T100649Z\smart-school-staging-db-full-before-0034.sql`
+
+| الدليل | القيمة |
+|---|---|
+| الحجم | `1,180,542` bytes |
+| SHA-256 | `9B22D5CAE7F02988D853B0B030E997D7285FE1209ED335EE5BB1F42D160D251C` |
+| migration history قبل التطبيق | `34/34` مرتبة ومطابقة حتى `0033` |
+| pending | `0034_result_card_publication.sql` فقط |
+| `foreign_key_check` | صفر مخالفات |
+| الجداول التاريخية المصورة | `59` جدولًا مع row counts وtyped snapshots كاملة |
+| snapshot SHA-256 | `60381b72f2b20d8a43ad201a6c07e59477946613316ca5bba00b3f8e67fdb14c` |
+| readiness قبل التطبيق | الأكاديمية `not_configured` متوقعة؛ fee/payroll-school/treasury صحية؛ payroll التفصيلية فارغة ومتوقعة |
+
+استعادت `scripts/run-phase20d-local-rehearsal.mjs` النسخة إلى D1 محلية معزولة خارج المستودع. نفذت `1,953` statement عادية، ثم استعادت صفًا واحدًا كبيرًا بربط `16` parameter وبإجمالي `360,514` bytes؛ أصبح مجموع statements المستعادة `1,954`. ثبت تطابق الاستعادة حرفيًا مع snapshot البعيد.
+
+بعد تطبيق `0034` وحدها محليًا، بقيت أعمدة وقيم جداول التطبيق التاريخية الـ`59` متطابقة تمامًا. التغيير الوحيد خارج جداول التطبيق كان تقدم عداد SQLite الداخلي لـ`d1_migrations` من `34` إلى `35`، وهو الأثر المتوقع لإضافة سجل migration. أصبح السجل `35` migration، و`0034` مرة واحدة وأخيرة، بلا pending وبـFK نظيف وreadiness سليمة.
+
+أدلة الآلة خارج المستودع:
+
+- `phase20d-readonly-preflight.json`: `3,640,548` bytes، SHA-256 `AB7430906700340BDDA909FFAE3D046B1CBE6E66E4FEC4B8DB5599323348DBBA`.
+- `phase20d-local-rehearsal-evidence.json`: `3,606` bytes، SHA-256 `C22C2692FDE76A7366C159C750C73326713BEA0F31A42419000F94EBEFFA72D0`.
+
+### تطبيق 0034 والتحقق البعيد
+
+طُبّقت `0034_result_card_publication.sql` وحدها على `smart-school-staging-db` في `2026-09-13 10:15:02 UTC` عبر `19` command. أثبت التحقق النهائي بعد QA والتنظيف:
+
+- `35` migration و`35` اسمًا مميزًا.
+- `0034` مرة واحدة، بالمعرّف `35`، وهي الأخيرة.
+- `No migrations to apply`.
+- `foreign_key_check` بلا نتائج، وجدول assertions المؤقت فارغ.
+- `result_card_publication_readiness` صحية للمدارس الثلاث: المدرسة `1` فيها `7` كروت (`0` draft، `1` published تاريخي، `6` withdrawn)، والمدرستان `2` و`3` بلا كروت.
+- `academic_grade_policy_readiness` هي `not_configured` المتوقعة للمدارس الثلاث بعد أرشفة صفوف QA.
+- finance fee/payroll-school/treasury صحية؛ payroll التفصيلية فارغة ومتوقعة.
+
+### QA المصادق عليه
+
+شغّل `scripts/run-phase20d-staging-qa.mjs` السيناريو الناجح المعزول على Preview وSTAGING فقط تحت marker:
+
+`PH20D-1789295069371-f7363188`
+
+كل السيناريوهات المطلوبة **PASS**:
+
+- بدأ Result Card `id=7` كمسودة `revision=0`، ولم يظهر لولي الأمر المرتبط أو التحقق العام، ورُفضت طباعته رسميًا.
+- رُفض نشر snapshot جزئي بالكود `result_card_incomplete`.
+- رُفض نشر snapshot بلا سياسة `approved/locked` موثقة بالكود `result_card_policy_required`.
+- أعيد snapshot الأصلي الكامل، ثم أُرسل طلبا نشر متزامنان بالنسخة نفسها: نجح واحد فقط وأصبح `revision=1`، ورُفض الآخر `409`، وبقي سجل النشر واحدًا.
+- ظهر المنشور لولي الأمر المرتبط وحده. رُفض ولي أمر آخر في المدرسة نفسها، ومدرس، ومالك مدرسة أخرى. لم تُرسل الاستجابات الخاصة snapshot الخام.
+- عمل التحقق العام والطباعة الرسمية بعد النشر فقط.
+- رُفض الإلغاء المباشر للمنشور بالكود `published_result_card_requires_withdrawal`.
+- رُفض السحب بلا سبب، ورُفض `expected_revision=0` القديم، ثم نجح السحب بسبب موثق وأصبح الكارت `withdrawn/cancelled` عند `revision=2`.
+- اختفى الكارت فورًا من ولي الأمر، وأصبح التحقق العام غير صالح/مسحوب، وعادت الطباعة الرسمية مرفوضة.
+- احتوى سجل التدقيق حدثين فقط: `draft→published` ثم `published→withdrawn`. رُفضت محاولة `UPDATE` للسجل بواسطة trigger `result_card_publication_log_immutable` وبقيت القيم مطابقة.
+
+عُطّل مستخدمو QA، وأُرشف الطالب والصف والشعبة والمواد، وأُلغي التسجيل، وعُطلت التكليفات والدرجات والرابط الأبوي. احتُفظ بالكارت المسحوب وسجلي التدقيق كأثر تاريخي. محاولتا fixture المتوقفتان قبل النجاح عولجتا كذلك إلى `withdrawn/cancelled` مع أثر تدقيق؛ النتيجة النهائية ثلاثة طلاب QA مؤرشفين، وثلاثة كروت مسحوبة، وستة سجلات تدقيق، وصفر مستخدم Phase 20D فعال. لم يُستخدم direct SQL `DELETE` أو cleanup هدّام.
+
+أدلة الآلة خارج المستودع:
+
+- `phase20d-authenticated-staging-qa.json`: `12,021` bytes، SHA-256 `ADB64880FD2EE0BE778F3731D450022D30FB83D7AF7FD87671FB3BDE5ECB56E5`.
+- `phase20d-aborted-fixture-recovery.json`: `1,614` bytes، SHA-256 `AD37484C2D36D1994D34DE5F2B4220A561C292438F7BEEF9448427DBDED51425`.
+
+## قرار القبول
+
+Phase 20D.1 اجتازت بوابات الكود وGitHub وCloudflare والنسخ وpreflight والاستعادة المحلية وتطبيق STAGING وQA المصادق عليه. PR `#43` جاهز للمراجعة ولا يُدمج تلقائيًا.
+
+لم يُستخدم Production، ولم يُنفذ remote seed/reset أو force-push أو cleanup هدّام، ولم تُعدّل migrations `0029`–`0034` بعد الاستيراد. Phase 20D.2، التي تربط النتيجة الرسمية المنشورة بقرار الترحيل/الإعادة/التخرج، تبدأ فقط بعد قبول ودمج Phase 20D.1.
