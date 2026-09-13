@@ -1028,6 +1028,7 @@ export function getResultCards(filters?: {
   section_id?: number | null;
   student_id?: number | null;
   status?: string | null;
+  publication_status?: 'draft' | 'published' | 'withdrawn' | null;
 }) {
   const params = new URLSearchParams();
   if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
@@ -1035,6 +1036,7 @@ export function getResultCards(filters?: {
   if (filters?.section_id != null) params.append('section_id', String(filters.section_id));
   if (filters?.student_id != null) params.append('student_id', String(filters.student_id));
   if (filters?.status != null) params.append('status', filters.status);
+  if (filters?.publication_status != null) params.append('publication_status', filters.publication_status);
   const qs = params.toString() ? `?${params.toString()}` : '';
   return fetchApi<Array<Record<string, any>>>(`/api/result-cards${qs}`);
 }
@@ -1085,12 +1087,30 @@ export function markResultCardPrinted(id: number | string, schoolId: number) {
   return fetchApi<Record<string, any>>(`/api/result-cards/${id}/mark-printed`, { method: 'PUT', body: JSON.stringify({ school_id: schoolId }) });
 }
 
+export function publishResultCard(id: number | string, schoolId: number, expectedRevision: number, note?: string) {
+  return fetchApi<Record<string, any>>(`/api/result-cards/${id}/publish`, {
+    method: 'PUT',
+    body: JSON.stringify({ school_id: schoolId, expected_revision: expectedRevision, note: note || null }),
+  });
+}
+
+export function withdrawResultCard(id: number | string, schoolId: number, expectedRevision: number, reason: string) {
+  return fetchApi<Record<string, any>>(`/api/result-cards/${id}/withdraw`, {
+    method: 'PUT',
+    body: JSON.stringify({ school_id: schoolId, expected_revision: expectedRevision, reason }),
+  });
+}
+
 export function cancelResultCard(id: number | string, schoolId: number) {
   return fetchApi<Record<string, any>>(`/api/result-cards/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ school_id: schoolId }) });
 }
 
 export function verifyResultCard(token: string) {
   return fetchApi<Record<string, any>>(`/api/verify/result-card/${token}`);
+}
+
+export function getParentStudentResultCards(studentId: number | string) {
+  return fetchApi<Record<string, any>>(`/api/parent/students/${studentId}/result-cards`);
 }
 
 // ===========================================

@@ -8257,6 +8257,96 @@ interface ResultCardIssueOptions {
   examRound: string;
 }
 
+function parseResultCardPublicationRevision(value: unknown): number | null {
+  const revision = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && /^\d+$/.test(value.trim())
+      ? Number(value.trim())
+      : Number.NaN;
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
+}
+
+function normalizeResultCardPublicationReason(value: unknown, required: boolean): string | null {
+  if (value == null || value === '') return required ? null : '';
+  if (typeof value !== 'string') return null;
+  const reason = value.trim();
+  if ((required && !reason) || reason.length > 1000) return null;
+  return reason;
+}
+
+function resultCardPublicationError(error: unknown): {
+  status: 400 | 409 | 500;
+  code: string;
+  error: string;
+} {
+  const detail = String((error as any)?.message || error || '');
+  if (detail.includes('validated = 1') || detail.includes('result_card_publication_stale')) {
+    return { status: 409, code: 'result_card_publication_stale', error: 'تغيرت حالة النتيجة؛ أعد تحميل القائمة' };
+  }
+  if (detail.includes('result_card_publication_invalid_transition')) {
+    return { status: 409, code: 'result_card_publication_invalid_transition', error: 'لا يمكن تنفيذ انتقال النشر من الحالة الحالية' };
+  }
+  if (detail.includes('published_result_card_requires_withdrawal')) {
+    return { status: 409, code: 'published_result_card_requires_withdrawal', error: 'يجب سحب النتيجة المنشورة بسبب موثق بدل إلغائها مباشرة' };
+  }
+  return { status: 500, code: 'result_card_publication_failed', error: 'فشل في تحديث حالة نشر النتيجة' };
+}
+
+function parentResultCardPayload(row: Record<string, any>): Record<string, any> {
+  let snapshot: Record<string, any> = {};
+  try {
+    snapshot = JSON.parse(String(row.card_data_json || '{}'));
+  } catch { /* an issued snapshot should already be valid JSON */ }
+  const policy = snapshot.academic_policy && typeof snapshot.academic_policy === 'object'
+    ? snapshot.academic_policy
+    : null;
+  const summary = snapshot.summary && typeof snapshot.summary === 'object'
+    ? snapshot.summary
+    : {};
+  const subjects = Array.isArray(snapshot.subjects)
+    ? snapshot.subjects.map((subject: Record<string, any>) => ({
+        subject_name: subject.subject_name ?? null,
+        policy_source_grade: subject.policy_source_grade ?? null,
+        decision_points: subject.decision_points ?? 0,
+        adjusted_grade: subject.adjusted_grade ?? null,
+        effective_grade: subject.effective_grade ?? null,
+        final_grade: subject.final_grade ?? null,
+        academic_status: subject.academic_status ?? null,
+        result_status: subject.result_status ?? null,
+      }))
+    : [];
+  return {
+    id: row.id,
+    card_number: row.card_number,
+    verification_token: row.verification_token,
+    student_name: row.student_name_snapshot,
+    class_name: row.class_name_snapshot,
+    section_name: row.section_name_snapshot,
+    academic_year: row.academic_year_snapshot,
+    overall_result_status: row.overall_result_status,
+    general_exemption_status: row.general_exemption_status === 1,
+    generated_at: row.generated_at,
+    published_at: row.published_at,
+    card: {
+      schema_version: snapshot.schema_version || null,
+      card_mode: snapshot.card_mode || 'complete',
+      exam_round: snapshot.exam_round || null,
+      subjects,
+      summary: {
+        academic_status: summary.academic_status ?? null,
+        overall_result_status: summary.overall_result_status ?? null,
+        ministerial_eligibility: summary.ministerial_eligibility ?? null,
+        exemption_status: summary.exemption_status ?? null,
+      },
+      academic_policy: policy ? {
+        version: policy.version,
+        policy_kind: policy.policy_kind,
+        source_reference: policy.source_reference,
+      } : null,
+    },
+  };
+}
+
 type ResultCardSnapshotBuild =
   | {
       ok: true;
@@ -8507,8 +8597,9 @@ async function createResultCardForStudent(
       school_name_snapshot, academic_year_snapshot,
       general_exemption_status, annual_effort_average, min_annual_effort,
       overall_result_status, card_data_json,
-      generated_by_user_id, generated_at, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
+      generated_by_user_id, generated_at, status,
+      publication_status, publication_revision, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'draft', 0, unixepoch(), unixepoch())
   `).bind(
     student.school_id,
     student.id,
@@ -8560,14 +8651,20 @@ app.get(
     const sectionId = query.section_id ? parseInt(query.section_id, 10) : null;
     const studentId = query.student_id ? parseInt(query.student_id, 10) : null;
     const status = query.status || null;
+    const publicationStatus = query.publication_status || null;
 
-    let sql = `SELECT rc.id, rc.school_id, rc.card_number, rc.student_name_snapshot, rc.class_name_snapshot, rc.section_name_snapshot, rc.school_name_snapshot, rc.academic_year_snapshot, rc.general_exemption_status, rc.overall_result_status, rc.generated_at, rc.printed_at, rc.status, rc.verification_token FROM result_cards rc WHERE rc.school_id = ?`;
+    if (publicationStatus && !['draft', 'published', 'withdrawn'].includes(publicationStatus)) {
+      return c.json({ error: 'حالة نشر النتيجة غير صالحة' }, 400);
+    }
+
+    let sql = `SELECT rc.id, rc.school_id, rc.card_number, rc.student_name_snapshot, rc.class_name_snapshot, rc.section_name_snapshot, rc.school_name_snapshot, rc.academic_year_snapshot, rc.general_exemption_status, rc.overall_result_status, rc.generated_at, rc.printed_at, rc.status, rc.verification_token, rc.publication_status, rc.publication_revision, rc.published_at, rc.withdrawn_at, rc.withdrawal_reason FROM result_cards rc WHERE rc.school_id = ?`;
     const params: any[] = [resolvedSchoolId];
 
     if (classId) { sql += ` AND rc.class_id = ?`; params.push(classId); }
     if (sectionId) { sql += ` AND rc.section_id = ?`; params.push(sectionId); }
     if (studentId) { sql += ` AND rc.student_id = ?`; params.push(studentId); }
     if (status) { sql += ` AND rc.status = ?`; params.push(status); }
+    if (publicationStatus) { sql += ` AND rc.publication_status = ?`; params.push(publicationStatus); }
 
     sql += ` ORDER BY rc.generated_at DESC`;
 
@@ -8734,7 +8831,7 @@ app.post(
           card: created.card,
           verification_url: `/verify/result-card/${created.card.verification_token}`,
         },
-        message: 'تم إنشاء كارت النتيجة بنجاح',
+        message: 'تم إنشاء كارت النتيجة كمسودة؛ راجعه قبل النشر',
       });
     } catch (err: any) {
       return c.json(
@@ -8876,13 +8973,166 @@ app.post(
           generated,
           skipped,
         },
-        message: 'تمت معالجة إنشاء كارتات الشعبة',
+        message: 'تمت معالجة إنشاء كارتات الشعبة كمسودات للمراجعة',
       });
     } catch (err: any) {
       return c.json(
         { error: 'فشل في إنشاء كارتات الشعبة', detail: err.message },
         500,
       );
+    }
+  },
+);
+
+
+// PUT /api/result-cards/:id/publish
+// A complete snapshot backed by an approved/locked annual policy is required.
+// ===========================================
+app.put(
+  '/api/result-cards/:id/publish',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_MANAGEMENT_ROLES),
+  async (c) => {
+    const db = c.env.DB;
+    const user = c.get('user') as UserContext;
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرّف كارت النتيجة غير صالح' }, 400);
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const target = await resolveActiveWriteSchool(db, user, body.school_id);
+      if (!target.ok) return c.json({ error: target.error }, target.status);
+      const expectedRevision = parseResultCardPublicationRevision(body.expected_revision);
+      if (expectedRevision == null) return c.json({ error: 'نسخة حالة النشر مطلوبة' }, 400);
+      const note = normalizeResultCardPublicationReason(body.note, false);
+      if (note == null) return c.json({ error: 'ملاحظة النشر يجب ألا تتجاوز 1000 حرف' }, 400);
+      const card = await db.prepare(`
+        SELECT id, school_id, status, publication_status, publication_revision, card_data_json
+        FROM result_cards WHERE id=?
+      `).bind(id).first<any>();
+      if (!card) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
+      if (card.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
+      if (card.status !== 'active' || card.publication_status !== 'draft') {
+        return c.json({ error: 'يمكن نشر كارت مسودة فعال فقط', code: 'result_card_publication_invalid_transition' }, 409);
+      }
+      if (Number(card.publication_revision) !== expectedRevision) {
+        return c.json({ error: 'تغيرت حالة النتيجة؛ أعد تحميل القائمة', code: 'result_card_publication_stale' }, 409);
+      }
+      let snapshot: Record<string, any> = {};
+      try { snapshot = JSON.parse(String(card.card_data_json || '{}')); } catch { /* handled below */ }
+      const policy = snapshot.academic_policy;
+      if (snapshot.card_mode !== 'complete') {
+        return c.json({ error: 'لا يمكن نشر نتيجة غير مكتملة', code: 'result_card_incomplete' }, 409);
+      }
+      if (
+        !policy
+        || !['approved', 'locked'].includes(String(policy.status))
+        || !String(policy.source_reference || '').trim()
+      ) {
+        return c.json({ error: 'يجب أن تعتمد النتيجة على سياسة سنوية موثقة قبل النشر', code: 'result_card_policy_required' }, 409);
+      }
+      const requestId = crypto.randomUUID();
+      const results = await db.batch<any>([
+        db.prepare(`
+          INSERT INTO result_card_publication_write_assertions(
+            request_id,result_card_id,expected_revision,expected_status,validated
+          ) SELECT ?,?,?,'draft',CASE WHEN EXISTS(
+            SELECT 1 FROM result_cards
+            WHERE id=? AND school_id=? AND status='active'
+              AND publication_status='draft' AND publication_revision=?
+          ) THEN 1 ELSE 0 END
+        `).bind(requestId, id, expectedRevision, id, target.schoolId, expectedRevision),
+        db.prepare(`
+          INSERT INTO result_card_publication_logs(
+            school_id,result_card_id,action,previous_status,new_status,
+            previous_revision,new_revision,reason,actor_user_id
+          ) VALUES(?,?,'published','draft','published',?,?,?,?)
+        `).bind(target.schoolId, id, expectedRevision, expectedRevision + 1, note || null, user.id),
+        db.prepare(`
+          UPDATE result_cards SET
+            publication_status='published',publication_revision=publication_revision+1,
+            published_at=unixepoch(),published_by_user_id=?,updated_at=unixepoch()
+          WHERE id=? AND school_id=? AND status='active'
+            AND publication_status='draft' AND publication_revision=?
+          RETURNING id,publication_status,publication_revision,published_at,status
+        `).bind(user.id, id, target.schoolId, expectedRevision),
+        db.prepare('DELETE FROM result_card_publication_write_assertions WHERE request_id=?').bind(requestId),
+      ]);
+      const updated = results[2]?.results?.[0];
+      if (!updated) return c.json({ error: 'تغيرت حالة النتيجة؛ أعد تحميل القائمة', code: 'result_card_publication_stale' }, 409);
+      return c.json({ data: updated, message: 'تم نشر النتيجة لولي الأمر والتحقق العام' });
+    } catch (error) {
+      const mapped = resultCardPublicationError(error);
+      return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
+    }
+  },
+);
+
+// PUT /api/result-cards/:id/withdraw
+// Withdrawal cancels the immutable published card and requires a reason.
+// ===========================================
+app.put(
+  '/api/result-cards/:id/withdraw',
+  requireSameSchoolOrAdmin(),
+  requireRoles(RESULT_CARD_MANAGEMENT_ROLES),
+  async (c) => {
+    const db = c.env.DB;
+    const user = c.get('user') as UserContext;
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرّف كارت النتيجة غير صالح' }, 400);
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const target = await resolveActiveWriteSchool(db, user, body.school_id);
+      if (!target.ok) return c.json({ error: target.error }, target.status);
+      const expectedRevision = parseResultCardPublicationRevision(body.expected_revision);
+      if (expectedRevision == null) return c.json({ error: 'نسخة حالة النشر مطلوبة' }, 400);
+      const reason = normalizeResultCardPublicationReason(body.reason, true);
+      if (!reason) return c.json({ error: 'سبب سحب النتيجة مطلوب وبحد أقصى 1000 حرف' }, 400);
+      const card = await db.prepare(`
+        SELECT id,school_id,status,publication_status,publication_revision
+        FROM result_cards WHERE id=?
+      `).bind(id).first<any>();
+      if (!card) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
+      if (card.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
+      if (card.status !== 'active' || card.publication_status !== 'published') {
+        return c.json({ error: 'يمكن سحب نتيجة منشورة وفعالة فقط', code: 'result_card_publication_invalid_transition' }, 409);
+      }
+      if (Number(card.publication_revision) !== expectedRevision) {
+        return c.json({ error: 'تغيرت حالة النتيجة؛ أعد تحميل القائمة', code: 'result_card_publication_stale' }, 409);
+      }
+      const requestId = crypto.randomUUID();
+      const results = await db.batch<any>([
+        db.prepare(`
+          INSERT INTO result_card_publication_write_assertions(
+            request_id,result_card_id,expected_revision,expected_status,validated
+          ) SELECT ?,?,?,'published',CASE WHEN EXISTS(
+            SELECT 1 FROM result_cards
+            WHERE id=? AND school_id=? AND status='active'
+              AND publication_status='published' AND publication_revision=?
+          ) THEN 1 ELSE 0 END
+        `).bind(requestId, id, expectedRevision, id, target.schoolId, expectedRevision),
+        db.prepare(`
+          INSERT INTO result_card_publication_logs(
+            school_id,result_card_id,action,previous_status,new_status,
+            previous_revision,new_revision,reason,actor_user_id
+          ) VALUES(?,?,'withdrawn','published','withdrawn',?,?,?,?)
+        `).bind(target.schoolId, id, expectedRevision, expectedRevision + 1, reason, user.id),
+        db.prepare(`
+          UPDATE result_cards SET
+            status='cancelled',publication_status='withdrawn',
+            publication_revision=publication_revision+1,withdrawn_at=unixepoch(),
+            withdrawn_by_user_id=?,withdrawal_reason=?,updated_at=unixepoch()
+          WHERE id=? AND school_id=? AND status='active'
+            AND publication_status='published' AND publication_revision=?
+          RETURNING id,publication_status,publication_revision,withdrawn_at,status,withdrawal_reason
+        `).bind(user.id, reason, id, target.schoolId, expectedRevision),
+        db.prepare('DELETE FROM result_card_publication_write_assertions WHERE request_id=?').bind(requestId),
+      ]);
+      const updated = results[2]?.results?.[0];
+      if (!updated) return c.json({ error: 'تغيرت حالة النتيجة؛ أعد تحميل القائمة', code: 'result_card_publication_stale' }, 409);
+      return c.json({ data: updated, message: 'تم سحب النتيجة المنشورة وحفظ السبب' });
+    } catch (error) {
+      const mapped = resultCardPublicationError(error);
+      return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
     }
   },
 );
@@ -8905,13 +9155,13 @@ app.put(
     const body = await c.req.json().catch(() => ({}));
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const row = await db.prepare(`SELECT school_id, status FROM result_cards WHERE id = ?`).bind(id).first<any>();
+    const row = await db.prepare(`SELECT school_id, status, publication_status FROM result_cards WHERE id = ?`).bind(id).first<any>();
     if (!row) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
     if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
-    if (row.status !== 'active') {
-      return c.json({ error: 'لا يمكن تعليم كارت غير فعال كمطبوع' }, 400);
+    if (row.status !== 'active' || row.publication_status !== 'published') {
+      return c.json({ error: 'لا يمكن طباعة الكارت رسميًا قبل نشره' }, 400);
     }
     await db.prepare(`UPDATE result_cards SET printed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, printed_at: Math.floor(Date.now() / 1000) }, message: 'تم تعليم الكارت كمطبوع' });
@@ -8938,12 +9188,26 @@ app.put(
     const body = await c.req.json().catch(() => ({}));
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const row = await db.prepare(`SELECT school_id, status FROM result_cards WHERE id = ?`).bind(id).first<any>();
+    const row = await db.prepare(`SELECT school_id, status, publication_status FROM result_cards WHERE id = ?`).bind(id).first<any>();
     if (!row) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
     if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
-    await db.prepare(`UPDATE result_cards SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
+    if (row.publication_status === 'published') {
+      return c.json({
+        error: 'يجب سحب النتيجة المنشورة بسبب موثق بدل إلغائها مباشرة',
+        code: 'published_result_card_requires_withdrawal',
+      }, 409);
+    }
+    if (row.status !== 'active' || row.publication_status !== 'draft') {
+      return c.json({ error: 'لا يمكن إلغاء هذا الكارت من حالته الحالية' }, 409);
+    }
+    const cancelled = await db.prepare(`
+      UPDATE result_cards SET status='cancelled',updated_at=unixepoch()
+      WHERE id=? AND school_id=? AND status='active' AND publication_status='draft'
+      RETURNING id
+    `).bind(id, targetSchool.schoolId).first<any>();
+    if (!cancelled) return c.json({ error: 'تغيرت حالة الكارت؛ أعد تحميل القائمة' }, 409);
     return c.json({ data: { id, status: 'cancelled' }, message: 'تم إلغاء الكارت' });
   } catch (err: any) {
     return c.json({ error: 'فشل في إلغاء الكارت', detail: err.message }, 500);
@@ -8962,7 +9226,7 @@ app.get('/api/verify/result-card/:token', async (c) => {
     const row = await db.prepare(`
       SELECT card_number, student_name_snapshot, class_name_snapshot, section_name_snapshot,
              school_name_snapshot, academic_year_snapshot, generated_at, status,
-             overall_result_status, general_exemption_status,
+             overall_result_status, general_exemption_status, publication_status,
              card_data_json
       FROM result_cards WHERE verification_token = ?
     `).bind(token).first<any>();
@@ -8974,11 +9238,20 @@ app.get('/api/verify/result-card/:token', async (c) => {
       }, 404);
     }
 
-    if (row.status === 'cancelled') {
+    if (row.publication_status === 'draft') {
+      return c.json({
+        valid: false,
+        unpublished: true,
+        message: 'هذه النتيجة لم تُنشر رسميًا بعد',
+      }, 404);
+    }
+
+    if (row.status === 'cancelled' || row.publication_status === 'withdrawn') {
       return c.json({
         valid: false,
         cancelled: true,
-        message: 'هذا الكارت ملغى ولا يُعتد به',
+        withdrawn: row.publication_status === 'withdrawn',
+        message: 'هذه النتيجة مسحوبة أو ملغاة ولا يُعتد بها',
         card_number: row.card_number,
         student_name: row.student_name_snapshot,
         school_name: row.school_name_snapshot,
@@ -9016,6 +9289,48 @@ app.get('/api/verify/result-card/:token', async (c) => {
     });
   } catch (err: any) {
     return c.json({ valid: false, message: 'خطأ في التحقق', detail: err.message }, 500);
+  }
+});
+
+// GET /api/parent/students/:id/result-cards
+// Parents receive only published immutable snapshots for linked active children.
+// ===========================================
+app.get('/api/parent/students/:id/result-cards', async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user') as UserContext | null;
+  const studentId = Number(c.req.param('id'));
+  if (!user || user.role_key !== 'parent' || user.school_id == null) {
+    return c.json({ error: 'غير مسموح' }, 403);
+  }
+  if (!Number.isInteger(studentId) || studentId <= 0) {
+    return c.json({ error: 'معرّف الطالب غير صالح' }, 400);
+  }
+  try {
+    const student = await db.prepare(`
+      SELECT student.id,student.full_name,student.student_number
+      FROM students student
+      INNER JOIN parent_student_links link
+        ON link.student_id=student.id AND link.school_id=student.school_id
+      WHERE student.id=? AND student.school_id=? AND student.status='active'
+        AND link.parent_user_id=? AND link.status='active'
+    `).bind(studentId, user.school_id, user.id).first<any>();
+    if (!student) return c.json({ error: 'الطالب غير موجود أو غير مرتبط بحساب ولي الأمر' }, 404);
+    const rows = await db.prepare(`
+      SELECT card.*
+      FROM result_cards card
+      LEFT JOIN academic_years year ON year.id=card.academic_year_id AND year.school_id=card.school_id
+      WHERE card.school_id=? AND card.student_id=?
+        AND card.status='active' AND card.publication_status='published'
+      ORDER BY COALESCE(year.starts_at,'') DESC,card.published_at DESC,card.id DESC
+    `).bind(user.school_id, studentId).all<any>();
+    return c.json({
+      data: {
+        student,
+        cards: (rows.results || []).map(parentResultCardPayload),
+      },
+    });
+  } catch (error: any) {
+    return c.json({ error: 'تعذر تحميل النتائج المنشورة', detail: error.message }, 500);
   }
 });
 
