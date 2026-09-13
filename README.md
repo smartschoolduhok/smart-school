@@ -10,6 +10,7 @@
 - اجتازت Phase 20B النسخ والاستعادة والـpreflight وQA الوظيفي على STAGING، لكن هذا لا يُعد تصريحًا لـProduction؛ يلزم قرار GO وإعداد ونشر مستقلان.
 - Phase 20C مكتملة ومندمجة ومنشورة على STAGING؛ تضيف سياسات درجات سنوية مرنة versioned للنجاح والإكمال والإعفاء والدخول الوزاري ودرجات القرار. Migration `0033` مطبقة على STAGING مرة واحدة وأخيرة، ولا توجد migrations معلّقة. بعد تنظيف QA لا توجد سياسة حقيقية معتمدة تلقائيًا؛ يجب إدخال مرجع قرار الوزارة وسياسة كل صف وسنة قبل اعتماد النتائج الرسمية.
 - اجتازت Phase 20C المحاكاة المحلية وSTAGING QA وQuality Gates ونشر Cloudflare بعد الدمج. هذا لا يُعد تصريحًا لـProduction؛ يلزم قرار GO وإعداد ونشر مستقلان.
+- Phase 20D.1 قيد التسليم على فرع مستقل: تضيف دورة نشر وسحب موثقة لكروت النتائج، وتعرض لولي الأمر النتائج المنشورة فقط. Migration `0034` اجتازت D1 المحلي ولم تُطبق على STAGING أو Production بعد.
 
 ## البنية التقنية
 
@@ -97,3 +98,4 @@ npm audit --audit-level=low
 - `docs/POST_AUDIT_STABILIZATION_REPORT.md` لنتيجة دفعات ما بعد التدقيق.
 - `docs/PHASE_20B_FINANCE_ACCOUNTS_INSTALLMENTS_RECEIPTS_QA.md` لعقود Phase 20B وبوابات قبولها.
 - `docs/PHASE_20C_ACADEMIC_GRADE_POLICIES_QA.md` لعقود سياسات الدرجات السنوية ودليل التحقق المحلي وبوابة STAGING.
+- `docs/PHASE_20D_RESULT_PUBLICATION_QA.md` لدورة نشر النتائج ووصول ولي الأمر وأدلة التحقق المحلي.
