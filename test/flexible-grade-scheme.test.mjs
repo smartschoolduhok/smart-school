@@ -51,6 +51,7 @@ function createRecalculationDatabase() {
     CREATE TABLE grades (
       id INTEGER PRIMARY KEY,
       school_id INTEGER NOT NULL,
+      student_subject_id INTEGER NOT NULL,
       first_term_grade REAL,
       first_month REAL,
       second_month REAL,
@@ -70,6 +71,29 @@ function createRecalculationDatabase() {
       exemption_status INTEGER DEFAULT 0,
       notes TEXT,
       is_active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE student_subjects (
+      id INTEGER PRIMARY KEY,
+      school_id INTEGER NOT NULL,
+      class_id INTEGER
+    );
+    CREATE TABLE academic_years (
+      id INTEGER PRIMARY KEY,
+      school_id INTEGER NOT NULL,
+      is_active INTEGER NOT NULL
+    );
+    CREATE TABLE academic_grade_policies (
+      id INTEGER PRIMARY KEY,
+      school_id INTEGER NOT NULL,
+      academic_year_id INTEGER NOT NULL,
+      class_id INTEGER NOT NULL,
+      is_current INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      pass_mark REAL NOT NULL,
+      individual_exemption_grade REAL NOT NULL,
+      exemption_enabled INTEGER NOT NULL,
+      minimum_monthly_exams_per_term INTEGER NOT NULL,
+      policy_kind TEXT NOT NULL
     );
   `);
   return db;
@@ -98,6 +122,7 @@ function insertGrade(db, overrides = {}) {
   const row = {
     id: 1,
     school_id: 1,
+    student_subject_id: overrides.id || 1,
     first_term_grade: null,
     first_month: null,
     second_month: null,
@@ -119,6 +144,8 @@ function insertGrade(db, overrides = {}) {
     is_active: 1,
     ...overrides,
   };
+  db.prepare('INSERT OR IGNORE INTO student_subjects(id,school_id,class_id) VALUES(?,?,1)')
+    .run(row.student_subject_id, row.school_id);
   const columns = Object.keys(row);
   db.prepare(`INSERT INTO grades (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
     .run(...columns.map(column => row[column]));
@@ -176,6 +203,43 @@ test('monthly scheme requires both months and every enabled annual component', (
   assert.equal(partial.annual_effort, null);
   assert.equal(partial.final_grade, null);
   assert.equal(partial.result_status, null);
+});
+
+test('an approved annual policy may require only one monthly exam per term', () => {
+  const result = calculateGrades({
+    first_month: 81,
+    second_month: null,
+    mid_year_exam: 75,
+    third_month: null,
+    fourth_month: 84,
+    final_exam: 70,
+  }, {
+    ...thresholds,
+    minimum_monthly_exams_per_term: 1,
+  });
+  assert.equal(result.first_term_average, 81);
+  assert.equal(result.second_term_average, 84);
+  assert.equal(result.annual_effort, 80);
+  assert.equal(result.final_grade, 75);
+  assert.equal(result.result_status, 'ناجح');
+});
+
+test('terminal policy calculation disables exemption without changing the annual effort', () => {
+  const result = calculateGrades({
+    first_month: 95,
+    second_month: 95,
+    mid_year_exam: 95,
+    third_month: 95,
+    fourth_month: 95,
+    final_exam: null,
+  }, {
+    ...thresholds,
+    exemption_enabled: 0,
+  });
+  assert.equal(result.annual_effort, 95);
+  assert.equal(result.exemption_status, 0);
+  assert.equal(result.final_grade, null);
+  assert.equal(result.result_status, null);
 });
 
 test('canonical term outputs cover complete monthly, direct and disabled inputs exactly', () => {
@@ -376,6 +440,32 @@ test('changing the exemption threshold immediately updates exemption, final and 
   assert.equal(after.result_status, 'ناجح');
   assertRawGradeValuesUnchanged(before, after);
   assertSqlMatchesCalculator(after, settings);
+  db.close();
+});
+
+test('set-based recalculation honors an approved terminal policy for monthly minimum and exemption', () => {
+  const db = createRecalculationDatabase();
+  replaceSettings(db, {
+    first_term_input_mode: 'monthly', second_term_input_mode: 'monthly',
+    mid_year_exam_enabled: 0, final_exam_enabled: 1, completion_exam_enabled: 0,
+    passing_grade: 50, exemption_grade: 90,
+  });
+  db.exec(`
+    INSERT INTO academic_years(id,school_id,is_active) VALUES(1,1,1);
+    INSERT INTO academic_grade_policies(
+      id,school_id,academic_year_id,class_id,is_current,status,pass_mark,
+      individual_exemption_grade,exemption_enabled,minimum_monthly_exams_per_term,policy_kind
+    ) VALUES(1,1,1,1,1,'approved',50,90,0,1,'terminal');
+  `);
+  insertGrade(db, { first_month: 100, third_month: 100, final_exam: 20 });
+  recalculateSchool(db);
+  const row = readGrade(db);
+  assert.equal(row.first_term_average, 100);
+  assert.equal(row.second_term_average, 100);
+  assert.equal(row.annual_effort, 100);
+  assert.equal(row.exemption_status, 0, 'terminal policy must suppress the school-wide exemption');
+  assert.equal(row.final_grade, 60);
+  assert.equal(row.result_status, 'ناجح');
   db.close();
 });
 
@@ -727,13 +817,13 @@ test('single-grade PUT recalculates and returns the complete tenant-scoped row w
   assert.match(route, /WHERE id = \? AND school_id = \? AND revision = \?/);
   assert.match(route, /RETURNING \*/);
   assert.match(route, /db\.batch<any>\(\[\.\.\.auditStatements, updateStatement\]\)/);
-  assert.match(route, /return c\.json\(\{ data: updated \}\)/);
+  assert.match(route, /return c\.json\(\{ data: policyAwareGradeRow\(\{ \.\.\.gradeRow, \.\.\.updated \}, policyResolution\) \}\)/);
 });
 
 test('student-grade autosave patches the returned row without a full-list refetch', async () => {
   const page = await readFile(new URL('../src/modules/grades/GradesPage.tsx', import.meta.url), 'utf8');
   const handlerStart = page.indexOf('async function handleSaveGrade');
-  const handlerEnd = page.indexOf('function fieldNameArabic', handlerStart);
+  const handlerEnd = page.indexOf('async function saveManualDecisionPoints', handlerStart);
   const handler = page.slice(handlerStart, handlerEnd);
 
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);

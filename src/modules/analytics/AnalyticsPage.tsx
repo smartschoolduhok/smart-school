@@ -13,7 +13,9 @@ import {
   TrendingUp,
   ShieldAlert,
   UserCircle,
+  ClipboardCheck,
 } from 'lucide-react';
+import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
@@ -30,7 +32,10 @@ import {
   getSections,
   getSubjects,
   getStudents,
+  getAcademicOutcomeSummary,
 } from '../../lib/api';
+import { SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import type { RoleKey } from '../../types';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import {
   displayGradeStatus,
@@ -40,6 +45,7 @@ import {
 // ---- Types ----
 type TabKey =
   | 'overview'
+  | 'official-outcomes'
   | 'by-class'
   | 'by-section'
   | 'by-subject'
@@ -52,10 +58,12 @@ interface TabDef {
   key: TabKey;
   label: string;
   icon: React.ReactNode;
+  roles?: readonly RoleKey[];
 }
 
 const TABS: TabDef[] = [
   { key: 'overview', label: 'نظرة عامة', icon: <LayoutDashboard size={18} /> },
+  { key: 'official-outcomes', label: 'النتائج الرسمية', icon: <ClipboardCheck size={18} />, roles: SCHOOL_MANAGEMENT_ROLES },
   { key: 'by-class', label: 'تحليل حسب الصف', icon: <GraduationCap size={18} /> },
   { key: 'by-section', label: 'تحليل حسب الشعبة', icon: <Users size={18} /> },
   { key: 'by-subject', label: 'تحليل حسب المادة', icon: <BookOpen size={18} /> },
@@ -114,9 +122,11 @@ function statusIcon(status: string | null): string {
 
 // ---- Component ----
 export default function AnalyticsPage() {
+  const { user } = useAuth();
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
+  const visibleTabs = TABS.filter(tab => !tab.roles || hasRole(user?.role_key, tab.roles));
 
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [filters, setFilters] = useState<FilterState>({
@@ -142,6 +152,7 @@ export default function AnalyticsPage() {
   const [closeExemptionData, setCloseExemptionData] = useState<any[]>([]);
   const [blockersData, setBlockersData] = useState<any[]>([]);
   const [studentSummaryData, setStudentSummaryData] = useState<any>(null);
+  const [officialOutcomesData, setOfficialOutcomesData] = useState<any>(null);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -153,6 +164,7 @@ export default function AnalyticsPage() {
     setByClassData([]); setBySectionData([]); setBySubjectData([]);
     setClosePassingData([]); setCloseExemptionData([]); setBlockersData([]);
     setStudentSummaryData(null);
+    setOfficialOutcomesData(null);
     setLoading(false);
     setError(null);
     async function loadDropdowns() {
@@ -205,6 +217,15 @@ export default function AnalyticsPage() {
           case 'overview': {
             const res = await getAnalyticsOverview(params);
             if (!cancelled && isCurrent()) setOverviewData(res.data ?? res);
+            break;
+          }
+          case 'official-outcomes': {
+            const res = await getAcademicOutcomeSummary({
+              school_id: schoolId,
+              class_id: params.class_id,
+              section_id: params.section_id,
+            });
+            if (!cancelled && isCurrent()) setOfficialOutcomesData(res.data ?? null);
             break;
           }
           case 'by-class': {
@@ -359,7 +380,7 @@ export default function AnalyticsPage() {
       {/* Tabs */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="flex overflow-x-auto border-b border-gray-200">
-          {TABS.map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
@@ -408,6 +429,36 @@ export default function AnalyticsPage() {
               </div>
               <div className="text-xs text-gray-500">
                 درجة النجاح: {toArabicDigits(overviewData.passing_grade || 50)} — درجة الإعفاء: {toArabicDigits(overviewData.exemption_grade || 90)}
+              </div>
+            </div>
+          )}
+
+          {!loading && !error && activeTab === 'official-outcomes' && officialOutcomesData && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs leading-6 text-blue-900">
+                هذه أعداد طلاب، وليست أعداد سجلات مواد. تُحسب من السياسة المعتمدة لكل صف، مع فصل النتيجة الدراسية عن أهلية الدخول الوزاري.
+              </div>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <Card title="الطلاب المقيمون" value={officialOutcomesData.evaluated_students || 0} />
+                <Card title="ناجح" value={officialOutcomesData.pass_count || 0} colorClass="bg-emerald-50" />
+                <Card title="مكمل" value={officialOutcomesData.completion_count || 0} colorClass="bg-amber-50" />
+                <Card title="راسب" value={officialOutcomesData.fail_count || 0} colorClass="bg-red-50" />
+                <Card title="غير مكتمل" value={officialOutcomesData.incomplete_count || 0} />
+                <Card title="إعفاء عام" value={officialOutcomesData.general_exemption_count || 0} colorClass="bg-indigo-50" />
+                <Card title="مؤهل وزاريًا" value={(officialOutcomesData.ministerial_eligible_count || 0) + (officialOutcomesData.ministerial_comprehensive_count || 0)} colorClass="bg-blue-50" />
+                <Card title="غير مؤهل وزاريًا" value={officialOutcomesData.ministerial_not_eligible_count || 0} colorClass="bg-rose-50" />
+              </div>
+              {(officialOutcomesData.missing_policy_class_ids || []).length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">توجد صفوف بلا سياسة معتمدة؛ لم تُخمن نتائجها: {officialOutcomesData.missing_policy_class_ids.map((id: number) => toArabicDigits(id)).join('، ')}</div>
+              )}
+              <div className="overflow-x-auto rounded-lg border">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600"><tr><th className="px-3 py-2 text-right">الطالب</th><th className="px-3 py-2 text-right">الصف / الشعبة</th><th className="px-3 py-2 text-center">النتيجة</th><th className="px-3 py-2 text-center">الدخول الوزاري</th><th className="px-3 py-2 text-center">مواد الإكمال</th><th className="px-3 py-2 text-center">درجات القرار</th><th className="px-3 py-2 text-center">الإصدار</th></tr></thead>
+                  <tbody className="divide-y">
+                    {(officialOutcomesData.students || []).map((student: any) => <tr key={student.student_id} className="hover:bg-gray-50"><td className="px-3 py-2 font-medium">{student.student_name}<div className="text-xs text-gray-400">{student.student_number}</div></td><td className="px-3 py-2">{student.class_name}{student.section_name ? ` / ${student.section_name}` : ''}</td><td className="px-3 py-2 text-center"><span className={`rounded-full px-2 py-1 text-xs font-bold ${statusBadge(student.academic_status_label)}`}>{student.academic_status_label}</span></td><td className="px-3 py-2 text-center text-xs">{student.ministerial_eligibility_label}</td><td className="px-3 py-2 text-center">{toArabicDigits(student.adjusted_failed_subjects || 0)}</td><td className="px-3 py-2 text-center">{toArabicDigits(student.decision_points_used || 0)}</td><td className="px-3 py-2 text-center">{toArabicDigits(student.policy_version || 1)}</td></tr>)}
+                    {(officialOutcomesData.students || []).length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">لا توجد نتائج قابلة للحساب بعد</td></tr>}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}

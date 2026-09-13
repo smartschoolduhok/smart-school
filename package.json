@@ -40,6 +40,7 @@
     "test:student-promotion": "node --experimental-strip-types --test test/student-promotion.test.mjs test/student-promotion-ui.test.mjs",
     "test:student-profile": "node --experimental-strip-types --test test/student-profile.test.mjs",
     "test:flexible-grades": "node --experimental-strip-types --test test/flexible-grade-scheme.test.mjs",
+    "test:grade-policies": "node --experimental-strip-types --test --test-concurrency=1 test/grade-policy.test.mjs test/grade-policy-api.test.mjs test/grade-policy-migration.test.mjs test/grade-policy-ui.test.mjs",
     "test:grade-presentation": "node --experimental-strip-types --test test/grade-presentation.test.mjs",
     "test:result-cards": "node --experimental-strip-types --test test/result-card.test.mjs",
     "test:settings": "node --experimental-strip-types --test test/settings-permissions.test.mjs",

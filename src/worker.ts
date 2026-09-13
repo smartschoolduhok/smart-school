@@ -75,6 +75,22 @@ import {
 } from './lib/apiSecurity'
 import { normalizeSectionName, RAW_GRADE_FIELDS, type RawGradeField } from './lib/excelImport'
 import { calculateGrades, type RawGradeValues } from './lib/gradeCalculations'
+import {
+  academicStatusLabel,
+  evaluateStudentAcademicPolicy,
+  ministerialEligibilityLabel,
+  validateAcademicGradePolicy,
+  type AcademicGradePolicy,
+  type StudentAcademicPolicyOutcome,
+} from './lib/gradePolicy'
+import {
+  calculatePolicyGradeRow,
+  gradeCalculationSettingsForPolicy,
+  loadAcademicPolicyOutcomes,
+  loadCurrentAcademicGradePolicies,
+  normalizeAcademicGradePolicyRow,
+  resolveAcademicYearId,
+} from './lib/gradePolicyDb'
 import { RECALCULATE_SCHOOL_GRADES_SQL } from './lib/gradeRecalculationSql'
 import {
   DEFAULT_GRADE_SCHEME_SETTINGS,
@@ -6056,6 +6072,690 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SETTINGS
 });
 
 // ===========================================
+// Phase 20C: Annual Grade Policies
+// ===========================================
+
+const GRADE_POLICY_FIELDS = [
+  'policy_kind', 'pass_mark', 'decision_points', 'decision_allocation_mode',
+  'decision_points_outcome_only', 'max_completion_subjects', 'exemption_enabled',
+  'individual_exemption_grade', 'general_exemption_average_grade',
+  'general_exemption_min_subject_grade', 'ministerial_entry_mode',
+  'ministerial_max_failed_subjects', 'minimum_monthly_exams_per_term',
+  'fraction_rounding_mode', 'source_reference', 'notes',
+] as const;
+
+function gradePolicyFromPayload(
+  body: Record<string, any>,
+  existing?: Record<string, any> | null,
+): AcademicGradePolicy {
+  const value = (key: typeof GRADE_POLICY_FIELDS[number], fallback: any) => (
+    body[key] === undefined ? existing?.[key] ?? fallback : body[key]
+  );
+  return {
+    policy_kind: value('policy_kind', 'non_terminal'),
+    pass_mark: Number(value('pass_mark', 50)),
+    decision_points: Number(value('decision_points', 0)),
+    decision_allocation_mode: value('decision_allocation_mode', 'optimal'),
+    decision_points_outcome_only: Number(value('decision_points_outcome_only', 1)),
+    max_completion_subjects: Number(value('max_completion_subjects', 0)),
+    exemption_enabled: Number(value('exemption_enabled', 0)),
+    individual_exemption_grade: Number(value('individual_exemption_grade', 90)),
+    general_exemption_average_grade: Number(value('general_exemption_average_grade', 85)),
+    general_exemption_min_subject_grade: Number(value('general_exemption_min_subject_grade', 75)),
+    ministerial_entry_mode: value('ministerial_entry_mode', 'none'),
+    ministerial_max_failed_subjects: Number(value('ministerial_max_failed_subjects', 0)),
+    minimum_monthly_exams_per_term: Number(value('minimum_monthly_exams_per_term', 2)),
+    fraction_rounding_mode: value('fraction_rounding_mode', 'nearest'),
+    source_reference: typeof value('source_reference', null) === 'string'
+      ? value('source_reference', null).trim() || null
+      : null,
+    notes: typeof value('notes', null) === 'string' ? value('notes', null).trim() || null : null,
+  };
+}
+
+function gradePolicyValues(policy: AcademicGradePolicy): any[] {
+  return [
+    policy.policy_kind, policy.pass_mark, policy.decision_points,
+    policy.decision_allocation_mode, Number(policy.decision_points_outcome_only),
+    policy.max_completion_subjects, Number(policy.exemption_enabled),
+    policy.individual_exemption_grade, policy.general_exemption_average_grade,
+    policy.general_exemption_min_subject_grade, policy.ministerial_entry_mode,
+    policy.ministerial_max_failed_subjects, policy.minimum_monthly_exams_per_term,
+    policy.fraction_rounding_mode, policy.source_reference || null, policy.notes || null,
+  ];
+}
+
+function gradePolicyPublicJson(row: Record<string, any>): string {
+  const publicRow = Object.fromEntries(Object.entries(row).filter(([key]) => (
+    key !== 'class_name' && key !== 'class_stage' && key !== 'academic_year_name'
+  )));
+  return JSON.stringify(publicRow);
+}
+
+async function loadGradePolicyById(db: D1Database, id: number): Promise<any | null> {
+  const row = await db.prepare('SELECT * FROM academic_grade_policies WHERE id=?').bind(id).first<any>();
+  return row ? normalizeAcademicGradePolicyRow(row) : null;
+}
+
+function gradePolicyDbError(err: any): { status: 400 | 409 | 500; error: string; code?: string } {
+  const message = String(err?.message || err || '');
+  if (/academic_grade_decision_write_assertions|grade_decision_stale/i.test(message)) return { status: 409, error: 'تغير توزيع درجات القرار؛ أعد تحميل الطالب', code: 'grade_decision_stale' };
+  if (/توزيع درجات القرار|درجات القرار اليدوية/i.test(message)) return { status: 400, error: message, code: 'grade_decision_invalid' };
+  if (/grade_decision_scope_mismatch/i.test(message)) return { status: 409, error: 'الطالب أو السياسة أو المواد لا تطابق نطاق قرار الدرجات', code: 'grade_decision_scope_mismatch' };
+  if (/grade_decision_invalid/i.test(message)) return { status: 400, error: 'توزيع درجات القرار غير صالح', code: 'grade_decision_invalid' };
+  if (/grade_decision_history_preserved/i.test(message)) return { status: 409, error: 'سجل توزيع درجات القرار محفوظ ولا يمكن حذفه أو تغييره', code: 'grade_decision_history_preserved' };
+  if (/grade_policy_school_mismatch/i.test(message)) return { status: 400, error: 'السنة أو الصف لا يتبعان المدرسة المحددة', code: 'grade_policy_school_mismatch' };
+  if (/grade_policy_invalid_transition|grade_policy_history_preserved|grade_policy_immutable_identity/i.test(message)) return { status: 409, error: 'لا يمكن تعديل سياسة معتمدة أو مقفلة؛ أنشئ تعديلًا جديدًا', code: 'grade_policy_locked' };
+  if (/UNIQUE constraint failed|idx_academic_grade_policies_current/i.test(message)) return { status: 409, error: 'توجد سياسة حالية لهذا الصف والسنة بالفعل', code: 'grade_policy_exists' };
+  if (/academic_grade_policy_write_assertions|CHECK constraint failed/i.test(message)) return { status: 409, error: 'تغيرت السياسة بواسطة مستخدم آخر؛ أعد تحميلها', code: 'grade_policy_stale' };
+  if (/grade_policy_invalid/i.test(message)) return { status: 400, error: 'قيم سياسة الدرجات غير صالحة', code: 'grade_policy_invalid' };
+  return { status: 500, error: 'فشل في معالجة سياسة الدرجات' };
+}
+
+app.get('/api/grade-policies', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+  const db = c.env.DB;
+  const schoolId = c.get('resolvedSchoolId');
+  try {
+    if (!schoolId) return c.json({ error: 'يجب تحديد المدرسة' }, 400);
+    const requestedYear = c.req.query('academic_year_id');
+    const academicYearId = await resolveAcademicYearId(
+      db,
+      schoolId,
+      requestedYear ? Number(requestedYear) : null,
+    );
+    if (!academicYearId) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404);
+    const classId = c.req.query('class_id') ? Number(c.req.query('class_id')) : null;
+    const policies = await loadCurrentAcademicGradePolicies(db, schoolId, academicYearId, {
+      includeDraft: true,
+      classId,
+    });
+    const readiness = await db.prepare(`
+      SELECT * FROM academic_grade_policy_readiness
+      WHERE school_id=? AND academic_year_id=?
+    `).bind(schoolId, academicYearId).first<any>();
+    return c.json({ data: policies, meta: { academic_year_id: academicYearId, readiness } });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+});
+
+app.post('/api/grade-policies', requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const body = await c.req.json();
+    const target = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!target.ok) return c.json({ error: target.error }, target.status);
+    const academicYearId = Number(body.academic_year_id);
+    const classId = Number(body.class_id);
+    if (!Number.isInteger(academicYearId) || !Number.isInteger(classId)) {
+      return c.json({ error: 'السنة الدراسية والصف مطلوبان' }, 400);
+    }
+    const current = await db.prepare(`
+      SELECT id FROM academic_grade_policies
+      WHERE school_id=? AND academic_year_id=? AND class_id=? AND is_current=1
+    `).bind(target.schoolId, academicYearId, classId).first<any>();
+    if (current) return c.json({ error: 'توجد سياسة حالية لهذا الصف والسنة بالفعل', code: 'grade_policy_exists' }, 409);
+    const policy = gradePolicyFromPayload(body);
+    const validationError = validateAcademicGradePolicy(policy);
+    if (validationError) return c.json({ error: validationError }, 400);
+    const versionRow = await db.prepare(`
+      SELECT COALESCE(MAX(version),0)+1 AS next_version
+      FROM academic_grade_policies WHERE school_id=? AND academic_year_id=? AND class_id=?
+    `).bind(target.schoolId, academicYearId, classId).first<{ next_version: number }>();
+    const version = Number(versionRow?.next_version || 1);
+    const after = {
+      school_id: target.schoolId,
+      academic_year_id: academicYearId,
+      class_id: classId,
+      version,
+      is_current: 1,
+      status: 'draft',
+      ...policy,
+    };
+    const statements = [
+      db.prepare(`
+        INSERT INTO academic_grade_policies(
+          school_id,academic_year_id,class_id,version,is_current,status,
+          policy_kind,pass_mark,decision_points,decision_allocation_mode,
+          decision_points_outcome_only,max_completion_subjects,exemption_enabled,
+          individual_exemption_grade,general_exemption_average_grade,
+          general_exemption_min_subject_grade,ministerial_entry_mode,
+          ministerial_max_failed_subjects,minimum_monthly_exams_per_term,
+          fraction_rounding_mode,source_reference,notes,
+          created_by_user_id,updated_by_user_id
+        ) VALUES(?,?,?,?,1,'draft',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(
+        target.schoolId, academicYearId, classId, version,
+        ...gradePolicyValues(policy), user?.id, user?.id,
+      ),
+      db.prepare(`
+        INSERT INTO academic_grade_policy_logs(
+          school_id,policy_id,action,before_json,after_json,change_reason,changed_by_user_id
+        )
+        SELECT school_id,id,'created',NULL,?,?,?
+        FROM academic_grade_policies
+        WHERE school_id=? AND academic_year_id=? AND class_id=? AND version=?
+      `).bind(
+        JSON.stringify(after), body.change_reason?.trim() || null, user?.id,
+        target.schoolId, academicYearId, classId, version,
+      ),
+    ];
+    await db.batch(statements);
+    const created = await db.prepare(`
+      SELECT * FROM academic_grade_policies
+      WHERE school_id=? AND academic_year_id=? AND class_id=? AND version=?
+    `).bind(target.schoolId, academicYearId, classId, version).first<any>();
+    return c.json({ data: created ? normalizeAcademicGradePolicyRow(created) : null }, 201);
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+});
+
+app.put('/api/grade-policies/:id', requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const id = Number(c.req.param('id'));
+    const body = await c.req.json();
+    const existing = await loadGradePolicyById(db, id);
+    if (!existing) return c.json({ error: 'سياسة الدرجات غير موجودة' }, 404);
+    const target = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!target.ok) return c.json({ error: target.error }, target.status);
+    if (existing.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
+    if (existing.status !== 'draft' || existing.is_current !== 1) {
+      return c.json({ error: 'يمكن تعديل السياسة الحالية وهي مسودة فقط', code: 'grade_policy_locked' }, 409);
+    }
+    const expectedRevision = Number(body.revision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== existing.revision) {
+      return c.json({ error: 'تغيرت السياسة بواسطة مستخدم آخر؛ أعد تحميلها', code: 'grade_policy_stale' }, 409);
+    }
+    const policy = gradePolicyFromPayload(body, existing);
+    const validationError = validateAcademicGradePolicy(policy);
+    if (validationError) return c.json({ error: validationError }, 400);
+    const after = { ...existing, ...policy, revision: expectedRevision + 1, updated_by_user_id: user?.id };
+    const requestId = crypto.randomUUID();
+    const results = await db.batch<any>([
+      db.prepare(`
+        INSERT INTO academic_grade_policy_write_assertions(request_id,policy_id,expected_revision,validated)
+        SELECT ?,?,?,CASE WHEN EXISTS(
+          SELECT 1 FROM academic_grade_policies
+          WHERE id=? AND school_id=? AND revision=? AND status='draft' AND is_current=1
+        ) THEN 1 ELSE 0 END
+      `).bind(requestId, id, expectedRevision, id, target.schoolId, expectedRevision),
+      db.prepare(`
+        INSERT INTO academic_grade_policy_logs(
+          school_id,policy_id,action,before_json,after_json,change_reason,changed_by_user_id
+        ) VALUES(?,?,'updated',?,?,?,?)
+      `).bind(
+        target.schoolId, id, gradePolicyPublicJson(existing), JSON.stringify(after),
+        body.change_reason?.trim() || null, user?.id,
+      ),
+      db.prepare(`
+        UPDATE academic_grade_policies SET
+          policy_kind=?,pass_mark=?,decision_points=?,decision_allocation_mode=?,
+          decision_points_outcome_only=?,max_completion_subjects=?,exemption_enabled=?,
+          individual_exemption_grade=?,general_exemption_average_grade=?,
+          general_exemption_min_subject_grade=?,ministerial_entry_mode=?,
+          ministerial_max_failed_subjects=?,minimum_monthly_exams_per_term=?,
+          fraction_rounding_mode=?,source_reference=?,notes=?,
+          revision=revision+1,updated_by_user_id=?,updated_at=unixepoch()
+        WHERE id=? AND school_id=? AND revision=? AND status='draft' AND is_current=1
+        RETURNING *
+      `).bind(...gradePolicyValues(policy), user?.id, id, target.schoolId, expectedRevision),
+      db.prepare('DELETE FROM academic_grade_policy_write_assertions WHERE request_id=?').bind(requestId),
+    ]);
+    const updated = results[2]?.results?.[0];
+    if (!updated) return c.json({ error: 'تغيرت السياسة بواسطة مستخدم آخر؛ أعد تحميلها', code: 'grade_policy_stale' }, 409);
+    return c.json({ data: normalizeAcademicGradePolicyRow(updated) });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+});
+
+async function transitionGradePolicy(
+  c: any,
+  transition: 'approved' | 'locked',
+) {
+  const db: D1Database = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const id = Number(c.req.param('id'));
+    const body = await c.req.json();
+    const existing = await loadGradePolicyById(db, id);
+    if (!existing) return c.json({ error: 'سياسة الدرجات غير موجودة' }, 404);
+    const target = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!target.ok) return c.json({ error: target.error }, target.status);
+    if (existing.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
+    const expectedStatus = transition === 'approved' ? 'draft' : 'approved';
+    if (existing.status !== expectedStatus || existing.is_current !== 1) {
+      return c.json({ error: `لا يمكن ${transition === 'approved' ? 'اعتماد' : 'قفل'} السياسة من حالتها الحالية`, code: 'grade_policy_invalid_transition' }, 409);
+    }
+    const expectedRevision = Number(body.revision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== existing.revision) {
+      return c.json({ error: 'تغيرت السياسة بواسطة مستخدم آخر؛ أعد تحميلها', code: 'grade_policy_stale' }, 409);
+    }
+    if (transition === 'approved' && !String(existing.source_reference || '').trim()) {
+      return c.json({ error: 'يجب تسجيل مرجع القرار قبل اعتماد السياسة' }, 400);
+    }
+    const timestampField = transition === 'approved' ? 'approved_at' : 'locked_at';
+    const userField = transition === 'approved' ? 'approved_by_user_id' : 'locked_by_user_id';
+    const after = { ...existing, status: transition, revision: expectedRevision + 1, [timestampField]: Math.floor(Date.now() / 1000), [userField]: user?.id };
+    const requestId = crypto.randomUUID();
+    const results = await db.batch<any>([
+      db.prepare(`
+        INSERT INTO academic_grade_policy_write_assertions(request_id,policy_id,expected_revision,validated)
+        SELECT ?,?,?,CASE WHEN EXISTS(
+          SELECT 1 FROM academic_grade_policies
+          WHERE id=? AND school_id=? AND revision=? AND status=? AND is_current=1
+        ) THEN 1 ELSE 0 END
+      `).bind(requestId, id, expectedRevision, id, target.schoolId, expectedRevision, expectedStatus),
+      db.prepare(`
+        INSERT INTO academic_grade_policy_logs(
+          school_id,policy_id,action,before_json,after_json,change_reason,changed_by_user_id
+        ) VALUES(?,?,?,?,?,?,?)
+      `).bind(
+        target.schoolId, id, transition === 'approved' ? 'approved' : 'locked',
+        gradePolicyPublicJson(existing), JSON.stringify(after), body.change_reason?.trim() || null, user?.id,
+      ),
+      db.prepare(`
+        UPDATE academic_grade_policies
+        SET status=?,${timestampField}=unixepoch(),${userField}=?,revision=revision+1,
+            updated_by_user_id=?,updated_at=unixepoch()
+        WHERE id=? AND school_id=? AND revision=? AND status=? AND is_current=1
+        RETURNING *
+      `).bind(transition, user?.id, user?.id, id, target.schoolId, expectedRevision, expectedStatus),
+      db.prepare('DELETE FROM academic_grade_policy_write_assertions WHERE request_id=?').bind(requestId),
+    ]);
+    const updated = results[2]?.results?.[0];
+    if (!updated) return c.json({ error: 'تغيرت السياسة بواسطة مستخدم آخر؛ أعد تحميلها', code: 'grade_policy_stale' }, 409);
+    return c.json({ data: normalizeAcademicGradePolicyRow(updated) });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+}
+
+app.post('/api/grade-policies/:id/approve', requireRoles(SETTINGS_MANAGEMENT_ROLES), (c) => (
+  transitionGradePolicy(c, 'approved')
+));
+
+app.post('/api/grade-policies/:id/lock', requireRoles(SETTINGS_MANAGEMENT_ROLES), (c) => (
+  transitionGradePolicy(c, 'locked')
+));
+
+app.post('/api/grade-policies/:id/amend', requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const id = Number(c.req.param('id'));
+    const body = await c.req.json();
+    const existing = await loadGradePolicyById(db, id);
+    if (!existing) return c.json({ error: 'سياسة الدرجات غير موجودة' }, 404);
+    const target = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!target.ok) return c.json({ error: target.error }, target.status);
+    if (existing.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
+    if (!['approved', 'locked'].includes(existing.status) || existing.is_current !== 1) {
+      return c.json({ error: 'التعديل الجديد يتطلب سياسة حالية معتمدة أو مقفلة' }, 409);
+    }
+    const expectedRevision = Number(body.revision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== existing.revision) {
+      return c.json({ error: 'تغيرت السياسة بواسطة مستخدم آخر؛ أعد تحميلها', code: 'grade_policy_stale' }, 409);
+    }
+    const policy = gradePolicyFromPayload(body, existing);
+    const validationError = validateAcademicGradePolicy(policy);
+    if (validationError) return c.json({ error: validationError }, 400);
+    const nextVersion = Number(existing.version) + 1;
+    const requestId = crypto.randomUUID();
+    const newSnapshot = {
+      school_id: target.schoolId,
+      academic_year_id: existing.academic_year_id,
+      class_id: existing.class_id,
+      version: nextVersion,
+      is_current: 1,
+      status: 'draft',
+      ...policy,
+    };
+    await db.batch([
+      db.prepare(`
+        INSERT INTO academic_grade_policy_write_assertions(request_id,policy_id,expected_revision,validated)
+        SELECT ?,?,?,CASE WHEN EXISTS(
+          SELECT 1 FROM academic_grade_policies
+          WHERE id=? AND school_id=? AND revision=? AND status IN ('approved','locked') AND is_current=1
+        ) THEN 1 ELSE 0 END
+      `).bind(requestId, id, expectedRevision, id, target.schoolId, expectedRevision),
+      db.prepare(`
+        UPDATE academic_grade_policies
+        SET is_current=0,revision=revision+1,updated_by_user_id=?,updated_at=unixepoch()
+        WHERE id=? AND school_id=? AND revision=? AND is_current=1
+      `).bind(user?.id, id, target.schoolId, expectedRevision),
+      db.prepare(`
+        INSERT INTO academic_grade_policy_logs(
+          school_id,policy_id,action,before_json,after_json,change_reason,changed_by_user_id
+        ) VALUES(?,?,'amended',?,?,?,?)
+      `).bind(
+        target.schoolId, id, gradePolicyPublicJson(existing), JSON.stringify({ ...existing, is_current: 0, revision: expectedRevision + 1 }),
+        body.change_reason?.trim() || 'إنشاء تعديل جديد', user?.id,
+      ),
+      db.prepare(`
+        INSERT INTO academic_grade_policies(
+          school_id,academic_year_id,class_id,version,is_current,status,
+          policy_kind,pass_mark,decision_points,decision_allocation_mode,
+          decision_points_outcome_only,max_completion_subjects,exemption_enabled,
+          individual_exemption_grade,general_exemption_average_grade,
+          general_exemption_min_subject_grade,ministerial_entry_mode,
+          ministerial_max_failed_subjects,minimum_monthly_exams_per_term,
+          fraction_rounding_mode,source_reference,notes,
+          created_by_user_id,updated_by_user_id
+        ) VALUES(?,?,?,?,1,'draft',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(
+        target.schoolId, existing.academic_year_id, existing.class_id, nextVersion,
+        ...gradePolicyValues(policy), user?.id, user?.id,
+      ),
+      db.prepare(`
+        INSERT INTO academic_grade_policy_logs(
+          school_id,policy_id,action,before_json,after_json,change_reason,changed_by_user_id
+        )
+        SELECT school_id,id,'created',NULL,?,?,?
+        FROM academic_grade_policies
+        WHERE school_id=? AND academic_year_id=? AND class_id=? AND version=?
+      `).bind(
+        JSON.stringify(newSnapshot), body.change_reason?.trim() || 'نسخة تعديل جديدة', user?.id,
+        target.schoolId, existing.academic_year_id, existing.class_id, nextVersion,
+      ),
+      db.prepare('DELETE FROM academic_grade_policy_write_assertions WHERE request_id=?').bind(requestId),
+    ]);
+    const created = await db.prepare(`
+      SELECT * FROM academic_grade_policies
+      WHERE school_id=? AND academic_year_id=? AND class_id=? AND version=?
+    `).bind(target.schoolId, existing.academic_year_id, existing.class_id, nextVersion).first<any>();
+    return c.json({ data: created ? normalizeAcademicGradePolicyRow(created) : null }, 201);
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+});
+
+app.get('/api/grade-policies/:id/history', requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const policy = await loadGradePolicyById(db, Number(c.req.param('id')));
+    if (!policy) return c.json({ error: 'سياسة الدرجات غير موجودة' }, 404);
+    if (user?.role_key !== 'system_admin' && user?.school_id !== policy.school_id) {
+      return c.json({ error: 'غير مسموح' }, 403);
+    }
+    const rows = await db.prepare(`
+      SELECT log.*, versioned_policy.version AS policy_version,
+             versioned_policy.status AS policy_status,
+             versioned_policy.is_current AS policy_is_current,
+             user.full_name AS changed_by_name
+      FROM academic_grade_policy_logs log
+      JOIN academic_grade_policies versioned_policy
+        ON versioned_policy.id=log.policy_id AND versioned_policy.school_id=log.school_id
+      LEFT JOIN users user ON user.id=log.changed_by_user_id
+      WHERE log.school_id=?
+        AND versioned_policy.academic_year_id=?
+        AND versioned_policy.class_id=?
+      ORDER BY log.created_at DESC, log.id DESC
+    `).bind(policy.school_id, policy.academic_year_id, policy.class_id).all<any>();
+    return c.json({ data: rows.results || [] });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+});
+
+app.get('/api/grade-policies/:id/students/:student_id/decision-points', requireAuthEnforced(), requireRoles(GRADE_VIEW_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const policy = await loadGradePolicyById(db, Number(c.req.param('id')));
+    const studentId = Number(c.req.param('student_id'));
+    if (!policy) return c.json({ error: 'سياسة الدرجات غير موجودة' }, 404);
+    if (!user || !await canAccessStudentResource(db, user, studentId)) return c.json({ error: 'غير مسموح' }, 403);
+    const rows = await db.prepare(`
+      SELECT decision_set.*, user.full_name AS created_by_name
+      FROM academic_grade_decision_sets decision_set
+      LEFT JOIN users user ON user.id=decision_set.created_by_user_id
+      WHERE decision_set.school_id=? AND decision_set.policy_id=? AND decision_set.student_id=?
+      ORDER BY decision_set.version DESC
+    `).bind(policy.school_id, policy.id, studentId).all<any>();
+    return c.json({ data: (rows.results || []).map(row => ({
+      ...row,
+      allocations: JSON.parse(String(row.allocations_json || '{}')),
+    })) });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+});
+
+app.put('/api/grade-policies/:id/students/:student_id/decision-points', requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const id = Number(c.req.param('id'));
+    const studentId = Number(c.req.param('student_id'));
+    const body = await c.req.json();
+    const policy = await loadGradePolicyById(db, id);
+    if (!policy) return c.json({ error: 'سياسة الدرجات غير موجودة' }, 404);
+    const target = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!target.ok) return c.json({ error: target.error }, target.status);
+    if (policy.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
+    if (policy.is_current !== 1 || !['approved', 'locked'].includes(policy.status) || policy.decision_allocation_mode !== 'manual') {
+      return c.json({ error: 'التوزيع اليدوي يتطلب سياسة حالية معتمدة مهيأة للتوزيع اليدوي' }, 409);
+    }
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    if (!reason || reason.length > 500) return c.json({ error: 'سبب توزيع درجات القرار مطلوب ولا يتجاوز 500 حرف' }, 400);
+    if (!body.allocations || typeof body.allocations !== 'object' || Array.isArray(body.allocations)) {
+      return c.json({ error: 'توزيع درجات القرار يجب أن يكون كائن مواد وقيم' }, 400);
+    }
+    const allocations: Record<number, number> = {};
+    for (const [rawSubjectId, rawPoints] of Object.entries(body.allocations)) {
+      const subjectId = Number(rawSubjectId);
+      const points = Number(rawPoints);
+      if (!Number.isInteger(subjectId) || subjectId <= 0 || !Number.isFinite(points) || points < 0) {
+        return c.json({ error: 'توزيع درجات القرار يحتوي مادة أو قيمة غير صالحة' }, 400);
+      }
+      if (points > 0) allocations[subjectId] = points;
+    }
+    const settings = await getGradeSettings(db, target.schoolId);
+    const preview = await loadAcademicPolicyOutcomes(db, settings, {
+      schoolId: target.schoolId,
+      academicYearId: policy.academic_year_id,
+      studentId,
+      classId: policy.class_id,
+      evaluationOptions: { manual_allocations: allocations },
+    });
+    const previewItem = preview.outcomes[0];
+    if (!previewItem || Number(previewItem.policy.id) !== id) {
+      return c.json({ error: 'الطالب لا يتبع صف وسياسة القرار المحددين' }, 409);
+    }
+    const current = await db.prepare(`
+      SELECT id,version FROM academic_grade_decision_sets
+      WHERE school_id=? AND policy_id=? AND student_id=? AND is_current=1
+    `).bind(target.schoolId, id, studentId).first<{ id: number; version: number }>();
+    const currentVersion = Number(current?.version || 0);
+    const expectedVersion = Number(body.expected_version);
+    if (!Number.isInteger(expectedVersion) || expectedVersion !== currentVersion) {
+      return c.json({ error: 'تغير توزيع درجات القرار؛ أعد تحميل الطالب', code: 'grade_decision_stale' }, 409);
+    }
+    const requestId = crypto.randomUUID();
+    const nextVersion = currentVersion + 1;
+    const allocationJson = JSON.stringify(allocations);
+    await db.batch([
+      db.prepare(`
+        INSERT INTO academic_grade_decision_write_assertions(
+          request_id,policy_id,student_id,expected_version,validated
+        ) SELECT ?,?,?,?,CASE WHEN COALESCE((
+          SELECT version FROM academic_grade_decision_sets
+          WHERE school_id=? AND policy_id=? AND student_id=? AND is_current=1
+        ),0)=? THEN 1 ELSE 0 END
+      `).bind(requestId, id, studentId, expectedVersion, target.schoolId, id, studentId, expectedVersion),
+      db.prepare(`
+        UPDATE academic_grade_decision_sets SET is_current=0
+        WHERE school_id=? AND policy_id=? AND student_id=? AND is_current=1
+      `).bind(target.schoolId, id, studentId),
+      db.prepare(`
+        INSERT INTO academic_grade_decision_sets(
+          school_id,policy_id,student_id,version,is_current,allocations_json,
+          reason,created_by_user_id
+        ) VALUES(?,?,?,?,1,?,?,?)
+      `).bind(target.schoolId, id, studentId, nextVersion, allocationJson, reason, user?.id),
+      db.prepare('DELETE FROM academic_grade_decision_write_assertions WHERE request_id=?').bind(requestId),
+    ]);
+    const storedResult = await loadAcademicPolicyOutcomes(db, settings, {
+      schoolId: target.schoolId,
+      academicYearId: policy.academic_year_id,
+      studentId,
+      classId: policy.class_id,
+    });
+    const item = storedResult.outcomes[0];
+    return c.json({ data: item ? {
+      ...item,
+      labels: {
+        academic_status: academicStatusLabel(item.outcome.academic_status),
+        ministerial_eligibility: ministerialEligibilityLabel(item.outcome.ministerial_eligibility),
+      },
+    } : null });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.status === 500 ? String(err.message || err) : mapped.error, code: mapped.code }, mapped.status);
+  }
+});
+
+app.post('/api/grade-policies/preview-student', requireRoles(SETTINGS_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const body = await c.req.json();
+    const target = await resolveActiveWriteSchool(db, user, body.school_id);
+    if (!target.ok) return c.json({ error: target.error }, target.status);
+    const policy = gradePolicyFromPayload(body.policy || body);
+    const validationError = validateAcademicGradePolicy(policy);
+    if (validationError) return c.json({ error: validationError }, 400);
+    const academicYearId = Number(body.academic_year_id);
+    const classId = Number(body.class_id);
+    const studentId = Number(body.student_id);
+    const settings = await getGradeSettings(db, target.schoolId);
+    const result = await loadAcademicPolicyOutcomes(db, settings, {
+      schoolId: target.schoolId,
+      academicYearId,
+      studentId,
+      classId,
+      policyOverride: policy,
+      evaluationOptions: body.manual_allocations
+        ? { manual_allocations: body.manual_allocations }
+        : undefined,
+    });
+    const item = result.outcomes[0];
+    if (!item) return c.json({ error: 'لا توجد بيانات طالب قابلة للمعاينة في الصف والسنة المحددين' }, 404);
+    return c.json({ data: item });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.status === 500 ? err.message : mapped.error, code: mapped.code }, mapped.status);
+  }
+});
+
+app.get('/api/academic-outcomes/students/:id', requireAuthEnforced(), requireRoles(GRADE_VIEW_ROLES), async (c) => {
+  const db = c.env.DB;
+  const user: UserContext | null = c.get('user') || null;
+  try {
+    const studentId = Number(c.req.param('id'));
+    const student = await db.prepare('SELECT school_id FROM students WHERE id=?').bind(studentId).first<{ school_id: number }>();
+    if (!student) return c.json({ error: 'الطالب غير موجود' }, 404);
+    if (!user || !await canAccessStudentResource(db, user, studentId)) return c.json({ error: 'غير مسموح' }, 403);
+    const academicYearId = await resolveAcademicYearId(
+      db,
+      student.school_id,
+      c.req.query('academic_year_id') ? Number(c.req.query('academic_year_id')) : null,
+    );
+    if (!academicYearId) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404);
+    const settings = await getGradeSettings(db, student.school_id);
+    const result = await loadAcademicPolicyOutcomes(db, settings, {
+      schoolId: student.school_id,
+      academicYearId,
+      studentId,
+    });
+    const item = result.outcomes[0];
+    if (!item) return c.json({
+      error: 'لا توجد سياسة معتمدة للصف والسنة',
+      code: 'grade_policy_missing',
+      meta: { missing_policy_class_ids: result.missing_policy_class_ids },
+    }, 409);
+    return c.json({
+      data: {
+        ...item,
+        labels: {
+          academic_status: academicStatusLabel(item.outcome.academic_status),
+          ministerial_eligibility: ministerialEligibilityLabel(item.outcome.ministerial_eligibility),
+        },
+      },
+    });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+});
+
+app.get('/api/academic-outcomes/summary', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
+  const db = c.env.DB;
+  const schoolId = c.get('resolvedSchoolId');
+  try {
+    if (!schoolId) return c.json({ error: 'يجب تحديد المدرسة' }, 400);
+    const academicYearId = await resolveAcademicYearId(
+      db,
+      schoolId,
+      c.req.query('academic_year_id') ? Number(c.req.query('academic_year_id')) : null,
+    );
+    if (!academicYearId) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404);
+    const settings = await getGradeSettings(db, schoolId);
+    const result = await loadAcademicPolicyOutcomes(db, settings, {
+      schoolId,
+      academicYearId,
+      classId: c.req.query('class_id') ? Number(c.req.query('class_id')) : null,
+      sectionId: c.req.query('section_id') ? Number(c.req.query('section_id')) : null,
+    });
+    const count = (field: string, value: string) => result.outcomes.filter(item => (item.outcome as any)[field] === value).length;
+    return c.json({
+      data: {
+        academic_year_id: academicYearId,
+        evaluated_students: result.outcomes.length,
+        pass_count: count('academic_status', 'pass'),
+        completion_count: count('academic_status', 'completion'),
+        fail_count: count('academic_status', 'fail'),
+        incomplete_count: count('academic_status', 'incomplete'),
+        general_exemption_count: count('exemption_status', 'general'),
+        individual_exemption_count: count('exemption_status', 'individual'),
+        ministerial_eligible_count: count('ministerial_eligibility', 'eligible'),
+        ministerial_comprehensive_count: count('ministerial_eligibility', 'comprehensive'),
+        ministerial_not_eligible_count: count('ministerial_eligibility', 'not_eligible'),
+        missing_policy_class_ids: result.missing_policy_class_ids,
+        students: result.outcomes.map(item => ({
+          ...item.context,
+          policy_id: item.policy.id,
+          policy_version: item.policy.version,
+          academic_status: item.outcome.academic_status,
+          academic_status_label: academicStatusLabel(item.outcome.academic_status),
+          exemption_status: item.outcome.exemption_status,
+          ministerial_eligibility: item.outcome.ministerial_eligibility,
+          ministerial_eligibility_label: ministerialEligibilityLabel(item.outcome.ministerial_eligibility),
+          adjusted_failed_subjects: item.outcome.adjusted_failed_subjects,
+          decision_points_used: item.outcome.decision_points_used,
+        })),
+      },
+    });
+  } catch (err: any) {
+    const mapped = gradePolicyDbError(err);
+    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+  }
+});
+
+// ===========================================
 // Grade Query Helpers
 // ===========================================
 
@@ -6071,6 +6771,40 @@ async function getGradeSettings(db: D1Database, schoolId: number): Promise<any> 
     return inserted ? withNormalizedGradeScheme(inserted) : null;
   }
   return withNormalizedGradeScheme(row);
+}
+
+async function getActiveGradePolicyResolution(db: D1Database, schoolId: number): Promise<{
+  academicYearId: number | null;
+  baseSettings: any;
+  policiesByClass: Map<number, AcademicGradePolicy & Record<string, any>>;
+}> {
+  const baseSettings = await getGradeSettings(db, schoolId);
+  const academicYearId = await resolveAcademicYearId(db, schoolId, null);
+  const policies = academicYearId
+    ? await loadCurrentAcademicGradePolicies(db, schoolId, academicYearId)
+    : [];
+  return {
+    academicYearId,
+    baseSettings,
+    policiesByClass: new Map(policies.map(policy => [Number(policy.class_id), policy])),
+  };
+}
+
+function policyAwareGradeRow(
+  row: Record<string, any>,
+  resolution: Awaited<ReturnType<typeof getActiveGradePolicyResolution>>,
+): Record<string, any> {
+  const classId = Number(row.assignment_class_id ?? row.class_id);
+  const policy = resolution.policiesByClass.get(classId);
+  if (!policy) return row;
+  const settings = gradeCalculationSettingsForPolicy(resolution.baseSettings, policy);
+  const calculated = calculatePolicyGradeRow(row as any, settings);
+  return {
+    ...calculated,
+    academic_policy_id: policy.id,
+    academic_policy_version: policy.version,
+    academic_policy_kind: policy.policy_kind,
+  };
 }
 
 async function getActiveStudentSubjects(db: D1Database, studentId: number, schoolId: number): Promise<any[]> {
@@ -6107,6 +6841,8 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(GRADE_VIEW_ROLES
 
     let sql = `
       SELECT g.*,
+             ss.student_id, ss.subject_id, ss.class_id as assignment_class_id,
+             ss.section_id as assignment_section_id,
              st.full_name as student_name, st.student_number,
              s.name as subject_name,
              c.name as class_name, sec.name as section_name
@@ -6157,7 +6893,12 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(GRADE_VIEW_ROLES
     const visibleRows = allowedIds == null
       ? (rows.results || [])
       : (rows.results || []).filter(row => allowedIds.has(Number(row.id)))
-    return c.json({ data: visibleRows });
+    const resolution = resolvedSchoolId
+      ? await getActiveGradePolicyResolution(db, resolvedSchoolId)
+      : null;
+    return c.json({
+      data: resolution ? visibleRows.map(row => policyAwareGradeRow(row, resolution)) : visibleRows,
+    });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب الدرجات', detail: err.message }, 500);
   }
@@ -6179,10 +6920,12 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(GRADE_VI
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى درجات هذا الطالب' }, 403);
     }
 
-    const settings = await getGradeSettings(db, student.school_id);
+    const resolution = await getActiveGradePolicyResolution(db, student.school_id);
 
     const rows = await db.prepare(`
-      SELECT g.*, s.name as subject_name, s.id as subject_id
+      SELECT g.*, ss.student_id, ss.class_id as assignment_class_id,
+             ss.section_id as assignment_section_id,
+             s.name as subject_name, s.id as subject_id
       FROM grades g
       JOIN student_subjects ss ON g.student_subject_id = ss.id AND ss.school_id = g.school_id
       JOIN subjects s ON ss.subject_id = s.id AND s.school_id = g.school_id
@@ -6191,7 +6934,39 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(GRADE_VI
       ORDER BY s.order_index, s.id
     `).bind(studentId, student.school_id, ...(user.role_key === 'teacher' ? [user.id] : [])).all<any>();
 
-    return c.json({ data: { student_name: student.full_name, settings, grades: rows.results || [] } });
+    const gradeRows = rows.results || [];
+    const classId = gradeRows[0]?.assignment_class_id == null
+      ? null
+      : Number(gradeRows[0].assignment_class_id);
+    const policy = classId == null ? null : resolution.policiesByClass.get(classId) || null;
+    const effectiveSettings = gradeCalculationSettingsForPolicy(resolution.baseSettings, policy);
+    let academicOutcome: any = null;
+    if (resolution.academicYearId && policy) {
+      const policyResult = await loadAcademicPolicyOutcomes(db, resolution.baseSettings, {
+        schoolId: student.school_id,
+        academicYearId: resolution.academicYearId,
+        studentId,
+        classId,
+      });
+      const item = policyResult.outcomes[0];
+      if (item) {
+        academicOutcome = {
+          ...item,
+          labels: {
+            academic_status: academicStatusLabel(item.outcome.academic_status),
+            ministerial_eligibility: ministerialEligibilityLabel(item.outcome.ministerial_eligibility),
+          },
+        };
+      }
+    }
+
+    return c.json({ data: {
+      student_name: student.full_name,
+      settings: effectiveSettings,
+      academic_policy: policy,
+      academic_outcome: academicOutcome,
+      grades: gradeRows.map(row => policyAwareGradeRow(row, resolution)),
+    } });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب درجات الطالب', detail: err.message }, 500);
   }
@@ -6315,7 +7090,9 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const gradeRow = await db.prepare(`
-      SELECT g.*, ss.is_active as ss_active, s.status as subject_status
+      SELECT g.*, ss.student_id, ss.class_id as assignment_class_id,
+             ss.section_id as assignment_section_id,
+             ss.is_active as ss_active, s.status as subject_status
       FROM grades g
       JOIN student_subjects ss ON g.student_subject_id = ss.id
       JOIN subjects s ON ss.subject_id = s.id
@@ -6341,7 +7118,9 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
       return c.json({ error: 'تغيرت الدرجة بواسطة مستخدم آخر؛ أعد تحميلها ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
     }
 
-    const settings = await getGradeSettings(db, gradeRow.school_id);
+    const policyResolution = await getActiveGradePolicyResolution(db, gradeRow.school_id);
+    const policy = policyResolution.policiesByClass.get(Number(gradeRow.assignment_class_id));
+    const settings = gradeCalculationSettingsForPolicy(policyResolution.baseSettings, policy);
     const { notes, change_reason } = body;
     const rawUpdates = buildRawGradeUpdates(body, settings);
     if (!rawUpdates.ok) return c.json({ error: rawUpdates.error }, 400);
@@ -6416,7 +7195,7 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
       return c.json({ error: 'تغيرت الدرجة بواسطة مستخدم آخر؛ أعد تحميلها ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
     }
     const updated = updatedRows[0];
-    return c.json({ data: updated });
+    return c.json({ data: policyAwareGradeRow({ ...gradeRow, ...updated }, policyResolution) });
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الدرجة', detail: err.message }, 500);
   }
@@ -6439,7 +7218,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
     if (entries.length > 50) return c.json({ error: 'يمكن حفظ 50 درجة كحد أقصى في العملية الواحدة' }, 400);
 
     const gradeIds = new Set<number>();
-    const settings = await getGradeSettings(db, targetSchool.schoolId);
+    const policyResolution = await getActiveGradePolicyResolution(db, targetSchool.schoolId);
     const plans: Array<{
       gradeId: number;
       gradeRow: any;
@@ -6455,7 +7234,10 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       gradeIds.add(gradeId);
 
       const gradeRow = await db.prepare(`
-        SELECT grade.*, assignment.is_active AS ss_active, subject.status AS subject_status
+        SELECT grade.*, assignment.student_id,
+               assignment.class_id AS assignment_class_id,
+               assignment.section_id AS assignment_section_id,
+               assignment.is_active AS ss_active, subject.status AS subject_status
         FROM grades grade
         JOIN student_subjects assignment ON assignment.id = grade.student_subject_id
         JOIN subjects subject ON subject.id = assignment.subject_id
@@ -6480,6 +7262,8 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
         return c.json({ error: `تغيرت الدرجة ${gradeId} بواسطة مستخدم آخر؛ أعد تحميل القائمة ثم حاول مجددًا`, code: 'grade_write_stale' }, 409);
       }
 
+      const policy = policyResolution.policiesByClass.get(Number(gradeRow.assignment_class_id));
+      const settings = gradeCalculationSettingsForPolicy(policyResolution.baseSettings, policy);
       const rawUpdates = buildRawGradeUpdates(entry, settings);
       if (!rawUpdates.ok) return c.json({ error: rawUpdates.error }, 400);
       const updates: Record<string, any> = { ...rawUpdates.updates };
@@ -7296,7 +8080,18 @@ async function loadResultCardEvaluation(
   evaluation: ResultCardEvaluation;
   settings: ResultCardSettings;
   subjects: ResultCardSubject[];
+  policy: (AcademicGradePolicy & Record<string, any>) | null;
+  academicOutcome: StudentAcademicPolicyOutcome | null;
+  decisionSet: Record<string, any> | null;
 }> {
+  const academicYear = await db.prepare(`
+    SELECT id, name
+    FROM academic_years
+    WHERE school_id = ? AND is_active = 1
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(schoolId).first<ResultCardAcademicYear>();
+
   const subjectRows = await db.prepare(`
     SELECT su.id, su.name AS subject_name, su.appears_in_report_card,
            su.counts_in_average
@@ -7312,6 +8107,9 @@ async function loadResultCardEvaluation(
     SELECT
       su.id AS subject_id,
       su.name AS subject_name,
+      su.order_index,
+      su.counts_in_average,
+      ss.class_id AS assignment_class_id,
       g.first_term_grade,
       g.first_month,
       g.second_month,
@@ -7340,7 +8138,7 @@ async function loadResultCardEvaluation(
       AND su.status = 'active'
     WHERE ss.student_id = ? AND g.school_id = ? AND g.is_active = 1
     ORDER BY su.order_index, su.id
-  `).bind(studentId, schoolId).all<ResultCardGrade>();
+  `).bind(studentId, schoolId).all<ResultCardGrade & Record<string, any>>();
 
   const storedGradeSettings = await db.prepare(
     'SELECT * FROM grade_settings WHERE school_id = ?',
@@ -7354,33 +8152,88 @@ async function loadResultCardEvaluation(
     ...DEFAULT_GRADE_SCHEME_SETTINGS,
     ...storedGradeSettings,
   });
+  const enrollment = academicYear
+    ? await db.prepare(`
+        SELECT class_id
+        FROM student_enrollments
+        WHERE school_id=? AND student_id=? AND academic_year_id=?
+          AND status IN ('active','completed')
+        ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, id DESC
+        LIMIT 1
+      `).bind(schoolId, studentId, academicYear.id).first<{ class_id: number }>()
+    : null;
+  const policy = academicYear && enrollment
+    ? (await loadCurrentAcademicGradePolicies(db, schoolId, academicYear.id, {
+        classId: Number(enrollment.class_id),
+      }))[0] || null
+    : null;
+  const storedDecisionSet = policy?.decision_allocation_mode === 'manual'
+    ? await db.prepare(`
+        SELECT * FROM academic_grade_decision_sets
+        WHERE school_id=? AND policy_id=? AND student_id=? AND is_current=1
+      `).bind(schoolId, policy.id, studentId).first<Record<string, any>>()
+    : null;
+  const decisionSet = storedDecisionSet ? {
+    ...storedDecisionSet,
+    allocations: JSON.parse(String(storedDecisionSet.allocations_json || '{}')),
+  } : null;
+  const effectiveGradeSettings = gradeCalculationSettingsForPolicy(gradeSettings, policy);
   const settings: ResultCardSettings = {
-    max_grade: gradeSettings.max_grade,
-    passing_grade: gradeSettings.passing_grade,
-    exemption_grade: gradeSettings.exemption_grade,
+    max_grade: effectiveGradeSettings.max_grade,
+    passing_grade: effectiveGradeSettings.passing_grade,
+    exemption_grade: effectiveGradeSettings.exemption_grade,
     general_exemption_average_grade:
-      gradeSettings.general_exemption_average_grade ?? 85,
+      effectiveGradeSettings.general_exemption_average_grade ?? 85,
     general_exemption_min_subject_grade:
-      gradeSettings.general_exemption_min_subject_grade ?? 75,
-    ...normalizeGradeSchemeSettings(gradeSettings),
+      effectiveGradeSettings.general_exemption_min_subject_grade ?? 75,
+    exemption_enabled: effectiveGradeSettings.exemption_enabled,
+    minimum_monthly_exams_per_term: effectiveGradeSettings.minimum_monthly_exams_per_term,
+    ...normalizeGradeSchemeSettings(effectiveGradeSettings),
   };
-  const academicYear = await db.prepare(`
-    SELECT id, name
-    FROM academic_years
-    WHERE school_id = ? AND is_active = 1
-    ORDER BY id DESC
-    LIMIT 1
-  `).bind(schoolId).first<ResultCardAcademicYear>();
+  const calculatedGradeRows: ResultCardGrade[] = (policy
+    ? (gradeRows.results || []).map(row => calculatePolicyGradeRow(row as any, effectiveGradeSettings))
+    : (gradeRows.results || [])) as ResultCardGrade[];
+  const evaluation = evaluateResultCard(
+    subjectRows.results || [],
+    calculatedGradeRows,
+    settings,
+    academicYear,
+  );
+  const academicOutcome = policy && evaluation.ok
+    ? evaluateStudentAcademicPolicy(policy, (subjectRows.results || []).map(subject => {
+        const grade = calculatedGradeRows.find(item => Number(item.subject_id) === Number(subject.id));
+        return {
+          subject_id: Number(subject.id),
+          subject_name: subject.subject_name,
+          order_index: Number((grade as any)?.order_index || 0),
+          counts_in_average: Number(subject.counts_in_average ?? 1),
+          annual_effort: grade?.annual_effort == null ? null : Number(grade.annual_effort),
+          final_grade: grade?.final_grade == null ? null : Number(grade.final_grade),
+          effective_grade: grade?.effective_grade == null ? null : Number(grade.effective_grade),
+        };
+      }), decisionSet ? { manual_allocations: decisionSet.allocations } : undefined)
+    : null;
+
+  const effectiveEvaluation = evaluation.ok && academicOutcome
+    ? {
+        ...evaluation,
+        summary: {
+          ...evaluation.summary,
+          general_exemption_eligible: academicOutcome.general_exemption_eligible,
+          overall_result_status: evaluation.card_mode === 'complete'
+            ? academicStatusLabel(academicOutcome.academic_status) as any
+            : evaluation.summary.overall_result_status,
+        },
+      }
+    : evaluation;
 
   return {
-    evaluation: evaluateResultCard(
-      subjectRows.results || [],
-      gradeRows.results || [],
-      settings,
-      academicYear,
-    ),
+    evaluation: effectiveEvaluation,
     settings,
     subjects: subjectRows.results || [],
+    policy,
+    academicOutcome,
+    decisionSet,
   };
 }
 
@@ -7468,7 +8321,7 @@ async function buildResultCardSnapshot(
     };
   }
 
-  const { evaluation, settings, subjects } = await loadResultCardEvaluation(
+  const { evaluation, settings, subjects, policy, academicOutcome, decisionSet } = await loadResultCardEvaluation(
     db,
     student.id,
     student.school_id,
@@ -7496,8 +8349,35 @@ async function buildResultCardSnapshot(
     visibleColumns,
     evaluation.summary.general_exemption_eligible,
   );
+  const policySubjectOutcomes = new Map(
+    (academicOutcome?.subjects || []).map(subject => [Number(subject.subject_id), subject]),
+  );
+  const resultCardSubjects = evaluation.grades.map(grade => {
+    const policySubject = policySubjectOutcomes.get(Number(grade.subject_id));
+    return policySubject ? {
+      ...grade,
+      policy_source_grade: policySubject.source_grade,
+      decision_points: policySubject.decision_points,
+      adjusted_grade: policySubject.adjusted_grade,
+      academic_status: policySubject.status,
+    } : grade;
+  });
+  const resultCardSummary = academicOutcome ? {
+    ...evaluation.summary,
+    academic_status_code: academicOutcome.academic_status,
+    academic_status: academicStatusLabel(academicOutcome.academic_status),
+    ministerial_eligibility_code: academicOutcome.ministerial_eligibility,
+    ministerial_eligibility: ministerialEligibilityLabel(academicOutcome.ministerial_eligibility),
+    ministerial_reason: academicOutcome.ministerial_reason,
+    exemption_status: academicOutcome.exemption_status,
+    raw_failed_subjects: academicOutcome.raw_failed_subjects,
+    adjusted_failed_subjects: academicOutcome.adjusted_failed_subjects,
+    decision_points_available: academicOutcome.decision_points_available,
+    decision_points_used: academicOutcome.decision_points_used,
+    decision_points_remaining: academicOutcome.decision_points_remaining,
+  } : evaluation.summary;
   const cardData = {
-    schema_version: 4,
+    schema_version: 5,
     card_mode: evaluation.card_mode,
     school: {
       id: student.school_id,
@@ -7526,13 +8406,35 @@ async function buildResultCardSnapshot(
     required_fields: evaluation.required_fields,
     visible_columns: visibleColumns,
     column_averages: columnAverages,
-    subjects: evaluation.grades,
+    subjects: resultCardSubjects,
+    academic_policy: policy ? {
+      id: policy.id,
+      version: policy.version,
+      status: policy.status,
+      policy_kind: policy.policy_kind,
+      pass_mark: policy.pass_mark,
+      decision_points: policy.decision_points,
+      decision_allocation_mode: policy.decision_allocation_mode,
+      max_completion_subjects: policy.max_completion_subjects,
+      exemption_enabled: policy.exemption_enabled,
+      ministerial_entry_mode: policy.ministerial_entry_mode,
+      ministerial_max_failed_subjects: policy.ministerial_max_failed_subjects,
+      source_reference: policy.source_reference,
+    } : null,
+    decision_point_record: decisionSet ? {
+      id: decisionSet.id,
+      version: decisionSet.version,
+      allocations: decisionSet.allocations,
+      reason: decisionSet.reason,
+      created_by_user_id: decisionSet.created_by_user_id,
+      created_at: decisionSet.created_at,
+    } : null,
     applicability: {
       display_subject_ids: evaluation.grades.map((grade) => grade.subject_id),
       counted_subject_ids: evaluation.counted_grades.map((grade) => grade.subject_id),
     },
     incomplete_subjects: evaluation.incomplete_subjects,
-    summary: evaluation.summary,
+    summary: resultCardSummary,
     document_settings: {
       result_card_header_text: schoolSettings?.result_card_header_text || null,
       result_card_footer_text: schoolSettings?.result_card_footer_text || null,
@@ -10837,9 +11739,18 @@ async function loadGradeImportContext(db: D1Database, schoolId: number): Promise
     general_exemption_average_grade: 85,
     general_exemption_min_subject_grade: 75,
   });
+  const academicYearId = await resolveAcademicYearId(db, schoolId, null);
+  const policies = academicYearId
+    ? await loadCurrentAcademicGradePolicies(db, schoolId, academicYearId)
+    : [];
+  const settingsByClass = Object.fromEntries(policies.map(policy => [
+    Number(policy.class_id),
+    gradeCalculationSettingsForPolicy(settings, policy),
+  ]));
   return {
     schoolId,
     settings,
+    settingsByClass,
     students,
     subjects: subjectsResult.results || [],
     assignments: assignmentsResult.results || [],

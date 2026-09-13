@@ -62,6 +62,8 @@ export interface ResultCardSettings extends GradeSchemeSettings {
   exemption_grade: number;
   general_exemption_average_grade: number;
   general_exemption_min_subject_grade: number;
+  exemption_enabled?: number | boolean;
+  minimum_monthly_exams_per_term?: number;
 }
 
 export interface ResultCardIncompleteSubject {
@@ -135,6 +137,32 @@ function blankGrade(subject: ResultCardSubject): ResultCardGrade {
 function roundedAverage(values: number[]): number | null {
   if (values.length === 0) return null;
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function missingAnnualGradeFields(
+  grade: ResultCardGrade,
+  settings: ResultCardSettings,
+): string[] {
+  const missing: string[] = [];
+  const minimumMonthly = settings.minimum_monthly_exams_per_term === 1 ? 1 : 2;
+  if (settings.first_term_input_mode === 'monthly') {
+    const fields: Array<'first_month' | 'second_month'> = ['first_month', 'second_month'];
+    const entered = fields.filter(field => isFiniteNumber(grade[field])).length;
+    if (entered < minimumMonthly) missing.push(...fields.filter(field => !isFiniteNumber(grade[field])));
+  } else if (settings.first_term_input_mode === 'direct' && !isFiniteNumber(grade.first_term_grade)) {
+    missing.push('first_term_grade');
+  }
+  if (settings.mid_year_exam_enabled === 1 && !isFiniteNumber(grade.mid_year_exam)) {
+    missing.push('mid_year_exam');
+  }
+  if (settings.second_term_input_mode === 'monthly') {
+    const fields: Array<'third_month' | 'fourth_month'> = ['third_month', 'fourth_month'];
+    const entered = fields.filter(field => isFiniteNumber(grade[field])).length;
+    if (entered < minimumMonthly) missing.push(...fields.filter(field => !isFiniteNumber(grade[field])));
+  } else if (settings.second_term_input_mode === 'direct' && !isFiniteNumber(grade.second_term_grade)) {
+    missing.push('second_term_grade');
+  }
+  return missing;
 }
 
 /**
@@ -242,9 +270,6 @@ export function evaluateResultCard(
   const requiredFields = enabledRawGradeFields(settings).filter(
     (field) => field !== 'completion_exam',
   );
-  const annualInputFields = requiredFields.filter(
-    (field) => field !== 'final_exam',
-  );
   const gradesBySubject = new Map(grades.map((grade) => [grade.subject_id, grade]));
   const { displaySubjects, countedSubjects } = partitionResultCardSubjects(
     applicableSubjects,
@@ -262,21 +287,23 @@ export function evaluateResultCard(
   const countedGrades = orderedGrades.filter((grade) => countedSubjectIds.has(grade.subject_id));
 
   const annualDataComplete = countedGrades.length > 0 && countedGrades.every(
-    (grade) =>
-      annualInputFields.every((field) => isFiniteNumber(grade[field])) &&
-      isFiniteNumber(grade.annual_effort),
+    (grade) => missingAnnualGradeFields(grade, settings).length === 0
+      && isFiniteNumber(grade.annual_effort),
   );
   const annualEfforts = annualDataComplete
     ? countedGrades.map((grade) => grade.annual_effort as number)
     : [];
   const annualEffortAverage = annualDataComplete ? roundedAverage(annualEfforts) : null;
   const minAnnualEffort = annualDataComplete ? Math.min(...annualEfforts) : null;
-  const generalExemptionEligible = annualDataComplete
-    ? annualEffortAverage !== null &&
-      annualEffortAverage >= settings.general_exemption_average_grade &&
-      minAnnualEffort !== null &&
-      minAnnualEffort >= settings.general_exemption_min_subject_grade
-    : null;
+  const exemptionEnabled = settings.exemption_enabled !== false && settings.exemption_enabled !== 0;
+  const generalExemptionEligible = !exemptionEnabled
+    ? false
+    : annualDataComplete
+      ? annualEffortAverage !== null &&
+        annualEffortAverage >= settings.general_exemption_average_grade &&
+        minAnnualEffort !== null &&
+        minAnnualEffort >= settings.general_exemption_min_subject_grade
+      : null;
 
   // General exemption is a card-level academic decision. It may complete the
   // presentation without mutating the persisted grade row or its individual flag.
@@ -302,9 +329,7 @@ export function evaluateResultCard(
   ): ResultCardIncompleteSubject[] => targetGrades.flatMap((grade): ResultCardIncompleteSubject[] => {
     const missingFields: string[] = [];
     if (!gradesBySubject.has(grade.subject_id)) missingFields.push('grade_record');
-    for (const field of annualInputFields) {
-      if (!isFiniteNumber(grade[field])) missingFields.push(field);
-    }
+    missingFields.push(...missingAnnualGradeFields(grade, settings));
     if (!isFiniteNumber(grade.annual_effort)) missingFields.push('annual_effort');
     if (
       scheme.final_exam_enabled === 1 &&

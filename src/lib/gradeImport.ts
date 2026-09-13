@@ -121,6 +121,7 @@ export interface GradeImportSection {
 export interface GradeImportContext {
   schoolId: number;
   settings: GradeCalculationSettings;
+  settingsByClass?: Record<number, GradeCalculationSettings>;
   students: GradeImportStudent[];
   subjects: GradeImportSubject[];
   assignments: GradeImportAssignment[];
@@ -882,7 +883,12 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
         existing_grade_id: existingGrade?.id || null,
         action: existingGrade ? 'update' : 'create',
         values,
-        calculated: calculateGrades(values, context.settings),
+        calculated: calculateGrades(
+          values,
+          student.class_id == null
+            ? context.settings
+            : context.settingsByClass?.[student.class_id] || context.settings,
+        ),
         changed_fields: changedFields,
         existing_values: existingValues,
       };

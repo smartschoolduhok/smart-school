@@ -176,7 +176,8 @@ test('current Result Card generation snapshots grades in canonical subject order
   const createStart = snapshotEnd;
   const createEnd = worker.indexOf("// GET /api/result-cards", createStart);
   const create = worker.slice(createStart, createEnd);
-  assert.match(snapshot, /subjects: evaluation\.grades/);
+  assert.match(snapshot, /const resultCardSubjects = evaluation\.grades\.map/);
+  assert.match(snapshot, /subjects: resultCardSubjects/);
   assert.match(create, /JSON\.stringify\(cardData\)/);
 });
 
