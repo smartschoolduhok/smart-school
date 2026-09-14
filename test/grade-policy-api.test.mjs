@@ -221,17 +221,50 @@ test('approved policies drive terminal allocation, exemption and student-level a
   const cardPreview = await api(f, 'owner', 'POST', '/api/result-cards/preview-student/1', { school_id: 1 });
   assert.equal(cardPreview.status, 200, JSON.stringify(cardPreview.body));
   const cardData = cardPreview.body.data.card.card_data_parsed;
-  assert.equal(cardData.schema_version, 5);
+  assert.equal(cardData.schema_version, 6);
   assert.equal(cardData.academic_policy.id, terminal.body.data.id);
   assert.equal(cardData.summary.academic_status, 'مكمل');
   assert.equal(cardData.summary.ministerial_eligibility, 'مؤهل للدخول الوزاري');
   assert.equal(cardData.summary.decision_points_used, 10);
+  assert.equal(cardData.card_mode, 'complete');
+  assert.equal(cardData.summary.overall_result_status, 'مكمل');
+  assert.deepEqual(cardData.incomplete_subjects, []);
+  assert.equal(cardData.required_fields.includes('final_exam'), false);
+  assert.equal(cardData.subjects[0].final_exam, null);
   assert.deepEqual(cardData.subjects.map(row => row.decision_points), [6, 0, 0, 4]);
 
   const exemptOutcome = await api(f, 'owner', 'GET', '/api/academic-outcomes/students/2?academic_year_id=1');
   assert.equal(exemptOutcome.status, 200, JSON.stringify(exemptOutcome.body));
   assert.equal(exemptOutcome.body.data.outcome.exemption_status, 'general');
   assert.equal(exemptOutcome.body.data.outcome.academic_status, 'pass');
+
+  const terminalCard = await api(f, 'owner', 'POST', '/api/result-cards/generate-student/1', {
+    school_id: 1,
+    exam_round: 'الدور الأول',
+  });
+  assert.equal(terminalCard.status, 200, JSON.stringify(terminalCard.body));
+  const terminalPublished = await api(
+    f,
+    'owner',
+    'PUT',
+    `/api/result-cards/${terminalCard.body.data.card.id}/publish`,
+    { school_id: 1, expected_revision: 0, note: 'اختبار التحليل المنشور' },
+  );
+  assert.equal(terminalPublished.status, 200, JSON.stringify(terminalPublished.body));
+
+  const nonTerminalCard = await api(f, 'owner', 'POST', '/api/result-cards/generate-student/2', {
+    school_id: 1,
+    exam_round: 'الدور الأول',
+  });
+  assert.equal(nonTerminalCard.status, 200, JSON.stringify(nonTerminalCard.body));
+  const nonTerminalPublished = await api(
+    f,
+    'owner',
+    'PUT',
+    `/api/result-cards/${nonTerminalCard.body.data.card.id}/publish`,
+    { school_id: 1, expected_revision: 0, note: 'اختبار التحليل المنشور' },
+  );
+  assert.equal(nonTerminalPublished.status, 200, JSON.stringify(nonTerminalPublished.body));
 
   const summary = await api(f, 'owner', 'GET', '/api/academic-outcomes/summary?school_id=1&academic_year_id=1');
   assert.equal(summary.status, 200, JSON.stringify(summary.body));
@@ -241,6 +274,78 @@ test('approved policies drive terminal allocation, exemption and student-level a
   assert.equal(summary.body.data.general_exemption_count, 1);
   assert.equal(summary.body.data.ministerial_eligible_count, 1);
   assert.deepEqual(summary.body.data.missing_policy_class_ids, []);
+  assert.equal(summary.body.data.published.published_students, 2);
+  assert.equal(summary.body.data.published.pass_count, 1);
+  assert.equal(summary.body.data.published.completion_count, 1);
+  assert.equal(summary.body.data.published.general_exemption_count, 1);
+  assert.equal(summary.body.data.published.ministerial_eligible_count, 1);
+  assert.equal(summary.body.data.published.awaiting_transition_count, 1);
+  assert.equal(summary.body.data.published.students[0].policy_version, 1);
+  assert.match(summary.body.data.published.students[0].result_card_number, /^RC-/);
+});
+
+test('terminal cards use annual decisions while preserving raw finals and incomplete annual inputs', async t => {
+  const f = gradeFixture(t);
+  f.db.exec(`UPDATE grades SET first_month=CASE WHEN id IN (101,102) THEN 45 ELSE 80 END,
+    mid_year_exam=CASE WHEN id IN (101,102) THEN 45 ELSE 80 END,
+    third_month=CASE WHEN id IN (101,102) THEN 45 ELSE 80 END WHERE id BETWEEN 101 AND 104`);
+  const created = await api(f, 'owner', 'POST', '/api/grade-policies', terminalDraft);
+  assert.equal(created.status, 201);
+  assert.equal((await api(f, 'owner', 'POST', `/api/grade-policies/${created.body.data.id}/approve`, {
+    school_id: 1, revision: created.body.data.revision,
+  })).status, 200);
+  const before = f.db.prepare('SELECT * FROM grades ORDER BY id').all();
+  const preview = await api(f, 'owner', 'POST', '/api/result-cards/preview-student/1', { school_id: 1 });
+  assert.equal(preview.status, 200);
+  const data = preview.body.data.card.card_data_parsed;
+  assert.equal(data.card_mode, 'complete');
+  assert.equal(data.summary.overall_result_status, 'ناجح');
+  assert.equal(data.summary.pass_count, 4);
+  assert.equal(data.summary.completion_count, 0);
+  assert.equal(data.summary.fail_count, 0);
+  assert.equal(data.summary.decision_points_used, 10);
+  assert.deepEqual(data.subjects.map(row => [row.policy_source_grade, row.decision_points, row.adjusted_grade]),
+    [[45, 5, 50], [45, 5, 50], [80, 0, 80], [80, 0, 80]]);
+  assert.ok(data.subjects.every(row => row.final_exam === null && row.final_grade === null));
+  assert.deepEqual(f.db.prepare('SELECT * FROM grades ORDER BY id').all(), before);
+
+  f.db.exec('UPDATE grades SET mid_year_exam=NULL WHERE id=101');
+  const incomplete = await api(f, 'owner', 'POST', '/api/result-cards/preview-student/1', { school_id: 1 });
+  assert.equal(incomplete.status, 200);
+  const partial = incomplete.body.data.card.card_data_parsed;
+  assert.equal(partial.card_mode, 'partial');
+  assert.equal(partial.summary.overall_result_status, 'غير مكتمل');
+  assert.ok(partial.incomplete_subjects[0].missing_fields.includes('mid_year_exam'));
+  assert.equal(partial.incomplete_subjects[0].missing_fields.includes('final_exam'), false);
+});
+
+test('published analytics keeps malformed legacy JSON incomplete without failing valid cards', async t => {
+  const f = gradeFixture(t);
+  const insert = f.db.prepare(`
+    INSERT INTO result_cards(
+      school_id,student_id,class_id,academic_year_id,card_number,verification_token,
+      verification_hash,student_name_snapshot,card_data_json,publication_status,
+      publication_revision,published_at
+    ) VALUES(1,?, ?,1,?,?,?,'Legacy Student',?,'published',1,1789297100)
+  `);
+  insert.run(1, 1, 'RC-BROKEN', 'legacy-broken-token', 'legacy-broken-hash', '{broken');
+  insert.run(2, 2, 'RC-VALID', 'legacy-valid-token', 'legacy-valid-hash', JSON.stringify({
+    student: { student_number: 'N-1' },
+    summary: { academic_status_code: 'pass' },
+  }));
+
+  const response = await api(f, 'owner', 'GET', '/api/academic-outcomes/summary?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  const published = response.body.data.published;
+  assert.equal(published.published_students, 2);
+  assert.equal(published.pass_count, 1);
+  assert.equal(published.incomplete_count, 1);
+  assert.equal(published.awaiting_transition_count, 1);
+  const malformed = published.students.find(student => student.student_id === 1);
+  assert.equal(malformed.academic_status, 'incomplete');
+  assert.equal(malformed.ministerial_eligibility, 'not_applicable');
+  assert.equal(malformed.student_number, null);
+  assert.equal(published.students.find(student => student.student_id === 2).student_number, 'N-1');
 });
 
 test('draft policies are visible but never affect official student outcomes', async t => {

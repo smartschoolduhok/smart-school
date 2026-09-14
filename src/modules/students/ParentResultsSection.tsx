@@ -28,6 +28,7 @@ function academicStatus(value: unknown): string {
     fail: 'راسب',
     incomplete: 'غير مكتمل',
     exempt_individual: 'معفى فرديًا',
+    exempt_general: 'معفى عامًا',
   } as Record<string, string>)[status] || displayValue(value);
 }
 
@@ -109,7 +110,20 @@ export default function ParentResultsSection({ studentId }: { studentId: number 
                   <div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">الدخول الوزاري</p><p className="mt-1 font-bold text-gray-900">{displayValue(summary.ministerial_eligibility)}</p></div>
                   <div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">الإعفاء</p><p className="mt-1 font-bold text-gray-900">{result.general_exemption_status ? 'إعفاء عام' : exemptionStatus(summary.exemption_status)}</p></div>
                   <div className="rounded-lg bg-gray-50 p-3"><p className="text-xs text-gray-500">الدور</p><p className="mt-1 font-bold text-gray-900">{displayValue(result.card?.exam_round)}</p></div>
+                  {Number(summary.decision_points_used || 0) > 0 && <div className="rounded-lg bg-amber-50 p-3"><p className="text-xs text-amber-700">درجات القرار المستخدمة</p><p className="mt-1 font-bold text-gray-900">{displayValue(summary.decision_points_used)}</p></div>}
                 </div>
+
+                {summary.ministerial_reason && summary.ministerial_eligibility_code !== 'not_applicable' && (
+                  <div className="mx-4 mb-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs leading-6 text-blue-900">
+                    <span className="font-bold">سبب قرار الدخول الوزاري: </span>{summary.ministerial_reason}
+                  </div>
+                )}
+                {(summary.completion_subject_names || []).length > 0 && (
+                  <div className="mx-4 mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><span className="font-bold">مواد الإكمال: </span>{summary.completion_subject_names.join('، ')}</div>
+                )}
+                {(summary.failed_subject_names || []).length > 0 && (
+                  <div className="mx-4 mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900"><span className="font-bold">مواد الرسوب: </span>{summary.failed_subject_names.join('، ')}</div>
+                )}
 
                 {subjects.length > 0 && (
                   <div className="overflow-x-auto border-t border-gray-100">

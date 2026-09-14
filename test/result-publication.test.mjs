@@ -210,10 +210,13 @@ test('parent sees only published linked-child snapshots and no internal audit id
   assert.equal(visible.body.data.cards[0].card.academic_policy.source_reference, 'وزارة التربية / قرار 2026-2027');
   assert.deepEqual(Object.keys(visible.body.data.cards[0].card.subjects[0]).sort(), [
     'academic_status', 'adjusted_grade', 'decision_points', 'effective_grade',
-    'final_grade', 'policy_source_grade', 'result_status', 'subject_name',
+    'exemption_status', 'final_grade', 'policy_source_grade', 'result_status', 'subject_name',
   ]);
   assert.deepEqual(Object.keys(visible.body.data.cards[0].card.summary).sort(), [
-    'academic_status', 'exemption_status', 'ministerial_eligibility', 'overall_result_status',
+    'academic_status', 'completion_count', 'completion_subject_names', 'decision_points_used',
+    'exempt_count', 'exempt_subject_names', 'exemption_status', 'fail_count',
+    'failed_subject_names', 'ministerial_eligibility', 'ministerial_eligibility_code',
+    'ministerial_reason', 'overall_result_status',
   ]);
   assert.equal(JSON.stringify(visible.body).includes('internal audit detail'), false);
   assert.equal(JSON.stringify(visible.body).includes('created_by_user_id'), false);

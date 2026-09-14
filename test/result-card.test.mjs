@@ -10,6 +10,7 @@ import {
   unixSecondsToDate,
 } from '../src/lib/resultCardPrint.ts';
 import {
+  buildOfficialResultCardColumns,
   buildResultCardColumns,
   DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
   LEGACY_RESULT_CARD_COLUMNS,
@@ -72,7 +73,7 @@ test('Result Card gender presentation normalizes known values and hides unsafe v
   );
   assert.match(component, /const studentGender = normalizeResultCardGender\(student\.gender\)/);
   assert.match(component, /displaySettings\.show_gender && studentGender/);
-  assert.match(component, /optionalStudentInfoItems\.push\(\{ label: 'الجنس', value: studentGender \}\)/);
+  assert.match(component, /optionalStudentInfoItems\.push\(\{ label: 'الجنس', labelEn: 'Gender', value: studentGender \}\)/);
   assert.doesNotMatch(component, /label: 'الجنس', value: student\.gender/);
 });
 
@@ -835,6 +836,46 @@ test('display options deterministically hide and show card columns', () => {
   assert.equal(normalized.show_phone, true);
 });
 
+test('official policy cards use compact decision-focused bilingual columns', () => {
+  const terminal = buildOfficialResultCardColumns(
+    monthlySettings,
+    fullDisplaySettings,
+    'terminal',
+  );
+  assert.deepEqual(terminal.map(column => column.key), [
+    'subject_name',
+    'policy_source_grade',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+  ]);
+  assert.ok(terminal.every(column => typeof column.label_en === 'string' && column.label_en.length > 0));
+
+  const nonTerminal = buildOfficialResultCardColumns(
+    monthlySettings,
+    fullDisplaySettings,
+    'non_terminal',
+  );
+  assert.deepEqual(nonTerminal.map(column => column.key), [
+    'subject_name',
+    'mid_year_exam',
+    'annual_effort',
+    'final_exam',
+    'completion_exam',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+    'exemption_detail',
+  ]);
+});
+
+test('legacy cards retain their configured columns when no annual policy applies', () => {
+  assert.deepEqual(
+    buildOfficialResultCardColumns(directSettings, null, null),
+    buildResultCardColumns(directSettings, null),
+  );
+});
+
 test('clean Result Card defaults show academic inputs and hide optional technical details', () => {
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_inputs, true);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_average, false);
@@ -1316,8 +1357,8 @@ test('snapshot builder freezes order, branding, note, display settings and verif
   const start = worker.indexOf('async function buildResultCardSnapshot');
   const end = worker.indexOf('async function createResultCardForStudent', start);
   const builder = worker.slice(start, end);
-  assert.match(builder, /schema_version: 5/);
-  assert.match(builder, /const visibleColumns = buildResultCardColumns\(settings, displaySettings\)/);
+  assert.match(builder, /schema_version: 6/);
+  assert.match(builder, /buildOfficialResultCardColumns\(settings, displaySettings, policy\.policy_kind\)/);
   assert.match(builder, /const columnAverages = calculateResultCardColumnAverages\(/);
   assert.match(builder, /visible_columns: visibleColumns/);
   assert.match(builder, /column_averages: columnAverages/);

@@ -84,6 +84,11 @@ import {
   type StudentAcademicPolicyOutcome,
 } from './lib/gradePolicy'
 import {
+  summarizePublishedAcademicOutcomes,
+  type PublishedAcademicOutcomeRow,
+  type PublishedTransitionRow,
+} from './lib/publishedAcademicAnalytics'
+import {
   calculatePolicyGradeRow,
   gradeCalculationSettingsForPolicy,
   loadAcademicPolicyOutcomes,
@@ -100,6 +105,7 @@ import {
   validateGradeSchemeSettings,
 } from './lib/gradeScheme'
 import {
+  buildOfficialResultCardColumns,
   buildResultCardColumns,
   normalizeResultCardDecisionNote,
   normalizeResultCardDisplaySettings,
@@ -6729,6 +6735,59 @@ app.get('/api/academic-outcomes/students/:id', requireAuthEnforced(), requireRol
   }
 });
 
+async function loadPublishedAcademicOutcomeSummary(
+  db: D1Database,
+  schoolId: number,
+  academicYearId: number,
+  classId: number | null,
+  sectionId: number | null,
+) {
+  let sql = `
+    SELECT
+      rc.id, rc.student_id, rc.student_name_snapshot,
+      CASE WHEN json_valid(rc.card_data_json)
+        THEN json_extract(rc.card_data_json,'$.student.student_number')
+        ELSE NULL END AS student_number,
+      rc.class_id, rc.class_name_snapshot, rc.section_id, rc.section_name_snapshot,
+      rc.academic_year_id, rc.academic_year_snapshot, rc.card_number,
+      rc.publication_revision, rc.published_at, rc.card_data_json
+    FROM result_cards rc
+    WHERE rc.school_id=?
+      AND rc.academic_year_id=?
+      AND rc.status='active'
+      AND rc.publication_status='published'
+  `;
+  const params: Array<number> = [schoolId, academicYearId];
+  if (classId != null) {
+    sql += ' AND rc.class_id=?';
+    params.push(classId);
+  }
+  if (sectionId != null) {
+    sql += ' AND rc.section_id=?';
+    params.push(sectionId);
+  }
+  sql += ' ORDER BY rc.published_at DESC, rc.id DESC';
+  const cards = await db.prepare(sql).bind(...params).all<PublishedAcademicOutcomeRow>();
+  let decisionSql = `
+    SELECT decision.result_card_id, decision.decision_action, decision.created_at
+    FROM student_promotion_result_decisions decision
+    INNER JOIN result_cards rc
+      ON rc.id=decision.result_card_id AND rc.school_id=decision.school_id
+    WHERE decision.school_id=? AND rc.academic_year_id=?
+  `;
+  const decisionParams: Array<number> = [schoolId, academicYearId];
+  if (classId != null) {
+    decisionSql += ' AND rc.class_id=?';
+    decisionParams.push(classId);
+  }
+  if (sectionId != null) {
+    decisionSql += ' AND rc.section_id=?';
+    decisionParams.push(sectionId);
+  }
+  const decisions = await db.prepare(decisionSql).bind(...decisionParams).all<PublishedTransitionRow>();
+  return summarizePublishedAcademicOutcomes(cards.results || [], decisions.results || []);
+}
+
 app.get('/api/academic-outcomes/summary', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const schoolId = c.get('resolvedSchoolId');
@@ -6741,39 +6800,65 @@ app.get('/api/academic-outcomes/summary', requireSameSchoolOrAdmin(), requireRol
     );
     if (!academicYearId) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404);
     const settings = await getGradeSettings(db, schoolId);
+    const classId = c.req.query('class_id') ? Number(c.req.query('class_id')) : null;
+    const sectionId = c.req.query('section_id') ? Number(c.req.query('section_id')) : null;
     const result = await loadAcademicPolicyOutcomes(db, settings, {
       schoolId,
       academicYearId,
-      classId: c.req.query('class_id') ? Number(c.req.query('class_id')) : null,
-      sectionId: c.req.query('section_id') ? Number(c.req.query('section_id')) : null,
+      classId,
+      sectionId,
     });
     const count = (field: string, value: string) => result.outcomes.filter(item => (item.outcome as any)[field] === value).length;
+    const live = {
+      evaluated_students: result.outcomes.length,
+      pass_count: count('academic_status', 'pass'),
+      completion_count: count('academic_status', 'completion'),
+      fail_count: count('academic_status', 'fail'),
+      incomplete_count: count('academic_status', 'incomplete'),
+      general_exemption_count: count('exemption_status', 'general'),
+      individual_exemption_count: count('exemption_status', 'individual'),
+      ministerial_eligible_count: count('ministerial_eligibility', 'eligible'),
+      ministerial_comprehensive_count: count('ministerial_eligibility', 'comprehensive'),
+      ministerial_not_eligible_count: count('ministerial_eligibility', 'not_eligible'),
+      ministerial_pending_count: count('ministerial_eligibility', 'pending'),
+      ministerial_not_applicable_count: count('ministerial_eligibility', 'not_applicable'),
+      missing_policy_class_ids: result.missing_policy_class_ids,
+      students: result.outcomes.map(item => ({
+        ...item.context,
+        policy_id: item.policy.id,
+        policy_version: item.policy.version,
+        academic_status: item.outcome.academic_status,
+        academic_status_label: academicStatusLabel(item.outcome.academic_status),
+        exemption_status: item.outcome.exemption_status,
+        ministerial_eligibility: item.outcome.ministerial_eligibility,
+        ministerial_eligibility_label: ministerialEligibilityLabel(item.outcome.ministerial_eligibility),
+        ministerial_reason: item.outcome.ministerial_reason,
+        adjusted_failed_subjects: item.outcome.adjusted_failed_subjects,
+        decision_points_used: item.outcome.decision_points_used,
+        completion_subject_names: item.outcome.academic_status === 'completion'
+          ? item.outcome.subjects.filter(subject => subject.status === 'fail').map(subject => subject.subject_name)
+          : [],
+        failed_subject_names: item.outcome.academic_status === 'fail'
+          ? item.outcome.subjects.filter(subject => subject.status === 'fail').map(subject => subject.subject_name)
+          : [],
+        exempt_subject_names: item.outcome.subjects
+          .filter(subject => subject.status === 'exempt_individual' || subject.status === 'exempt_general')
+          .map(subject => subject.subject_name),
+      })),
+    };
+    const published = await loadPublishedAcademicOutcomeSummary(
+      db,
+      schoolId,
+      academicYearId,
+      classId,
+      sectionId,
+    );
     return c.json({
       data: {
         academic_year_id: academicYearId,
-        evaluated_students: result.outcomes.length,
-        pass_count: count('academic_status', 'pass'),
-        completion_count: count('academic_status', 'completion'),
-        fail_count: count('academic_status', 'fail'),
-        incomplete_count: count('academic_status', 'incomplete'),
-        general_exemption_count: count('exemption_status', 'general'),
-        individual_exemption_count: count('exemption_status', 'individual'),
-        ministerial_eligible_count: count('ministerial_eligibility', 'eligible'),
-        ministerial_comprehensive_count: count('ministerial_eligibility', 'comprehensive'),
-        ministerial_not_eligible_count: count('ministerial_eligibility', 'not_eligible'),
-        missing_policy_class_ids: result.missing_policy_class_ids,
-        students: result.outcomes.map(item => ({
-          ...item.context,
-          policy_id: item.policy.id,
-          policy_version: item.policy.version,
-          academic_status: item.outcome.academic_status,
-          academic_status_label: academicStatusLabel(item.outcome.academic_status),
-          exemption_status: item.outcome.exemption_status,
-          ministerial_eligibility: item.outcome.ministerial_eligibility,
-          ministerial_eligibility_label: ministerialEligibilityLabel(item.outcome.ministerial_eligibility),
-          adjusted_failed_subjects: item.outcome.adjusted_failed_subjects,
-          decision_points_used: item.outcome.decision_points_used,
-        })),
+        ...live,
+        live,
+        published,
       },
     });
   } catch (err: any) {
@@ -8225,6 +8310,7 @@ async function loadResultCardEvaluation(
     calculatedGradeRows,
     settings,
     academicYear,
+    policy?.policy_kind === 'terminal' ? 'annual_effort' : 'effective_grade',
   );
   const academicOutcome = policy && evaluation.ok
     ? evaluateStudentAcademicPolicy(policy, (subjectRows.results || []).map(subject => {
@@ -8241,11 +8327,23 @@ async function loadResultCardEvaluation(
       }), decisionSet ? { manual_allocations: decisionSet.allocations } : undefined)
     : null;
 
+  const visiblePolicySubjects = evaluation.ok
+    ? academicOutcome?.subjects.filter(subject =>
+        evaluation.grades.some(grade => grade.subject_id === subject.subject_id)
+      ) || []
+    : [];
   const effectiveEvaluation = evaluation.ok && academicOutcome
     ? {
         ...evaluation,
         summary: {
           ...evaluation.summary,
+          ...(policy?.policy_kind === 'terminal' ? {
+            pass_count: visiblePolicySubjects.filter(subject => subject.status === 'pass').length,
+            completion_count: academicOutcome.academic_status === 'completion'
+              ? visiblePolicySubjects.filter(subject => subject.status === 'fail').length : 0,
+            fail_count: academicOutcome.academic_status === 'fail'
+              ? visiblePolicySubjects.filter(subject => subject.status === 'fail').length : 0,
+          } : {}),
           general_exemption_eligible: academicOutcome.general_exemption_eligible,
           overall_result_status: evaluation.card_mode === 'complete'
             ? academicStatusLabel(academicOutcome.academic_status) as any
@@ -8343,6 +8441,7 @@ function parentResultCardPayload(row: Record<string, any>): Record<string, any> 
         final_grade: subject.final_grade ?? null,
         academic_status: subject.academic_status ?? null,
         result_status: subject.result_status ?? null,
+        exemption_status: subject.exemption_status ?? null,
       }))
     : [];
   return {
@@ -8366,7 +8465,22 @@ function parentResultCardPayload(row: Record<string, any>): Record<string, any> 
         academic_status: summary.academic_status ?? null,
         overall_result_status: summary.overall_result_status ?? null,
         ministerial_eligibility: summary.ministerial_eligibility ?? null,
+        ministerial_eligibility_code: summary.ministerial_eligibility_code ?? null,
+        ministerial_reason: summary.ministerial_reason ?? null,
         exemption_status: summary.exemption_status ?? null,
+        decision_points_used: summary.decision_points_used ?? 0,
+        completion_count: summary.completion_count ?? 0,
+        fail_count: summary.fail_count ?? 0,
+        exempt_count: summary.exempt_count ?? 0,
+        completion_subject_names: Array.isArray(summary.completion_subject_names)
+          ? summary.completion_subject_names
+          : [],
+        failed_subject_names: Array.isArray(summary.failed_subject_names)
+          ? summary.failed_subject_names
+          : [],
+        exempt_subject_names: Array.isArray(summary.exempt_subject_names)
+          ? summary.exempt_subject_names
+          : [],
       },
       academic_policy: policy ? {
         version: policy.version,
@@ -8461,7 +8575,9 @@ async function buildResultCardSnapshot(
   const verificationUrl = identity.token
     ? `/verify/result-card/${identity.token}`
     : null;
-  const visibleColumns = buildResultCardColumns(settings, displaySettings);
+  const visibleColumns = policy
+    ? buildOfficialResultCardColumns(settings, displaySettings, policy.policy_kind)
+    : buildResultCardColumns(settings, displaySettings);
   const columnAverages = calculateResultCardColumnAverages(
     subjects,
     evaluation.counted_grades,
@@ -8495,9 +8611,19 @@ async function buildResultCardSnapshot(
     decision_points_available: academicOutcome.decision_points_available,
     decision_points_used: academicOutcome.decision_points_used,
     decision_points_remaining: academicOutcome.decision_points_remaining,
+    completion_subject_names: academicOutcome.academic_status === 'completion'
+      ? academicOutcome.subjects.filter(subject => subject.status === 'fail').map(subject => subject.subject_name)
+      : [],
+    failed_subject_names: academicOutcome.academic_status === 'fail'
+      ? academicOutcome.subjects.filter(subject => subject.status === 'fail').map(subject => subject.subject_name)
+      : [],
+    exempt_subject_names: academicOutcome.subjects
+      .filter(subject => subject.status === 'exempt_individual' || subject.status === 'exempt_general')
+      .map(subject => subject.subject_name),
   } : evaluation.summary;
   const cardData = {
-    schema_version: 5,
+    schema_version: 6,
+    template_kind: policy?.policy_kind || 'legacy',
     card_mode: evaluation.card_mode,
     school: {
       id: student.school_id,
