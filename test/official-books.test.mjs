@@ -27,7 +27,8 @@ const migration = name => readFileSync(join(rootDir, 'migrations', name), 'utf8'
 const secret = 'official-books-test-secret-with-adequate-entropy-20e2';
 const vite = await createServer({ root: rootDir, appType: 'custom', server: { middlewareMode: true, hmr: false } });
 const { default: app } = await vite.ssrLoadModule('/src/worker.ts');
-const { OfficialBookDocument, officialBookDate } = await vite.ssrLoadModule('/src/components/officialBooks/OfficialBookDocument.tsx');
+const { OfficialBookDocument } = await vite.ssrLoadModule('/src/components/officialBooks/OfficialBookDocument.tsx');
+const { formatOfficialBookDate, officialBookDate } = await vite.ssrLoadModule('/src/lib/officialBookLayout.ts');
 after(async () => vite.close());
 
 class LocalStatement {
@@ -326,6 +327,10 @@ test('A4 document renders bilingual hierarchy, QR, signature and no internal aud
   ]) assert.match(html, new RegExp(expected));
   assert.doesNotMatch(html, /أنشئ بواسطة|created_by/);
   assert.equal(officialBookDate(1789000000).getUTCFullYear(), 2026);
+  assert.match(formatOfficialBookDate(1789000000), /(?:٢٠٢٦|2026)/);
+  assert.match(formatOfficialBookDate('1789000000'), /(?:٢٠٢٦|2026)/);
+  assert.doesNotMatch(formatOfficialBookDate(1789000000), /(?:١٩٧٠|1970)/);
+  assert.equal(formatOfficialBookDate('not-a-date'), '—');
 });
 
 test('A4 document honors legacy numeric zero for Western digits', () => {

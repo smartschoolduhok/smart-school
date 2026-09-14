@@ -28,6 +28,20 @@ export const DEFAULT_OFFICIAL_BOOK_LAYOUT: OfficialBookLayoutSettings = {
   official_emblem_url: '',
 };
 
+export function officialBookDate(value: string | number): Date {
+  if (typeof value === 'number') return new Date(value < 10_000_000_000 ? value * 1_000 : value);
+  if (/^\d+$/.test(value)) {
+    const numeric = Number(value);
+    return new Date(numeric < 10_000_000_000 ? numeric * 1_000 : numeric);
+  }
+  return new Date(value);
+}
+
+export function formatOfficialBookDate(value: string | number, locale = 'ar-IQ'): string {
+  const date = officialBookDate(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString(locale);
+}
+
 const TEXT_KEYS = [
   'country_ar',
   'ministry_ar',

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { toArabicDigits } from '../../lib/arabicDigits';
-import { resolvedOfficialBookLayout } from '../../lib/officialBookLayout';
+import { officialBookDate, resolvedOfficialBookLayout } from '../../lib/officialBookLayout';
 
 export interface OfficialBookDocumentRecord {
   id: number;
@@ -31,15 +31,6 @@ function parseSnapshot(source?: string | null): Record<string, any> {
   } catch {
     return {};
   }
-}
-
-export function officialBookDate(value: string | number): Date {
-  if (typeof value === 'number') return new Date(value < 10_000_000_000 ? value * 1_000 : value);
-  if (/^\d+$/.test(value)) {
-    const numeric = Number(value);
-    return new Date(numeric < 10_000_000_000 ? numeric * 1_000 : numeric);
-  }
-  return new Date(value);
 }
 
 function DocumentImage({ src, alt, className }: { src: string; alt: string; className: string }) {
