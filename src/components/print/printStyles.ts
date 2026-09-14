@@ -199,6 +199,10 @@ export const PRINT_CSS = `
     page-break-inside: avoid;
   }
 
+  .official-book-document footer {
+    margin-top: 1mm !important;
+  }
+
   .official-book-body {
     orphans: 3;
     widows: 3;
