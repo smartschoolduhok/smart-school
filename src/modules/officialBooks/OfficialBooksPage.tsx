@@ -1,20 +1,24 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getOfficialBookTemplates, createOfficialBookTemplate, updateOfficialBookTemplate,
-  getOfficialBooks, createOfficialBook, cancelOfficialBook, printOfficialBook,
+  getOfficialBooks, createOfficialBook, cancelOfficialBook,
   verifyOfficialBook, getStudents, getEmployees
 } from '../../lib/api';
-import { toArabicDigits } from '../../lib/arabicDigits';
 import {
-  FileText, Printer, Search, User, Briefcase, CheckCircle, AlertCircle,
-  Loader2, QrCode, XCircle, Eye, Archive, BookOpen, CheckSquare, Globe
+  FileText, Printer, CheckCircle, AlertCircle,
+  Loader2, XCircle, Eye, Archive, BookOpen, CheckSquare, Sparkles
 } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
 import type { RoleKey } from '../../types';
+import type { OfficialBookTemplateField } from '../../lib/officialBookTemplates';
+import { officialBookTemplateDefaults } from '../../lib/officialBookTemplates';
+import {
+  OfficialBookDocument,
+  type OfficialBookDocumentRecord,
+} from '../../components/officialBooks/OfficialBookDocument';
 import {
   OFFICIAL_BOOK_ACCESS_ROLES,
   OFFICIAL_BOOK_VIEW_ROLES,
@@ -50,34 +54,50 @@ function statusBadge(status: string | null) {
 type TabKey = 'templates' | 'generate' | 'list' | 'verify';
 
 interface TemplateRecord {
-  id: number;
+  id?: number;
+  preset_key?: string;
+  source?: 'builtin' | 'school';
+  category?: string;
   title: string;
+  description?: string;
   body_text: string;
   paper_size: string;
-  requires_student: number;
-  requires_employee: number;
+  requires_student: number | boolean;
+  requires_employee: number | boolean;
   status: string;
+  fields?: OfficialBookTemplateField[];
 }
 
-interface BookRecord {
-  id: number;
-  document_number: string;
-  title: string;
-  body_text: string;
+interface BookRecord extends OfficialBookDocumentRecord {
+  school_id: number;
   paper_size: string;
-  status: string;
   student_name?: string;
   employee_name?: string;
   created_by_name?: string;
-  created_at: string;
-  verification_token: string;
   printed_at?: number | null;
-  settings_snapshot_json?: string;
-  school_name_snapshot?: string;
 }
 
 interface StudentOption { id: number; full_name: string; student_number: string; }
 interface EmployeeOption { id: number; full_name: string; job_title: string; }
+
+const SYSTEM_BOOK_FIELDS = new Set([
+  'school_name', 'principal_name', 'student_name', 'student_number', 'class_name',
+  'section_name', 'academic_year', 'employee_name', 'employee_position', 'date',
+  'document_number',
+]);
+
+function inferredCustomFields(bodyText: string): OfficialBookTemplateField[] {
+  const keys = Array.from(new Set(
+    Array.from(bodyText.matchAll(/\{\{([a-z][a-z0-9_]*)\}\}/gi), match => match[1]),
+  )).filter(key => !SYSTEM_BOOK_FIELDS.has(key));
+  return keys.map(key => ({
+    key,
+    label: key.replace(/_/g, ' '),
+    type: 'text' as const,
+    required: true,
+    max_length: 2_000,
+  }));
+}
 
 const TAB_CONFIG: { key: TabKey; label: string; icon: React.ReactNode }[] = [
   { key: 'templates', label: 'القوالب', icon: <BookOpen size={18} /> },
@@ -152,6 +172,7 @@ export default function OfficialBooksPage() {
 function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
+  const [presets, setPresets] = useState<TemplateRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -167,7 +188,9 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
     try {
       const res = await getOfficialBookTemplates(schoolId);
       if (!isCurrent()) return;
+      if (res.error) throw new Error(res.error);
       setTemplates((res.data || []) as TemplateRecord[]);
+      setPresets((res.meta?.presets || []) as TemplateRecord[]);
     } catch (e: any) {
       if (!isCurrent()) return;
       setError(e?.message || 'فشل في جلب القوالب');
@@ -176,6 +199,7 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
 
   useEffect(() => {
     setTemplates([]);
+    setPresets([]);
     setShowForm(false);
     setEditingId(null);
     setFormData({ title: '', body_text: '', paper_size: 'A4', requires_student: false, requires_employee: false });
@@ -189,12 +213,17 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
     if (schoolId == null) return;
     const isCurrent = captureSchoolRequest();
     try {
+      let result;
       if (editingId) {
-        await updateOfficialBookTemplate(editingId, formData, schoolId);
+        result = await updateOfficialBookTemplate(editingId, formData, schoolId);
       } else {
-        await createOfficialBookTemplate(formData, schoolId);
+        result = await createOfficialBookTemplate(formData, schoolId);
       }
       if (!isCurrent()) return;
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
       setShowForm(false);
       setEditingId(null);
       setFormData({ title: '', body_text: '', paper_size: 'A4', requires_student: false, requires_employee: false });
@@ -206,6 +235,7 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
   };
 
   const startEdit = (t: TemplateRecord) => {
+    if (t.id == null) return;
     setEditingId(t.id);
     setFormData({
       title: t.title, body_text: t.body_text, paper_size: t.paper_size || 'A4',
@@ -219,8 +249,12 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
     if (!confirm('هل أنت متأكد من أرشفة هذا القالب؟')) return;
     const isCurrent = captureSchoolRequest();
     try {
-      await updateOfficialBookTemplate(id, { status: 'archived' }, schoolId);
+      const result = await updateOfficialBookTemplate(id, { status: 'archived' }, schoolId);
       if (!isCurrent()) return;
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
       await fetchTemplates();
     } catch (e: any) {
       if (!isCurrent()) return;
@@ -278,8 +312,44 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
 
       {loading ? <div className="text-center py-8"><Loader2 className="animate-spin mx-auto" /></div> :
        error ? <div className="text-red-600 text-center py-8">{error}</div> :
-       templates.length === 0 ? <div className="text-gray-500 text-center py-8">لا توجد قوالب</div> :
-       <div className="grid gap-3">
+       <div className="space-y-6">
+         <section>
+           <div className="mb-3 flex items-center gap-2">
+             <Sparkles size={18} className="text-amber-600" />
+             <h4 className="font-bold text-gray-900">قوالب عراقية جاهزة</h4>
+             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">{presets.length}</span>
+           </div>
+           <p className="mb-3 text-xs leading-relaxed text-gray-500">
+             صيغ إرشادية قابلة للتعديل قبل الإصدار؛ راجع الجهة والغرض والأسماء حسب تعليمات مديريتك.
+           </p>
+           {presets.length === 0 ? (
+             <div className="rounded-lg border border-dashed border-gray-300 py-6 text-center text-sm text-gray-500">تعذر تحميل القوالب الجاهزة</div>
+           ) : (
+             <div className="grid gap-3 md:grid-cols-2">
+               {presets.map(t => (
+                 <article key={t.preset_key} className="rounded-xl border border-amber-200 bg-gradient-to-br from-white to-amber-50/60 p-4">
+                   <div className="flex items-start gap-3">
+                     <span className="mt-0.5 rounded-lg bg-amber-100 p-2 text-amber-700"><FileText size={17} /></span>
+                     <div>
+                       <h5 className="font-bold text-gray-900">{t.title}</h5>
+                       <p className="mt-1 text-xs leading-relaxed text-gray-600">{t.description}</p>
+                       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+                         <span className="rounded bg-white px-2 py-1 text-gray-600">A4</span>
+                         {!!t.requires_student && <span className="rounded bg-blue-50 px-2 py-1 text-blue-700">يرتبط بطالب</span>}
+                         {!!t.requires_employee && <span className="rounded bg-violet-50 px-2 py-1 text-violet-700">يرتبط بموظف</span>}
+                       </div>
+                     </div>
+                   </div>
+                 </article>
+               ))}
+             </div>
+           )}
+         </section>
+
+         <section>
+           <h4 className="mb-3 font-bold text-gray-900">قوالب المدرسة الخاصة</h4>
+           {templates.length === 0 ? <div className="rounded-lg border border-dashed border-gray-300 py-6 text-center text-sm text-gray-500">لا توجد قوالب خاصة بعد</div> :
+           <div className="grid gap-3">
          {templates.map(t => (
            <div key={t.id} className="bg-white p-4 rounded-lg border border-gray-200 flex justify-between items-start">
              <div className="space-y-1">
@@ -291,11 +361,13 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
              {canManageTemplates(user?.role_key) && schoolId != null && t.status !== 'archived' && (
                <div className="flex gap-2">
                  <button onClick={() => startEdit(t)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Eye size={16} /></button>
-                 <button onClick={() => archiveTemplate(t.id)} className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg"><Archive size={16} /></button>
+                 <button onClick={() => t.id != null && archiveTemplate(t.id)} className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg"><Archive size={16} /></button>
                </div>
              )}
            </div>
          ))}
+       </div>}
+         </section>
        </div>}
     </div>
   );
@@ -307,21 +379,31 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
 function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
+  const [presets, setPresets] = useState<TemplateRecord[]>([]);
   const [students, setStudents] = useState<StudentOption[]>([]);
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<number | ''>('');
+  const [selectedTemplate, setSelectedTemplate] = useState('');
   const [selectedStudent, setSelectedStudent] = useState<number | ''>('');
   const [selectedEmployee, setSelectedEmployee] = useState<number | ''>('');
+  const [titleDraft, setTitleDraft] = useState('');
+  const [bodyDraft, setBodyDraft] = useState('');
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const [error, setError] = useState('');
   const [generated, setGenerated] = useState<any>(null);
 
   useEffect(() => {
     setTemplates([]);
+    setPresets([]);
     setStudents([]);
     setEmployees([]);
     setSelectedTemplate('');
     setSelectedStudent('');
     setSelectedEmployee('');
+    setTitleDraft('');
+    setBodyDraft('');
+    setFieldValues({});
+    setError('');
     setGenerated(null);
     setLoading(false);
     if (schoolId == null) {
@@ -337,26 +419,67 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
       getEmployees(schoolId),
     ]).then(([templateResult, studentResult, employeeResult]) => {
       if (!isCurrent()) return;
-      setTemplates(((templateResult.data || []) as TemplateRecord[]).filter((t) => t.status === 'active'));
+      if (templateResult.error || studentResult.error || employeeResult.error) {
+        setError(templateResult.error || studentResult.error || employeeResult.error || 'فشل تحميل بيانات الكتب الرسمية');
+        return;
+      }
+      setTemplates(((templateResult.data || []) as TemplateRecord[])
+        .filter((t) => t.status === 'active')
+        .map((t) => ({ ...t, source: 'school' })));
+      setPresets((templateResult.meta?.presets || []) as TemplateRecord[]);
       setStudents((studentResult.data || []).map((s: any) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number })));
       setEmployees((employeeResult.data || []).map((e: any) => ({ id: e.id, full_name: e.full_name, job_title: e.job_title })));
     });
   }, [schoolId]);
 
+  const allTemplates = [...presets, ...templates];
+  const optionKey = (item: TemplateRecord) => item.source === 'builtin'
+    ? `preset:${item.preset_key}`
+    : `school:${item.id}`;
+  const template = allTemplates.find((item) => optionKey(item) === selectedTemplate);
+  const activeFields = template?.fields || (template ? inferredCustomFields(bodyDraft) : []);
+
+  const handleTemplateChange = (value: string) => {
+    const nextTemplate = allTemplates.find((item) => optionKey(item) === value);
+    setSelectedTemplate(value);
+    setSelectedStudent('');
+    setSelectedEmployee('');
+    setGenerated(null);
+    setError('');
+    setTitleDraft(nextTemplate?.title || '');
+    setBodyDraft(nextTemplate?.body_text || '');
+    const nextFields = nextTemplate?.fields || (nextTemplate ? inferredCustomFields(nextTemplate.body_text) : []);
+    setFieldValues(nextFields.length > 0
+      ? officialBookTemplateDefaults({ fields: nextFields })
+      : {});
+  };
+
   const handleGenerate = async () => {
     if (schoolId == null) return;
     if (!selectedTemplate) return;
-    const template = templates.find(t => t.id === Number(selectedTemplate));
     if (!template) return;
     const isCurrent = captureSchoolRequest();
 
-    const data: any = { template_id: Number(selectedTemplate) };
+    setError('');
+    for (const field of activeFields) {
+      if (field.required && !(fieldValues[field.key] || '').trim()) {
+        setError(`الحقل «${field.label}» مطلوب`);
+        return;
+      }
+    }
+    const data: any = {
+      title: titleDraft,
+      body_text: bodyDraft,
+      field_values: fieldValues,
+    };
+    if (template.source === 'builtin') data.preset_key = template.preset_key;
+    else data.template_id = template.id;
     if (template.requires_student) {
-      if (!selectedStudent) { alert('هذا القالب يتطلب اختيار طالب'); return; }
+      if (!selectedStudent) { setError('هذا القالب يتطلب اختيار طالب'); return; }
       data.student_id = Number(selectedStudent);
     }
     if (template.requires_employee) {
-      if (!selectedEmployee) { alert('هذا القالب يتطلب اختيار موظف'); return; }
+      if (!selectedEmployee) { setError('هذا القالب يتطلب اختيار موظف'); return; }
       data.employee_id = Number(selectedEmployee);
     }
 
@@ -364,26 +487,40 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     try {
       const res = await createOfficialBook(data, schoolId);
       if (!isCurrent()) return;
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
       setGenerated(res.data);
     } catch (e: any) {
       if (!isCurrent()) return;
-      alert(e?.error || 'فشل في إنشاء الكتاب');
+      setError(e?.error || 'فشل في إنشاء الكتاب');
     } finally { if (isCurrent()) setLoading(false); }
   };
 
-  const template = templates.find(t => t.id === Number(selectedTemplate));
+  if (!canManageBooks(user?.role_key)) {
+    return <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">لديك صلاحية عرض الكتب فقط، ولا تملك صلاحية إصدار كتاب جديد.</div>;
+  }
 
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="max-w-4xl space-y-4">
       <h3 className="text-lg font-bold">إنشاء كتاب رسمي</h3>
 
-      <div className="bg-white p-4 rounded-lg border border-gray-200 space-y-3">
+      <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">اختر القالب</label>
-          <select value={selectedTemplate} onChange={e => setSelectedTemplate(Number(e.target.value) || '')} className="w-full px-3 py-2 border rounded-lg text-sm">
+          <select value={selectedTemplate} onChange={e => handleTemplateChange(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm">
             <option value="">-- اختر قالب --</option>
-            {templates.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+            <optgroup label="قوالب عراقية جاهزة">
+              {presets.map(t => <option key={t.preset_key} value={optionKey(t)}>{t.title}</option>)}
+            </optgroup>
+            {templates.length > 0 && (
+              <optgroup label="قوالب المدرسة">
+                {templates.map(t => <option key={t.id} value={optionKey(t)}>{t.title}</option>)}
+              </optgroup>
+            )}
           </select>
+          {template?.description && <p className="mt-2 text-xs leading-relaxed text-gray-500">{template.description}</p>}
         </div>
 
         {template?.requires_student && (
@@ -406,6 +543,61 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
           </div>
         )}
 
+        {template && activeFields.length > 0 && (
+          <fieldset className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
+            <legend className="px-2 text-sm font-bold text-blue-900">بيانات الكتاب المتغيرة</legend>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {activeFields.map(field => (
+                <label key={field.key} className={field.type === 'textarea' ? 'md:col-span-2' : ''}>
+                  <span className="mb-1 block text-sm font-medium text-gray-700">
+                    {field.label}{field.required && <span className="mr-1 text-red-600">*</span>}
+                  </span>
+                  {field.type === 'textarea' ? (
+                    <textarea
+                      rows={4}
+                      value={fieldValues[field.key] || ''}
+                      onChange={event => setFieldValues(prev => ({ ...prev, [field.key]: event.target.value }))}
+                      maxLength={field.max_length}
+                      placeholder={field.placeholder}
+                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={fieldValues[field.key] || ''}
+                      onChange={event => setFieldValues(prev => ({ ...prev, [field.key]: event.target.value }))}
+                      maxLength={field.max_length}
+                      placeholder={field.placeholder}
+                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    />
+                  )}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
+
+        {template && (
+          <details className="rounded-xl border border-gray-200" open={template.source === 'school'}>
+            <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-gray-700">مراجعة النص وتعديله قبل الإصدار</summary>
+            <div className="space-y-3 border-t border-gray-200 p-4">
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-gray-700">عنوان الكتاب</span>
+                <input type="text" value={titleDraft} onChange={event => setTitleDraft(event.target.value)} maxLength={180} className="w-full rounded-lg border px-3 py-2 text-sm" />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-gray-700">نص الكتاب</span>
+                <textarea dir="rtl" rows={13} value={bodyDraft} onChange={event => setBodyDraft(event.target.value)} maxLength={12_000} className="w-full rounded-lg border px-3 py-2 text-sm leading-relaxed" />
+              </label>
+              <p className="text-xs leading-relaxed text-gray-500">
+                اترك المتغيرات بين الأقواس كما هي ليملأها النظام، مثل {'{{student_name}}'} و{'{{academic_year}}'}. التعديل يخص هذا الإصدار ولا يغيّر أصل القالب الجاهز.
+              </p>
+            </div>
+          </details>
+        )}
+
+        {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+
         <button
           onClick={handleGenerate}
           disabled={loading || !selectedTemplate}
@@ -426,6 +618,9 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
             <div>رقم الكتاب: {generated.document_number}</div>
             <div className="break-all">رمز التحقق: {generated.verification_token}</div>
           </div>
+          <a href={`/print/official-book/${generated.id}`} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800">
+            <Printer size={16} /> معاينة A4 والطباعة
+          </a>
         </div>
       )}
     </div>
@@ -440,7 +635,6 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
   const [books, setBooks] = useState<BookRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [previewBook, setPreviewBook] = useState<BookRecord | null>(null);
-  const printRef = useRef<HTMLDivElement>(null);
 
   const fetchBooks = async () => {
     if (schoolId == null) { setBooks([]); setLoading(false); return; }
@@ -449,8 +643,9 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
     try {
       const res = await getOfficialBooks(schoolId);
       if (!isCurrent()) return;
+      if (res.error) throw new Error(res.error);
       setBooks((res.data || []) as BookRecord[]);
-    } catch (e) { /* ignore */ }
+    } catch (e: any) { alert(e?.message || 'فشل في جلب الكتب الرسمية'); }
     finally { if (isCurrent()) setLoading(false); }
   };
 
@@ -461,31 +656,19 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
     void fetchBooks();
   }, [schoolId]);
 
-  const handlePrint = async (book: BookRecord) => {
-    if (schoolId == null) return;
-    const isCurrent = captureSchoolRequest();
-    try {
-      await printOfficialBook(book.id, schoolId);
-      if (!isCurrent()) return;
-      setPreviewBook(book);
-      setTimeout(() => window.print(), 300);
-    } catch (e) { alert('فشل في تسجيل الطباعة'); }
-  };
-
   const handleCancel = async (id: number) => {
     if (schoolId == null) return;
     if (!confirm('هل أنت متأكد من إلغاء هذا الكتاب؟')) return;
     const isCurrent = captureSchoolRequest();
     try {
-      await cancelOfficialBook(id, schoolId);
+      const result = await cancelOfficialBook(id, schoolId);
       if (!isCurrent()) return;
+      if (result.error) {
+        alert(result.error);
+        return;
+      }
       await fetchBooks();
     } catch (e) { alert('فشل في الإلغاء'); }
-  };
-
-  const getPreviewUrl = (token: string) => {
-    const base = window.location.origin;
-    return `${base}/verify/official-book/${token}`;
   };
 
   return (
@@ -512,8 +695,7 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
                <button onClick={() => { setPreviewBook(b); }} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="معاينة"><Eye size={16} /></button>
                {canManageBooks(user?.role_key) && schoolId != null && b.status === 'active' && (
                  <>
-                   <button onClick={() => handlePrint(b)} className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg" title="طباعة / حفظ PDF"><Printer size={16} /></button>
-                   <a href={`/print/official-book/${b.id}`} className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg inline-flex items-center" title="تصدير PDF مخصص"><Printer size={16} /></a>
+                   <a href={`/print/official-book/${b.id}`} className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg inline-flex items-center" title="معاينة A4 والطباعة"><Printer size={16} /></a>
                    <button onClick={() => handleCancel(b.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-lg" title="إلغاء"><XCircle size={16} /></button>
                  </>
                )}
@@ -530,13 +712,18 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
               <h3 className="font-bold">معاينة الكتاب</h3>
               <button onClick={() => setPreviewBook(null)} className="p-1 hover:bg-gray-100 rounded"><XCircle size={20} /></button>
             </div>
-            <div ref={printRef} className="p-8 space-y-6 print:p-0">
-              <PrintPreview book={previewBook} />
+            <div className="bg-gray-100 p-4 md:p-8">
+              <div className="mx-auto max-w-[210mm] bg-white p-8 shadow-sm">
+                <OfficialBookDocument
+                  book={previewBook}
+                  verificationUrl={`${window.location.origin}/verify/official-book/${previewBook.verification_token}`}
+                />
+              </div>
             </div>
             <div className="p-4 border-t flex gap-2 print:hidden">
-              <button onClick={() => window.print()} className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-700 flex items-center gap-2">
-                <Printer size={16} /> طباعة / حفظ PDF
-              </button>
+              <a href={`/print/official-book/${previewBook.id}`} className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-700 flex items-center gap-2">
+                <Printer size={16} /> فتح معاينة A4 والطباعة
+              </a>
               <button onClick={() => setPreviewBook(null)} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm">إغلاق</button>
             </div>
           </div>
@@ -544,47 +731,6 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
       )}
     </div>
   );
-}
-
-/* ─── Print Preview Component ─── */
-function PrintPreview({ book }: { book: BookRecord }) {
-  const settings = book.settings_snapshot_json ? JSON.parse(book.settings_snapshot_json) : {};
-  const useLogo = settings.use_logo && settings.logo_url;
-  const useStamp = settings.use_stamp && settings.stamp_url;
-
-  return (
-    <div className={`mx-auto bg-white p-8 border print:border-0 ${book.paper_size === 'A5' ? 'max-w-md' : book.paper_size === 'Letter' ? 'max-w-2xl' : 'max-w-3xl'}`}>
-      {/* Header */}
-      <div className="text-center border-b pb-4 mb-4">
-        {useLogo && <img src={settings.logo_url} alt="logo" className="h-16 mx-auto mb-2" />}
-        <div className="font-bold text-xl">{settings.school_name || book.school_name_snapshot || 'المدرسة'}</div>
-        {settings.principal_name && <div className="text-sm text-gray-600">المدير: {settings.principal_name}</div>}
-        {settings.official_book_header_text && <div className="text-sm mt-2">{settings.official_book_header_text}</div>}
-      </div>
-
-      {/* Body */}
-      <div className="py-4 text-lg leading-relaxed whitespace-pre-wrap">
-        {book.body_text}
-      </div>
-
-      {/* Footer */}
-      <div className="border-t pt-4 mt-4 text-center">
-        {settings.official_book_footer_text && <div className="text-sm mb-2">{settings.official_book_footer_text}</div>}
-        <div className="text-sm text-gray-500">رقم الكتاب: {book.document_number}</div>
-        <div className="text-sm text-gray-500">تاريخ الإنشاء: {new Date(book.created_at).toLocaleDateString('ar-IQ')}</div>
-        {useStamp && <img src={settings.stamp_url} alt="stamp" className="h-16 mx-auto mt-2" />}
-        {settings.verification_note && <div className="text-xs text-gray-400 mt-2">{settings.verification_note}</div>}
-        <div className="mt-4 flex justify-center">
-          <QRCodeSVG value={getPreviewUrl(book.verification_token)} size={80} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function getPreviewUrl(token: string) {
-  const base = window.location.origin;
-  return `${base}/verify/official-book/${token}`;
 }
 
 /* ═══════════════════════════════════════

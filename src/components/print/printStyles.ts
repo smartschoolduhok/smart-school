@@ -179,6 +179,31 @@ export const PRINT_CSS = `
     overflow: visible !important;
   }
 
+  .print-a4.official-book-print-sheet {
+    width: 180mm !important;
+    min-height: 267mm !important;
+    padding: 0 !important;
+    margin: 0 auto !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+  }
+
+  .official-book-document {
+    min-height: 267mm !important;
+  }
+
+  .official-book-header,
+  .official-book-signature,
+  .official-book-document footer {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .official-book-body {
+    orphans: 3;
+    widows: 3;
+  }
+
   .receipt-a4-sheet section,
   .receipt-a4-sheet header,
   .receipt-a4-sheet .print-footer {

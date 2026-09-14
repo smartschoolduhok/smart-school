@@ -7,6 +7,7 @@ import {
   type ResultCardGradeDetailMode,
   type ResultCardDisplaySettingKey,
 } from '../../lib/resultCardPresentation';
+import { normalizeOfficialBookLayout } from '../../lib/officialBookLayout';
 import {
   Save,
   Loader2,
@@ -20,6 +21,7 @@ import {
   CalendarRange,
   ListChecks,
   SlidersHorizontal,
+  Landmark,
 } from 'lucide-react';
 
 interface Props {
@@ -184,6 +186,8 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
       result_card_header_text: settings.result_card_header_text || '',
       result_card_footer_text: settings.result_card_footer_text || '',
       receipt_footer_text: settings.receipt_footer_text || '',
+      official_book_header_text: settings.official_book_header_text || '',
+      official_book_footer_text: settings.official_book_footer_text || '',
       verification_note_text: settings.verification_note_text || '',
       use_school_logo_on_docs: settings.use_school_logo_on_docs ?? 1,
       use_school_stamp_on_docs: settings.use_school_stamp_on_docs ?? 0,
@@ -191,6 +195,9 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
       default_receipt_size: settings.default_receipt_size || 'A5',
       result_card_display_settings: normalizeResultCardDisplaySettings(
         settings.result_card_display_settings,
+      ),
+      official_book_layout_settings: normalizeOfficialBookLayout(
+        settings.official_book_layout_settings,
       ),
     });
     setSaving(false);
@@ -224,6 +231,17 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
       result_card_display_settings: {
         ...normalizeResultCardDisplaySettings(prev.result_card_display_settings),
         grade_detail_mode: mode,
+      },
+    }));
+    setChanged(true);
+  };
+
+  const changeOfficialBookLayout = (key: string, value: string | boolean) => {
+    setForm(prev => ({
+      ...prev,
+      official_book_layout_settings: {
+        ...normalizeOfficialBookLayout(prev.official_book_layout_settings),
+        [key]: value,
       },
     }));
     setChanged(true);
@@ -324,6 +342,114 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
           </div>
         </div>
       </div>
+
+      <section className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-5">
+        <div className="mb-4 flex items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-700 text-white">
+            <Landmark size={20} />
+          </span>
+          <div>
+            <h3 className="font-bold text-gray-900">ترويسة الكتب الرسمية</h3>
+            <p className="mt-1 text-xs leading-relaxed text-gray-600">
+              تظهر هذه البيانات في رأس الكتاب العربي والإنكليزي، وتُحفظ نسخة منها داخل كل كتاب عند إصداره.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <TextAreaField
+            label="نص إضافي تحت الترويسة"
+            name="official_book_header_text"
+            value={form.official_book_header_text || ''}
+            canEdit={canEdit}
+            onChange={handleChange}
+            placeholder={'مثال: قسم التعليم العام\nشعبة الإدارة المدرسية'}
+            rows={2}
+            maxLength={1_000}
+          />
+          <TextAreaField
+            label="تذييل الكتب الرسمية"
+            name="official_book_footer_text"
+            value={form.official_book_footer_text || ''}
+            canEdit={canEdit}
+            onChange={handleChange}
+            placeholder="العنوان أو الهاتف أو تعليمات النسخ"
+            rows={2}
+            maxLength={1_000}
+          />
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+          {[
+            ['country_ar', 'الدولة — عربي', 'جمهورية العراق', 'rtl'],
+            ['country_en', 'الدولة — إنكليزي', 'Republic of Iraq', 'ltr'],
+            ['ministry_ar', 'الوزارة — عربي', 'وزارة التربية', 'rtl'],
+            ['ministry_en', 'الوزارة — إنكليزي', 'Ministry of Education', 'ltr'],
+            ['directorate_ar', 'المديرية — عربي', 'المديرية العامة لتربية نينوى', 'rtl'],
+            ['directorate_en', 'المديرية — إنكليزي', 'General Directorate of Education in Nineveh', 'ltr'],
+            ['department_ar', 'القسم/الشعبة — عربي', 'القسم أو الشعبة', 'rtl'],
+            ['department_en', 'القسم/الشعبة — إنكليزي', 'Department / Division', 'ltr'],
+          ].map(([key, label, placeholder, direction]) => (
+            <label key={key} className="block text-sm font-medium text-gray-700">
+              <span className="mb-1 block">{label}</span>
+              <input
+                type="text"
+                dir={direction}
+                value={normalizeOfficialBookLayout(form.official_book_layout_settings)[key as keyof ReturnType<typeof normalizeOfficialBookLayout>] as string}
+                onChange={event => changeOfficialBookLayout(key, event.target.value)}
+                disabled={!canEdit}
+                maxLength={250}
+                placeholder={placeholder}
+                className={`w-full rounded-lg border px-3 py-2 text-sm ${canEdit ? 'border-gray-200 bg-white focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500' : 'cursor-not-allowed border-gray-100 bg-gray-50 text-gray-600'}`}
+              />
+            </label>
+          ))}
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => changeOfficialBookLayout(
+              'show_english_header',
+              !normalizeOfficialBookLayout(form.official_book_layout_settings).show_english_header,
+            )}
+            disabled={!canEdit}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-3 text-right text-sm ${normalizeOfficialBookLayout(form.official_book_layout_settings).show_english_header ? 'border-emerald-300 bg-white text-emerald-800' : 'border-gray-200 bg-white text-gray-600'} ${canEdit ? 'hover:border-emerald-400' : 'cursor-not-allowed opacity-70'}`}
+          >
+            {normalizeOfficialBookLayout(form.official_book_layout_settings).show_english_header ? <CheckSquare size={17} /> : <Square size={17} />}
+            عرض الجانب الإنكليزي في الترويسة
+          </button>
+          <button
+            type="button"
+            onClick={() => changeOfficialBookLayout(
+              'show_official_emblem',
+              !normalizeOfficialBookLayout(form.official_book_layout_settings).show_official_emblem,
+            )}
+            disabled={!canEdit}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-3 text-right text-sm ${normalizeOfficialBookLayout(form.official_book_layout_settings).show_official_emblem ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-gray-200 bg-white text-gray-600'} ${canEdit ? 'hover:border-amber-400' : 'cursor-not-allowed opacity-70'}`}
+          >
+            {normalizeOfficialBookLayout(form.official_book_layout_settings).show_official_emblem ? <CheckSquare size={17} /> : <Square size={17} />}
+            عرض شعار جمهورية العراق
+          </button>
+        </div>
+
+        <label className="mt-4 block text-sm font-medium text-gray-700">
+          <span className="mb-1 block">رابط ملف شعار الجمهورية</span>
+          <input
+            type="text"
+            dir="ltr"
+            value={normalizeOfficialBookLayout(form.official_book_layout_settings).official_emblem_url}
+            onChange={event => changeOfficialBookLayout('official_emblem_url', event.target.value)}
+            disabled={!canEdit}
+            maxLength={2_000}
+            placeholder="https://... أو /uploads/..."
+            className={`w-full rounded-lg border px-3 py-2 text-sm ${canEdit ? 'border-gray-200 bg-white focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500' : 'cursor-not-allowed border-gray-100 bg-gray-50 text-gray-600'}`}
+          />
+        </label>
+        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900">
+          فعّل الشعار الرسمي فقط إذا كانت المدرسة أو الجهة مخوّلة باستعماله. النظام لا يضيف شعار الجمهورية تلقائيًا.
+        </p>
+      </section>
 
       <div className="border-t border-gray-200 pt-5">
         <h3 className="text-sm font-semibold text-gray-700 mb-4">خيارات الطباعة</h3>
