@@ -197,6 +197,17 @@ export const PRINT_CSS = `
     font-size: 10px !important;
   }
 
+  .result-card-print-sheet .result-card-modern {
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .result-card-print-sheet .result-card-custom-heading {
+    margin: 0 0 2mm !important;
+    padding: 1.5mm 3mm !important;
+  }
+
   .result-card-print-sheet .result-card-header {
     padding: 2mm 3mm !important;
   }
@@ -220,9 +231,20 @@ export const PRINT_CSS = `
 
   .result-card-print-sheet .result-card-table {
     width: 100% !important;
+    min-width: 0 !important;
     table-layout: fixed;
     font-size: 10.5px !important;
     line-height: 1.25;
+  }
+
+  .result-card-print-sheet .result-card-table-dense {
+    font-size: 9px !important;
+    line-height: 1.15;
+  }
+
+  .result-card-print-sheet .result-card-table-extra-dense {
+    font-size: 8px !important;
+    line-height: 1.1;
   }
 
   .result-card-print-sheet .result-card-table th {

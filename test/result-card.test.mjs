@@ -17,9 +17,13 @@ import {
   normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
   parseResultCardDisplaySettings,
+  RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH,
+  RESULT_CARD_GRADE_DETAIL_MODES,
   RESULT_CARD_DISPLAY_SETTING_KEYS,
   snapshotResultCardColumnAverages,
   snapshotResultCardColumns,
+  validateResultCardCustomText,
+  validateResultCardDisplaySettings,
 } from '../src/lib/resultCardPresentation.ts';
 import {
   calculateResultCardColumnAverages,
@@ -869,6 +873,104 @@ test('official policy cards use compact decision-focused bilingual columns', () 
   ]);
 });
 
+test('official cards expose deterministic annual, term, monthly and custom grade views', () => {
+  assert.deepEqual(RESULT_CARD_GRADE_DETAIL_MODES, ['annual', 'term', 'monthly', 'custom']);
+
+  const term = buildOfficialResultCardColumns(monthlySettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    grade_detail_mode: 'term',
+  }, 'terminal');
+  assert.deepEqual(term.map(column => column.key), [
+    'subject_name',
+    'first_term_average',
+    'mid_year_exam',
+    'second_term_average',
+    'annual_effort',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+  ]);
+
+  const monthly = buildOfficialResultCardColumns(monthlySettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    grade_detail_mode: 'monthly',
+  }, 'terminal');
+  assert.deepEqual(monthly.map(column => column.key), [
+    'subject_name',
+    'first_month',
+    'second_month',
+    'mid_year_exam',
+    'third_month',
+    'fourth_month',
+    'annual_effort',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+  ]);
+
+  const nonTerminalMonthly = buildOfficialResultCardColumns(monthlySettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    grade_detail_mode: 'monthly',
+    show_exemption_detail: true,
+  }, 'non_terminal');
+  assert.deepEqual(nonTerminalMonthly.map(column => column.key), [
+    'subject_name',
+    'first_month',
+    'second_month',
+    'mid_year_exam',
+    'third_month',
+    'fourth_month',
+    'annual_effort',
+    'final_exam',
+    'policy_source_grade',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+    'exemption_detail',
+  ]);
+
+  const custom = buildOfficialResultCardColumns(directSettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    grade_detail_mode: 'custom',
+    show_first_term_inputs: true,
+    show_mid_year_exam: false,
+    show_second_term_inputs: false,
+    show_annual_effort: false,
+    show_final_exam: false,
+    show_subject_status: false,
+  }, 'terminal');
+  assert.deepEqual(custom.map(column => column.key), [
+    'subject_name',
+    'first_term_grade',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+  ]);
+});
+
+test('grade-view settings remain backward compatible and reject invalid values', () => {
+  assert.equal(normalizeResultCardDisplaySettings(null).grade_detail_mode, 'annual');
+  assert.equal(normalizeResultCardDisplaySettings({ grade_detail_mode: 'term' }).grade_detail_mode, 'term');
+  assert.equal(parseResultCardDisplaySettings('{"grade_detail_mode":"monthly"}').grade_detail_mode, 'monthly');
+  assert.equal(parseResultCardDisplaySettings('{"show_phone":false}').grade_detail_mode, 'annual');
+  assert.equal(validateResultCardDisplaySettings({ grade_detail_mode: 'weekly' }), 'نمط عرض درجات كارت النتيجة غير صالح');
+  assert.equal(validateResultCardDisplaySettings({ grade_detail_mode: 'custom' }), null);
+});
+
+test('custom Result Card text accepts multiline school headings within a bounded length', () => {
+  assert.equal(RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH, 500);
+  assert.equal(validateResultCardCustomText('جمهورية العراق\nوزارة التربية'), null);
+  assert.equal(validateResultCardCustomText(null), null);
+  assert.equal(
+    validateResultCardCustomText(42, 'النص المخصص أعلى كارت النتيجة'),
+    'النص المخصص أعلى كارت النتيجة يجب أن يكون نصاً',
+  );
+  assert.equal(
+    validateResultCardCustomText('س'.repeat(501), 'النص المخصص أعلى كارت النتيجة'),
+    'النص المخصص أعلى كارت النتيجة يجب ألا يتجاوز 500 حرف',
+  );
+});
+
 test('legacy cards retain their configured columns when no annual policy applies', () => {
   assert.deepEqual(
     buildOfficialResultCardColumns(directSettings, null, null),
@@ -877,6 +979,7 @@ test('legacy cards retain their configured columns when no annual policy applies
 });
 
 test('clean Result Card defaults show academic inputs and hide optional technical details', () => {
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.grade_detail_mode, 'annual');
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_inputs, true);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_average, false);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_mid_year_exam, true);
@@ -1207,7 +1310,7 @@ test('Result Card document renders one aligned print-safe average row from the s
   assert.match(component, /isResultCardNumericColumnKey\(column\.key\)/);
   assert.match(component, /: '—'/);
   assert.match(component, /result-card-last-subject-row/);
-  assert.match(component, /result-card-average-row border-t-2 border-slate-700 bg-slate-100 font-black/);
+  assert.match(component, /result-card-average-row border-t-2 font-black/);
   assert.doesNotMatch(component, /calculateResultCardColumnAverages/);
 });
 
@@ -1234,7 +1337,7 @@ test('Result Card presentation uses a compact optional-field layout and balanced
   assert.equal((component.match(/label: 'الشعبة'/g) || []).length, 1);
   assert.doesNotMatch(component, /العام الدراسي:/);
   assert.doesNotMatch(component, /show_class_section_in_header/);
-  assert.doesNotMatch(component, /show_exam_round/);
+  assert.match(component, /displaySettings\.show_exam_round && data\?\.exam_round/);
   assert.doesNotMatch(component, /label: 'الدور'/);
   assert.doesNotMatch(component, /كارت جزئي — بعض البيانات الأكاديمية غير مكتملة/);
   assert.match(component, /const isPartial = data\?\.card_mode === 'partial'/);
@@ -1333,6 +1436,10 @@ test('Result Card print route measures rendered content inside one explicit A4 c
   assert.match(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?width: 180mm !important;[\s\S]*?height: 267mm !important;[\s\S]*?max-height: 267mm !important;[\s\S]*?padding: 0 !important;/);
   assert.doesNotMatch(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?width: 210mm !important;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-document \{[\s\S]*?min-height: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-modern \{[\s\S]*?box-shadow: none !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-table \{[\s\S]*?min-width: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-table-dense \{[\s\S]*?font-size: 9px !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-table-extra-dense \{[\s\S]*?font-size: 8px !important;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table thead \{[\s\S]*?display: table-header-group;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table tr \{[\s\S]*?break-inside: avoid;[\s\S]*?page-break-inside: avoid;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-last-subject-row \{[\s\S]*?break-after: avoid-page;[\s\S]*?page-break-after: avoid;/);
@@ -1357,7 +1464,8 @@ test('snapshot builder freezes order, branding, note, display settings and verif
   const start = worker.indexOf('async function buildResultCardSnapshot');
   const end = worker.indexOf('async function createResultCardForStudent', start);
   const builder = worker.slice(start, end);
-  assert.match(builder, /schema_version: 6/);
+  assert.match(builder, /schema_version: 7/);
+  assert.match(builder, /design_version: 'modern_official_v1'/);
   assert.match(builder, /buildOfficialResultCardColumns\(settings, displaySettings, policy\.policy_kind\)/);
   assert.match(builder, /const columnAverages = calculateResultCardColumnAverages\(/);
   assert.match(builder, /visible_columns: visibleColumns/);

@@ -221,7 +221,8 @@ test('approved policies drive terminal allocation, exemption and student-level a
   const cardPreview = await api(f, 'owner', 'POST', '/api/result-cards/preview-student/1', { school_id: 1 });
   assert.equal(cardPreview.status, 200, JSON.stringify(cardPreview.body));
   const cardData = cardPreview.body.data.card.card_data_parsed;
-  assert.equal(cardData.schema_version, 6);
+  assert.equal(cardData.schema_version, 7);
+  assert.equal(cardData.design_version, 'modern_official_v1');
   assert.equal(cardData.academic_policy.id, terminal.body.data.id);
   assert.equal(cardData.summary.academic_status, 'مكمل');
   assert.equal(cardData.summary.ministerial_eligibility, 'مؤهل للدخول الوزاري');

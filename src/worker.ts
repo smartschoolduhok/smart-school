@@ -110,6 +110,7 @@ import {
   normalizeResultCardDecisionNote,
   normalizeResultCardDisplaySettings,
   parseResultCardDisplaySettings,
+  validateResultCardCustomText,
   validateResultCardDecisionNote,
   validateResultCardDisplaySettings,
   type ResultCardDisplaySettings,
@@ -8622,7 +8623,8 @@ async function buildResultCardSnapshot(
       .map(subject => subject.subject_name),
   } : evaluation.summary;
   const cardData = {
-    schema_version: 6,
+    schema_version: 7,
+    design_version: 'modern_official_v1',
     template_kind: policy?.policy_kind || 'legacy',
     card_mode: evaluation.card_mode,
     school: {
@@ -11185,6 +11187,13 @@ app.put('/api/settings/document', requireSameSchoolOrAdmin(), requireRoles(SETTI
       body.result_card_display_settings,
     );
     if (displaySettingsError) return c.json({ error: displaySettingsError }, 400);
+    for (const [key, label] of [
+      ['result_card_header_text', 'النص المخصص أعلى كارت النتيجة'],
+      ['result_card_footer_text', 'تذييل كارت النتيجة'],
+    ] as const) {
+      const textError = validateResultCardCustomText(body[key], label);
+      if (textError) return c.json({ error: textError }, 400);
+    }
 
     // Ensure row exists
     const existing = await db.prepare(`SELECT id FROM school_settings WHERE school_id = ?`).bind(targetSchoolId).first<any>();

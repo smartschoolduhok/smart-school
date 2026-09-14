@@ -232,6 +232,7 @@ export default function SettingsPage() {
             {activeTab === 'document' && (
               <DocumentTab
                 data={documentData}
+                school={schoolData?.school}
                 canEdit={canEdit}
                 schoolId={effectiveSchoolId}
                 onSuccess={handleSuccess}

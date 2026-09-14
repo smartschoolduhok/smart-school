@@ -146,3 +146,90 @@ test('non-terminal v6 card makes individual exemption and its subjects explicit'
     'الفيزياء',
   ]) assert.match(html, new RegExp(expected));
 });
+
+test('v7 monthly card renders the modern design, school text and dense safe table', () => {
+  const data = {
+    ...baseData('terminal'),
+    schema_version: 7,
+    document_settings: {
+      ...baseData('terminal').document_settings,
+      result_card_header_text: 'جمهورية العراق\nوزارة التربية',
+      result_card_display_settings: {
+        ...baseData('terminal').document_settings.result_card_display_settings,
+        grade_detail_mode: 'monthly',
+        show_school_subtitle: true,
+      },
+    },
+    visible_columns: [
+      { key: 'subject_name', label: 'المادة', label_en: 'Subject' },
+      { key: 'first_month', label: 'الشهر الأول', label_en: 'Month 1' },
+      { key: 'second_month', label: 'الشهر الثاني', label_en: 'Month 2' },
+      { key: 'mid_year_exam', label: 'نصف السنة', label_en: 'Mid-year' },
+      { key: 'third_month', label: 'الشهر الثالث', label_en: 'Month 3' },
+      { key: 'fourth_month', label: 'الشهر الرابع', label_en: 'Month 4' },
+      { key: 'annual_effort', label: 'السعي السنوي', label_en: 'Annual effort' },
+      { key: 'decision_points', label: 'درجات القرار', label_en: 'Decision points' },
+      { key: 'adjusted_grade', label: 'بعد القرار', label_en: 'Adjusted grade' },
+      { key: 'academic_status', label: 'الحالة', label_en: 'Status' },
+    ],
+    column_averages: {
+      first_month: 80,
+      second_month: 82,
+      mid_year_exam: 78,
+      third_month: 84,
+      fourth_month: 86,
+      annual_effort: 82,
+    },
+    subjects: [{
+      subject_id: 1,
+      subject_name: 'الفيزياء',
+      first_month: 80,
+      second_month: 82,
+      mid_year_exam: 78,
+      third_month: 84,
+      fourth_month: 86,
+      annual_effort: 82,
+      decision_points: 0,
+      adjusted_grade: 82,
+      academic_status: 'pass',
+    }],
+    summary: {
+      academic_status: 'ناجح',
+      overall_result_status: 'مكتمل',
+      pass_count: 1,
+      completion_count: 0,
+      fail_count: 0,
+    },
+  };
+  const html = render(data);
+  for (const expected of [
+    'result-card-modern',
+    'result-card-custom-heading',
+    'جمهورية العراق',
+    'وزارة التربية',
+    'شهري / Monthly details',
+    'data-grade-detail-mode="monthly"',
+    'data-column-count="10"',
+    'result-card-table-dense',
+    'bg-gradient-to-l',
+  ]) assert.match(html, new RegExp(expected));
+});
+
+test('v6 snapshots retain the classic wrapper and do not gain the v7 custom banner', () => {
+  const html = render({
+    ...baseData('terminal'),
+    document_settings: {
+      ...baseData('terminal').document_settings,
+      result_card_header_text: 'نص محفوظ قديم',
+      result_card_display_settings: {
+        ...baseData('terminal').document_settings.result_card_display_settings,
+        show_school_subtitle: true,
+      },
+    },
+    visible_columns: [{ key: 'subject_name', label: 'المادة', label_en: 'Subject' }],
+    subjects: [{ subject_id: 1, subject_name: 'الفيزياء' }],
+    summary: { academic_status: 'ناجح', overall_result_status: 'مكتمل' },
+  });
+  assert.doesNotMatch(html, /result-card-modern|result-card-custom-heading/);
+  assert.match(html, /نص محفوظ قديم/);
+});

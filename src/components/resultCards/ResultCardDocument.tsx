@@ -45,11 +45,16 @@ interface StudentInfoItem {
   prominent?: boolean;
 }
 
-function BilingualLabel({ ar, en }: { ar: string; en: string }) {
+function BilingualLabel({ ar, en, inverse = false }: { ar: string; en: string; inverse?: boolean }) {
   return (
     <span className="inline-flex flex-col leading-tight">
       <span>{ar}</span>
-      <span dir="ltr" className="text-[0.72em] font-semibold tracking-wide text-slate-500">{en}</span>
+      <span
+        dir="ltr"
+        className={`text-[0.72em] font-semibold tracking-wide ${inverse ? 'text-blue-100' : 'text-slate-500'}`}
+      >
+        {en}
+      </span>
     </span>
   );
 }
@@ -71,6 +76,23 @@ function bilingualAcademicStatus(value: unknown): string {
   } as Record<string, string>)[raw];
   return english ? `${raw} / ${english}` : raw || '—';
 }
+
+function resultStatusTone(value: unknown): string {
+  const status = String(value || '');
+  if (status.includes('ناجح') || status.includes('معف')) {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-900';
+  }
+  if (status.includes('مكمل')) return 'border-amber-200 bg-amber-50 text-amber-950';
+  if (status.includes('راسب')) return 'border-rose-200 bg-rose-50 text-rose-950';
+  return 'border-slate-200 bg-slate-50 text-slate-900';
+}
+
+const RESULT_CARD_GRADE_DETAIL_LABELS = {
+  annual: 'سنوي مختصر / Annual summary',
+  term: 'فصلي / Term details',
+  monthly: 'شهري / Monthly details',
+  custom: 'مخصص / Custom columns',
+} as const;
 
 function renderSubjectCell(row: Record<string, any>, key: ResultCardColumnKey) {
   if (key === 'subject_name') return row.subject_name || row.name || '—';
@@ -109,6 +131,7 @@ export function ResultCardDocument({
   const displaySettings = normalizeResultCardDisplaySettings(
     documentSettings.result_card_display_settings,
   );
+  const isModernDesign = Number(data?.schema_version || 0) >= 7;
   const columns = snapshotResultCardColumns(data?.visible_columns);
   const columnAverages = snapshotResultCardColumnAverages(
     data?.column_averages,
@@ -131,6 +154,9 @@ export function ResultCardDocument({
   const studentGender = normalizeResultCardGender(student.gender);
   const templateKind = data?.template_kind || data?.academic_policy?.policy_kind || 'legacy';
   const note = typeof data?.decision_note === 'string' ? data.decision_note.trim() : '';
+  const customHeaderText = typeof documentSettings.result_card_header_text === 'string'
+    ? documentSettings.result_card_header_text.trim()
+    : '';
   const showDecisionNote = displaySettings.show_notes_decisions && note.length > 0;
   const logoUrl = displaySettings.show_school_logo && documentSettings.logo_url
     ? documentSettings.logo_url
@@ -222,17 +248,54 @@ export function ResultCardDocument({
   const showStamp = displaySettings.show_signatures_block && (
     documentSettings.official_stamp_url || displaySettings.show_school_stamp_placeholder
   );
+  const tableMinimumWidth = columns.length >= 12
+    ? '66rem'
+    : columns.length >= 10
+      ? '58rem'
+      : columns.length >= 8
+        ? '48rem'
+        : '36rem';
+  const subjectColumnWidth = columns.length >= 12
+    ? '18%'
+    : columns.length >= 10
+      ? '21%'
+      : columns.length > 8
+        ? '24%'
+        : '28%';
+  const gradeDetailLabel = RESULT_CARD_GRADE_DETAIL_LABELS[displaySettings.grade_detail_mode];
 
   return (
     <article
       dir="rtl"
-      className={`result-card-document flex flex-col gap-4 bg-white text-gray-950 ${compact ? 'p-4 sm:p-5' : 'p-6 sm:p-8'}`}
+      data-result-card-schema={data?.schema_version || 'legacy'}
+      data-grade-detail-mode={displaySettings.grade_detail_mode}
+      className={`result-card-document flex flex-col gap-4 bg-white text-gray-950 ${
+        isModernDesign ? 'result-card-modern overflow-hidden rounded-3xl border border-blue-100 shadow-xl shadow-slate-200/70' : ''
+      } ${compact ? 'p-4 sm:p-5' : 'p-6 sm:p-8'}`}
       style={{ maxWidth: '210mm', minHeight: compact ? undefined : '277mm', margin: '0 auto' }}
     >
-      <header className="result-card-header rounded-xl border-2 border-slate-700 px-4 py-3 sm:px-5">
+      {isModernDesign && displaySettings.show_school_subtitle && customHeaderText && (
+        <div className="result-card-custom-heading -mx-4 -mt-4 whitespace-pre-line border-b border-blue-200 bg-blue-50 px-5 py-2.5 text-center text-xs font-bold leading-relaxed text-blue-950 sm:-mx-5 sm:-mt-5">
+          {customHeaderText}
+        </div>
+      )}
+
+      <header className={`result-card-header px-4 py-3 sm:px-5 ${
+        isModernDesign
+          ? 'relative overflow-hidden rounded-2xl border border-blue-950 bg-gradient-to-l from-slate-950 via-blue-950 to-blue-800 text-white shadow-lg shadow-blue-950/15'
+          : 'rounded-xl border-2 border-slate-700'
+      }`}>
+        {isModernDesign && (
+          <>
+            <div aria-hidden="true" className="absolute -left-12 -top-20 h-44 w-44 rounded-full border-[22px] border-white/5" />
+            <div aria-hidden="true" className="absolute -bottom-16 -right-12 h-36 w-36 rounded-full bg-blue-400/10" />
+          </>
+        )}
         <div className={`grid items-center gap-3 ${logoUrl ? 'grid-cols-1 sm:grid-cols-[6rem_1fr_6rem] print:grid-cols-[6rem_1fr_6rem]' : 'grid-cols-1'}`}>
           {logoUrl && (
-            <div className="flex h-20 w-20 justify-self-center items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5">
+            <div className={`relative flex h-20 w-20 justify-self-center items-center justify-center bg-white p-1.5 ${
+              isModernDesign ? 'rounded-2xl border border-white/40 shadow-md' : 'rounded-lg border border-slate-200'
+            }`}>
               <img
                 src={logoUrl}
                 alt="شعار المدرسة"
@@ -240,36 +303,40 @@ export function ResultCardDocument({
               />
             </div>
           )}
-          <div className="min-w-0 text-center">
+          <div className="relative min-w-0 text-center">
             <h1 className="text-xl font-black leading-tight tracking-tight sm:text-2xl">{schoolName}</h1>
             {school.name_en && (
-              <p dir="ltr" className="mt-0.5 text-xs font-bold tracking-wide text-slate-600 sm:text-sm">{school.name_en}</p>
+              <p dir="ltr" className={`mt-0.5 text-xs font-bold tracking-wide sm:text-sm ${isModernDesign ? 'text-blue-100' : 'text-slate-600'}`}>{school.name_en}</p>
             )}
-            {displaySettings.show_school_subtitle && documentSettings.result_card_header_text && (
+            {!isModernDesign && displaySettings.show_school_subtitle && customHeaderText && (
               <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600 sm:text-sm">
-                {documentSettings.result_card_header_text}
+                {customHeaderText}
               </p>
             )}
-            <div className="mt-2 inline-flex items-center border-y-2 border-slate-700 px-6 py-0.5 text-base font-black tracking-wide">
-              <BilingualLabel ar="كارت النتيجة" en="RESULT CARD" />
+            <div className={`mt-2 inline-flex items-center px-6 py-1 text-base font-black tracking-wide ${
+              isModernDesign ? 'rounded-full border border-white/25 bg-white/10 shadow-inner' : 'border-y-2 border-slate-700 py-0.5'
+            }`}>
+              <BilingualLabel ar="كارت النتيجة" en="RESULT CARD" inverse={isModernDesign} />
             </div>
             {!logoUrl && academicYear && (
               <p
                 dir="ltr"
                 aria-label={`السنة الدراسية ${academicYear}`}
-                className="mt-2 whitespace-nowrap text-base font-black tracking-wide text-slate-800"
+                className={`mt-2 whitespace-nowrap text-base font-black tracking-wide ${isModernDesign ? 'text-blue-50' : 'text-slate-800'}`}
               >
                 {String(academicYear)}
               </p>
             )}
           </div>
           {logoUrl && (
-            <div className="justify-self-center text-center">
+            <div className="relative justify-self-center text-center">
               {academicYear && (
                 <p
                   dir="ltr"
                   aria-label={`السنة الدراسية ${academicYear}`}
-                  className="whitespace-nowrap border-y border-slate-300 px-1 py-1 text-base font-black tracking-wide text-slate-800"
+                  className={`whitespace-nowrap px-2 py-1 text-base font-black tracking-wide ${
+                    isModernDesign ? 'rounded-lg border border-white/20 bg-white/10 text-white' : 'border-y border-slate-300 text-slate-800'
+                  }`}
                 >
                   {String(academicYear)}
                 </p>
@@ -278,33 +345,42 @@ export function ResultCardDocument({
           )}
         </div>
         {contactItems.length > 0 && (
-          <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 border-t border-slate-200 pt-2 text-[10px] text-slate-500 sm:text-[11px]">
+          <div className={`relative mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 border-t pt-2 text-[10px] sm:text-[11px] ${
+            isModernDesign ? 'border-white/15 text-blue-100' : 'border-slate-200 text-slate-500'
+          }`}>
             {contactItems.map((item) => <span key={String(item)}>{item}</span>)}
           </div>
         )}
-        <div className="mt-2 flex flex-wrap justify-center gap-2 text-[9px] font-bold uppercase tracking-wide text-slate-600">
-          <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5">
+        <div className={`relative mt-2 flex flex-wrap justify-center gap-2 text-[9px] font-bold uppercase tracking-wide ${isModernDesign ? 'text-blue-50' : 'text-slate-600'}`}>
+          <span className={`rounded-full border px-2 py-0.5 ${isModernDesign ? 'border-white/20 bg-white/10' : 'border-slate-300 bg-white'}`}>
             {templateKind === 'terminal'
               ? 'صف منتهٍ / Terminal grade'
               : templateKind === 'non_terminal'
                 ? 'صف غير منتهٍ / Non-terminal grade'
                 : 'سجل دراسي / Academic record'}
           </span>
-          {data?.exam_round && (
-            <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5">
+          {displaySettings.show_exam_round && data?.exam_round && (
+            <span className={`rounded-full border px-2 py-0.5 ${isModernDesign ? 'border-white/20 bg-white/10' : 'border-slate-300 bg-white'}`}>
               الدور / Round: {String(data.exam_round)}
+            </span>
+          )}
+          {isModernDesign && (
+            <span className="rounded-full border border-white/20 bg-white/10 px-2 py-0.5">
+              {gradeDetailLabel}
             </span>
           )}
         </div>
       </header>
 
-      <section className="result-card-student-info rounded-lg border border-slate-300 bg-slate-50/70 px-3 py-2.5">
+      <section className={`result-card-student-info rounded-xl px-3 py-2.5 ${
+        isModernDesign ? 'border border-blue-200 bg-gradient-to-l from-blue-50/80 to-white' : 'border border-slate-300 bg-slate-50/70'
+      }`}>
         <div className={`grid gap-3 ${student.photo_url ? 'grid-cols-[1fr_4.5rem]' : ''}`}>
           <div>
             <div className={`grid gap-3 ${academicPlacementItems.length > 0 ? 'sm:grid-cols-2' : ''}`}>
               <div className="space-y-2 sm:pl-3">
                 {studentIdentityItems.map((item) => (
-                  <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
+                  <div key={item.label} className={`min-w-0 border-r-2 pr-2 ${isModernDesign ? 'border-blue-500' : 'border-slate-300'}`}>
                     <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
                     <div className={`break-words text-xs leading-snug text-slate-900 sm:text-sm ${item.prominent ? 'font-black' : 'font-bold'}`}>
                       {item.value}
@@ -315,7 +391,7 @@ export function ResultCardDocument({
               {academicPlacementItems.length > 0 && (
                 <div className="space-y-2 border-t border-slate-300 pt-3 sm:border-r sm:border-t-0 sm:pr-4 sm:pt-0">
                   {academicPlacementItems.map((item) => (
-                    <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
+                    <div key={item.label} className={`min-w-0 border-r-2 pr-2 ${isModernDesign ? 'border-blue-500' : 'border-slate-300'}`}>
                       <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
                       <div className="break-words text-xs font-bold leading-snug text-slate-900 sm:text-sm">
                         {item.value}
@@ -351,28 +427,35 @@ export function ResultCardDocument({
         </div>
       )}
 
-      <section className="result-card-table-wrap overflow-x-auto rounded-lg border border-slate-500">
-        <table aria-label="درجات مواد الطالب" className="result-card-table w-full table-fixed min-w-[36rem] border-collapse text-[11px] leading-snug print:min-w-0">
+      <section className={`result-card-table-wrap overflow-x-auto rounded-xl border ${isModernDesign ? 'border-blue-900 shadow-sm' : 'border-slate-500'}`}>
+        <table
+          aria-label="درجات مواد الطالب"
+          data-column-count={columns.length}
+          className={`result-card-table w-full table-fixed border-collapse leading-snug print:min-w-0 ${
+            columns.length >= 12 ? 'result-card-table-extra-dense text-[9px]' : columns.length >= 9 ? 'result-card-table-dense text-[10px]' : 'text-[11px]'
+          }`}
+          style={{ minWidth: tableMinimumWidth }}
+        >
           <colgroup>
             {columns.map((column) => (
               <col
                 key={column.key}
                 className={column.key === 'subject_name' ? 'result-card-subject-column' : undefined}
-                style={column.key === 'subject_name' ? { width: columns.length > 8 ? '24%' : '28%' } : undefined}
+                style={column.key === 'subject_name' ? { width: subjectColumnWidth } : undefined}
               />
             ))}
           </colgroup>
           <thead>
-            <tr className="bg-slate-200 text-slate-950">
+            <tr className={isModernDesign ? 'bg-blue-950 text-white' : 'bg-slate-200 text-slate-950'}>
               {columns.map((column) => (
                 <th
                   key={column.key}
                   scope="col"
-                  className={`border-l border-slate-500 px-1.5 py-2 font-black last:border-l-0 ${
+                  className={`border-l px-1.5 py-2 font-black last:border-l-0 ${isModernDesign ? 'border-blue-700' : 'border-slate-500'} ${
                     column.key === 'subject_name' ? 'text-right' : 'text-center'
                   }`}
                 >
-                  <BilingualLabel ar={column.label} en={column.label_en || RESULT_CARD_COLUMN_ENGLISH_LABELS[column.key]} />
+                  <BilingualLabel ar={column.label} en={column.label_en || RESULT_CARD_COLUMN_ENGLISH_LABELS[column.key]} inverse={isModernDesign} />
                 </th>
               ))}
             </tr>
@@ -381,14 +464,14 @@ export function ResultCardDocument({
             {subjects.map((subject: Record<string, any>, index: number) => (
               <tr
                 key={`${subject.subject_id ?? 'subject'}-${index}`}
-                className={`odd:bg-white even:bg-slate-50 ${
+                className={`${isModernDesign ? 'odd:bg-white even:bg-blue-50/50' : 'odd:bg-white even:bg-slate-50'} ${
                   columnAverages && index === subjects.length - 1 ? 'result-card-last-subject-row' : ''
                 }`}
               >
                 {columns.map((column) => (
                   <td
                     key={column.key}
-                    className={`break-words border-l border-t border-slate-300 px-1.5 py-1.5 text-center align-middle last:border-l-0 ${
+                    className={`break-words border-l border-t px-1.5 py-1.5 text-center align-middle last:border-l-0 ${isModernDesign ? 'border-blue-100' : 'border-slate-300'} ${
                       column.key === 'subject_name' ? 'text-right font-bold' : ''
                     }`}
                   >
@@ -398,11 +481,11 @@ export function ResultCardDocument({
               </tr>
             ))}
             {columnAverages && (
-              <tr className="result-card-average-row border-t-2 border-slate-700 bg-slate-100 font-black">
+              <tr className={`result-card-average-row border-t-2 font-black ${isModernDesign ? 'border-blue-900 bg-blue-100 text-blue-950' : 'border-slate-700 bg-slate-100'}`}>
                 {columns.map((column) => (
                   <td
                     key={column.key}
-                    className={`border-l border-slate-400 px-1.5 py-2 text-center last:border-l-0 ${
+                    className={`border-l px-1.5 py-2 text-center last:border-l-0 ${isModernDesign ? 'border-blue-300' : 'border-slate-400'} ${
                       column.key === 'subject_name' ? 'text-right' : ''
                     }`}
                   >
@@ -420,11 +503,16 @@ export function ResultCardDocument({
       </section>
 
       <section className={`result-card-summary grid gap-3 ${showDecisionNote ? 'sm:grid-cols-2' : ''}`}>
-        <div className="rounded-lg border-2 border-slate-700 p-3">
-          <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black"><BilingualLabel ar="الخلاصة العامة" en="Overall summary" /></h2>
+        <div className={`rounded-xl p-3 ${isModernDesign ? 'border border-blue-200 bg-blue-50/40' : 'border-2 border-slate-700'}`}>
+          <h2 className={`mb-2 border-b pb-1.5 text-sm font-black ${isModernDesign ? 'border-blue-200 text-blue-950' : 'border-slate-200'}`}><BilingualLabel ar="الخلاصة العامة" en="Overall summary" /></h2>
           <div className="grid grid-cols-2 gap-2">
             {summaryItems.map((item) => (
-              <div key={item.label} className={item.primary ? 'col-span-2 sm:col-span-1' : ''}>
+              <div
+                key={item.label}
+                className={`${item.primary ? 'col-span-2 sm:col-span-1' : ''} ${
+                  item.primary && isModernDesign ? `rounded-lg border px-3 py-2 ${resultStatusTone(overallStatus)}` : ''
+                }`}
+              >
                 <div className="text-[10px] font-bold text-slate-500"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
                 <div className={`text-sm ${item.primary ? 'font-black' : 'font-bold'}`}>{item.value}</div>
               </div>
@@ -448,14 +536,16 @@ export function ResultCardDocument({
           </div>
         </div>
         {showDecisionNote && (
-          <div className="rounded-lg border border-slate-400 p-3">
-            <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black"><BilingualLabel ar="الملاحظات والقرارات" en="Notes and decisions" /></h2>
+          <div className={`rounded-xl border p-3 ${isModernDesign ? 'border-blue-200 bg-white' : 'border-slate-400'}`}>
+            <h2 className={`mb-2 border-b pb-1.5 text-sm font-black ${isModernDesign ? 'border-blue-100 text-blue-950' : 'border-slate-200'}`}><BilingualLabel ar="الملاحظات والقرارات" en="Notes and decisions" /></h2>
             <p className="result-card-note-body min-h-12 whitespace-pre-line text-sm leading-relaxed text-slate-700">{note}</p>
           </div>
         )}
       </section>
 
-      <footer className="result-card-footer mt-auto border-t-2 border-slate-700 pt-3 text-center text-xs">
+      <footer className={`result-card-footer mt-auto rounded-xl border-t-2 pt-3 text-center text-xs ${
+        isModernDesign ? 'border-blue-900 bg-slate-50/80 px-3 pb-2' : 'border-slate-700'
+      }`}>
         <div className="grid grid-cols-3 items-end gap-3">
           <div className="min-h-24">
             {displaySettings.show_signatures_block && (

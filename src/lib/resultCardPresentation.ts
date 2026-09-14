@@ -38,9 +38,36 @@ export const RESULT_CARD_DISPLAY_SETTING_KEYS = [
 ] as const;
 
 export type ResultCardDisplaySettingKey = typeof RESULT_CARD_DISPLAY_SETTING_KEYS[number];
-export type ResultCardDisplaySettings = Record<ResultCardDisplaySettingKey, boolean>;
+
+export const RESULT_CARD_GRADE_DETAIL_MODES = [
+  'annual',
+  'term',
+  'monthly',
+  'custom',
+] as const;
+
+export type ResultCardGradeDetailMode = typeof RESULT_CARD_GRADE_DETAIL_MODES[number];
+
+export type ResultCardDisplaySettings = Record<ResultCardDisplaySettingKey, boolean> & {
+  grade_detail_mode: ResultCardGradeDetailMode;
+};
+
+export const RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH = 500;
+
+export function validateResultCardCustomText(
+  value: unknown,
+  label = 'النص المخصص لكارت النتيجة',
+): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return `${label} يجب أن يكون نصاً`;
+  if (value.length > RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH) {
+    return `${label} يجب ألا يتجاوز ${RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH} حرف`;
+  }
+  return null;
+}
 
 export const DEFAULT_RESULT_CARD_DISPLAY_SETTINGS: ResultCardDisplaySettings = {
+  grade_detail_mode: 'annual',
   show_school_logo: true,
   show_school_subtitle: true,
   show_phone: true,
@@ -84,6 +111,12 @@ export function validateResultCardDisplaySettings(input: unknown): string | null
     return 'إعدادات عرض كارت النتيجة غير صالحة';
   }
   const record = input as Record<string, unknown>;
+  if (
+    record.grade_detail_mode !== undefined &&
+    !RESULT_CARD_GRADE_DETAIL_MODES.includes(record.grade_detail_mode as ResultCardGradeDetailMode)
+  ) {
+    return 'نمط عرض درجات كارت النتيجة غير صالح';
+  }
   for (const key of RESULT_CARD_DISPLAY_SETTING_KEYS) {
     const value = record[key];
     if (
@@ -102,12 +135,19 @@ export function normalizeResultCardDisplaySettings(input: unknown): ResultCardDi
   const record = input && typeof input === 'object' && !Array.isArray(input)
     ? input as Record<string, unknown>
     : {};
-  return Object.fromEntries(
+  return {
+    grade_detail_mode: RESULT_CARD_GRADE_DETAIL_MODES.includes(
+      record.grade_detail_mode as ResultCardGradeDetailMode,
+    )
+      ? record.grade_detail_mode as ResultCardGradeDetailMode
+      : DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.grade_detail_mode,
+    ...Object.fromEntries(
     RESULT_CARD_DISPLAY_SETTING_KEYS.map((key) => [
       key,
       normalizeBoolean(record[key], DEFAULT_RESULT_CARD_DISPLAY_SETTINGS[key]),
     ]),
-  ) as ResultCardDisplaySettings;
+    ),
+  } as ResultCardDisplaySettings;
 }
 
 export function parseResultCardDisplaySettings(value: unknown): ResultCardDisplaySettings {
@@ -234,10 +274,9 @@ export const LEGACY_RESULT_CARD_COLUMNS: readonly ResultCardColumnDescriptor[] =
 ];
 
 /**
- * Official v6 cards intentionally use a compact decision-focused table.
- * Raw monthly inputs remain available in grade screens and legacy/custom
- * snapshots, while the issued A4 card shows the values that explain the
- * annual decision without shrinking an unbounded number of columns.
+ * Official cards default to a compact decision-focused table. A school can
+ * opt into term, monthly or custom detail without changing the underlying
+ * marks or policy outcome. Issued snapshots freeze the resulting columns.
  */
 export function buildOfficialResultCardColumns(
   schemeInput: GradeSchemeSettingsInput,
@@ -249,28 +288,60 @@ export function buildOfficialResultCardColumns(
   const display = normalizeResultCardDisplaySettings(displayInput);
   const keys: ResultCardColumnKey[] = ['subject_name'];
 
-  if (policyKind === 'terminal') {
+  if (display.grade_detail_mode === 'annual' && policyKind === 'terminal') {
     keys.push('policy_source_grade', 'decision_points', 'adjusted_grade', 'academic_status');
     return keys.map(descriptor);
   }
 
-  if (display.show_first_term_average && scheme.first_term_input_mode !== 'disabled') {
-    keys.push('first_term_average');
+  if (display.grade_detail_mode === 'term') {
+    if (scheme.first_term_input_mode !== 'disabled') keys.push('first_term_average');
+    if (scheme.mid_year_exam_enabled === 1) keys.push('mid_year_exam');
+    if (scheme.second_term_input_mode !== 'disabled') keys.push('second_term_average');
+  } else if (display.grade_detail_mode === 'monthly') {
+    if (scheme.first_term_input_mode === 'monthly') keys.push('first_month', 'second_month');
+    if (scheme.first_term_input_mode === 'direct') keys.push('first_term_grade');
+    if (scheme.mid_year_exam_enabled === 1) keys.push('mid_year_exam');
+    if (scheme.second_term_input_mode === 'monthly') keys.push('third_month', 'fourth_month');
+    if (scheme.second_term_input_mode === 'direct') keys.push('second_term_grade');
+  } else if (display.grade_detail_mode === 'custom') {
+    keys.push(...buildResultCardColumns(scheme, display)
+      .map(column => column.key)
+      .filter(key => key !== 'subject_name' && key !== 'result_status' && key !== 'exemption_detail'));
+  } else {
+    if (display.show_first_term_average && scheme.first_term_input_mode !== 'disabled') {
+      keys.push('first_term_average');
+    }
+    if (display.show_mid_year_exam && scheme.mid_year_exam_enabled === 1) {
+      keys.push('mid_year_exam');
+    }
+    if (display.show_second_term_average && scheme.second_term_input_mode !== 'disabled') {
+      keys.push('second_term_average');
+    }
   }
-  if (display.show_mid_year_exam && scheme.mid_year_exam_enabled === 1) {
-    keys.push('mid_year_exam');
-  }
-  if (display.show_second_term_average && scheme.second_term_input_mode !== 'disabled') {
-    keys.push('second_term_average');
-  }
-  if (display.show_annual_effort) keys.push('annual_effort');
-  if (display.show_final_exam && scheme.final_exam_enabled === 1) keys.push('final_exam');
-  if (display.show_completion_exam && scheme.completion_exam_enabled === 1) {
-    keys.push('completion_exam');
-  }
+
+  if (display.show_annual_effort && !keys.includes('annual_effort')) keys.push('annual_effort');
+  if (
+    policyKind !== 'terminal' &&
+    display.show_final_exam &&
+    scheme.final_exam_enabled === 1 &&
+    !keys.includes('final_exam')
+  ) keys.push('final_exam');
+  if (
+    policyKind !== 'terminal' &&
+    display.show_completion_exam &&
+    scheme.completion_exam_enabled === 1 &&
+    !keys.includes('completion_exam')
+  ) keys.push('completion_exam');
+
+  if (
+    policyKind === 'non_terminal' &&
+    display.grade_detail_mode !== 'annual' &&
+    !keys.includes('policy_source_grade')
+  ) keys.push('policy_source_grade');
+
   keys.push('decision_points', 'adjusted_grade', 'academic_status');
   if (display.show_exemption_detail) keys.push('exemption_detail');
-  return keys.map(descriptor);
+  return [...new Set(keys)].map(descriptor);
 }
 
 export function buildResultCardColumns(
