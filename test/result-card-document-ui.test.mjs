@@ -18,9 +18,9 @@ const card = {
   verification_token: 'qa-result-card-v6',
 };
 
-function render(data) {
+function render(data, cardOverrides = {}) {
   return renderToStaticMarkup(React.createElement(ResultCardDocument, {
-    card,
+    card: { ...card, ...cardOverrides },
     data,
     verificationUrl: 'https://school.example/verify/result-card/qa-result-card-v6',
   }));
@@ -145,6 +145,7 @@ test('non-terminal v6 card makes individual exemption and its subjects explicit'
     'معفى فرديًا / Individually exempt',
     'الفيزياء',
   ]) assert.match(html, new RegExp(expected));
+  assert.doesNotMatch(html, /Decision points|Adjusted grade|درجات القرار|بعد القرار/);
 });
 
 test('v7 monthly card renders the modern design, school text and dense safe table', () => {
@@ -209,10 +210,45 @@ test('v7 monthly card renders the modern design, school text and dense safe tabl
     'وزارة التربية',
     'شهري / Monthly details',
     'data-grade-detail-mode="monthly"',
-    'data-column-count="10"',
-    'result-card-table-dense',
+    'data-column-count="8"',
     'bg-gradient-to-l',
   ]) assert.match(html, new RegExp(expected));
+  assert.doesNotMatch(html, /Decision points|بعد القرار/);
+});
+
+test('v7 card hides generic academic-record and first-round labels but keeps meaningful decisions and second round', () => {
+  const data = {
+    ...baseData('legacy'),
+    schema_version: 7,
+    exam_round: 'الدور الثاني',
+    visible_columns: [
+      { key: 'subject_name', label: 'المادة', label_en: 'Subject' },
+      { key: 'policy_source_grade', label: 'الدرجة المعتمدة', label_en: 'Policy grade' },
+      { key: 'decision_points', label: 'درجات القرار', label_en: 'Decision points' },
+      { key: 'adjusted_grade', label: 'بعد القرار', label_en: 'Adjusted grade' },
+      { key: 'academic_status', label: 'الحالة', label_en: 'Status' },
+    ],
+    subjects: [{
+      subject_id: 1,
+      subject_name: 'الفيزياء',
+      policy_source_grade: 45,
+      decision_points: 5,
+      adjusted_grade: 50,
+      academic_status: 'pass',
+    }],
+    summary: { academic_status: 'ناجح', overall_result_status: 'مكتمل', decision_points_used: 5 },
+  };
+  const html = render(data, { publication_status: 'draft' });
+  assert.match(html, /مسودة غير منشورة \/ Unpublished draft/);
+  assert.match(html, /رمز التحقق بعد النشر/);
+  assert.doesNotMatch(html, /qa-result-card-v6/);
+  assert.match(html, /الدور \/ Round: الدور الثاني/);
+  assert.match(html, /Decision points/);
+  assert.match(html, /Adjusted grade/);
+  assert.doesNotMatch(html, /سجل دراسي \/ Academic record/);
+
+  const firstRound = render({ ...data, exam_round: 'الدور الأول' });
+  assert.doesNotMatch(firstRound, /الدور \/ Round:/);
 });
 
 test('v6 snapshots retain the classic wrapper and do not gain the v7 custom banner', () => {
@@ -232,4 +268,12 @@ test('v6 snapshots retain the classic wrapper and do not gain the v7 custom bann
   });
   assert.doesNotMatch(html, /result-card-modern|result-card-custom-heading/);
   assert.match(html, /نص محفوظ قديم/);
+
+  const legacyHtml = render({
+    ...baseData('legacy'),
+    visible_columns: [{ key: 'subject_name', label: 'المادة', label_en: 'Subject' }],
+    subjects: [{ subject_id: 1, subject_name: 'الفيزياء' }],
+    summary: { academic_status: 'ناجح', overall_result_status: 'مكتمل' },
+  });
+  assert.doesNotMatch(legacyHtml, /سجل دراسي \/ Academic record|الدور \/ Round:/);
 });

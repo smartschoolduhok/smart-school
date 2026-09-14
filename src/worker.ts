@@ -109,7 +109,9 @@ import {
   buildResultCardColumns,
   normalizeResultCardDecisionNote,
   normalizeResultCardDisplaySettings,
+  omitUnusedResultCardDecisionColumns,
   parseResultCardDisplaySettings,
+  resultCardHasDecisionPoints,
   validateResultCardCustomText,
   validateResultCardDecisionNote,
   validateResultCardDisplaySettings,
@@ -8576,16 +8578,9 @@ async function buildResultCardSnapshot(
   const verificationUrl = identity.token
     ? `/verify/result-card/${identity.token}`
     : null;
-  const visibleColumns = policy
+  const configuredVisibleColumns = policy
     ? buildOfficialResultCardColumns(settings, displaySettings, policy.policy_kind)
     : buildResultCardColumns(settings, displaySettings);
-  const columnAverages = calculateResultCardColumnAverages(
-    subjects,
-    evaluation.counted_grades,
-    settings,
-    visibleColumns,
-    evaluation.summary.general_exemption_eligible,
-  );
   const policySubjectOutcomes = new Map(
     (academicOutcome?.subjects || []).map(subject => [Number(subject.subject_id), subject]),
   );
@@ -8622,6 +8617,17 @@ async function buildResultCardSnapshot(
       .filter(subject => subject.status === 'exempt_individual' || subject.status === 'exempt_general')
       .map(subject => subject.subject_name),
   } : evaluation.summary;
+  const visibleColumns = omitUnusedResultCardDecisionColumns(
+    configuredVisibleColumns,
+    resultCardHasDecisionPoints(resultCardSubjects, resultCardSummary),
+  );
+  const columnAverages = calculateResultCardColumnAverages(
+    subjects,
+    evaluation.counted_grades,
+    settings,
+    visibleColumns,
+    evaluation.summary.general_exemption_eligible,
+  );
   const cardData = {
     schema_version: 7,
     design_version: 'modern_official_v1',

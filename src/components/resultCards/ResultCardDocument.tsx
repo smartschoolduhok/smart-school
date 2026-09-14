@@ -9,7 +9,9 @@ import {
   isResultCardNumericColumnKey,
   normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
+  omitUnusedResultCardDecisionColumns,
   RESULT_CARD_COLUMN_ENGLISH_LABELS,
+  resultCardHasDecisionPoints,
   snapshotResultCardColumnAverages,
   snapshotResultCardColumns,
   type ResultCardColumnKey,
@@ -28,6 +30,7 @@ export interface ResultCardDocumentRecord {
   generated_at?: number | string | null;
   printed_at?: number | string | null;
   status?: string | null;
+  publication_status?: 'draft' | 'published' | 'withdrawn' | string | null;
   verification_token?: string | null;
 }
 
@@ -132,12 +135,14 @@ export function ResultCardDocument({
     documentSettings.result_card_display_settings,
   );
   const isModernDesign = Number(data?.schema_version || 0) >= 7;
-  const columns = snapshotResultCardColumns(data?.visible_columns);
+  const subjects = Array.isArray(data?.subjects) ? data.subjects : [];
+  const hasDecisionPoints = resultCardHasDecisionPoints(subjects, summary);
+  const snapshotColumns = snapshotResultCardColumns(data?.visible_columns);
+  const columns = omitUnusedResultCardDecisionColumns(snapshotColumns, hasDecisionPoints);
   const columnAverages = snapshotResultCardColumnAverages(
     data?.column_averages,
     columns,
   );
-  const subjects = Array.isArray(data?.subjects) ? data.subjects : [];
   const isPartial = data?.card_mode === 'partial' ||
     summary.overall_result_status === 'غير مكتمل' ||
     card.overall_result_status === 'غير مكتمل';
@@ -263,6 +268,15 @@ export function ResultCardDocument({
         ? '24%'
         : '28%';
   const gradeDetailLabel = RESULT_CARD_GRADE_DETAIL_LABELS[displaySettings.grade_detail_mode];
+  const templateKindLabel = templateKind === 'terminal'
+    ? 'صف منتهٍ / Terminal grade'
+    : templateKind === 'non_terminal'
+      ? 'صف غير منتهٍ / Non-terminal grade'
+      : null;
+  const examRound = typeof data?.exam_round === 'string' ? data.exam_round.trim() : '';
+  const showExamRound = displaySettings.show_exam_round && examRound.length > 0 &&
+    examRound !== 'الدور الأول';
+  const isUnpublishedDraft = card.publication_status === 'draft';
 
   return (
     <article
@@ -274,6 +288,11 @@ export function ResultCardDocument({
       } ${compact ? 'p-4 sm:p-5' : 'p-6 sm:p-8'}`}
       style={{ maxWidth: '210mm', minHeight: compact ? undefined : '277mm', margin: '0 auto' }}
     >
+      {isUnpublishedDraft && (
+        <div className="result-card-draft-notice rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-center text-xs font-black text-amber-900">
+          مسودة غير منشورة / Unpublished draft
+        </div>
+      )}
       {isModernDesign && displaySettings.show_school_subtitle && customHeaderText && (
         <div className="result-card-custom-heading -mx-4 -mt-4 whitespace-pre-line border-b border-blue-200 bg-blue-50 px-5 py-2.5 text-center text-xs font-bold leading-relaxed text-blue-950 sm:-mx-5 sm:-mt-5">
           {customHeaderText}
@@ -352,16 +371,14 @@ export function ResultCardDocument({
           </div>
         )}
         <div className={`relative mt-2 flex flex-wrap justify-center gap-2 text-[9px] font-bold uppercase tracking-wide ${isModernDesign ? 'text-blue-50' : 'text-slate-600'}`}>
-          <span className={`rounded-full border px-2 py-0.5 ${isModernDesign ? 'border-white/20 bg-white/10' : 'border-slate-300 bg-white'}`}>
-            {templateKind === 'terminal'
-              ? 'صف منتهٍ / Terminal grade'
-              : templateKind === 'non_terminal'
-                ? 'صف غير منتهٍ / Non-terminal grade'
-                : 'سجل دراسي / Academic record'}
-          </span>
-          {displaySettings.show_exam_round && data?.exam_round && (
+          {templateKindLabel && (
             <span className={`rounded-full border px-2 py-0.5 ${isModernDesign ? 'border-white/20 bg-white/10' : 'border-slate-300 bg-white'}`}>
-              الدور / Round: {String(data.exam_round)}
+              {templateKindLabel}
+            </span>
+          )}
+          {showExamRound && (
+            <span className={`rounded-full border px-2 py-0.5 ${isModernDesign ? 'border-white/20 bg-white/10' : 'border-slate-300 bg-white'}`}>
+              الدور / Round: {examRound}
             </span>
           )}
           {isModernDesign && (
@@ -572,15 +589,19 @@ export function ResultCardDocument({
           </div>
           <div className="flex min-h-24 flex-col items-center justify-end">
             {displaySettings.show_qr_code && (
-              verificationUrl ? (
+              verificationUrl && !isUnpublishedDraft ? (
                 <QRCodeSVG value={verificationUrl} size={100} level="M" />
               ) : card.status === 'preview' ? (
                 <div className="flex h-[100px] w-[100px] items-center justify-center rounded border-2 border-dashed border-slate-300 px-2 text-[9px] font-semibold leading-relaxed text-slate-500">
                   يُنشأ رمز QR عند إصدار الكارت<br />Issued with final card
                 </div>
+              ) : isUnpublishedDraft ? (
+                <div className="flex h-[100px] w-[100px] items-center justify-center rounded border-2 border-dashed border-amber-300 bg-amber-50 px-2 text-[9px] font-semibold leading-relaxed text-amber-800">
+                  رمز التحقق بعد النشر<br />Available after publication
+                </div>
               ) : null
             )}
-            {displaySettings.show_verification_code_text && card.verification_token && (
+            {displaySettings.show_verification_code_text && !isUnpublishedDraft && card.verification_token && (
               <p dir="ltr" className="mt-1 max-w-[125px] break-all font-mono text-[7px] leading-tight text-slate-500">
                 {card.verification_token}
               </p>

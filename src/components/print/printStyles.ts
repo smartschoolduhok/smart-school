@@ -153,6 +153,23 @@ export const PRINT_CSS = `
     page-break-inside: avoid;
   }
 
+  .result-card-batch-print {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  .result-card-batch-sheet {
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .result-card-batch-sheet:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
   .print-a4.receipt-a4-sheet {
     width: 180mm !important;
     min-height: 267mm !important;
@@ -206,6 +223,11 @@ export const PRINT_CSS = `
   .result-card-print-sheet .result-card-custom-heading {
     margin: 0 0 2mm !important;
     padding: 1.5mm 3mm !important;
+  }
+
+  .result-card-print-sheet .result-card-draft-notice {
+    margin-bottom: 1.5mm !important;
+    padding: 1mm 2mm !important;
   }
 
   .result-card-print-sheet .result-card-header {
@@ -310,6 +332,11 @@ export const PRINT_CSS = `
     min-height: 100vh;
     padding: 1rem;
     overflow-x: auto;
+  }
+
+  .result-card-batch-print {
+    display: grid;
+    gap: 1rem;
   }
 
   .print-a4 {

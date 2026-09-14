@@ -319,5 +319,7 @@ test('result publication UI separates review, publish, withdrawal and parent rea
   assert.match(parent, /المسودات والنتائج المسحوبة لا تظهر لولي الأمر/);
   assert.match(parent, /getParentStudentResultCards\(studentId\)/);
   assert.match(profile, /<ParentResultsSection studentId=\{student\.id\} \/>/);
-  assert.match(print, /loaded\.publication_status !== 'published'/);
+  assert.match(print, /isResultCardPrintable\(loaded\.status, loaded\.publication_status\)/);
+  assert.match(print, /card\?\.publication_status === 'published'/);
+  assert.match(print, /shouldRegisterResultCardPrint/);
 });

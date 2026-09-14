@@ -188,6 +188,35 @@ export interface ResultCardColumnDescriptor {
   label_en?: string;
 }
 
+export function resultCardHasDecisionPoints(
+  subjectsInput: unknown,
+  summaryInput?: unknown,
+): boolean {
+  const summary = summaryInput && typeof summaryInput === 'object' && !Array.isArray(summaryInput)
+    ? summaryInput as Record<string, unknown>
+    : {};
+  if (Number(summary.decision_points_used || 0) > 0) return true;
+  if (!Array.isArray(subjectsInput)) return false;
+  return subjectsInput.some((subject) => {
+    if (!subject || typeof subject !== 'object' || Array.isArray(subject)) return false;
+    return Number((subject as Record<string, unknown>).decision_points || 0) > 0;
+  });
+}
+
+/**
+ * A zero-value decision column only duplicates the official grade. Keep the
+ * decision pair together and show it when at least one subject used points.
+ */
+export function omitUnusedResultCardDecisionColumns(
+  columns: readonly ResultCardColumnDescriptor[],
+  hasDecisionPoints: boolean,
+): ResultCardColumnDescriptor[] {
+  if (hasDecisionPoints) return [...columns];
+  return columns.filter(column =>
+    column.key !== 'decision_points' && column.key !== 'adjusted_grade'
+  );
+}
+
 export const RESULT_CARD_NUMERIC_COLUMN_KEYS = [
   'first_term_grade',
   'first_month',

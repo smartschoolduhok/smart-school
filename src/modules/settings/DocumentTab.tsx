@@ -105,7 +105,7 @@ const RESULT_CARD_DISPLAY_OPTIONS: Array<{
   { key: 'show_student_number', label: 'رقم الطالب' },
   { key: 'show_exam_number', label: 'الرقم الامتحاني عند توفره' },
   { key: 'show_gender', label: 'الجنس' },
-  { key: 'show_exam_round', label: 'الدور' },
+  { key: 'show_exam_round', label: 'الدور الثاني عند الحاجة' },
   { key: 'show_overall_average', label: 'المعدل العام' },
   { key: 'show_appreciation', label: 'التقدير' },
   { key: 'show_subject_status', label: 'حالة المادة' },
@@ -149,7 +149,7 @@ const RESULT_CARD_GRADE_VIEW_OPTIONS: Array<{
   {
     value: 'annual',
     title: 'سنوي مختصر',
-    description: 'النتيجة الرسمية ودرجات القرار في جدول واضح ومضغوط.',
+    description: 'النتيجة الرسمية في جدول واضح، وتظهر درجات القرار فقط عند استخدامها.',
     icon: ListChecks,
   },
   {
