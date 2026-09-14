@@ -74,6 +74,7 @@ The selected columns and their averages are frozen into each new snapshot. Chang
 - Wide term/monthly tables scroll inside the card at narrow widths instead of extending the whole page.
 - Table density changes deterministically at 9 and 12 columns.
 - A4 print removes screen-only shadow/radius, forces the table into the printable width and retains the existing single-page fit measurement.
+- The card itself fills the complete `180 x 267mm` printable A4 area when its content is short, with the footer anchored at the bottom; longer or wider cards are scaled down inside the same fixed area.
 - Print colors use the existing exact-color contract and rows avoid page breaks.
 - Batch printing enforces a page break after every card except the last.
 

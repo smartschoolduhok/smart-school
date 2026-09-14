@@ -27,7 +27,7 @@ export const PRINT_CSS = `
 .result-card-print-sheet .result-card-document {
   width: 100% !important;
   max-width: none !important;
-  min-height: 0 !important;
+  min-height: 267mm !important;
   margin: 0 !important;
   padding: 0 !important;
   gap: 2.2mm !important;
@@ -306,7 +306,7 @@ export const PRINT_CSS = `
   }
 
   .result-card-print-sheet .result-card-footer {
-    margin-top: 0 !important;
+    margin-top: auto !important;
     padding-top: 2mm !important;
   }
 
@@ -434,7 +434,7 @@ export const PRINT_CSS = `
   }
 
   .print-a4.result-card-print-sheet .result-card-document {
-    min-height: 0 !important;
+    min-height: 267mm !important;
   }
 
   .print-a4.receipt-a4-sheet {

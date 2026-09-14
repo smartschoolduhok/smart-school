@@ -1461,7 +1461,7 @@ test('Result Card print route measures rendered content inside one explicit A4 c
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-print-fit \{[\s\S]*?position: absolute;[\s\S]*?transform: scale\(var\(--result-card-print-scale\)\);[\s\S]*?transform-origin: top right;/);
   assert.match(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?width: 180mm !important;[\s\S]*?height: 267mm !important;[\s\S]*?max-height: 267mm !important;[\s\S]*?padding: 0 !important;/);
   assert.doesNotMatch(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?width: 210mm !important;/);
-  assert.match(printStyles, /\.result-card-print-sheet \.result-card-document \{[\s\S]*?min-height: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-document \{[\s\S]*?min-height: 267mm !important;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-modern \{[\s\S]*?box-shadow: none !important;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table \{[\s\S]*?min-width: 0 !important;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table-dense \{[\s\S]*?font-size: 9px !important;/);
@@ -1470,7 +1470,7 @@ test('Result Card print route measures rendered content inside one explicit A4 c
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table tr \{[\s\S]*?break-inside: avoid;[\s\S]*?page-break-inside: avoid;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-last-subject-row \{[\s\S]*?break-after: avoid-page;[\s\S]*?page-break-after: avoid;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-average-row \{[\s\S]*?break-before: avoid-page;[\s\S]*?page-break-before: avoid;/);
-  assert.match(printStyles, /\.result-card-print-sheet \.result-card-footer \{[\s\S]*?margin-top: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-footer \{[\s\S]*?margin-top: auto !important;/);
 });
 
 test('Subjects settings clearly expose independent card visibility and average controls', async () => {
