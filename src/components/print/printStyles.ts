@@ -30,7 +30,7 @@ export const PRINT_CSS = `
   min-height: 0 !important;
   margin: 0 !important;
   padding: 0 !important;
-  gap: 2.5mm !important;
+  gap: 2.2mm !important;
   box-shadow: none !important;
 }
 
@@ -221,17 +221,18 @@ export const PRINT_CSS = `
   }
 
   .result-card-print-sheet .result-card-custom-heading {
-    margin: 0 0 2mm !important;
-    padding: 1.5mm 3mm !important;
-  }
-
-  .result-card-print-sheet .result-card-draft-notice {
-    margin-bottom: 1.5mm !important;
-    padding: 1mm 2mm !important;
+    margin: 0 0 1mm !important;
+    padding: 0 !important;
   }
 
   .result-card-print-sheet .result-card-header {
-    padding: 2mm 3mm !important;
+    padding: 5mm 4mm 2mm !important;
+    background: #fff !important;
+    color: #0f172a !important;
+  }
+
+  .result-card-print-sheet .result-card-header-rule {
+    background: #172554 !important;
   }
 
   .result-card-print-sheet .result-card-student-info {
@@ -309,12 +310,17 @@ export const PRINT_CSS = `
     padding-top: 2mm !important;
   }
 
-  .result-card-print-sheet .result-card-footer .min-h-24 {
-    min-height: 20mm !important;
+  .result-card-print-sheet .result-card-footer .min-h-20 {
+    min-height: 17mm !important;
   }
 
-  .result-card-print-sheet .result-card-footer .mt-12 {
-    margin-top: 8mm !important;
+  .result-card-print-sheet .result-card-footer .mt-7 {
+    margin-top: 6mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer-grid svg {
+    width: 22mm !important;
+    height: 22mm !important;
   }
 
   .result-card-print-sheet .result-card-footer-meta {

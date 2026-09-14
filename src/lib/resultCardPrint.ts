@@ -32,7 +32,9 @@ export function shouldRegisterResultCardPrint(
   hasPrintPermission: boolean,
   publicationStatus: string = 'published',
 ): boolean {
-  return status === 'active' && publicationStatus === 'published' && hasPrintPermission;
+  return status === 'active' &&
+    (publicationStatus === 'draft' || publicationStatus === 'published') &&
+    hasPrintPermission;
 }
 
 export function isResultCardPrintable(

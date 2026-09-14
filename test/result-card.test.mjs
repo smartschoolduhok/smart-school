@@ -1345,12 +1345,12 @@ test('Result Card presentation uses a compact optional-field layout and balanced
 
   assert.match(component, /const logoUrl = displaySettings\.show_school_logo/);
   assert.doesNotMatch(component, /absolute right-5 top-4/);
-  assert.match(component, /grid-cols-\[6rem_1fr_6rem\]/);
+  assert.match(component, /grid-cols-\[3\.75rem_minmax\(0,1fr\)_3\.75rem\]/);
   assert.match(component, /studentIdentityItems: StudentInfoItem\[\]/);
   assert.match(component, /academicPlacementItems: StudentInfoItem\[\]/);
   assert.match(component, /optionalStudentInfoItems: StudentInfoItem\[\]/);
   assert.match(component, /student\.student_number !== null[\s\S]*?student\.student_number !== ''/);
-  assert.match(component, /card\.status !== 'preview' && card\.card_number\)[\s\S]*?studentIdentityItems\.push\(\{ label: 'رقم الكارت'/);
+  assert.match(component, /!isModernDesign && card\.status !== 'preview' && card\.card_number\)[\s\S]*?studentIdentityItems\.push\(\{ label: 'رقم الكارت'/);
   assert.doesNotMatch(component, /معاينة مباشرة غير محفوظة/);
   assert.doesNotMatch(component, /معاينة غير محفوظة/);
   assert.match(component, /card\.status === 'cancelled'[\s\S]*?كارت ملغى — غير صالح للاستخدام الرسمي/);
@@ -1377,9 +1377,10 @@ test('Result Card presentation uses a compact optional-field layout and balanced
   assert.match(component, /result-card-summary grid gap-3 \$\{showDecisionNote \? 'sm:grid-cols-2' : ''\}/);
   assert.match(component, /\{showDecisionNote && \([\s\S]*?result-card-note-body/);
   assert.doesNotMatch(component, /لا توجد ملاحظات أو قرارات مسجلة/);
-  assert.match(component, /grid grid-cols-3 items-end gap-3/);
-  assert.match(component, /<QRCodeSVG value=\{verificationUrl\} size=\{100\} level="M"/);
-  assert.match(component, /يُنشأ رمز QR عند إصدار الكارت/);
+  assert.match(component, /result-card-footer-grid grid items-end gap-4/);
+  assert.match(component, /<QRCodeSVG value=\{verificationUrl\} size=\{92\} level="M"/);
+  assert.match(component, /يُضاف QR عند إصدار الكارت/);
+  assert.doesNotMatch(component, /مسودة غير منشورة|رمز التحقق بعد النشر/);
 });
 
 test('single-page print fit keeps small content at natural size and never enlarges it', () => {
@@ -1627,7 +1628,7 @@ test('formats exemptions, Unix seconds, and print eligibility safely', () => {
   assert.equal(formatUnixSecondsDate('invalid'), '-');
   assert.equal(shouldRegisterResultCardPrint('cancelled', true), false);
   assert.equal(shouldRegisterResultCardPrint('active', true), true);
-  assert.equal(shouldRegisterResultCardPrint('active', true, 'draft'), false);
+  assert.equal(shouldRegisterResultCardPrint('active', true, 'draft'), true);
   assert.equal(shouldRegisterResultCardPrint('active', true, 'published'), true);
   assert.equal(isResultCardPrintable('active', 'draft'), true);
   assert.equal(isResultCardPrintable('active', 'published'), true);
@@ -1643,11 +1644,11 @@ test('Result Card list separates publishing from single and selected batch print
     readFile(new URL('../src/App.tsx', import.meta.url), 'utf8'),
     readFile(new URL('../src/components/print/printStyles.ts', import.meta.url), 'utf8'),
   ]);
-  assert.match(page, /الطباعة مستقلة عن النشر/);
+  assert.match(page, /الطباعة ورمز QR مستقلان عن الإرسال/);
   assert.match(page, /تحديد كل الكارتات القابلة للطباعة/);
   assert.match(page, /طباعة المحدد/);
   assert.match(page, /\/print\/result-cards\?ids=/);
-  assert.match(page, />\s*نشر\s*</);
+  assert.match(page, />\s*إرسال لولي الأمر\s*</);
   assert.doesNotMatch(page, /تعليم كمطبوع/);
   assert.match(batchPage, /parseResultCardBatchIds/);
   assert.match(batchPage, /Promise\.all\(cardIds\.map/);

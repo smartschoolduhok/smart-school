@@ -145,7 +145,7 @@ export default function PrintResultCardsPage() {
             <ResultCardDocument
               card={card}
               data={card.card_data_parsed}
-              verificationUrl={card.publication_status === 'published' && card.verification_token
+              verificationUrl={card.status === 'active' && card.verification_token
                 ? `${base}/verify/result-card/${card.verification_token}`
                 : null}
             />

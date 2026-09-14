@@ -50,7 +50,7 @@ export default function PrintResultCardPage() {
     ? requestedSchoolId
     : null;
   const base = typeof window !== 'undefined' ? window.location.origin : '';
-  const verificationUrl = card?.publication_status === 'published' && card.verification_token
+  const verificationUrl = card?.status === 'active' && card.verification_token
     ? `${base}/verify/result-card/${card.verification_token}`
     : null;
 

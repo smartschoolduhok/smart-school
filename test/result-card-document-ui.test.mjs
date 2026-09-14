@@ -208,10 +208,9 @@ test('v7 monthly card renders the modern design, school text and dense safe tabl
     'result-card-custom-heading',
     'جمهورية العراق',
     'وزارة التربية',
-    'شهري / Monthly details',
     'data-grade-detail-mode="monthly"',
     'data-column-count="8"',
-    'bg-gradient-to-l',
+    'result-card-header-rule',
   ]) assert.match(html, new RegExp(expected));
   assert.doesNotMatch(html, /Decision points|بعد القرار/);
 });
@@ -239,9 +238,10 @@ test('v7 card hides generic academic-record and first-round labels but keeps mea
     summary: { academic_status: 'ناجح', overall_result_status: 'مكتمل', decision_points_used: 5 },
   };
   const html = render(data, { publication_status: 'draft' });
-  assert.match(html, /مسودة غير منشورة \/ Unpublished draft/);
-  assert.match(html, /رمز التحقق بعد النشر/);
-  assert.doesNotMatch(html, /qa-result-card-v6/);
+  assert.doesNotMatch(html, /مسودة غير منشورة|Unpublished draft|رمز التحقق بعد النشر|Available after publication/);
+  assert.match(html, /<svg[^>]+role="img"/);
+  assert.match(html, /qa-result-card-v6/);
+  assert.match(html, /امسح للتحقق من صحة الكارت/);
   assert.match(html, /الدور \/ Round: الدور الثاني/);
   assert.match(html, /Decision points/);
   assert.match(html, /Adjusted grade/);
