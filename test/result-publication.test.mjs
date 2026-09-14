@@ -148,11 +148,21 @@ test('0034 preserves old card values and backfills historical publication state'
   db.close();
 });
 
-test('publication is management-only, revision-guarded and invisible before approval', async t => {
+test('issued card QR verifies before parent delivery and delivery remains management-only and revision-guarded', async t => {
   const f = publicationFixture(t);
   const draftVerification = await publicApi(f, '/api/verify/result-card/draft-token');
-  assert.equal(draftVerification.status, 404);
-  assert.equal(draftVerification.body.unpublished, true);
+  assert.equal(draftVerification.status, 200);
+  assert.equal(draftVerification.body.valid, true);
+
+  const parentBeforeDelivery = await api(f, 'parent', 'GET', '/api/parent/students/1/result-cards');
+  assert.equal(parentBeforeDelivery.status, 200);
+  assert.equal(parentBeforeDelivery.body.data.cards.length, 0);
+
+  const printedBeforeDelivery = await api(f, 'owner', 'PUT', '/api/result-cards/1/mark-printed', {
+    school_id: 1,
+  });
+  assert.equal(printedBeforeDelivery.status, 200, JSON.stringify(printedBeforeDelivery.body));
+  assert.ok(f.db.prepare('SELECT printed_at FROM result_cards WHERE id=1').get().printed_at > 0);
 
   assert.equal((await api(f, 'teacher', 'PUT', '/api/result-cards/1/publish', {
     school_id: 1,
@@ -311,13 +321,16 @@ test('result publication UI separates review, publish, withdrawal and parent rea
   const parent = readFileSync(join(root, 'src/modules/students/ParentResultsSection.tsx'), 'utf8');
   const profile = readFileSync(join(root, 'src/modules/students/StudentProfilePage.tsx'), 'utf8');
   const print = readFileSync(join(root, 'src/modules/print/PrintResultCardPage.tsx'), 'utf8');
-  assert.match(management, /حالة النشر/);
+  assert.match(management, /الإرسال لولي الأمر/);
   assert.match(management, /handlePublish\(c\)/);
   assert.match(management, /handleWithdraw\(c\)/);
-  assert.match(management, /سبب سحب النتيجة المنشورة/);
-  assert.match(parent, /النتائج المنشورة/);
-  assert.match(parent, /المسودات والنتائج المسحوبة لا تظهر لولي الأمر/);
+  assert.match(management, /سبب سحب النتيجة من حساب ولي الأمر/);
+  assert.match(management, /إرسال لولي الأمر/);
+  assert.match(parent, /النتائج المرسلة من المدرسة/);
+  assert.match(parent, /الكارت المطبوع للطالب لا يظهر هنا/);
   assert.match(parent, /getParentStudentResultCards\(studentId\)/);
   assert.match(profile, /<ParentResultsSection studentId=\{student\.id\} \/>/);
-  assert.match(print, /loaded\.publication_status !== 'published'/);
+  assert.match(print, /isResultCardPrintable\(loaded\.status, loaded\.publication_status\)/);
+  assert.match(print, /card\?\.status === 'active'/);
+  assert.match(print, /shouldRegisterResultCardPrint/);
 });

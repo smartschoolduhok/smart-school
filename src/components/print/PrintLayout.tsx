@@ -3,7 +3,7 @@ import { injectPrintStyles } from './printStyles';
 
 export interface PrintLayoutProps {
   children: React.ReactNode;
-  size?: 'A4' | 'A5';
+  size?: 'A4' | 'A5' | null;
   className?: string;
   onPrint?: () => void;
   backButton?: React.ReactNode;
@@ -23,7 +23,7 @@ const PrintLayout: React.FC<PrintLayoutProps> = ({
     };
   }, []);
 
-  const sizeClass = size === 'A5' ? 'print-a5' : 'print-a4';
+  const sizeClass = size === null ? '' : size === 'A5' ? 'print-a5' : 'print-a4';
 
   return (
     <div className="print-preview-bg">

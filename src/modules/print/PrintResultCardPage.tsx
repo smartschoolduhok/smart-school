@@ -13,11 +13,13 @@ import {
 import { useAuth } from '../../hooks/useAuth';
 import { getResultCard, markResultCardPrinted } from '../../lib/api';
 import {
+  isResultCardPrintable,
+  shouldRegisterResultCardPrint,
+} from '../../lib/resultCardPrint';
+import {
   hasRole,
   RESULT_CARD_PRINT_ROLES,
-  RESULT_CARD_VIEW_ROLES,
 } from '../../lib/rbac';
-import { shouldRegisterResultCardPrint } from '../../lib/resultCardPrint';
 import type { RoleKey } from '../../types';
 
 interface CardRecord extends ResultCardDocumentRecord {
@@ -30,8 +32,8 @@ interface CardRecord extends ResultCardDocumentRecord {
   card_data_parsed?: Record<string, any>;
 }
 
-function canViewResultCards(roleKey?: RoleKey) {
-  return hasRole(roleKey, RESULT_CARD_VIEW_ROLES);
+function canPrintResultCards(roleKey?: RoleKey) {
+  return hasRole(roleKey, RESULT_CARD_PRINT_ROLES);
 }
 
 export default function PrintResultCardPage() {
@@ -48,7 +50,7 @@ export default function PrintResultCardPage() {
     ? requestedSchoolId
     : null;
   const base = typeof window !== 'undefined' ? window.location.origin : '';
-  const verificationUrl = card?.verification_token
+  const verificationUrl = card?.status === 'active' && card.verification_token
     ? `${base}/verify/result-card/${card.verification_token}`
     : null;
 
@@ -59,6 +61,7 @@ export default function PrintResultCardPage() {
       if (!card || !shouldRegisterResultCardPrint(
         card.status,
         hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES),
+        card.publication_status,
       )) return;
       try {
         await markResultCardPrinted(String(card.id), card.school_id);
@@ -76,9 +79,9 @@ export default function PrintResultCardPage() {
     if (res.error) setError(res.error);
     else if (res.data) {
       const loaded = res.data as CardRecord;
-      if (loaded.publication_status !== 'published') {
+      if (!isResultCardPrintable(loaded.status, loaded.publication_status)) {
         setCard(null);
-        setError('لا يمكن طباعة كارت النتيجة رسميًا قبل نشره');
+        setError('لا يمكن طباعة كارت ملغى أو مسحوب');
       } else {
         setCard(loaded);
       }
@@ -92,7 +95,7 @@ export default function PrintResultCardPage() {
       navigate('/login');
       return;
     }
-    if (!canViewResultCards(user.role_key)) {
+    if (!canPrintResultCards(user.role_key)) {
       setError('غير مسموح: لا تملك صلاحية تصدير PDF');
       setLoading(false);
       return;

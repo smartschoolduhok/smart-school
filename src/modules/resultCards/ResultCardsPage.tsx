@@ -1,16 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import {
   getResultCards, getResultCard, generateStudentResultCard,
-  generateSectionResultCards, markResultCardPrinted, cancelResultCard,
+  generateSectionResultCards, cancelResultCard,
   publishResultCard, withdrawResultCard,
   previewStudentResultCard, verifyResultCard,
   getStudents, getClasses, getSections
 } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import { isResultCardPrintable } from '../../lib/resultCardPrint';
 import { ResultCardDocument } from '../../components/resultCards/ResultCardDocument';
 import {
   hasRole,
@@ -65,7 +66,11 @@ function publicationStatusBadge(status: string | null) {
     : status === 'withdrawn'
       ? 'bg-red-100 text-red-700'
       : 'bg-amber-100 text-amber-800';
-  const label = status === 'published' ? 'منشورة' : status === 'withdrawn' ? 'مسحوبة' : 'مسودة';
+  const label = status === 'published'
+    ? 'مرسلة لولي الأمر'
+    : status === 'withdrawn'
+      ? 'مسحوبة من ولي الأمر'
+      : 'غير مرسلة لولي الأمر';
   return <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${cls}`}>{label}</span>;
 }
 
@@ -216,7 +221,7 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
     if (res.error) {
       setMessage({ text: res.error, type: 'error' });
     } else {
-      setMessage({ text: (res.data as any)?.message || 'تم إنشاء الكارت كمسودة للمراجعة', type: 'success' });
+      setMessage({ text: (res.data as any)?.message || 'تم إصدار الكارت وهو جاهز للطباعة', type: 'success' });
       setCard(res.data?.card || null);
       if (res.data?.card?.id) {
         const d = await getResultCard(res.data.card.id, schoolId);
@@ -361,7 +366,7 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
               className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors"
             >
               {generating ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
-              إصدار وحفظ الكارت
+              إصدار الكارت
             </button>
           </>
         )}
@@ -372,13 +377,13 @@ function GenerateStudentTab({ schoolId }: { schoolId: number | null }) {
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-900">معاينة الكارت</h3>
-            {card?.id && (
+            {card?.id && hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && isResultCardPrintable(card.status, card.publication_status) && (
               <a
                 href={`/print/result-card/${card.id}?school_id=${schoolId}`}
                 className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition-colors print:hidden"
               >
                 <Printer size={14} />
-                طباعة / تصدير PDF
+                طباعة الكارت
               </a>
             )}
           </div>
@@ -535,7 +540,7 @@ function GenerateSectionTab({ schoolId }: { schoolId: number | null }) {
             className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 transition-colors"
           >
             {generating ? <Loader2 size={16} className="animate-spin" /> : <Users size={16} />}
-            إنشاء كارتات الشعبة
+            إصدار كارتات الشعبة
           </button>
         )}
       </div>
@@ -585,6 +590,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
   const [filters, setFilters] = useState<{ status: string; publication_status: string; student_id: string }>({ status: '', publication_status: '', student_id: '' });
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [students, setStudents] = useState<StudentOption[]>([]);
+  const [selectedCardIds, setSelectedCardIds] = useState<number[]>([]);
 
   useEffect(() => {
     setCards([]);
@@ -592,6 +598,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
     setFilters({ status: '', publication_status: '', student_id: '' });
     setLoading(false);
     setMessage(null);
+    setSelectedCardIds([]);
     void loadCards();
     void loadStudents();
   }, [schoolId]);
@@ -607,7 +614,12 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
       student_id: filters.student_id ? Number(filters.student_id) : null,
     });
     if (!isCurrent()) return;
-    setCards((res.data || []) as CardRecord[]);
+    const loadedCards = (res.data || []) as CardRecord[];
+    setCards(loadedCards);
+    const printableIds = new Set(loadedCards
+      .filter(card => card.id != null && isResultCardPrintable(card.status, card.publication_status))
+      .map(card => card.id as number));
+    setSelectedCardIds(previous => previous.filter(id => printableIds.has(id)));
     setLoading(false);
   }
 
@@ -619,42 +631,53 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
     if (res.data) setStudents((res.data as any[]).map((s) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number })));
   }
 
-  async function handleMarkPrinted(id: number) {
-    if (schoolId == null) return;
-    const isCurrent = captureSchoolRequest();
-    const res = await markResultCardPrinted(id, schoolId);
-    if (!isCurrent()) return;
-    if (res.error) setMessage({ text: res.error, type: 'error' });
-    else { setMessage({ text: 'تم تعليم الكارت كمطبوع', type: 'success' }); loadCards(); }
-    setTimeout(() => setMessage(null), 3000);
+  const printableCards = useMemo(() => cards.filter(card =>
+    card.id != null && isResultCardPrintable(card.status, card.publication_status)
+  ), [cards]);
+  const selectedPrintableCards = useMemo(() => printableCards.filter(card =>
+    selectedCardIds.includes(card.id as number)
+  ), [printableCards, selectedCardIds]);
+  const allPrintableSelected = printableCards.length > 0 &&
+    selectedPrintableCards.length === printableCards.length;
+
+  function togglePrintSelection(id: number) {
+    setSelectedCardIds(previous => previous.includes(id)
+      ? previous.filter(value => value !== id)
+      : [...previous, id]);
+  }
+
+  function toggleAllPrintable() {
+    setSelectedCardIds(allPrintableSelected
+      ? []
+      : printableCards.map(card => card.id as number));
   }
 
   async function handlePublish(card: CardRecord) {
     if (schoolId == null || card.id == null) return;
-    if (!window.confirm('نشر هذه النتيجة سيجعلها ظاهرة لولي الأمر وقابلة للتحقق العام. هل تريد المتابعة؟')) return;
+    if (!window.confirm('إرسال هذه النتيجة سيجعلها ظاهرة في حساب ولي الأمر المرتبط بهذا الطالب فقط. الطباعة ورمز QR يعملان قبل الإرسال. هل تريد المتابعة؟')) return;
     const isCurrent = captureSchoolRequest();
     const res = await publishResultCard(card.id, schoolId, card.publication_revision);
     if (!isCurrent()) return;
     if (res.error) setMessage({ text: res.error, type: 'error' });
-    else { setMessage({ text: 'تم نشر النتيجة رسميًا', type: 'success' }); void loadCards(); }
+    else { setMessage({ text: 'تم إرسال النتيجة إلى حساب ولي الأمر المرتبط', type: 'success' }); void loadCards(); }
     setTimeout(() => setMessage(null), 4000);
   }
 
   async function handleWithdraw(card: CardRecord) {
     if (schoolId == null || card.id == null) return;
-    const reason = window.prompt('اكتب سبب سحب النتيجة المنشورة. سيُحفظ السبب في سجل التدقيق:')?.trim();
+    const reason = window.prompt('اكتب سبب سحب النتيجة من حساب ولي الأمر. سيُحفظ السبب في سجل التدقيق:')?.trim();
     if (!reason) return;
     const isCurrent = captureSchoolRequest();
     const res = await withdrawResultCard(card.id, schoolId, card.publication_revision, reason);
     if (!isCurrent()) return;
     if (res.error) setMessage({ text: res.error, type: 'error' });
-    else { setMessage({ text: 'تم سحب النتيجة المنشورة وحفظ السبب', type: 'success' }); void loadCards(); }
+    else { setMessage({ text: 'تم سحب النتيجة من حساب ولي الأمر وحفظ السبب', type: 'success' }); void loadCards(); }
     setTimeout(() => setMessage(null), 4000);
   }
 
   async function handleCancel(id: number) {
     if (schoolId == null) return;
-    if (!window.confirm('هل أنت متأكد من إلغاء مسودة هذا الكارت؟')) return;
+    if (!window.confirm('هل أنت متأكد من إلغاء هذا الكارت؟ سيتوقف رمز QR عن التحقق.')) return;
     const isCurrent = captureSchoolRequest();
     const res = await cancelResultCard(id, schoolId);
     if (!isCurrent()) return;
@@ -690,12 +713,12 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
           </select>
         </div>
         <div className="w-40">
-          <label className="block text-sm font-medium text-gray-700 mb-1">حالة النشر</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">الإرسال لولي الأمر</label>
           <select value={filters.publication_status} onChange={(e) => setFilters((f) => ({ ...f, publication_status: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
             <option value="">الكل</option>
-            <option value="draft">مسودة</option>
-            <option value="published">منشورة</option>
-            <option value="withdrawn">مسحوبة</option>
+            <option value="draft">غير مرسلة</option>
+            <option value="published">مرسلة</option>
+            <option value="withdrawn">مسحوبة من ولي الأمر</option>
           </select>
         </div>
         <button onClick={loadCards} disabled={loading} className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-50">
@@ -703,6 +726,39 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
           بحث
         </button>
       </div>
+
+      {hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && cards.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+          <div>
+            <p className="text-sm font-bold text-indigo-950">اطبع للطالب أولًا، ثم أرسل لولي الأمر</p>
+            <p className="text-xs text-indigo-700">الطباعة ورمز QR مستقلان عن الإرسال؛ كل كارت محدد يُطبع في صفحة A4 مستقلة.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleAllPrintable}
+              disabled={printableCards.length === 0}
+              className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+            >
+              {allPrintableSelected ? 'إلغاء تحديد الكل' : 'تحديد الكل للطباعة'}
+            </button>
+            {selectedPrintableCards.length > 0 ? (
+              <a
+                href={`/print/result-cards?ids=${selectedPrintableCards.map(card => card.id).join(',')}&school_id=${schoolId}`}
+                className="inline-flex items-center gap-2 rounded-lg bg-indigo-700 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-800"
+              >
+                <Printer size={16} />
+                طباعة المحدد ({toArabicDigits(selectedPrintableCards.length)})
+              </a>
+            ) : (
+              <span className="inline-flex items-center gap-2 rounded-lg bg-indigo-200 px-4 py-2 text-sm font-bold text-indigo-500">
+                <Printer size={16} />
+                طباعة المحدد (٠)
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex items-center justify-center py-12">
@@ -720,12 +776,24 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 text-gray-600 text-xs">
+                  {hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && (
+                    <th className="px-3 py-2 text-center font-medium border-b border-gray-200">
+                      <input
+                        type="checkbox"
+                        aria-label="تحديد كل الكارتات القابلة للطباعة"
+                        checked={allPrintableSelected}
+                        onChange={toggleAllPrintable}
+                        disabled={printableCards.length === 0}
+                        className="h-4 w-4 rounded border-gray-300 text-indigo-600"
+                      />
+                    </th>
+                  )}
                   <th className="px-3 py-2 text-right font-medium border-b border-gray-200">رقم الكارت</th>
                   <th className="px-3 py-2 text-right font-medium border-b border-gray-200">الطالب</th>
                   <th className="px-3 py-2 text-right font-medium border-b border-gray-200">الصف / الشعبة</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">السنة</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">الحالة</th>
-                  <th className="px-3 py-2 text-center font-medium border-b border-gray-200">النشر</th>
+                  <th className="px-3 py-2 text-center font-medium border-b border-gray-200">ولي الأمر</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">النتيجة</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">الإعفاء</th>
                   <th className="px-3 py-2 text-center font-medium border-b border-gray-200">تاريخ الإنشاء</th>
@@ -735,6 +803,18 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
               <tbody>
                 {cards.map((c) => (
                   <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                    {hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && (
+                      <td className="px-3 py-2 text-center border-b border-gray-100">
+                        <input
+                          type="checkbox"
+                          aria-label={`تحديد كارت ${c.student_name_snapshot} للطباعة`}
+                          checked={c.id != null && selectedCardIds.includes(c.id)}
+                          onChange={() => c.id != null && togglePrintSelection(c.id)}
+                          disabled={c.id == null || !isResultCardPrintable(c.status, c.publication_status)}
+                          className="h-4 w-4 rounded border-gray-300 text-indigo-600 disabled:opacity-30"
+                        />
+                      </td>
+                    )}
                     <td className="px-3 py-2 border-b border-gray-100 font-mono text-xs text-gray-700">{c.card_number}</td>
                     <td className="px-3 py-2 border-b border-gray-100 font-medium text-gray-900">{c.student_name_snapshot}</td>
                     <td className="px-3 py-2 border-b border-gray-100 text-gray-600 text-xs">{c.class_name_snapshot}{c.section_name_snapshot ? ` / ${c.section_name_snapshot}` : ''}</td>
@@ -753,51 +833,53 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
                       {c.generated_at ? new Date(c.generated_at * 1000).toLocaleDateString('ar-SY') : '—'}
                     </td>
                     <td className="px-3 py-2 border-b border-gray-100 text-center">
-                      <div className="flex items-center justify-center gap-1">
+                      <div className="flex flex-wrap items-center justify-center gap-1.5">
+                        {hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && c.id != null && isResultCardPrintable(c.status, c.publication_status) && (
+                          <a
+                            href={`/print/result-card/${c.id}?school_id=${schoolId}`}
+                            title="طباعة الكارت للطالب"
+                            className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-1.5 text-xs font-bold text-indigo-700 transition-colors hover:bg-indigo-100"
+                          >
+                            <Printer size={13} />
+                            طباعة
+                          </a>
+                        )}
                         {c.status === 'active' && c.publication_status === 'draft' && (
                           <>
                             {hasRole(user?.role_key, RESULT_CARD_MANAGEMENT_ROLES) && (
-                              <button onClick={() => handlePublish(c)} title="نشر النتيجة" className="p-1.5 rounded-md hover:bg-emerald-50 text-emerald-700 transition-colors">
-                                <Send size={14} />
+                              <button onClick={() => handlePublish(c)} title="إرسال النتيجة إلى ولي الأمر" className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1.5 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-100">
+                                <Send size={13} />
+                                إرسال لولي الأمر
                               </button>
                             )}
                             {hasRole(user?.role_key, RESULT_CARD_MANAGEMENT_ROLES) && (
-                              <button onClick={() => handleCancel(c.id!)} title="إلغاء المسودة" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
-                                <XCircle size={14} />
+                              <button onClick={() => handleCancel(c.id!)} title="إلغاء الكارت" className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold text-red-600 transition-colors hover:bg-red-50">
+                                <XCircle size={13} />
+                                إلغاء
                               </button>
                             )}
                           </>
                         )}
                         {c.status === 'active' && c.publication_status === 'published' && (
                           <>
-                            {hasRole(user?.role_key, RESULT_CARD_PRINT_ROLES) && (
-                              <button onClick={() => handleMarkPrinted(c.id!)} title="تعليم كمطبوع" className="p-1.5 rounded-md hover:bg-blue-50 text-blue-600 transition-colors">
-                                <Printer size={14} />
-                              </button>
-                            )}
-                            <a
-                              href={`/print/result-card/${c.id}?school_id=${schoolId}`}
-                              title="طباعة / تصدير PDF"
-                              className="p-1.5 rounded-md hover:bg-indigo-50 text-indigo-600 transition-colors"
-                            >
-                              <Printer size={14} />
-                            </a>
                             {hasRole(user?.role_key, RESULT_CARD_MANAGEMENT_ROLES) && (
-                              <button onClick={() => handleWithdraw(c)} title="سحب النتيجة" className="p-1.5 rounded-md hover:bg-red-50 text-red-600 transition-colors">
-                                <Undo2 size={14} />
+                              <button onClick={() => handleWithdraw(c)} title="سحب النتيجة" className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold text-red-600 transition-colors hover:bg-red-50">
+                                <Undo2 size={13} />
+                                سحب
                               </button>
                             )}
                           </>
                         )}
-                        {c.publication_status === 'published' && (
+                        {c.status === 'active' && c.verification_token && (
                           <a
                             href={`/verify/result-card/${c.verification_token}`}
                             target="_blank"
                             rel="noreferrer"
                             title="فتح صفحة التحقق"
-                            className="p-1.5 rounded-md hover:bg-emerald-50 text-emerald-600 transition-colors"
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-50"
                           >
-                            <Globe size={14} />
+                            <Globe size={13} />
+                            تحقق
                           </a>
                         )}
                       </div>

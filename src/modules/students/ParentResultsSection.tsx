@@ -62,27 +62,27 @@ export default function ParentResultsSection({ studentId }: { studentId: number 
   }, [studentId]);
 
   if (loading) {
-    return <section className="rounded-xl border border-blue-200 bg-white p-6" aria-label="النتائج المنشورة"><p className="text-center text-sm text-gray-500">جاري تحميل النتائج المنشورة...</p></section>;
+    return <section className="rounded-xl border border-blue-200 bg-white p-6" aria-label="النتائج المرسلة"><p className="text-center text-sm text-gray-500">جاري تحميل النتائج المرسلة...</p></section>;
   }
   if (error) {
-    return <section className="rounded-xl border border-red-200 bg-red-50 p-5" aria-label="النتائج المنشورة"><div className="flex items-center gap-2 text-red-700"><AlertTriangle size={19} /><span>{error}</span></div></section>;
+    return <section className="rounded-xl border border-red-200 bg-red-50 p-5" aria-label="النتائج المرسلة"><div className="flex items-center gap-2 text-red-700"><AlertTriangle size={19} /><span>{error}</span></div></section>;
   }
 
   return (
-    <section className="overflow-hidden rounded-xl border border-blue-200 bg-white" aria-label="النتائج المنشورة">
+    <section className="overflow-hidden rounded-xl border border-blue-200 bg-white" aria-label="النتائج المرسلة">
       <div className="flex items-center gap-3 border-b border-blue-100 bg-blue-50 px-6 py-4">
         <div className="rounded-xl bg-blue-100 p-2 text-blue-700"><Award size={22} /></div>
         <div>
-          <h2 className="text-lg font-bold text-gray-900">النتائج المنشورة</h2>
-          <p className="text-xs text-gray-600">تظهر هنا النتائج التي اعتمدتها المدرسة رسميًا فقط</p>
+          <h2 className="text-lg font-bold text-gray-900">النتائج المرسلة من المدرسة</h2>
+          <p className="text-xs text-gray-600">تظهر هنا فقط النتائج التي أرسلتها المدرسة إلى حساب ولي الأمر</p>
         </div>
       </div>
 
       {cards.length === 0 ? (
         <div className="p-8 text-center">
           <FileCheck2 className="mx-auto mb-2 text-gray-300" size={34} />
-          <p className="text-sm font-medium text-gray-700">لا توجد نتيجة منشورة لهذا الطالب حاليًا.</p>
-          <p className="mt-1 text-xs text-gray-500">المسودات والنتائج المسحوبة لا تظهر لولي الأمر.</p>
+          <p className="text-sm font-medium text-gray-700">لم ترسل المدرسة نتيجة لهذا الطالب حاليًا.</p>
+          <p className="mt-1 text-xs text-gray-500">الكارت المطبوع للطالب لا يظهر هنا حتى ترسله المدرسة إلى هذا الحساب.</p>
         </div>
       ) : (
         <div className="space-y-5 p-5 sm:p-6">
@@ -98,7 +98,7 @@ export default function ParentResultsSection({ studentId }: { studentId: number 
                       <h3 className="font-bold text-gray-900">{displayValue(result.academic_year)}</h3>
                       <span className={`rounded-full px-2 py-1 text-xs font-bold ${resultClasses(overall)}`}>{displayValue(overall)}</span>
                     </div>
-                    <p className="mt-1 text-xs text-gray-500">{displayValue(result.class_name)}{result.section_name ? ` / ${result.section_name}` : ''} · نُشرت {formatPublishedAt(result.published_at)}</p>
+                    <p className="mt-1 text-xs text-gray-500">{displayValue(result.class_name)}{result.section_name ? ` / ${result.section_name}` : ''} · أُرسلت {formatPublishedAt(result.published_at)}</p>
                   </div>
                   <a href={`/verify/result-card/${result.verification_token}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50">
                     تحقق من النتيجة <ExternalLink size={14} />

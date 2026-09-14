@@ -6,6 +6,8 @@ import { displayGradeStatus, displayIndividualExemptionDetail } from '../src/lib
 import {
   formatExemptionStatus,
   formatUnixSecondsDate,
+  isResultCardPrintable,
+  parseResultCardBatchIds,
   shouldRegisterResultCardPrint,
   unixSecondsToDate,
 } from '../src/lib/resultCardPrint.ts';
@@ -16,10 +18,16 @@ import {
   LEGACY_RESULT_CARD_COLUMNS,
   normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
+  omitUnusedResultCardDecisionColumns,
   parseResultCardDisplaySettings,
+  RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH,
+  RESULT_CARD_GRADE_DETAIL_MODES,
   RESULT_CARD_DISPLAY_SETTING_KEYS,
+  resultCardHasDecisionPoints,
   snapshotResultCardColumnAverages,
   snapshotResultCardColumns,
+  validateResultCardCustomText,
+  validateResultCardDisplaySettings,
 } from '../src/lib/resultCardPresentation.ts';
 import {
   calculateResultCardColumnAverages,
@@ -869,6 +877,123 @@ test('official policy cards use compact decision-focused bilingual columns', () 
   ]);
 });
 
+test('official cards expose deterministic annual, term, monthly and custom grade views', () => {
+  assert.deepEqual(RESULT_CARD_GRADE_DETAIL_MODES, ['annual', 'term', 'monthly', 'custom']);
+
+  const term = buildOfficialResultCardColumns(monthlySettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    grade_detail_mode: 'term',
+  }, 'terminal');
+  assert.deepEqual(term.map(column => column.key), [
+    'subject_name',
+    'first_term_average',
+    'mid_year_exam',
+    'second_term_average',
+    'annual_effort',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+  ]);
+
+  const monthly = buildOfficialResultCardColumns(monthlySettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    grade_detail_mode: 'monthly',
+  }, 'terminal');
+  assert.deepEqual(monthly.map(column => column.key), [
+    'subject_name',
+    'first_month',
+    'second_month',
+    'mid_year_exam',
+    'third_month',
+    'fourth_month',
+    'annual_effort',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+  ]);
+
+  const nonTerminalMonthly = buildOfficialResultCardColumns(monthlySettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    grade_detail_mode: 'monthly',
+    show_exemption_detail: true,
+  }, 'non_terminal');
+  assert.deepEqual(nonTerminalMonthly.map(column => column.key), [
+    'subject_name',
+    'first_month',
+    'second_month',
+    'mid_year_exam',
+    'third_month',
+    'fourth_month',
+    'annual_effort',
+    'final_exam',
+    'policy_source_grade',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+    'exemption_detail',
+  ]);
+
+  const custom = buildOfficialResultCardColumns(directSettings, {
+    ...DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    grade_detail_mode: 'custom',
+    show_first_term_inputs: true,
+    show_mid_year_exam: false,
+    show_second_term_inputs: false,
+    show_annual_effort: false,
+    show_final_exam: false,
+    show_subject_status: false,
+  }, 'terminal');
+  assert.deepEqual(custom.map(column => column.key), [
+    'subject_name',
+    'first_term_grade',
+    'decision_points',
+    'adjusted_grade',
+    'academic_status',
+  ]);
+});
+
+test('decision columns are shown only when at least one subject actually uses decision points', () => {
+  const configured = buildOfficialResultCardColumns(
+    monthlySettings,
+    DEFAULT_RESULT_CARD_DISPLAY_SETTINGS,
+    'terminal',
+  );
+  assert.equal(resultCardHasDecisionPoints([{ decision_points: 0 }], { decision_points_used: 0 }), false);
+  assert.deepEqual(
+    omitUnusedResultCardDecisionColumns(configured, false).map(column => column.key),
+    ['subject_name', 'policy_source_grade', 'academic_status'],
+  );
+  assert.equal(resultCardHasDecisionPoints([{ decision_points: 5 }], { decision_points_used: 0 }), true);
+  assert.deepEqual(
+    omitUnusedResultCardDecisionColumns(configured, true).map(column => column.key),
+    configured.map(column => column.key),
+  );
+  assert.equal(resultCardHasDecisionPoints([], { decision_points_used: 10 }), true);
+});
+
+test('grade-view settings remain backward compatible and reject invalid values', () => {
+  assert.equal(normalizeResultCardDisplaySettings(null).grade_detail_mode, 'annual');
+  assert.equal(normalizeResultCardDisplaySettings({ grade_detail_mode: 'term' }).grade_detail_mode, 'term');
+  assert.equal(parseResultCardDisplaySettings('{"grade_detail_mode":"monthly"}').grade_detail_mode, 'monthly');
+  assert.equal(parseResultCardDisplaySettings('{"show_phone":false}').grade_detail_mode, 'annual');
+  assert.equal(validateResultCardDisplaySettings({ grade_detail_mode: 'weekly' }), 'نمط عرض درجات كارت النتيجة غير صالح');
+  assert.equal(validateResultCardDisplaySettings({ grade_detail_mode: 'custom' }), null);
+});
+
+test('custom Result Card text accepts multiline school headings within a bounded length', () => {
+  assert.equal(RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH, 500);
+  assert.equal(validateResultCardCustomText('جمهورية العراق\nوزارة التربية'), null);
+  assert.equal(validateResultCardCustomText(null), null);
+  assert.equal(
+    validateResultCardCustomText(42, 'النص المخصص أعلى كارت النتيجة'),
+    'النص المخصص أعلى كارت النتيجة يجب أن يكون نصاً',
+  );
+  assert.equal(
+    validateResultCardCustomText('س'.repeat(501), 'النص المخصص أعلى كارت النتيجة'),
+    'النص المخصص أعلى كارت النتيجة يجب ألا يتجاوز 500 حرف',
+  );
+});
+
 test('legacy cards retain their configured columns when no annual policy applies', () => {
   assert.deepEqual(
     buildOfficialResultCardColumns(directSettings, null, null),
@@ -877,6 +1002,7 @@ test('legacy cards retain their configured columns when no annual policy applies
 });
 
 test('clean Result Card defaults show academic inputs and hide optional technical details', () => {
+  assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.grade_detail_mode, 'annual');
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_inputs, true);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_first_term_average, false);
   assert.equal(DEFAULT_RESULT_CARD_DISPLAY_SETTINGS.show_mid_year_exam, true);
@@ -1207,7 +1333,7 @@ test('Result Card document renders one aligned print-safe average row from the s
   assert.match(component, /isResultCardNumericColumnKey\(column\.key\)/);
   assert.match(component, /: '—'/);
   assert.match(component, /result-card-last-subject-row/);
-  assert.match(component, /result-card-average-row border-t-2 border-slate-700 bg-slate-100 font-black/);
+  assert.match(component, /result-card-average-row border-t-2 font-black/);
   assert.doesNotMatch(component, /calculateResultCardColumnAverages/);
 });
 
@@ -1219,12 +1345,12 @@ test('Result Card presentation uses a compact optional-field layout and balanced
 
   assert.match(component, /const logoUrl = displaySettings\.show_school_logo/);
   assert.doesNotMatch(component, /absolute right-5 top-4/);
-  assert.match(component, /grid-cols-\[6rem_1fr_6rem\]/);
+  assert.match(component, /grid-cols-\[3\.75rem_minmax\(0,1fr\)_3\.75rem\]/);
   assert.match(component, /studentIdentityItems: StudentInfoItem\[\]/);
   assert.match(component, /academicPlacementItems: StudentInfoItem\[\]/);
   assert.match(component, /optionalStudentInfoItems: StudentInfoItem\[\]/);
   assert.match(component, /student\.student_number !== null[\s\S]*?student\.student_number !== ''/);
-  assert.match(component, /card\.status !== 'preview' && card\.card_number\)[\s\S]*?studentIdentityItems\.push\(\{ label: 'رقم الكارت'/);
+  assert.match(component, /!isModernDesign && card\.status !== 'preview' && card\.card_number\)[\s\S]*?studentIdentityItems\.push\(\{ label: 'رقم الكارت'/);
   assert.doesNotMatch(component, /معاينة مباشرة غير محفوظة/);
   assert.doesNotMatch(component, /معاينة غير محفوظة/);
   assert.match(component, /card\.status === 'cancelled'[\s\S]*?كارت ملغى — غير صالح للاستخدام الرسمي/);
@@ -1234,7 +1360,9 @@ test('Result Card presentation uses a compact optional-field layout and balanced
   assert.equal((component.match(/label: 'الشعبة'/g) || []).length, 1);
   assert.doesNotMatch(component, /العام الدراسي:/);
   assert.doesNotMatch(component, /show_class_section_in_header/);
-  assert.doesNotMatch(component, /show_exam_round/);
+  assert.match(component, /const showExamRound = displaySettings\.show_exam_round/);
+  assert.match(component, /examRound !== 'الدور الأول'/);
+  assert.doesNotMatch(component, /سجل دراسي \/ Academic record/);
   assert.doesNotMatch(component, /label: 'الدور'/);
   assert.doesNotMatch(component, /كارت جزئي — بعض البيانات الأكاديمية غير مكتملة/);
   assert.match(component, /const isPartial = data\?\.card_mode === 'partial'/);
@@ -1249,9 +1377,10 @@ test('Result Card presentation uses a compact optional-field layout and balanced
   assert.match(component, /result-card-summary grid gap-3 \$\{showDecisionNote \? 'sm:grid-cols-2' : ''\}/);
   assert.match(component, /\{showDecisionNote && \([\s\S]*?result-card-note-body/);
   assert.doesNotMatch(component, /لا توجد ملاحظات أو قرارات مسجلة/);
-  assert.match(component, /grid grid-cols-3 items-end gap-3/);
-  assert.match(component, /<QRCodeSVG value=\{verificationUrl\} size=\{100\} level="M"/);
-  assert.match(component, /يُنشأ رمز QR عند إصدار الكارت/);
+  assert.match(component, /result-card-footer-grid grid items-end gap-4/);
+  assert.match(component, /<QRCodeSVG value=\{verificationUrl\} size=\{92\} level="M"/);
+  assert.match(component, /يُضاف QR عند إصدار الكارت/);
+  assert.doesNotMatch(component, /مسودة غير منشورة|رمز التحقق بعد النشر/);
 });
 
 test('single-page print fit keeps small content at natural size and never enlarges it', () => {
@@ -1332,12 +1461,16 @@ test('Result Card print route measures rendered content inside one explicit A4 c
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-print-fit \{[\s\S]*?position: absolute;[\s\S]*?transform: scale\(var\(--result-card-print-scale\)\);[\s\S]*?transform-origin: top right;/);
   assert.match(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?width: 180mm !important;[\s\S]*?height: 267mm !important;[\s\S]*?max-height: 267mm !important;[\s\S]*?padding: 0 !important;/);
   assert.doesNotMatch(printStyles, /\.print-a4\.result-card-print-sheet \{[\s\S]*?width: 210mm !important;/);
-  assert.match(printStyles, /\.result-card-print-sheet \.result-card-document \{[\s\S]*?min-height: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-document \{[\s\S]*?min-height: 267mm !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-modern \{[\s\S]*?box-shadow: none !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-table \{[\s\S]*?min-width: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-table-dense \{[\s\S]*?font-size: 9px !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-table-extra-dense \{[\s\S]*?font-size: 8px !important;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table thead \{[\s\S]*?display: table-header-group;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-table tr \{[\s\S]*?break-inside: avoid;[\s\S]*?page-break-inside: avoid;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-last-subject-row \{[\s\S]*?break-after: avoid-page;[\s\S]*?page-break-after: avoid;/);
   assert.match(printStyles, /\.result-card-print-sheet \.result-card-average-row \{[\s\S]*?break-before: avoid-page;[\s\S]*?page-break-before: avoid;/);
-  assert.match(printStyles, /\.result-card-print-sheet \.result-card-footer \{[\s\S]*?margin-top: 0 !important;/);
+  assert.match(printStyles, /\.result-card-print-sheet \.result-card-footer \{[\s\S]*?margin-top: auto !important;/);
 });
 
 test('Subjects settings clearly expose independent card visibility and average controls', async () => {
@@ -1357,8 +1490,11 @@ test('snapshot builder freezes order, branding, note, display settings and verif
   const start = worker.indexOf('async function buildResultCardSnapshot');
   const end = worker.indexOf('async function createResultCardForStudent', start);
   const builder = worker.slice(start, end);
-  assert.match(builder, /schema_version: 6/);
+  assert.match(builder, /schema_version: 7/);
+  assert.match(builder, /design_version: 'modern_official_v1'/);
   assert.match(builder, /buildOfficialResultCardColumns\(settings, displaySettings, policy\.policy_kind\)/);
+  assert.match(builder, /omitUnusedResultCardDecisionColumns\(/);
+  assert.match(builder, /resultCardHasDecisionPoints\(resultCardSubjects, resultCardSummary\)/);
   assert.match(builder, /const columnAverages = calculateResultCardColumnAverages\(/);
   assert.match(builder, /visible_columns: visibleColumns/);
   assert.match(builder, /column_averages: columnAverages/);
@@ -1492,4 +1628,33 @@ test('formats exemptions, Unix seconds, and print eligibility safely', () => {
   assert.equal(formatUnixSecondsDate('invalid'), '-');
   assert.equal(shouldRegisterResultCardPrint('cancelled', true), false);
   assert.equal(shouldRegisterResultCardPrint('active', true), true);
+  assert.equal(shouldRegisterResultCardPrint('active', true, 'draft'), true);
+  assert.equal(shouldRegisterResultCardPrint('active', true, 'published'), true);
+  assert.equal(isResultCardPrintable('active', 'draft'), true);
+  assert.equal(isResultCardPrintable('active', 'published'), true);
+  assert.equal(isResultCardPrintable('cancelled', 'published'), false);
+  assert.equal(isResultCardPrintable('active', 'withdrawn'), false);
+  assert.deepEqual(parseResultCardBatchIds('18,19,18,invalid,-3,20'), [18, 19, 20]);
+});
+
+test('Result Card list separates publishing from single and selected batch printing', async () => {
+  const [page, batchPage, app, printStyles] = await Promise.all([
+    readFile(new URL('../src/modules/resultCards/ResultCardsPage.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/modules/print/PrintResultCardsPage.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/components/print/printStyles.ts', import.meta.url), 'utf8'),
+  ]);
+  assert.match(page, /الطباعة ورمز QR مستقلان عن الإرسال/);
+  assert.match(page, /تحديد كل الكارتات القابلة للطباعة/);
+  assert.match(page, /طباعة المحدد/);
+  assert.match(page, /\/print\/result-cards\?ids=/);
+  assert.match(page, />\s*إرسال لولي الأمر\s*</);
+  assert.doesNotMatch(page, /تعليم كمطبوع/);
+  assert.match(batchPage, /parseResultCardBatchIds/);
+  assert.match(batchPage, /Promise\.all\(cardIds\.map/);
+  assert.match(batchPage, /size=\{null\}/);
+  assert.match(batchPage, /result-card-batch-sheet/);
+  assert.match(app, /path="\/print\/result-cards"/);
+  assert.match(printStyles, /\.result-card-batch-sheet \{[\s\S]*?break-after: page;/);
+  assert.match(printStyles, /\.result-card-batch-sheet:last-child \{[\s\S]*?break-after: auto;/);
 });

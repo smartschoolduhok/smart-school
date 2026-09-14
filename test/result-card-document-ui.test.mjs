@@ -18,9 +18,9 @@ const card = {
   verification_token: 'qa-result-card-v6',
 };
 
-function render(data) {
+function render(data, cardOverrides = {}) {
   return renderToStaticMarkup(React.createElement(ResultCardDocument, {
-    card,
+    card: { ...card, ...cardOverrides },
     data,
     verificationUrl: 'https://school.example/verify/result-card/qa-result-card-v6',
   }));
@@ -145,4 +145,135 @@ test('non-terminal v6 card makes individual exemption and its subjects explicit'
     'معفى فرديًا / Individually exempt',
     'الفيزياء',
   ]) assert.match(html, new RegExp(expected));
+  assert.doesNotMatch(html, /Decision points|Adjusted grade|درجات القرار|بعد القرار/);
+});
+
+test('v7 monthly card renders the modern design, school text and dense safe table', () => {
+  const data = {
+    ...baseData('terminal'),
+    schema_version: 7,
+    document_settings: {
+      ...baseData('terminal').document_settings,
+      result_card_header_text: 'جمهورية العراق\nوزارة التربية',
+      result_card_display_settings: {
+        ...baseData('terminal').document_settings.result_card_display_settings,
+        grade_detail_mode: 'monthly',
+        show_school_subtitle: true,
+      },
+    },
+    visible_columns: [
+      { key: 'subject_name', label: 'المادة', label_en: 'Subject' },
+      { key: 'first_month', label: 'الشهر الأول', label_en: 'Month 1' },
+      { key: 'second_month', label: 'الشهر الثاني', label_en: 'Month 2' },
+      { key: 'mid_year_exam', label: 'نصف السنة', label_en: 'Mid-year' },
+      { key: 'third_month', label: 'الشهر الثالث', label_en: 'Month 3' },
+      { key: 'fourth_month', label: 'الشهر الرابع', label_en: 'Month 4' },
+      { key: 'annual_effort', label: 'السعي السنوي', label_en: 'Annual effort' },
+      { key: 'decision_points', label: 'درجات القرار', label_en: 'Decision points' },
+      { key: 'adjusted_grade', label: 'بعد القرار', label_en: 'Adjusted grade' },
+      { key: 'academic_status', label: 'الحالة', label_en: 'Status' },
+    ],
+    column_averages: {
+      first_month: 80,
+      second_month: 82,
+      mid_year_exam: 78,
+      third_month: 84,
+      fourth_month: 86,
+      annual_effort: 82,
+    },
+    subjects: [{
+      subject_id: 1,
+      subject_name: 'الفيزياء',
+      first_month: 80,
+      second_month: 82,
+      mid_year_exam: 78,
+      third_month: 84,
+      fourth_month: 86,
+      annual_effort: 82,
+      decision_points: 0,
+      adjusted_grade: 82,
+      academic_status: 'pass',
+    }],
+    summary: {
+      academic_status: 'ناجح',
+      overall_result_status: 'مكتمل',
+      pass_count: 1,
+      completion_count: 0,
+      fail_count: 0,
+    },
+  };
+  const html = render(data);
+  for (const expected of [
+    'result-card-modern',
+    'result-card-custom-heading',
+    'جمهورية العراق',
+    'وزارة التربية',
+    'data-grade-detail-mode="monthly"',
+    'data-column-count="8"',
+    'result-card-header-rule',
+  ]) assert.match(html, new RegExp(expected));
+  assert.doesNotMatch(html, /Decision points|بعد القرار/);
+});
+
+test('v7 card hides generic academic-record and first-round labels but keeps meaningful decisions and second round', () => {
+  const data = {
+    ...baseData('legacy'),
+    schema_version: 7,
+    exam_round: 'الدور الثاني',
+    visible_columns: [
+      { key: 'subject_name', label: 'المادة', label_en: 'Subject' },
+      { key: 'policy_source_grade', label: 'الدرجة المعتمدة', label_en: 'Policy grade' },
+      { key: 'decision_points', label: 'درجات القرار', label_en: 'Decision points' },
+      { key: 'adjusted_grade', label: 'بعد القرار', label_en: 'Adjusted grade' },
+      { key: 'academic_status', label: 'الحالة', label_en: 'Status' },
+    ],
+    subjects: [{
+      subject_id: 1,
+      subject_name: 'الفيزياء',
+      policy_source_grade: 45,
+      decision_points: 5,
+      adjusted_grade: 50,
+      academic_status: 'pass',
+    }],
+    summary: { academic_status: 'ناجح', overall_result_status: 'مكتمل', decision_points_used: 5 },
+  };
+  const html = render(data, { publication_status: 'draft' });
+  assert.doesNotMatch(html, /مسودة غير منشورة|Unpublished draft|رمز التحقق بعد النشر|Available after publication/);
+  assert.match(html, /<svg[^>]+role="img"/);
+  assert.match(html, /qa-result-card-v6/);
+  assert.match(html, /امسح للتحقق من صحة الكارت/);
+  assert.match(html, /الدور \/ Round: الدور الثاني/);
+  assert.match(html, /Decision points/);
+  assert.match(html, /Adjusted grade/);
+  assert.doesNotMatch(html, /سجل دراسي \/ Academic record/);
+
+  const firstRound = render({ ...data, exam_round: 'الدور الأول' });
+  assert.doesNotMatch(firstRound, /الدور \/ Round:/);
+});
+
+test('v6 snapshots retain the classic wrapper and do not gain the v7 custom banner', () => {
+  const html = render({
+    ...baseData('terminal'),
+    document_settings: {
+      ...baseData('terminal').document_settings,
+      result_card_header_text: 'نص محفوظ قديم',
+      result_card_display_settings: {
+        ...baseData('terminal').document_settings.result_card_display_settings,
+        show_school_subtitle: true,
+      },
+    },
+    visible_columns: [{ key: 'subject_name', label: 'المادة', label_en: 'Subject' }],
+    subjects: [{ subject_id: 1, subject_name: 'الفيزياء' }],
+    summary: { academic_status: 'ناجح', overall_result_status: 'مكتمل' },
+  });
+  assert.doesNotMatch(html, /result-card-modern|result-card-custom-heading/);
+  assert.match(html, /نص محفوظ قديم/);
+
+  const legacyHtml = render({
+    ...baseData('legacy'),
+    visible_columns: [{ key: 'subject_name', label: 'المادة', label_en: 'Subject' }],
+    subjects: [{ subject_id: 1, subject_name: 'الفيزياء' }],
+    summary: { academic_status: 'ناجح', overall_result_status: 'مكتمل' },
+  });
+  assert.doesNotMatch(legacyHtml, /سجل دراسي \/ Academic record|الدور \/ Round:/);
 });

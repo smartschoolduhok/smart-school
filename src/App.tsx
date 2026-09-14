@@ -45,6 +45,7 @@ const OfficialBookVerificationPage = lazy(() => import('./modules/verification/O
 const OfficialBooksPage = lazy(() => import('./modules/officialBooks/OfficialBooksPage'));
 const PrintRecordsPage = lazy(() => import('./modules/printRecords/PrintRecordsPage'));
 const PrintResultCardPage = lazy(() => import('./modules/print/PrintResultCardPage'));
+const PrintResultCardsPage = lazy(() => import('./modules/print/PrintResultCardsPage'));
 const PrintReceiptPage = lazy(() => import('./modules/print/PrintReceiptPage'));
 const PrintOfficialBookPage = lazy(() => import('./modules/print/PrintOfficialBookPage'));
 const ImportExportPage = lazy(() => import('./modules/importExport/ImportExportPage'));
@@ -194,6 +195,7 @@ export default function App() {
 
           {/* Print routes - no layout */}
           <Route path="/print/result-card/:id" element={<PrintResultCardPage />} />
+          <Route path="/print/result-cards" element={<PrintResultCardsPage />} />
           <Route path="/print/receipt/:id" element={<PrintReceiptPage />} />
           <Route path="/print/official-book/:id" element={<PrintOfficialBookPage />} />
 

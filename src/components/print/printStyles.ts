@@ -27,10 +27,10 @@ export const PRINT_CSS = `
 .result-card-print-sheet .result-card-document {
   width: 100% !important;
   max-width: none !important;
-  min-height: 0 !important;
+  min-height: 267mm !important;
   margin: 0 !important;
   padding: 0 !important;
-  gap: 2.5mm !important;
+  gap: 2.2mm !important;
   box-shadow: none !important;
 }
 
@@ -153,6 +153,23 @@ export const PRINT_CSS = `
     page-break-inside: avoid;
   }
 
+  .result-card-batch-print {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+  }
+
+  .result-card-batch-sheet {
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .result-card-batch-sheet:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
   .print-a4.receipt-a4-sheet {
     width: 180mm !important;
     min-height: 267mm !important;
@@ -197,8 +214,25 @@ export const PRINT_CSS = `
     font-size: 10px !important;
   }
 
+  .result-card-print-sheet .result-card-modern {
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .result-card-print-sheet .result-card-custom-heading {
+    margin: 0 0 1mm !important;
+    padding: 0 !important;
+  }
+
   .result-card-print-sheet .result-card-header {
-    padding: 2mm 3mm !important;
+    padding: 5mm 4mm 2mm !important;
+    background: #fff !important;
+    color: #0f172a !important;
+  }
+
+  .result-card-print-sheet .result-card-header-rule {
+    background: #172554 !important;
   }
 
   .result-card-print-sheet .result-card-student-info {
@@ -220,9 +254,20 @@ export const PRINT_CSS = `
 
   .result-card-print-sheet .result-card-table {
     width: 100% !important;
+    min-width: 0 !important;
     table-layout: fixed;
     font-size: 10.5px !important;
     line-height: 1.25;
+  }
+
+  .result-card-print-sheet .result-card-table-dense {
+    font-size: 9px !important;
+    line-height: 1.15;
+  }
+
+  .result-card-print-sheet .result-card-table-extra-dense {
+    font-size: 8px !important;
+    line-height: 1.1;
   }
 
   .result-card-print-sheet .result-card-table th {
@@ -261,16 +306,21 @@ export const PRINT_CSS = `
   }
 
   .result-card-print-sheet .result-card-footer {
-    margin-top: 0 !important;
+    margin-top: auto !important;
     padding-top: 2mm !important;
   }
 
-  .result-card-print-sheet .result-card-footer .min-h-24 {
-    min-height: 20mm !important;
+  .result-card-print-sheet .result-card-footer .min-h-20 {
+    min-height: 17mm !important;
   }
 
-  .result-card-print-sheet .result-card-footer .mt-12 {
-    margin-top: 8mm !important;
+  .result-card-print-sheet .result-card-footer .mt-7 {
+    margin-top: 6mm !important;
+  }
+
+  .result-card-print-sheet .result-card-footer-grid svg {
+    width: 22mm !important;
+    height: 22mm !important;
   }
 
   .result-card-print-sheet .result-card-footer-meta {
@@ -288,6 +338,11 @@ export const PRINT_CSS = `
     min-height: 100vh;
     padding: 1rem;
     overflow-x: auto;
+  }
+
+  .result-card-batch-print {
+    display: grid;
+    gap: 1rem;
   }
 
   .print-a4 {
@@ -379,7 +434,7 @@ export const PRINT_CSS = `
   }
 
   .print-a4.result-card-print-sheet .result-card-document {
-    min-height: 0 !important;
+    min-height: 267mm !important;
   }
 
   .print-a4.receipt-a4-sheet {

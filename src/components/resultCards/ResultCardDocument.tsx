@@ -9,7 +9,9 @@ import {
   isResultCardNumericColumnKey,
   normalizeResultCardGender,
   normalizeResultCardDisplaySettings,
+  omitUnusedResultCardDecisionColumns,
   RESULT_CARD_COLUMN_ENGLISH_LABELS,
+  resultCardHasDecisionPoints,
   snapshotResultCardColumnAverages,
   snapshotResultCardColumns,
   type ResultCardColumnKey,
@@ -28,6 +30,7 @@ export interface ResultCardDocumentRecord {
   generated_at?: number | string | null;
   printed_at?: number | string | null;
   status?: string | null;
+  publication_status?: 'draft' | 'published' | 'withdrawn' | string | null;
   verification_token?: string | null;
 }
 
@@ -45,11 +48,16 @@ interface StudentInfoItem {
   prominent?: boolean;
 }
 
-function BilingualLabel({ ar, en }: { ar: string; en: string }) {
+function BilingualLabel({ ar, en, inverse = false }: { ar: string; en: string; inverse?: boolean }) {
   return (
     <span className="inline-flex flex-col leading-tight">
       <span>{ar}</span>
-      <span dir="ltr" className="text-[0.72em] font-semibold tracking-wide text-slate-500">{en}</span>
+      <span
+        dir="ltr"
+        className={`text-[0.72em] font-semibold tracking-wide ${inverse ? 'text-blue-100' : 'text-slate-500'}`}
+      >
+        {en}
+      </span>
     </span>
   );
 }
@@ -71,6 +79,23 @@ function bilingualAcademicStatus(value: unknown): string {
   } as Record<string, string>)[raw];
   return english ? `${raw} / ${english}` : raw || '—';
 }
+
+function resultStatusTone(value: unknown): string {
+  const status = String(value || '');
+  if (status.includes('ناجح') || status.includes('معف')) {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-900';
+  }
+  if (status.includes('مكمل')) return 'border-amber-200 bg-amber-50 text-amber-950';
+  if (status.includes('راسب')) return 'border-rose-200 bg-rose-50 text-rose-950';
+  return 'border-slate-200 bg-slate-50 text-slate-900';
+}
+
+const RESULT_CARD_GRADE_DETAIL_LABELS = {
+  annual: 'سنوي مختصر / Annual summary',
+  term: 'فصلي / Term details',
+  monthly: 'شهري / Monthly details',
+  custom: 'مخصص / Custom columns',
+} as const;
 
 function renderSubjectCell(row: Record<string, any>, key: ResultCardColumnKey) {
   if (key === 'subject_name') return row.subject_name || row.name || '—';
@@ -109,12 +134,15 @@ export function ResultCardDocument({
   const displaySettings = normalizeResultCardDisplaySettings(
     documentSettings.result_card_display_settings,
   );
-  const columns = snapshotResultCardColumns(data?.visible_columns);
+  const isModernDesign = Number(data?.schema_version || 0) >= 7;
+  const subjects = Array.isArray(data?.subjects) ? data.subjects : [];
+  const hasDecisionPoints = resultCardHasDecisionPoints(subjects, summary);
+  const snapshotColumns = snapshotResultCardColumns(data?.visible_columns);
+  const columns = omitUnusedResultCardDecisionColumns(snapshotColumns, hasDecisionPoints);
   const columnAverages = snapshotResultCardColumnAverages(
     data?.column_averages,
     columns,
   );
-  const subjects = Array.isArray(data?.subjects) ? data.subjects : [];
   const isPartial = data?.card_mode === 'partial' ||
     summary.overall_result_status === 'غير مكتمل' ||
     card.overall_result_status === 'غير مكتمل';
@@ -131,6 +159,9 @@ export function ResultCardDocument({
   const studentGender = normalizeResultCardGender(student.gender);
   const templateKind = data?.template_kind || data?.academic_policy?.policy_kind || 'legacy';
   const note = typeof data?.decision_note === 'string' ? data.decision_note.trim() : '';
+  const customHeaderText = typeof documentSettings.result_card_header_text === 'string'
+    ? documentSettings.result_card_header_text.trim()
+    : '';
   const showDecisionNote = displaySettings.show_notes_decisions && note.length > 0;
   const logoUrl = displaySettings.show_school_logo && documentSettings.logo_url
     ? documentSettings.logo_url
@@ -152,7 +183,7 @@ export function ResultCardDocument({
   ) {
     studentIdentityItems.push({ label: 'رقم الطالب', labelEn: 'Student number', value: displayValue(student.student_number) });
   }
-  if (card.status !== 'preview' && card.card_number) {
+  if (!isModernDesign && card.status !== 'preview' && card.card_number) {
     studentIdentityItems.push({ label: 'رقم الكارت', labelEn: 'Card number', value: displayValue(card.card_number) });
   }
 
@@ -222,119 +253,161 @@ export function ResultCardDocument({
   const showStamp = displaySettings.show_signatures_block && (
     documentSettings.official_stamp_url || displaySettings.show_school_stamp_placeholder
   );
+  const tableMinimumWidth = columns.length >= 12
+    ? '66rem'
+    : columns.length >= 10
+      ? '58rem'
+      : columns.length >= 8
+        ? '48rem'
+        : '36rem';
+  const subjectColumnWidth = columns.length >= 12
+    ? '18%'
+    : columns.length >= 10
+      ? '21%'
+      : columns.length > 8
+        ? '24%'
+        : '28%';
+  const gradeDetailLabel = RESULT_CARD_GRADE_DETAIL_LABELS[displaySettings.grade_detail_mode];
+  const templateKindLabel = templateKind === 'terminal'
+    ? 'صف منتهٍ / Terminal grade'
+    : templateKind === 'non_terminal'
+      ? 'صف غير منتهٍ / Non-terminal grade'
+      : null;
+  const examRound = typeof data?.exam_round === 'string' ? data.exam_round.trim() : '';
+  const showExamRound = displaySettings.show_exam_round && examRound.length > 0 &&
+    examRound !== 'الدور الأول';
+  const allStudentInfoItems = [
+    ...studentIdentityItems,
+    ...academicPlacementItems,
+    ...optionalStudentInfoItems,
+  ];
+  const schoolInitials = schoolName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part: string) => part[0])
+    .join('');
+  const showQrSlot = displaySettings.show_qr_code && (
+    Boolean(verificationUrl) || card.status === 'preview'
+  );
 
   return (
     <article
       dir="rtl"
-      className={`result-card-document flex flex-col gap-4 bg-white text-gray-950 ${compact ? 'p-4 sm:p-5' : 'p-6 sm:p-8'}`}
+      data-result-card-schema={data?.schema_version || 'legacy'}
+      data-grade-detail-mode={displaySettings.grade_detail_mode}
+      className={`result-card-document flex flex-col gap-4 bg-white text-gray-950 ${
+        isModernDesign ? 'result-card-modern overflow-hidden rounded-2xl border border-slate-300 shadow-lg shadow-slate-200/70' : ''
+      } ${compact ? 'p-4 sm:p-5' : 'p-6 sm:p-8'}`}
       style={{ maxWidth: '210mm', minHeight: compact ? undefined : '277mm', margin: '0 auto' }}
     >
-      <header className="result-card-header rounded-xl border-2 border-slate-700 px-4 py-3 sm:px-5">
-        <div className={`grid items-center gap-3 ${logoUrl ? 'grid-cols-1 sm:grid-cols-[6rem_1fr_6rem] print:grid-cols-[6rem_1fr_6rem]' : 'grid-cols-1'}`}>
-          {logoUrl && (
-            <div className="flex h-20 w-20 justify-self-center items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5">
-              <img
-                src={logoUrl}
-                alt="شعار المدرسة"
-                className="h-full w-full object-contain"
-              />
+      <header className={`result-card-header px-4 py-3 sm:px-5 ${
+        isModernDesign
+          ? 'relative overflow-hidden rounded-xl border border-slate-300 bg-white pt-5 text-slate-950'
+          : 'rounded-xl border-2 border-slate-700'
+      }`}>
+        {isModernDesign ? (
+          <>
+            <div aria-hidden="true" className="result-card-header-rule absolute inset-x-0 top-0 h-2 bg-blue-950" />
+            <div aria-hidden="true" className="absolute inset-x-0 top-2 h-px bg-amber-500" />
+            <div className="grid grid-cols-[3.75rem_minmax(0,1fr)_3.75rem] items-center gap-3 sm:grid-cols-[5.5rem_minmax(0,1fr)_5.5rem]">
+              <div className="flex justify-center">
+                <div className="relative flex h-14 w-14 items-center justify-center overflow-hidden rounded-full border border-slate-300 bg-slate-50 text-lg font-black text-blue-950 sm:h-20 sm:w-20">
+                  <span aria-hidden="true">{schoolInitials || 'م'}</span>
+                  {logoUrl && (
+                    <img
+                      src={logoUrl}
+                      alt=""
+                      className="absolute inset-0 h-full w-full bg-white object-contain p-1.5"
+                      onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="min-w-0 text-center">
+                {displaySettings.show_school_subtitle && customHeaderText && (
+                  <p className="result-card-custom-heading whitespace-pre-line text-[10px] font-bold leading-relaxed text-slate-600 sm:text-xs">
+                    {customHeaderText}
+                  </p>
+                )}
+                <h1 className="mt-1 text-lg font-black leading-tight tracking-tight text-blue-950 sm:text-2xl">{schoolName}</h1>
+                {school.name_en && (
+                  <p dir="ltr" className="mt-0.5 text-[10px] font-bold tracking-wide text-slate-500 sm:text-xs">{school.name_en}</p>
+                )}
+                <div className="mt-2 inline-flex border-y border-blue-950 px-5 py-0.5 text-sm font-black tracking-wide text-blue-950 sm:text-base">
+                  <BilingualLabel ar="كارت النتيجة" en="RESULT CARD" />
+                </div>
+              </div>
+              <div className="space-y-2 text-center text-[9px] font-bold text-slate-600 sm:text-[10px]">
+                {academicYear && (
+                  <div aria-label={`السنة الدراسية ${academicYear}`} className="rounded-lg border border-slate-300 bg-slate-50 px-1.5 py-1">
+                    <span className="block">السنة الدراسية</span>
+                    <span dir="ltr" className="block text-[10px] font-black text-blue-950 sm:text-xs">{String(academicYear)}</span>
+                  </div>
+                )}
+                {card.status !== 'preview' && card.card_number && (
+                  <div className="break-all border-t border-slate-300 pt-1 font-mono text-[8px] text-slate-500">
+                    {card.card_number}
+                  </div>
+                )}
+              </div>
             </div>
-          )}
-          <div className="min-w-0 text-center">
-            <h1 className="text-xl font-black leading-tight tracking-tight sm:text-2xl">{schoolName}</h1>
-            {school.name_en && (
-              <p dir="ltr" className="mt-0.5 text-xs font-bold tracking-wide text-slate-600 sm:text-sm">{school.name_en}</p>
+          </>
+        ) : (
+          <div className={`grid items-center gap-3 ${logoUrl ? 'grid-cols-1 sm:grid-cols-[6rem_1fr_6rem]' : 'grid-cols-1'}`}>
+            {logoUrl && (
+              <div className="flex h-20 w-20 justify-self-center items-center justify-center rounded-lg border border-slate-200 bg-white p-1.5">
+                <img src={logoUrl} alt="شعار المدرسة" className="h-full w-full object-contain" />
+              </div>
             )}
-            {displaySettings.show_school_subtitle && documentSettings.result_card_header_text && (
-              <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600 sm:text-sm">
-                {documentSettings.result_card_header_text}
-              </p>
-            )}
-            <div className="mt-2 inline-flex items-center border-y-2 border-slate-700 px-6 py-0.5 text-base font-black tracking-wide">
-              <BilingualLabel ar="كارت النتيجة" en="RESULT CARD" />
-            </div>
-            {!logoUrl && academicYear && (
-              <p
-                dir="ltr"
-                aria-label={`السنة الدراسية ${academicYear}`}
-                className="mt-2 whitespace-nowrap text-base font-black tracking-wide text-slate-800"
-              >
-                {String(academicYear)}
-              </p>
-            )}
-          </div>
-          {logoUrl && (
-            <div className="justify-self-center text-center">
-              {academicYear && (
-                <p
-                  dir="ltr"
-                  aria-label={`السنة الدراسية ${academicYear}`}
-                  className="whitespace-nowrap border-y border-slate-300 px-1 py-1 text-base font-black tracking-wide text-slate-800"
-                >
-                  {String(academicYear)}
-                </p>
+            <div className="min-w-0 text-center">
+              <h1 className="text-xl font-black leading-tight tracking-tight sm:text-2xl">{schoolName}</h1>
+              {school.name_en && <p dir="ltr" className="mt-0.5 text-xs font-bold tracking-wide text-slate-600 sm:text-sm">{school.name_en}</p>}
+              {displaySettings.show_school_subtitle && customHeaderText && (
+                <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-slate-600 sm:text-sm">{customHeaderText}</p>
               )}
+              <div className="mt-2 inline-flex items-center border-y-2 border-slate-700 px-6 py-0.5 text-base font-black tracking-wide">
+                <BilingualLabel ar="كارت النتيجة" en="RESULT CARD" />
+              </div>
+              {!logoUrl && academicYear && <p dir="ltr" className="mt-2 whitespace-nowrap text-base font-black tracking-wide text-slate-800">{String(academicYear)}</p>}
             </div>
-          )}
-        </div>
+            {logoUrl && academicYear && <p dir="ltr" className="justify-self-center border-y border-slate-300 px-2 py-1 text-base font-black">{String(academicYear)}</p>}
+          </div>
+        )}
         {contactItems.length > 0 && (
-          <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 border-t border-slate-200 pt-2 text-[10px] text-slate-500 sm:text-[11px]">
+          <div className="relative mt-3 flex flex-wrap justify-center gap-x-4 gap-y-1 border-t border-slate-200 pt-2 text-[9px] text-slate-500 sm:text-[10px]">
             {contactItems.map((item) => <span key={String(item)}>{item}</span>)}
           </div>
         )}
-        <div className="mt-2 flex flex-wrap justify-center gap-2 text-[9px] font-bold uppercase tracking-wide text-slate-600">
-          <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5">
-            {templateKind === 'terminal'
-              ? 'صف منتهٍ / Terminal grade'
-              : templateKind === 'non_terminal'
-                ? 'صف غير منتهٍ / Non-terminal grade'
-                : 'سجل دراسي / Academic record'}
-          </span>
-          {data?.exam_round && (
+        <div className="relative mt-2 flex flex-wrap justify-center gap-2 text-[9px] font-bold uppercase tracking-wide text-slate-600">
+          {!isModernDesign && templateKindLabel && (
             <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5">
-              الدور / Round: {String(data.exam_round)}
+              {templateKindLabel}
             </span>
           )}
+          {showExamRound && (
+            <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5">
+              الدور / Round: {examRound}
+            </span>
+          )}
+          {!isModernDesign && <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5">{gradeDetailLabel}</span>}
         </div>
       </header>
 
-      <section className="result-card-student-info rounded-lg border border-slate-300 bg-slate-50/70 px-3 py-2.5">
+      <section className={`result-card-student-info rounded-xl px-3 py-2.5 ${
+        isModernDesign ? 'border border-slate-300 bg-slate-50/60' : 'border border-slate-300 bg-slate-50/70'
+      }`}>
         <div className={`grid gap-3 ${student.photo_url ? 'grid-cols-[1fr_4.5rem]' : ''}`}>
-          <div>
-            <div className={`grid gap-3 ${academicPlacementItems.length > 0 ? 'sm:grid-cols-2' : ''}`}>
-              <div className="space-y-2 sm:pl-3">
-                {studentIdentityItems.map((item) => (
-                  <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
-                    <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
-                    <div className={`break-words text-xs leading-snug text-slate-900 sm:text-sm ${item.prominent ? 'font-black' : 'font-bold'}`}>
-                      {item.value}
-                    </div>
-                  </div>
-                ))}
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+            {allStudentInfoItems.map((item, index) => (
+              <div
+                key={`${item.label}-${index}`}
+                className={`min-w-0 border-r-2 pr-2 ${item.prominent ? 'col-span-2 sm:col-span-1' : ''} ${isModernDesign ? 'border-blue-900' : 'border-slate-400'}`}
+              >
+                <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
+                <div className={`break-words text-xs leading-snug text-slate-900 sm:text-sm ${item.prominent ? 'font-black' : 'font-bold'}`}>{item.value}</div>
               </div>
-              {academicPlacementItems.length > 0 && (
-                <div className="space-y-2 border-t border-slate-300 pt-3 sm:border-r sm:border-t-0 sm:pr-4 sm:pt-0">
-                  {academicPlacementItems.map((item) => (
-                    <div key={item.label} className="min-w-0 border-r-2 border-slate-300 pr-2">
-                      <div className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
-                      <div className="break-words text-xs font-bold leading-snug text-slate-900 sm:text-sm">
-                        {item.value}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            {optionalStudentInfoItems.length > 0 && (
-              <div className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-200 pt-2">
-                {optionalStudentInfoItems.map((item) => (
-                  <div key={item.label} className="min-w-0">
-                    <span className="text-[9px] font-bold text-slate-500 sm:text-[10px]"><BilingualLabel ar={item.label} en={item.labelEn} />: </span>
-                    <span className="text-xs font-bold text-slate-800 sm:text-sm">{item.value}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            ))}
           </div>
           {student.photo_url && (
             <div className="flex flex-col items-center justify-center gap-1">
@@ -351,24 +424,31 @@ export function ResultCardDocument({
         </div>
       )}
 
-      <section className="result-card-table-wrap overflow-x-auto rounded-lg border border-slate-500">
-        <table aria-label="درجات مواد الطالب" className="result-card-table w-full table-fixed min-w-[36rem] border-collapse text-[11px] leading-snug print:min-w-0">
+      <section className={`result-card-table-wrap overflow-x-auto rounded-lg border ${isModernDesign ? 'border-slate-400' : 'border-slate-500'}`}>
+        <table
+          aria-label="درجات مواد الطالب"
+          data-column-count={columns.length}
+          className={`result-card-table w-full table-fixed border-collapse leading-snug print:min-w-0 ${
+            columns.length >= 12 ? 'result-card-table-extra-dense text-[9px]' : columns.length >= 9 ? 'result-card-table-dense text-[10px]' : 'text-[11px]'
+          }`}
+          style={{ minWidth: tableMinimumWidth }}
+        >
           <colgroup>
             {columns.map((column) => (
               <col
                 key={column.key}
                 className={column.key === 'subject_name' ? 'result-card-subject-column' : undefined}
-                style={column.key === 'subject_name' ? { width: columns.length > 8 ? '24%' : '28%' } : undefined}
+                style={column.key === 'subject_name' ? { width: subjectColumnWidth } : undefined}
               />
             ))}
           </colgroup>
           <thead>
-            <tr className="bg-slate-200 text-slate-950">
+            <tr className={isModernDesign ? 'border-t-[3px] border-blue-950 bg-slate-100 text-blue-950' : 'bg-slate-200 text-slate-950'}>
               {columns.map((column) => (
                 <th
                   key={column.key}
                   scope="col"
-                  className={`border-l border-slate-500 px-1.5 py-2 font-black last:border-l-0 ${
+                  className={`border-l px-1.5 py-2 font-black last:border-l-0 ${isModernDesign ? 'border-slate-300' : 'border-slate-500'} ${
                     column.key === 'subject_name' ? 'text-right' : 'text-center'
                   }`}
                 >
@@ -381,16 +461,15 @@ export function ResultCardDocument({
             {subjects.map((subject: Record<string, any>, index: number) => (
               <tr
                 key={`${subject.subject_id ?? 'subject'}-${index}`}
-                className={`odd:bg-white even:bg-slate-50 ${
+                className={`${isModernDesign ? 'odd:bg-white even:bg-slate-50/70' : 'odd:bg-white even:bg-slate-50'} ${
                   columnAverages && index === subjects.length - 1 ? 'result-card-last-subject-row' : ''
                 }`}
               >
                 {columns.map((column) => (
                   <td
                     key={column.key}
-                    className={`break-words border-l border-t border-slate-300 px-1.5 py-1.5 text-center align-middle last:border-l-0 ${
-                      column.key === 'subject_name' ? 'text-right font-bold' : ''
-                    }`}
+                    className="break-words border-l border-t border-slate-200 px-1.5 py-1.5 text-center align-middle last:border-l-0"
+                    style={column.key === 'subject_name' ? { textAlign: 'right', fontWeight: 700 } : undefined}
                   >
                     {renderSubjectCell(subject, column.key)}
                   </td>
@@ -398,11 +477,11 @@ export function ResultCardDocument({
               </tr>
             ))}
             {columnAverages && (
-              <tr className="result-card-average-row border-t-2 border-slate-700 bg-slate-100 font-black">
+              <tr className={`result-card-average-row border-t-2 font-black ${isModernDesign ? 'border-blue-950 bg-slate-100 text-blue-950' : 'border-slate-700 bg-slate-100'}`}>
                 {columns.map((column) => (
                   <td
                     key={column.key}
-                    className={`border-l border-slate-400 px-1.5 py-2 text-center last:border-l-0 ${
+                    className={`border-l px-1.5 py-2 text-center last:border-l-0 ${isModernDesign ? 'border-slate-300' : 'border-slate-400'} ${
                       column.key === 'subject_name' ? 'text-right' : ''
                     }`}
                   >
@@ -420,11 +499,16 @@ export function ResultCardDocument({
       </section>
 
       <section className={`result-card-summary grid gap-3 ${showDecisionNote ? 'sm:grid-cols-2' : ''}`}>
-        <div className="rounded-lg border-2 border-slate-700 p-3">
-          <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black"><BilingualLabel ar="الخلاصة العامة" en="Overall summary" /></h2>
+        <div className={`rounded-xl p-3 ${isModernDesign ? 'border border-slate-300 bg-white' : 'border-2 border-slate-700'}`}>
+          <h2 className={`mb-2 border-b pb-1.5 text-sm font-black ${isModernDesign ? 'border-slate-200 text-blue-950' : 'border-slate-200'}`}><BilingualLabel ar="الخلاصة العامة" en="Overall summary" /></h2>
           <div className="grid grid-cols-2 gap-2">
             {summaryItems.map((item) => (
-              <div key={item.label} className={item.primary ? 'col-span-2 sm:col-span-1' : ''}>
+              <div
+                key={item.label}
+                className={`${item.primary ? 'col-span-2' : ''} ${
+                  item.primary && isModernDesign ? `rounded-lg border px-3 py-2 ${resultStatusTone(overallStatus)}` : ''
+                }`}
+              >
                 <div className="text-[10px] font-bold text-slate-500"><BilingualLabel ar={item.label} en={item.labelEn} /></div>
                 <div className={`text-sm ${item.primary ? 'font-black' : 'font-bold'}`}>{item.value}</div>
               </div>
@@ -448,25 +532,28 @@ export function ResultCardDocument({
           </div>
         </div>
         {showDecisionNote && (
-          <div className="rounded-lg border border-slate-400 p-3">
-            <h2 className="mb-2 border-b border-slate-200 pb-1.5 text-sm font-black"><BilingualLabel ar="الملاحظات والقرارات" en="Notes and decisions" /></h2>
+          <div className={`rounded-xl border p-3 ${isModernDesign ? 'border-slate-300 bg-slate-50/50' : 'border-slate-400'}`}>
+            <h2 className={`mb-2 border-b pb-1.5 text-sm font-black ${isModernDesign ? 'border-slate-200 text-blue-950' : 'border-slate-200'}`}><BilingualLabel ar="الملاحظات والقرارات" en="Notes and decisions" /></h2>
             <p className="result-card-note-body min-h-12 whitespace-pre-line text-sm leading-relaxed text-slate-700">{note}</p>
           </div>
         )}
       </section>
 
-      <footer className="result-card-footer mt-auto border-t-2 border-slate-700 pt-3 text-center text-xs">
-        <div className="grid grid-cols-3 items-end gap-3">
-          <div className="min-h-24">
+      <footer className={`result-card-footer mt-auto rounded-xl border-t-2 pt-3 text-center text-xs ${
+        isModernDesign ? 'border-blue-950 bg-slate-50/70 px-3 pb-2' : 'border-slate-700'
+      }`}>
+        <div className={`result-card-footer-grid grid items-end gap-4 ${showQrSlot ? 'grid-cols-[1fr_auto]' : 'grid-cols-1'}`}>
+          <div className={`grid items-end gap-4 ${showStamp ? 'grid-cols-2' : 'grid-cols-1'}`}>
+          <div className="min-h-20">
             {displaySettings.show_signatures_block && (
               <>
                 <p className="font-black">إدارة المدرسة</p>
                 <p dir="ltr" className="text-[9px] font-semibold text-slate-500">School administration</p>
-                <p className="mx-auto mt-10 max-w-32 border-t border-slate-500 pt-1 text-[10px]">التوقيع / Signature</p>
+                <p className="mx-auto mt-7 max-w-36 border-t border-slate-500 pt-1 text-[10px]">التوقيع / Signature</p>
               </>
             )}
           </div>
-          <div className="flex min-h-24 flex-col items-center justify-end">
+          {showStamp && <div className="flex min-h-20 flex-col items-center justify-end">
             {showStamp && (
               documentSettings.official_stamp_url ? (
                 <>
@@ -479,23 +566,23 @@ export function ResultCardDocument({
                 </div>
               )
             )}
+          </div>}
           </div>
-          <div className="flex min-h-24 flex-col items-center justify-end">
-            {displaySettings.show_qr_code && (
-              verificationUrl ? (
-                <QRCodeSVG value={verificationUrl} size={100} level="M" />
-              ) : card.status === 'preview' ? (
-                <div className="flex h-[100px] w-[100px] items-center justify-center rounded border-2 border-dashed border-slate-300 px-2 text-[9px] font-semibold leading-relaxed text-slate-500">
-                  يُنشأ رمز QR عند إصدار الكارت<br />Issued with final card
-                </div>
-              ) : null
+          {showQrSlot && <div className="flex min-h-20 flex-col items-center justify-end border-r border-slate-200 pr-4">
+            {verificationUrl ? (
+              <QRCodeSVG value={verificationUrl} size={92} level="M" />
+            ) : (
+              <div className="flex h-[92px] w-[92px] items-center justify-center rounded border border-dashed border-slate-300 px-2 text-[8px] font-semibold leading-relaxed text-slate-500">
+                يُضاف QR عند إصدار الكارت<br />Added on issue
+              </div>
             )}
+            {verificationUrl && <p className="mt-1 text-[8px] font-bold text-slate-600">امسح للتحقق من صحة الكارت</p>}
             {displaySettings.show_verification_code_text && card.verification_token && (
               <p dir="ltr" className="mt-1 max-w-[125px] break-all font-mono text-[7px] leading-tight text-slate-500">
                 {card.verification_token}
               </p>
             )}
-          </div>
+          </div>}
         </div>
         <div className="result-card-footer-meta mt-3 space-y-1 border-t border-slate-200 pt-2 text-[9px] leading-relaxed text-slate-500">
           <p>تاريخ الإصدار / Issue date: {toArabicDigits(formatUnixSecondsDate(card.generated_at))}</p>

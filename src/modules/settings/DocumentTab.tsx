@@ -3,16 +3,82 @@ import { updateDocumentSettings } from '../../lib/api';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import {
   normalizeResultCardDisplaySettings,
+  RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH,
+  type ResultCardGradeDetailMode,
   type ResultCardDisplaySettingKey,
 } from '../../lib/resultCardPresentation';
-import { Save, Loader2, FileText, Printer, Image, Stamp, CheckSquare, Square } from 'lucide-react';
+import {
+  Save,
+  Loader2,
+  FileText,
+  Printer,
+  Image,
+  Stamp,
+  CheckSquare,
+  Square,
+  CalendarDays,
+  CalendarRange,
+  ListChecks,
+  SlidersHorizontal,
+} from 'lucide-react';
 
 interface Props {
   data: Record<string, any>;
+  school?: Record<string, any>;
   canEdit: boolean;
   schoolId: number | null;
   onSuccess: (msg: string) => void;
   onError: (msg: string) => void;
+}
+
+interface TextAreaFieldProps {
+  label: string;
+  name: string;
+  value: string;
+  canEdit: boolean;
+  placeholder?: string;
+  hint?: string;
+  rows?: number;
+  maxLength?: number;
+  onChange: (name: string, value: string) => void;
+}
+
+function TextAreaField({
+  label,
+  name,
+  value,
+  canEdit,
+  placeholder,
+  hint,
+  rows = 3,
+  maxLength,
+  onChange,
+}: TextAreaFieldProps) {
+  const inputId = `document-setting-${name}`;
+  return (
+    <div>
+      <div className="mb-1 flex items-end justify-between gap-3">
+        <label htmlFor={inputId} className="block text-sm font-medium text-gray-700">{label}</label>
+        {maxLength && <span className="text-[11px] text-gray-400">{value.length}/{maxLength}</span>}
+      </div>
+      <textarea
+        id={inputId}
+        name={name}
+        value={value}
+        onChange={event => onChange(name, event.target.value)}
+        disabled={!canEdit}
+        rows={rows}
+        maxLength={maxLength}
+        placeholder={placeholder}
+        className={`w-full resize-none rounded-lg border px-4 py-2 text-sm transition-colors focus:outline-none ${
+          canEdit
+            ? 'border-gray-200 focus:border-primary-500 focus:ring-1 focus:ring-primary-500'
+            : 'cursor-not-allowed border-gray-100 bg-gray-50 text-gray-600'
+        }`}
+      />
+      {hint && <p className="mt-1 text-xs leading-relaxed text-gray-500">{hint}</p>}
+    </div>
+  );
 }
 
 const PRINT_SIZES = [
@@ -31,7 +97,7 @@ const RESULT_CARD_DISPLAY_OPTIONS: Array<{
   label: string;
 }> = [
   { key: 'show_school_logo', label: 'شعار المدرسة' },
-  { key: 'show_school_subtitle', label: 'العنوان الفرعي / الشعار النصي' },
+  { key: 'show_school_subtitle', label: 'النص المخصص أعلى الكارت' },
   { key: 'show_phone', label: 'رقم الهاتف' },
   { key: 'show_address', label: 'العنوان' },
   { key: 'show_email_website', label: 'البريد والموقع الإلكتروني' },
@@ -39,7 +105,7 @@ const RESULT_CARD_DISPLAY_OPTIONS: Array<{
   { key: 'show_student_number', label: 'رقم الطالب' },
   { key: 'show_exam_number', label: 'الرقم الامتحاني عند توفره' },
   { key: 'show_gender', label: 'الجنس' },
-  { key: 'show_exam_round', label: 'الدور' },
+  { key: 'show_exam_round', label: 'الدور الثاني عند الحاجة' },
   { key: 'show_overall_average', label: 'المعدل العام' },
   { key: 'show_appreciation', label: 'التقدير' },
   { key: 'show_subject_status', label: 'حالة المادة' },
@@ -61,7 +127,52 @@ const RESULT_CARD_DISPLAY_OPTIONS: Array<{
   { key: 'show_school_stamp_placeholder', label: 'الختم أو موضعه' },
 ];
 
-export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onError }: Props) {
+const RESULT_CARD_GRADE_OPTION_KEYS = new Set<ResultCardDisplaySettingKey>([
+  'show_first_term_inputs',
+  'show_first_term_average',
+  'show_mid_year_exam',
+  'show_second_term_inputs',
+  'show_second_term_average',
+  'show_final_exam',
+  'show_annual_effort',
+  'show_final_grade',
+  'show_effective_grade',
+  'show_completion_exam',
+]);
+
+const RESULT_CARD_GRADE_VIEW_OPTIONS: Array<{
+  value: ResultCardGradeDetailMode;
+  title: string;
+  description: string;
+  icon: typeof CalendarDays;
+}> = [
+  {
+    value: 'annual',
+    title: 'سنوي مختصر',
+    description: 'النتيجة الرسمية في جدول واضح، وتظهر درجات القرار فقط عند استخدامها.',
+    icon: ListChecks,
+  },
+  {
+    value: 'term',
+    title: 'درجات فصلية',
+    description: 'سعي الفصلين ونصف السنة مع خلاصة القرار السنوي.',
+    icon: CalendarRange,
+  },
+  {
+    value: 'monthly',
+    title: 'درجات شهرية',
+    description: 'الأشهر المتاحة حسب نظام الدرجات مع النتيجة الرسمية.',
+    icon: CalendarDays,
+  },
+  {
+    value: 'custom',
+    title: 'أعمدة مخصصة',
+    description: 'اختيار كل عمود يدويًا من الخيارات المتقدمة أدناه.',
+    icon: SlidersHorizontal,
+  },
+];
+
+export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess, onError }: Props) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const settings = data || {};
   const [form, setForm] = useState<Record<string, any>>({});
@@ -101,6 +212,18 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
       result_card_display_settings: {
         ...normalizeResultCardDisplaySettings(prev.result_card_display_settings),
         [key]: !normalizeResultCardDisplaySettings(prev.result_card_display_settings)[key],
+        ...(RESULT_CARD_GRADE_OPTION_KEYS.has(key) ? { grade_detail_mode: 'custom' } : {}),
+      },
+    }));
+    setChanged(true);
+  };
+
+  const setResultCardGradeView = (mode: ResultCardGradeDetailMode) => {
+    setForm(prev => ({
+      ...prev,
+      result_card_display_settings: {
+        ...normalizeResultCardDisplaySettings(prev.result_card_display_settings),
+        grade_detail_mode: mode,
       },
     }));
     setChanged(true);
@@ -122,26 +245,6 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
     }
   };
 
-  const TextArea = ({ label, name, placeholder, rows = 3 }: {
-    label: string; name: string; placeholder?: string; rows?: number;
-  }) => (
-    <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
-      <textarea
-        value={form[name] || ''}
-        onChange={e => handleChange(name, e.target.value)}
-        disabled={!canEdit}
-        rows={rows}
-        placeholder={placeholder}
-        className={`w-full px-4 py-2 rounded-lg border text-sm transition-colors focus:outline-none resize-none ${
-          canEdit
-            ? 'border-gray-200 focus:border-primary-500 focus:ring-1 focus:ring-primary-500'
-            : 'border-gray-100 bg-gray-50 text-gray-600 cursor-not-allowed'
-        }`}
-      />
-    </div>
-  );
-
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="flex items-center justify-between">
@@ -162,30 +265,64 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <TextArea
-          label="عنوان رأس كارت النتيجة"
+        <TextAreaField
+          label="النص المخصص أعلى كارت النتيجة"
           name="result_card_header_text"
-          placeholder="نص يظهر أعلى كارت النتيجة الرسمي"
+          value={form.result_card_header_text || ''}
+          canEdit={canEdit}
+          onChange={handleChange}
+          placeholder={'مثال: جمهورية العراق\nوزارة التربية'}
+          hint="يظهر كسطر أو عدة أسطر فوق عنوان الكارت، ويُحفظ داخل كل كارت جديد."
           rows={2}
+          maxLength={RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH}
         />
-        <TextArea
+        <TextAreaField
           label="تذييل كارت النتيجة"
           name="result_card_footer_text"
+          value={form.result_card_footer_text || ''}
+          canEdit={canEdit}
+          onChange={handleChange}
           placeholder="نص يظهر أسفل كارت النتيجة الرسمي"
           rows={2}
+          maxLength={RESULT_CARD_CUSTOM_TEXT_MAX_LENGTH}
         />
-        <TextArea
+        <TextAreaField
           label="تذييل الإيصال"
           name="receipt_footer_text"
+          value={form.receipt_footer_text || ''}
+          canEdit={canEdit}
+          onChange={handleChange}
           placeholder="نص يظهر أسفل إيصال الدفع"
           rows={2}
+          maxLength={500}
         />
-        <TextArea
+        <TextAreaField
           label="ملاحظة التحقق العامة"
           name="verification_note_text"
+          value={form.verification_note_text || ''}
+          canEdit={canEdit}
+          onChange={handleChange}
           placeholder="نص يظهر في صفحة التحقق العامة"
           rows={2}
+          maxLength={500}
         />
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-blue-200 bg-gradient-to-l from-slate-950 via-blue-950 to-blue-800 text-white shadow-sm">
+        <div className="whitespace-pre-line border-b border-white/15 bg-white/5 px-5 py-2 text-center text-xs font-bold leading-relaxed text-blue-50">
+          {form.result_card_header_text || 'النص المخصص الذي تختاره المدرسة يظهر هنا'}
+        </div>
+        <div className="flex items-center justify-between gap-4 px-5 py-4">
+          <div>
+            <p className="text-xs font-semibold text-blue-200">معاينة مبسطة للرأس</p>
+            <p className="mt-1 text-lg font-black">{school?.name || 'اسم المدرسة'}</p>
+            {school?.name_en && <p dir="ltr" className="mt-0.5 text-xs text-blue-100">{school.name_en}</p>}
+          </div>
+          <div className="rounded-xl border border-white/20 bg-white/10 px-4 py-2 text-center">
+            <p className="font-black">كارت النتيجة</p>
+            <p dir="ltr" className="text-[10px] font-bold tracking-wider text-blue-100">RESULT CARD</p>
+          </div>
+        </div>
       </div>
 
       <div className="border-t border-gray-200 pt-5">
@@ -271,8 +408,45 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
         <p className="mb-4 text-xs text-gray-500">
           تُحفظ هذه الخيارات داخل كل كارت عند إصداره، لذلك تبقى الكارتات القديمة كما صدرت.
         </p>
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
-          {RESULT_CARD_DISPLAY_OPTIONS.map((option) => {
+
+        <fieldset>
+          <legend className="mb-3 text-sm font-bold text-gray-800">مستوى تفاصيل الدرجات</legend>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {RESULT_CARD_GRADE_VIEW_OPTIONS.map(option => {
+              const selected = normalizeResultCardDisplaySettings(
+                form.result_card_display_settings,
+              ).grade_detail_mode === option.value;
+              const Icon = option.icon;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setResultCardGradeView(option.value)}
+                  disabled={!canEdit}
+                  className={`rounded-xl border p-4 text-right transition-all ${
+                    selected
+                      ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-100'
+                      : 'border-gray-200 bg-white text-gray-700'
+                  } ${canEdit ? 'hover:border-blue-300 hover:bg-blue-50/50' : 'cursor-not-allowed opacity-70'}`}
+                >
+                  <span className={`mb-3 flex h-9 w-9 items-center justify-center rounded-lg ${selected ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'}`}>
+                    <Icon size={18} />
+                  </span>
+                  <span className="block text-sm font-bold">{option.title}</span>
+                  <span className="mt-1 block text-xs leading-relaxed text-gray-500">{option.description}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-xs leading-relaxed text-gray-500">
+            العرض الشهري والفصلي يتكيّفان تلقائيًا مع طريقة إدخال الدرجات المعتمدة للمدرسة، ولا يغيّران أي درجة أو قرار.
+          </p>
+        </fieldset>
+
+        <div className="mt-5 grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+          {RESULT_CARD_DISPLAY_OPTIONS.filter(option => !RESULT_CARD_GRADE_OPTION_KEYS.has(option.key)).map((option) => {
             const enabled = normalizeResultCardDisplaySettings(
               form.result_card_display_settings,
             )[option.key];
@@ -294,6 +468,36 @@ export default function DocumentTab({ data, canEdit, schoolId, onSuccess, onErro
             );
           })}
         </div>
+
+        <details className="mt-4 rounded-xl border border-gray-200 bg-gray-50/70">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-bold text-gray-700">
+            <SlidersHorizontal size={17} className="text-primary-600" />
+            تخصيص أعمدة الدرجات يدويًا
+          </summary>
+          <div className="grid grid-cols-1 gap-2 border-t border-gray-200 p-4 md:grid-cols-2 lg:grid-cols-3">
+            {RESULT_CARD_DISPLAY_OPTIONS.filter(option => RESULT_CARD_GRADE_OPTION_KEYS.has(option.key)).map((option) => {
+              const enabled = normalizeResultCardDisplaySettings(
+                form.result_card_display_settings,
+              )[option.key];
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => toggleResultCardDisplay(option.key)}
+                  disabled={!canEdit}
+                  className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-right text-xs transition-colors ${
+                    enabled
+                      ? 'border-primary-200 bg-primary-50 text-primary-700'
+                      : 'border-gray-200 bg-white text-gray-600'
+                  } ${canEdit ? 'hover:bg-white' : 'cursor-not-allowed opacity-70'}`}
+                >
+                  {enabled ? <CheckSquare size={16} /> : <Square size={16} />}
+                  <span>{option.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </details>
       </div>
 
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3 text-blue-700">

@@ -109,7 +109,10 @@ import {
   buildResultCardColumns,
   normalizeResultCardDecisionNote,
   normalizeResultCardDisplaySettings,
+  omitUnusedResultCardDecisionColumns,
   parseResultCardDisplaySettings,
+  resultCardHasDecisionPoints,
+  validateResultCardCustomText,
   validateResultCardDecisionNote,
   validateResultCardDisplaySettings,
   type ResultCardDisplaySettings,
@@ -8575,16 +8578,9 @@ async function buildResultCardSnapshot(
   const verificationUrl = identity.token
     ? `/verify/result-card/${identity.token}`
     : null;
-  const visibleColumns = policy
+  const configuredVisibleColumns = policy
     ? buildOfficialResultCardColumns(settings, displaySettings, policy.policy_kind)
     : buildResultCardColumns(settings, displaySettings);
-  const columnAverages = calculateResultCardColumnAverages(
-    subjects,
-    evaluation.counted_grades,
-    settings,
-    visibleColumns,
-    evaluation.summary.general_exemption_eligible,
-  );
   const policySubjectOutcomes = new Map(
     (academicOutcome?.subjects || []).map(subject => [Number(subject.subject_id), subject]),
   );
@@ -8621,8 +8617,20 @@ async function buildResultCardSnapshot(
       .filter(subject => subject.status === 'exempt_individual' || subject.status === 'exempt_general')
       .map(subject => subject.subject_name),
   } : evaluation.summary;
+  const visibleColumns = omitUnusedResultCardDecisionColumns(
+    configuredVisibleColumns,
+    resultCardHasDecisionPoints(resultCardSubjects, resultCardSummary),
+  );
+  const columnAverages = calculateResultCardColumnAverages(
+    subjects,
+    evaluation.counted_grades,
+    settings,
+    visibleColumns,
+    evaluation.summary.general_exemption_eligible,
+  );
   const cardData = {
-    schema_version: 6,
+    schema_version: 7,
+    design_version: 'modern_official_v1',
     template_kind: policy?.policy_kind || 'legacy',
     card_mode: evaluation.card_mode,
     school: {
@@ -8987,7 +8995,7 @@ app.post(
           card: created.card,
           verification_url: `/verify/result-card/${created.card.verification_token}`,
         },
-        message: 'تم إنشاء كارت النتيجة كمسودة؛ راجعه قبل النشر',
+        message: 'تم إصدار كارت النتيجة وهو جاهز للطباعة؛ لم يُرسل إلى ولي الأمر بعد',
       });
     } catch (err: any) {
       return c.json(
@@ -9129,7 +9137,7 @@ app.post(
           generated,
           skipped,
         },
-        message: 'تمت معالجة إنشاء كارتات الشعبة كمسودات للمراجعة',
+        message: 'تم إصدار كارتات الشعبة الجاهزة للطباعة؛ لم تُرسل إلى أولياء الأمور بعد',
       });
     } catch (err: any) {
       return c.json(
@@ -9168,7 +9176,7 @@ app.put(
       if (!card) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
       if (card.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
       if (card.status !== 'active' || card.publication_status !== 'draft') {
-        return c.json({ error: 'يمكن نشر كارت مسودة فعال فقط', code: 'result_card_publication_invalid_transition' }, 409);
+        return c.json({ error: 'يمكن إرسال كارت فعال غير مرسل إلى ولي الأمر فقط', code: 'result_card_publication_invalid_transition' }, 409);
       }
       if (Number(card.publication_revision) !== expectedRevision) {
         return c.json({ error: 'تغيرت حالة النتيجة؛ أعد تحميل القائمة', code: 'result_card_publication_stale' }, 409);
@@ -9177,14 +9185,14 @@ app.put(
       try { snapshot = JSON.parse(String(card.card_data_json || '{}')); } catch { /* handled below */ }
       const policy = snapshot.academic_policy;
       if (snapshot.card_mode !== 'complete') {
-        return c.json({ error: 'لا يمكن نشر نتيجة غير مكتملة', code: 'result_card_incomplete' }, 409);
+        return c.json({ error: 'لا يمكن إرسال نتيجة غير مكتملة إلى ولي الأمر', code: 'result_card_incomplete' }, 409);
       }
       if (
         !policy
         || !['approved', 'locked'].includes(String(policy.status))
         || !String(policy.source_reference || '').trim()
       ) {
-        return c.json({ error: 'يجب أن تعتمد النتيجة على سياسة سنوية موثقة قبل النشر', code: 'result_card_policy_required' }, 409);
+        return c.json({ error: 'يجب أن تعتمد النتيجة على سياسة سنوية موثقة قبل إرسالها إلى ولي الأمر', code: 'result_card_policy_required' }, 409);
       }
       const requestId = crypto.randomUUID();
       const results = await db.batch<any>([
@@ -9215,7 +9223,7 @@ app.put(
       ]);
       const updated = results[2]?.results?.[0];
       if (!updated) return c.json({ error: 'تغيرت حالة النتيجة؛ أعد تحميل القائمة', code: 'result_card_publication_stale' }, 409);
-      return c.json({ data: updated, message: 'تم نشر النتيجة لولي الأمر والتحقق العام' });
+      return c.json({ data: updated, message: 'تم إرسال النتيجة إلى حساب ولي الأمر المرتبط' });
     } catch (error) {
       const mapped = resultCardPublicationError(error);
       return c.json({ error: mapped.error, code: mapped.code }, mapped.status);
@@ -9316,8 +9324,11 @@ app.put(
     if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
-    if (row.status !== 'active' || row.publication_status !== 'published') {
-      return c.json({ error: 'لا يمكن طباعة الكارت رسميًا قبل نشره' }, 400);
+    if (
+      row.status !== 'active' ||
+      !['draft', 'published'].includes(String(row.publication_status))
+    ) {
+      return c.json({ error: 'لا يمكن تعليم كارت ملغى أو مسحوب كمطبوع' }, 400);
     }
     await db.prepare(`UPDATE result_cards SET printed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, printed_at: Math.floor(Date.now() / 1000) }, message: 'تم تعليم الكارت كمطبوع' });
@@ -9391,14 +9402,6 @@ app.get('/api/verify/result-card/:token', async (c) => {
       return c.json({
         valid: false,
         message: 'الكارت غير موجود أو رمز التحقق غير صحيح',
-      }, 404);
-    }
-
-    if (row.publication_status === 'draft') {
-      return c.json({
-        valid: false,
-        unpublished: true,
-        message: 'هذه النتيجة لم تُنشر رسميًا بعد',
       }, 404);
     }
 
@@ -11185,6 +11188,13 @@ app.put('/api/settings/document', requireSameSchoolOrAdmin(), requireRoles(SETTI
       body.result_card_display_settings,
     );
     if (displaySettingsError) return c.json({ error: displaySettingsError }, 400);
+    for (const [key, label] of [
+      ['result_card_header_text', 'النص المخصص أعلى كارت النتيجة'],
+      ['result_card_footer_text', 'تذييل كارت النتيجة'],
+    ] as const) {
+      const textError = validateResultCardCustomText(body[key], label);
+      if (textError) return c.json({ error: textError }, 400);
+    }
 
     // Ensure row exists
     const existing = await db.prepare(`SELECT id FROM school_settings WHERE school_id = ?`).bind(targetSchoolId).first<any>();

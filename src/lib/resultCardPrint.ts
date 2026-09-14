@@ -30,6 +30,29 @@ export function formatUnixSecondsDate(
 export function shouldRegisterResultCardPrint(
   status: string,
   hasPrintPermission: boolean,
+  publicationStatus: string = 'published',
 ): boolean {
-  return status === 'active' && hasPrintPermission;
+  return status === 'active' &&
+    (publicationStatus === 'draft' || publicationStatus === 'published') &&
+    hasPrintPermission;
+}
+
+export function isResultCardPrintable(
+  status: string | null | undefined,
+  publicationStatus: string | null | undefined,
+): boolean {
+  return status === 'active' && (publicationStatus === 'draft' || publicationStatus === 'published');
+}
+
+export const RESULT_CARD_BATCH_PRINT_LIMIT = 100;
+
+export function parseResultCardBatchIds(value: string | null | undefined): number[] {
+  if (!value) return [];
+  const ids = value.split(',').flatMap((part) => {
+    const normalized = part.trim();
+    if (!/^\d+$/.test(normalized)) return [];
+    const id = Number(normalized);
+    return Number.isSafeInteger(id) && id > 0 ? [id] : [];
+  });
+  return [...new Set(ids)].slice(0, RESULT_CARD_BATCH_PRINT_LIMIT);
 }

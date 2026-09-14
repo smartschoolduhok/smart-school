@@ -7,7 +7,7 @@ import { createServer } from 'vite';
 import { root } from './helpers/finance-fixture.mjs';
 
 const window = new Window({ url: 'http://localhost', width: 390, height: 844 });
-for (const key of ['window', 'document', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'HTMLFormElement', 'Node', 'Event', 'MouseEvent', 'KeyboardEvent', 'InputEvent', 'localStorage', 'sessionStorage']) {
+for (const key of ['window', 'document', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLSelectElement', 'HTMLFormElement', 'Node', 'Event', 'MouseEvent', 'KeyboardEvent', 'InputEvent', 'localStorage', 'sessionStorage']) {
   Object.defineProperty(globalThis, key, { configurable: true, value: key === 'window' ? window : window[key] });
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -20,6 +20,7 @@ const vite = await createServer({
   server: { middlewareMode: true, hmr: false },
 });
 const { default: SchoolProfileTab } = await vite.ssrLoadModule('/src/modules/settings/SchoolProfileTab.tsx');
+const { default: DocumentTab } = await vite.ssrLoadModule('/src/modules/settings/DocumentTab.tsx');
 const { default: LoginPage } = await vite.ssrLoadModule('/src/modules/auth/LoginPage.tsx');
 const { default: StudentsPage } = await vite.ssrLoadModule('/src/modules/students/StudentsPage.tsx');
 const { default: GradesPage } = await vite.ssrLoadModule('/src/modules/grades/GradesPage.tsx');
@@ -48,6 +49,14 @@ async function render(t, element) {
 async function input(element, value) {
   await act(async () => {
     const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    descriptor.set.call(element, value);
+    element.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+}
+
+async function textareaInput(element, value) {
+  await act(async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
     descriptor.set.call(element, value);
     element.dispatchEvent(new window.Event('input', { bubbles: true }));
   });
@@ -84,6 +93,55 @@ test('school profile fields retain focus while typing', async t => {
   assert.equal(document.activeElement, field);
   assert.equal(field.value, 'مدرسة الاختبار الجديدة');
   assert.ok(container.textContent.includes('حفظ التغييرات'));
+});
+
+test('document settings save the monthly card view and stable custom top text', async t => {
+  const previousFetch = globalThis.fetch;
+  let savedPayload = null;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), '/api/settings/document');
+    assert.equal(options?.method, 'PUT');
+    savedPayload = JSON.parse(String(options?.body || '{}'));
+    return new Response(JSON.stringify({ data: { message: 'تم الحفظ' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  t.after(() => { globalThis.fetch = previousFetch; });
+
+  const container = await render(t, createElement(DocumentTab, {
+    data: {},
+    school: { name: 'مدرسة الاختبار', name_en: 'Test School' },
+    canEdit: true,
+    schoolId: 41,
+    onSuccess() {},
+    onError(message) { assert.fail(message); },
+  }));
+
+  const monthlyButton = [...container.querySelectorAll('button')]
+    .find(button => button.textContent.includes('درجات شهرية'));
+  assert.ok(monthlyButton);
+  await act(async () => monthlyButton.click());
+  assert.equal(monthlyButton.getAttribute('aria-checked'), 'true');
+
+  const customText = container.querySelector('#document-setting-result_card_header_text');
+  assert.ok(customText);
+  customText.focus();
+  await textareaInput(customText, 'جمهورية العراق\nوزارة التربية');
+  assert.equal(document.activeElement, customText);
+  assert.ok(container.textContent.includes('جمهورية العراق'));
+
+  await act(async () => {
+    container.querySelector('form').dispatchEvent(new window.Event('submit', {
+      bubbles: true,
+      cancelable: true,
+    }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+
+  assert.equal(savedPayload.school_id, 41);
+  assert.equal(savedPayload.result_card_header_text, 'جمهورية العراق\nوزارة التربية');
+  assert.equal(savedPayload.result_card_display_settings.grade_detail_mode, 'monthly');
 });
 
 test('navigation is grouped, hides future placeholders, and scopes parent destinations', () => {
