@@ -201,6 +201,14 @@ export interface TimetableEntryNotice {
   message: string;
 }
 
+export function isBlockingTimetableEntryConflict(notice: TimetableEntryNotice): boolean {
+  return notice.code !== 'teacher_collision';
+}
+
+export function hasBlockingTimetableEntryConflict(notices: TimetableEntryNotice[]): boolean {
+  return notices.some(isBlockingTimetableEntryConflict);
+}
+
 export interface TimetableGridEntry extends TimetableEntry {
   subject_id: number;
   subject_name: string;

@@ -225,7 +225,9 @@ import {
   buildTeacherAvailabilityMatrix,
   buildTimetableReadiness,
   evaluateTimetableEntryPlacement,
+  hasBlockingTimetableEntryConflict,
   isTimetableConstraintError,
+  isBlockingTimetableEntryConflict,
   loadHasInvalidAcademicReference,
   loadHasInvalidTeacherReference,
   projectTimetableEntryDrop,
@@ -3614,18 +3616,21 @@ app.get('/api/timetable/master-grid', requireSameSchoolOrAdmin(), requireRoles(A
       }
     })
     const entries = evaluatedEntries
-      .filter((item) => item.entry != null && activeLessonSlotIds.has(Number(item.entry.slot_id)) && item.entry.hard_conflicts.length === 0)
+      .filter((item) => item.entry != null
+        && activeLessonSlotIds.has(Number(item.entry.slot_id))
+        && !hasBlockingTimetableEntryConflict(item.entry.hard_conflicts))
       .map((item) => item.entry!)
     const invalidEntries = evaluatedEntries
       .filter((item) => item.invalid != null || (item.entry != null && (
-        !activeLessonSlotIds.has(Number(item.entry.slot_id)) || item.entry.hard_conflicts.length > 0
+        !activeLessonSlotIds.has(Number(item.entry.slot_id))
+        || hasBlockingTimetableEntryConflict(item.entry.hard_conflicts)
       )))
       .map((item) => item.invalid || ({
         id: Number(item.entry!.id),
         slot_id: Number(item.entry!.slot_id),
         teaching_load_id: Number(item.entry!.teaching_load_id),
         hard_conflicts: item.entry!.hard_conflicts,
-        reason: item.entry!.hard_conflicts.length > 0 ? 'invalid' as const : 'historical' as const,
+        reason: hasBlockingTimetableEntryConflict(item.entry!.hard_conflicts) ? 'invalid' as const : 'historical' as const,
       }))
     const data: TimetableMasterGridData = {
       school,
@@ -3727,7 +3732,7 @@ app.get('/api/timetable/grid', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
     for (const item of evaluatedEntries) {
       const loadId = Number(item.entry.teaching_load_id)
       totalByLoad.set(loadId, (totalByLoad.get(loadId) || 0) + 1)
-      if (item.entry.hard_conflicts.length > 0) {
+      if (hasBlockingTimetableEntryConflict(item.entry.hard_conflicts)) {
         invalidByLoad.set(loadId, (invalidByLoad.get(loadId) || 0) + 1)
         continue
       }
@@ -4074,7 +4079,8 @@ app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRo
       teacherAvailability: context.availability,
       teacherConstraints: context.constraints,
     })
-    const hardConflict = sourceEvaluation.hard_conflicts[0] || targetEvaluation?.hard_conflicts[0]
+    const hardConflict = sourceEvaluation.hard_conflicts.find(isBlockingTimetableEntryConflict)
+      || targetEvaluation?.hard_conflicts.find(isBlockingTimetableEntryConflict)
     if (hardConflict) return c.json(
       { error: hardConflict.message, code: hardConflict.code },
       timetableEntryNoticeStatus(hardConflict),
@@ -4145,13 +4151,18 @@ app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRo
     ])
     const warnings = [...sourceEvaluation.warnings, ...(targetEvaluation?.warnings || [])]
       .filter((notice, index, all) => all.findIndex((item) => item.code === notice.code && item.message === notice.message) === index)
+    const conflicts = [
+      ...sourceEvaluation.hard_conflicts,
+      ...(targetEvaluation?.hard_conflicts || []),
+    ].filter((notice) => notice.code === 'teacher_collision')
+      .filter((notice, index, all) => all.findIndex((item) => item.code === notice.code && item.message === notice.message) === index)
     return c.json({
       data: {
         operation: targetEntry == null ? 'move' : 'swap',
         entries: savedResult.results || [],
         revision,
       },
-      meta: { warnings },
+      meta: { warnings, conflicts },
     })
   } catch (error) {
     if (/stale_timetable_proposal/.test(error instanceof Error ? error.message : String(error))) {

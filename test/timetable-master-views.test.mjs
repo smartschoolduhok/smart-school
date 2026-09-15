@@ -164,12 +164,21 @@ test('teacher and placement views are scoped to the selected canonical ids', () 
 });
 
 test('invalid placements are visible as an alert and link back to repair without becoming cells', () => {
-  assert.match(workerSource, /item\.entry\.hard_conflicts\.length === 0/);
+  assert.match(workerSource, /hasBlockingTimetableEntryConflict\(item\.entry\.hard_conflicts\)/);
   assert.match(workerSource, /invalid_entry_count: invalidEntries\.length/);
   assert.ok(viewSource.includes('حصة تحتاج إصلاح'));
   assert.ok(viewSource.includes('لن تظهر كخلايا صحيحة في الجدول'));
   assert.ok(viewSource.includes('العودة إلى شبكة التحرير للإصلاح'));
   assert.match(viewSource, /onClick=\{onOpenRepair\}/);
+});
+
+test('teacher collisions stay in the master grid and use a rose conflict treatment', () => {
+  assert.match(viewSource, /timetable-subject-card--teacher-conflict/);
+  assert.match(viewSource, /تعارض المدرّس/);
+  assert.match(viewSource, /data-timetable-teacher-conflict/);
+  assert.match(cssSource, /\.timetable-subject-card--teacher-conflict/);
+  assert.match(cssSource, /#ffe4e6/);
+  assert.match(viewSource, /entriesBySlot/);
 });
 
 test('print mode supports large master sizes, A4 focused views and exact colors', () => {

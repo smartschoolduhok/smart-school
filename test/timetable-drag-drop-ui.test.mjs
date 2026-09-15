@@ -163,6 +163,12 @@ async function mount(t, options = {}) {
       const sourceSlot = source.slot_id;
       source.slot_id = body.target_slot_id;
       if (target) target.slot_id = sourceSlot;
+      if (options.teacherConflictAfterDrop) {
+        source.hard_conflicts = [{
+          code: 'teacher_collision',
+          message: 'المدرس مرتبط بحصة أخرى في الفترة نفسها',
+        }];
+      }
       grid.revision += target ? 3 : 1;
       return response({
         data: {
@@ -170,7 +176,13 @@ async function mount(t, options = {}) {
           entries: structuredClone(target ? [source, target] : [source]),
           revision: grid.revision,
         },
-        meta: { warnings: [] },
+        meta: {
+          warnings: [],
+          conflicts: options.teacherConflictAfterDrop ? [{
+            code: 'teacher_collision',
+            message: 'المدرس مرتبط بحصة أخرى في الفترة نفسها',
+          }] : [],
+        },
       });
     }
     throw new Error(`Unexpected request ${method} ${path}`);
@@ -240,18 +252,34 @@ test('mouse drop on another subject requests an atomic swap and renders both new
   assert.match(ui.container.querySelector('[role="status"]').textContent, /تم تبديل حصة الرياضيات مع حصة اللغة العربية/);
 });
 
-test('failed drop keeps the visible timetable unchanged and reports that nothing changed', async (t) => {
+test('accepted teacher collision is colored rose and announced as a visible conflict', async (t) => {
+  const ui = await mount(t, { teacherConflictAfterDrop: true });
+  await drag(
+    ui.container.querySelector('[data-timetable-drag-entry="501"]'),
+    ui.container.querySelector('[data-timetable-drop-slot="12"]'),
+  );
+  await waitFor(() => ui.changed === 1, 'teacher-conflict refresh');
+  const card = ui.container.querySelector('[data-timetable-entry="501"]');
+  assert.equal(card.getAttribute('data-timetable-teacher-conflict'), 'true');
+  assert.match(card.className, /border-rose-400/);
+  assert.match(card.className, /bg-rose-100/);
+  assert.match(card.textContent, /تعارض المدرّس/);
+  assert.match(ui.container.querySelector('[role="alert"]').textContent, /تعارض المدرّس/);
+  assert.match(ui.container.querySelector('[role="status"]').textContent, /يوجد تعارض للمدرّس/);
+});
+
+test('failed non-collision drop keeps the visible timetable unchanged and reports that nothing changed', async (t) => {
   const ui = await mount(t, {
     dropFailure: {
       status: 409,
-      body: { error: 'المدرس مرتبط بحصة أخرى في الفترة نفسها', code: 'teacher_collision' },
+      body: { error: 'المدرس غير متاح في هذه الفترة', code: 'teacher_unavailable' },
     },
   });
   await drag(
     ui.container.querySelector('[data-timetable-drag-entry="501"]'),
     ui.container.querySelector('[data-timetable-drop-slot="12"]'),
   );
-  await waitFor(() => ui.container.textContent.includes('المدرس مرتبط بحصة أخرى في الفترة نفسها'), 'drop error');
+  await waitFor(() => ui.container.textContent.includes('المدرس غير متاح في هذه الفترة'), 'drop error');
   assert.equal(ui.changed, 0);
   assert.match(ui.container.querySelector('[data-timetable-drop-slot="11"]').textContent, /الرياضيات/);
   assert.doesNotMatch(ui.container.querySelector('[data-timetable-drop-slot="12"]').textContent, /الرياضيات/);

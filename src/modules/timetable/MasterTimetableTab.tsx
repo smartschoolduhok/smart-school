@@ -42,6 +42,7 @@ function slotLabel(slot: TimetableSlot) {
 
 function SubjectCell({ entry, extra }: { entry: TimetableGridEntry | null; extra?: ReactNode }) {
   if (!entry) return <span className="text-gray-400">—</span>;
+  const hasTeacherCollision = entry.hard_conflicts.some((conflict) => conflict.code === 'teacher_collision');
   const subjectVisualKey = timetableSubjectVisualKey(entry.school_id, entry.subject_name);
   const color = timetableSubjectColorForSubject(entry.school_id, entry.subject_name);
   const style = {
@@ -51,14 +52,16 @@ function SubjectCell({ entry, extra }: { entry: TimetableGridEntry | null; extra
   } as CSSProperties;
   return (
     <div
-      className="timetable-subject-card"
+      className={`timetable-subject-card ${hasTeacherCollision ? 'timetable-subject-card--teacher-conflict' : ''}`}
       style={style}
       data-subject-id={entry.subject_id}
       data-subject-visual-key={subjectVisualKey}
-      title={`${entry.subject_name}\n${entry.employee_name || 'بدون مدرس'}\n${entry.class_name}${entry.section_name ? ` / ${entry.section_name}` : ''}`}
+      data-timetable-teacher-conflict={hasTeacherCollision ? 'true' : 'false'}
+      title={`${entry.subject_name}\n${entry.employee_name || 'بدون مدرس'}\n${entry.class_name}${entry.section_name ? ` / ${entry.section_name}` : ''}${hasTeacherCollision ? '\nتعارض المدرّس' : ''}`}
     >
       <strong>{entry.subject_name}</strong>
       <span>{entry.employee_name || 'بدون مدرس'}</span>
+      {hasTeacherCollision && <span className="timetable-teacher-conflict-label"><AlertTriangle size={11} />تعارض المدرّس</span>}
       {entry.is_locked === 1 && <span className="no-print inline-flex items-center gap-1 text-[10px] font-bold" title="حصة مثبتة"><Lock size={11} />مثبتة</span>}
       {extra}
     </div>
@@ -184,7 +187,12 @@ function PlacementGrid({ data, placement }: { data: TimetableMasterGridData; pla
 
 function TeacherGrid({ data, teacherId }: { data: TimetableMasterGridData; teacherId: number }) {
   const entries = data.entries.filter((entry) => Number(entry.employee_id) === teacherId);
-  const entryBySlot = new Map(entries.map((entry) => [Number(entry.slot_id), entry]));
+  const entriesBySlot = new Map<number, TimetableGridEntry[]>();
+  for (const entry of entries) {
+    const slotEntries = entriesBySlot.get(Number(entry.slot_id)) || [];
+    slotEntries.push(entry);
+    entriesBySlot.set(Number(entry.slot_id), slotEntries);
+  }
   return (
     <table className="timetable-focused-table">
       <caption className="sr-only">جدول المدرس المختار</caption>
@@ -199,7 +207,13 @@ function TeacherGrid({ data, teacherId }: { data: TimetableMasterGridData; teach
             ) : (
               <tr key={slot.id}>
                 <th><span>{slotLabel(slot)}</span><YearValue value={`${slot.start_time}–${slot.end_time}`} /></th>
-                <td><SubjectCell entry={entryBySlot.get(Number(slot.id)) || null} extra={entryBySlot.has(Number(slot.id)) ? <small>{entryBySlot.get(Number(slot.id))!.class_name}{entryBySlot.get(Number(slot.id))!.section_name ? ` / ${entryBySlot.get(Number(slot.id))!.section_name}` : ''}</small> : undefined} /></td>
+                <td>
+                  {(entriesBySlot.get(Number(slot.id)) || []).length === 0
+                    ? <SubjectCell entry={null} />
+                    : <div className="timetable-teacher-entry-stack">{(entriesBySlot.get(Number(slot.id)) || []).map((entry) => (
+                      <SubjectCell key={entry.id} entry={entry} extra={<small>{entry.class_name}{entry.section_name ? ` / ${entry.section_name}` : ''}</small>} />
+                    ))}</div>}
+                </td>
               </tr>
             )),
           ];
@@ -267,6 +281,9 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
   const placements = useMemo(() => data ? buildTimetableMasterPlacements(data.classes, data.sections) : [], [data]);
   const selectedPlacement = placements.find((placement) => timetablePlacementKey(placement) === placementKey) || null;
   const selectedTeacher = data?.teachers.find((teacher) => Number(teacher.id) === teacherId) || null;
+  const teacherConflictCount = data?.entries.filter((entry) => (
+    entry.hard_conflicts.some((conflict) => conflict.code === 'teacher_collision')
+  )).length || 0;
   const selectedEntries = mode === 'teacher' && teacherId != null
     ? data?.entries.filter((entry) => Number(entry.employee_id) === teacherId) || []
     : mode === 'placement' && selectedPlacement
@@ -298,6 +315,12 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
           <AlertTriangle size={20} />
           <p className="font-semibold">توجد <bdi dir="ltr">{data.invalid_entry_count}</bdi> حصة تحتاج إصلاح؛ ولن تظهر كخلايا صحيحة في الجدول.</p>
           <button type="button" onClick={onOpenRepair} className="mr-auto rounded-lg bg-red-700 px-3 py-2 text-sm font-bold text-white">العودة إلى شبكة التحرير للإصلاح</button>
+        </div>
+      )}
+      {teacherConflictCount > 0 && (
+        <div className="no-print flex items-center gap-3 rounded-xl border border-rose-300 bg-rose-100 p-4 text-rose-950" role="alert">
+          <AlertTriangle size={20} />
+          <p className="font-bold">تعارض المدرّس ظاهر في <bdi dir="ltr">{teacherConflictCount}</bdi> حصة ملوّنة بالوردي المحمر.</p>
         </div>
       )}
 

@@ -20,6 +20,7 @@ const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 const migration = readMigration('0023_timetable_foundation.sql');
 const availabilityMigration = readMigration('0024_teacher_timetable_constraints.sql');
 const entriesMigration = readMigration('0025_timetable_entries.sql');
+const teacherCollisionVisibilityMigration = readMigration('0037_timetable_teacher_collision_visibility.sql');
 
 function insertId(database, sql, ...params) {
   return Number(database.prepare(`${sql} RETURNING id`).get(...params).id);
@@ -111,6 +112,33 @@ function addLoad(database, {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `, schoolId, yearId, classId, sectionId, subjectId, employeeId, weeklyPeriods, status);
 }
+
+test('0037 permits teacher overlap while retaining the other entry validation triggers', () => {
+  const database = createFixture();
+  database.exec(teacherCollisionVisibilityMigration);
+  addDay(database);
+  const slotId = addSlot(database);
+  const firstLoadId = addLoad(database, { classId: 1, sectionId: 1, subjectId: 1, employeeId: 1 });
+  const otherClassLoadId = addLoad(database, { classId: 2, sectionId: null, subjectId: 3, employeeId: 1 });
+  const sameGroupLoadId = addLoad(database, { classId: 1, sectionId: 1, subjectId: 2, employeeId: 2 });
+
+  database.prepare(`INSERT INTO timetable_entries
+    (school_id, academic_year_id, slot_id, teaching_load_id)
+    VALUES (1, 1, ?, ?)`).run(slotId, firstLoadId);
+  assert.doesNotThrow(() => database.prepare(`INSERT INTO timetable_entries
+    (school_id, academic_year_id, slot_id, teaching_load_id)
+    VALUES (1, 1, ?, ?)`).run(slotId, otherClassLoadId));
+  assert.throws(() => database.prepare(`INSERT INTO timetable_entries
+    (school_id, academic_year_id, slot_id, teaching_load_id)
+    VALUES (1, 1, ?, ?)`).run(slotId, sameGroupLoadId), /group collision/);
+
+  const triggerSql = database.prepare(`SELECT group_concat(sql, '\n') AS sql
+    FROM sqlite_schema WHERE type = 'trigger'
+      AND name IN ('trg_timetable_entries_validate_insert', 'trg_timetable_entries_validate_update')`).get().sql;
+  assert.doesNotMatch(triggerSql, /teacher collision/);
+  assert.match(triggerSql, /teacher unavailable/);
+  assert.match(triggerSql, /max periods per day/);
+});
 
 test('0023 and 0024 create scoped timetable tables, indexes and validation triggers', () => {
   const database = createFixture();

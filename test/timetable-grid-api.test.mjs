@@ -64,6 +64,7 @@ async function fixture() {
     '0016_auth_security.sql', '0023_timetable_foundation.sql',
     '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
     '0026_timetable_adoption_locking.sql',
+    '0037_timetable_teacher_collision_visibility.sql',
   ]) database.exec(migration(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
@@ -833,17 +834,53 @@ test('locked source or occupied target must be unlocked before drag and drop', a
   assert.deepEqual(savedEntries(lockedTarget), targetBefore);
 });
 
-test('drop revalidates final teacher placement and rejects a hard conflict without writes', async () => {
+test('drop allows a teacher collision and both lessons remain visible with a conflict notice', async () => {
   const context = await fixture(); setup(context);
   const sourceResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
   const sourceId = (await sourceResponse.json()).data.id;
-  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({
+  const conflictingResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({
     slot_id: 2, teaching_load_id: 4,
-  }))).status, 201);
+  }));
+  assert.equal(conflictingResponse.status, 201);
+  const conflictingId = (await conflictingResponse.json()).data.id;
+  const response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(context));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.data.operation, 'move');
+  assert.ok(body.meta.conflicts.some((notice) => notice.code === 'teacher_collision'));
+  assert.deepEqual(savedEntries(context).map((entry) => [entry.id, entry.slot_id]), [
+    [sourceId, 2], [conflictingId, 2],
+  ]);
+
+  const sourceGrid = (await (await api(context, context.tokens.owner, 'GET',
+    '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).json()).data;
+  const otherGrid = (await (await api(context, context.tokens.owner, 'GET',
+    '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=2&section_id=3')).json()).data;
+  assert.ok(sourceGrid.entries.find((entry) => entry.id === sourceId).hard_conflicts
+    .some((notice) => notice.code === 'teacher_collision'));
+  assert.ok(otherGrid.entries.find((entry) => entry.id === conflictingId).hard_conflicts
+    .some((notice) => notice.code === 'teacher_collision'));
+  assert.equal(sourceGrid.loads.find((load) => load.id === 1).scheduled_periods, 1);
+  assert.equal(sourceGrid.loads.find((load) => load.id === 1).invalid_placements, 0);
+
+  const master = (await (await api(context, context.tokens.owner, 'GET',
+    '/api/timetable/master-grid?school_id=1&academic_year_id=1')).json()).data;
+  assert.deepEqual(master.entries.filter((entry) => [sourceId, conflictingId].includes(entry.id))
+    .map((entry) => entry.id).sort((left, right) => left - right), [sourceId, conflictingId]);
+  assert.equal(master.invalid_entries.some((entry) => [sourceId, conflictingId].includes(entry.id)), false);
+});
+
+test('drop still rejects teacher unavailability and keeps all entries unchanged', async () => {
+  const context = await fixture(); setup(context);
+  const sourceResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const sourceId = (await sourceResponse.json()).data.id;
+  context.database.exec(`INSERT INTO timetable_teacher_availability
+    (school_id, academic_year_id, employee_id, slot_id, status)
+    VALUES (1, 1, 1, 2, 'unavailable')`);
   const before = savedEntries(context);
   const response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(context));
   assert.equal(response.status, 409);
-  assert.equal((await response.json()).code, 'teacher_collision');
+  assert.equal((await response.json()).code, 'teacher_unavailable');
   assert.deepEqual(savedEntries(context), before);
 });
 

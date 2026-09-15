@@ -47,9 +47,12 @@ function SlotIdentity({ slot }: { slot: TimetableSlot }) {
 
 function HardConflictNotice({ conflicts }: { conflicts: TimetableEntryNotice[] }) {
   if (conflicts.length === 0) return null;
+  const onlyTeacherCollisions = conflicts.every((conflict) => conflict.code === 'teacher_collision');
   return (
-    <div className="mt-2 rounded-md border border-red-200 bg-red-100/70 p-2 text-xs text-red-900" title={conflicts.map((conflict) => conflict.message).join(' • ')}>
-      <p className="flex items-center gap-1 font-bold"><AlertTriangle size={13} />تعارض صلب</p>
+    <div className={`mt-2 rounded-md border p-2 text-xs ${onlyTeacherCollisions
+      ? 'border-rose-300 bg-rose-200/70 text-rose-950'
+      : 'border-red-200 bg-red-100/70 text-red-900'}`} title={conflicts.map((conflict) => conflict.message).join(' • ')}>
+      <p className="flex items-center gap-1 font-bold"><AlertTriangle size={13} />{onlyTeacherCollisions ? 'تعارض المدرّس' : 'تعارض صلب'}</p>
       <ul className="mt-1 list-inside list-disc space-y-0.5">
         {conflicts.map((conflict) => <li key={conflict.code}>{conflict.message}</li>)}
       </ul>
@@ -73,6 +76,7 @@ export function TimetableGridTab({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [warnings, setWarnings] = useState<TimetableEntryNotice[]>([]);
+  const [operationConflicts, setOperationConflicts] = useState<TimetableEntryNotice[]>([]);
   const [draggedEntryId, setDraggedEntryId] = useState<number | null>(null);
   const [dragOverSlotId, setDragOverSlotId] = useState<number | null>(null);
   const [dropAnnouncement, setDropAnnouncement] = useState('');
@@ -116,6 +120,7 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    setOperationConflicts([]);
     draggedEntryRef.current = null;
     setDraggedEntryId(null);
     setDragOverSlotId(null);
@@ -131,6 +136,7 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    setOperationConflicts([]);
     draggedEntryRef.current = null;
     setDraggedEntryId(null);
     setDragOverSlotId(null);
@@ -149,6 +155,7 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    setOperationConflicts([]);
     draggedEntryRef.current = null;
     setDraggedEntryId(null);
     setDragOverSlotId(null);
@@ -164,6 +171,7 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    setOperationConflicts([]);
     draggedEntryRef.current = null;
     setDraggedEntryId(null);
     setDragOverSlotId(null);
@@ -181,9 +189,11 @@ export function TimetableGridTab({
     expectedScope: string,
     expectedGeneration: number,
     notices: TimetableEntryNotice[] = [],
+    conflicts: TimetableEntryNotice[] = [],
   ) {
     if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setWarnings(notices);
+    setOperationConflicts(conflicts);
     await Promise.all([loadGrid(), onChanged()]);
   }
 
@@ -231,6 +241,7 @@ export function TimetableGridTab({
     setSaving(true);
     setError('');
     setWarnings([]);
+    setOperationConflicts([]);
     const response = await dropTimetableEntry(entry.id, {
       school_id: schoolId,
       academic_year_id: academicYearId,
@@ -251,10 +262,19 @@ export function TimetableGridTab({
       return;
     }
     setMoveDialog(null);
-    setDropAnnouncement(response.data?.operation === 'swap'
+    const teacherCollision = response.meta?.conflicts?.some((notice) => notice.code === 'teacher_collision') === true;
+    const successAnnouncement = response.data?.operation === 'swap'
       ? `تم تبديل حصة ${entry.subject_name} مع حصة ${targetEntry?.subject_name || 'أخرى'}.`
-      : `تم نقل حصة ${entry.subject_name} إلى ${slotLabel(grid.slots.find((slot) => Number(slot.id) === Number(targetSlotId))!)}.`);
-    await refreshAfterMutation(expectedScope, expectedGeneration, response.meta?.warnings || []);
+      : `تم نقل حصة ${entry.subject_name} إلى ${slotLabel(grid.slots.find((slot) => Number(slot.id) === Number(targetSlotId))!)}.`;
+    setDropAnnouncement(teacherCollision
+      ? `${successAnnouncement} يوجد تعارض للمدرّس في هذه الفترة.`
+      : successAnnouncement);
+    await refreshAfterMutation(
+      expectedScope,
+      expectedGeneration,
+      response.meta?.warnings || [],
+      response.meta?.conflicts || [],
+    );
   }
 
   async function moveEntry(slotId: number) {
@@ -421,6 +441,11 @@ export function TimetableGridTab({
       </div>
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800">{error}</div>}
+      {operationConflicts.map((conflict) => (
+        <div key={conflict.code} role="alert" className="flex items-center gap-2 rounded-lg border border-rose-300 bg-rose-100 p-3 text-sm font-bold text-rose-950">
+          <AlertTriangle size={18} />تعارض المدرّس: {conflict.message}
+        </div>
+      ))}
       {warnings.map((warning) => (
         <div key={warning.code} className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
           <AlertTriangle size={18} />{warning.message}
@@ -450,7 +475,7 @@ export function TimetableGridTab({
             <GripVertical className="mt-0.5 shrink-0" size={19} />
             <div>
               <p className="font-bold">تغيير مكان الحصة بالسحب والإفلات</p>
-              <p className="mt-0.5 text-blue-800">اسحب من المقبض إلى خانة فارغة للنقل، أو فوق مادة أخرى لتبديل الحصتين. الحصة المثبتة يجب فك تثبيتها أولًا. ويمكن النقر على زر النقل بدل السحب.</p>
+              <p className="mt-0.5 text-blue-800">اسحب من المقبض إلى خانة فارغة للنقل، أو فوق مادة أخرى لتبديل الحصتين. إذا أصبح للمدرّس درسان في الفترة نفسها يتم النقل وتظهر الحصتان بالوردي المحمر مع تنبيه تعارض. الحصة المثبتة يجب فك تثبيتها أولًا. ويمكن النقر على زر النقل بدل السحب.</p>
             </div>
           </div>
           <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
@@ -498,10 +523,22 @@ export function TimetableGridTab({
                                 <Plus size={17} />جدولة حصة
                               </button>
                             ) : entries.map((entry) => {
-                              const hasHardConflicts = entry.hard_conflicts.length > 0;
+                              const hasTeacherCollision = entry.hard_conflicts.some((conflict) => conflict.code === 'teacher_collision');
+                              const hasBlockingHardConflicts = entry.hard_conflicts.some((conflict) => conflict.code !== 'teacher_collision');
                               return (
-                                <div key={entry.id} className={`mb-2 rounded-lg border p-2 transition-opacity last:mb-0 ${draggedEntryId === entry.id ? 'opacity-45' : ''} ${hasHardConflicts ? 'border-red-300 bg-red-50' : 'border-primary-200 bg-primary-50'}`}>
-                                  <p className={`font-bold ${hasHardConflicts ? 'text-red-950' : 'text-primary-900'}`}>{entry.subject_name}</p>
+                                <div
+                                  key={entry.id}
+                                  data-timetable-entry={entry.id}
+                                  data-timetable-teacher-conflict={hasTeacherCollision ? 'true' : 'false'}
+                                  className={`mb-2 rounded-lg border p-2 transition-opacity last:mb-0 ${draggedEntryId === entry.id ? 'opacity-45' : ''} ${hasBlockingHardConflicts
+                                    ? 'border-red-400 bg-red-50'
+                                    : hasTeacherCollision
+                                      ? 'border-rose-400 bg-rose-100 ring-1 ring-inset ring-rose-300'
+                                      : 'border-primary-200 bg-primary-50'}`}
+                                >
+                                  <p className={`font-bold ${hasBlockingHardConflicts
+                                    ? 'text-red-950'
+                                    : hasTeacherCollision ? 'text-rose-950' : 'text-primary-900'}`}>{entry.subject_name}</p>
                                   <p className={`text-xs ${entry.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-600'}`}>{entry.employee_name || 'بدون مدرس'}</p>
                                   <HardConflictNotice conflicts={entry.hard_conflicts} />
                                   {entry.warnings.length > 0 && (

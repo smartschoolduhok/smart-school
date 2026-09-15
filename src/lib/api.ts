@@ -479,7 +479,7 @@ export function dropTimetableEntry(id: number, data: {
       entries: TimetableEntry[];
       revision: number;
     };
-    meta?: { warnings?: TimetableEntryNotice[] };
+    meta?: { warnings?: TimetableEntryNotice[]; conflicts?: TimetableEntryNotice[] };
     error?: string;
     code?: string;
     status?: number;

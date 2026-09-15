@@ -24,11 +24,12 @@ test('timetable module is Arabic RTL and exposes the weekly grid with all founda
 
 test('weekly grid exposes explicit class/section flow, breaks and missing-teacher demand', () => {
   assert.match(gridSource, /dir="rtl"/);
-  for (const label of ['اختر الصف', 'اختر الشعبة', 'جدولة حصة', 'استراحة', 'بدون مدرس', 'المطلوب', 'المجدول', 'المتبقي', 'تنبيه تفضيل', 'تعارض صلب']) {
+  for (const label of ['اختر الصف', 'اختر الشعبة', 'جدولة حصة', 'استراحة', 'بدون مدرس', 'المطلوب', 'المجدول', 'المتبقي', 'تنبيه تفضيل', 'تعارض صلب', 'تعارض المدرّس']) {
     assert.ok(gridSource.includes(label), label);
   }
   assert.match(gridSource, /slot\.slot_type === 'break'/);
-  assert.match(gridSource, /entry\.hard_conflicts\.length > 0/);
+  assert.match(gridSource, /entry\.hard_conflicts\.some\(\(conflict\) => conflict\.code === 'teacher_collision'\)/);
+  assert.match(gridSource, /entry\.hard_conflicts\.some\(\(conflict\) => conflict\.code !== 'teacher_collision'\)/);
   assert.match(gridSource, /entry\.warnings\.length > 0/);
   assert.match(gridSource, /draggable=\{entry\.is_locked !== 1 && !saving\}/);
   assert.match(gridSource, /onDragStart/);
@@ -46,7 +47,8 @@ test('each day cell renders its own slot identity without a representative-row s
 });
 
 test('hard conflicts and preference warnings remain visually and semantically separate', () => {
-  assert.match(gridSource, /border-red-300 bg-red-50/);
+  assert.match(gridSource, /border-red-400 bg-red-50/);
+  assert.match(gridSource, /border-rose-400 bg-rose-100/);
   assert.match(gridSource, /function HardConflictNotice/);
   assert.match(gridSource, /conflicts\.map\(\(conflict\)/);
   assert.match(gridSource, /border-amber-200 bg-amber-50/);
