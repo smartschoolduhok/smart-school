@@ -6,32 +6,43 @@ Base: `36aabc0e42e5be2ef0d8da1d5dcb063c9caca9ef` (`main`, merged PR #47)
 
 Branch: `codex/phase-20e3-timetable-drag-drop`
 
-Status: Draft PR [#48](https://github.com/smartschoolduhok/smart-school/pull/48). The implementation is pushed and its CI and Cloudflare Preview checks pass. The authorized STAGING continuation stopped at its mandatory preflight gate on 2026-09-15; migration 0037 and authenticated acceptance remain pending.
+Status: Draft PR [#48](https://github.com/smartschoolduhok/smart-school/pull/48). The explicitly authorized STAGING continuation completed on 2026-09-15 against only `smart-school-staging-db` (`1bdb9c3d-08d6-4023-9cbc-64369d53198a`). A verified full backup preceded migration 0037; database postflight and authenticated Preview acceptance passed, and the temporary QA account was disabled afterward. The PR remains open and Draft; no merge, auto-merge, manual deployment or Production use occurred.
 
-## STAGING continuation checkpoint — stopped at preflight
+## STAGING continuation checkpoint — completed under the authorized readiness exception
 
-The authorized continuation was run from a clean, isolated worktree at implementation commit `0f152990db172d3d09b6ac4de034f52004619577` and tree `7d0d8961c11aa439159f4181a006741113b80919`. PR #48 was still open and Draft, Quality Gates run `34958910730` was successful and the immutable Preview was `https://6571ea9b.smart-school-staging.pages.dev/`. The tracked configuration contained exactly one D1 binding: `smart-school-staging-db`, ID `1bdb9c3d-08d6-4023-9cbc-64369d53198a`.
+The continuation ran from the clean isolated worktree for `codex/phase-20e3-timetable-drag-drop`. Browser acceptance used the immutable Preview `https://6571ea9b.smart-school-staging.pages.dev/` for implementation commit `0f152990db172d3d09b6ac4de034f52004619577`; every subsequent commit before this evidence update changed only this QA document. The tracked Wrangler configuration contained exactly one D1 binding: `smart-school-staging-db`, ID `1bdb9c3d-08d6-4023-9cbc-64369d53198a`.
 
-A fresh full export was created outside the repository before any attempted mutation:
+Before any remote mutation, a fresh full export was verified outside the repository:
 
 - path: `C:\Users\ibrah\Documents\SmartSchoolBackups\phase20e3-staging-20260915T133234Z\smart-school-staging-db-full-before-0037.sql`;
 - size: `1,433,838` bytes;
-- SHA-256: `B09BCDC0DEEE64225D9AEC8CF515D9783C71A9ED92343EA3B3B4B8DDB8E1060F`.
+- SHA-256: `B09BCDC0DEEE64225D9AEC8CF515D9783C71A9ED92343EA3B3B4B8DDB8E1060F`;
+- isolated restore rehearsal: `2,295` statements restored, with the typed schema and values matching all `62` STAGING tables and a clean foreign-key check.
 
-Read-only preflight proved 37 distinct migration rows in repository order through `0036_official_book_layout.sql`, exactly one pending file (`0037_timetable_teacher_collision_visibility.sql`), an empty `PRAGMA foreign_key_check`, and both canonical timetable validation triggers with the pre-0037 teacher-collision block and all other guards present. The complete typed snapshot covered 62 tables (60 application tables) and has hash `cd4981fdc425a9216294c4bfc2371a691b0f5ec062fb199622eab71c2dfd6405`.
+The user authorized only these two old, non-timetable readiness exceptions for this phase:
 
-An isolated Local D1 rehearsal restored 2,295 export statements: 2,294 normal statements plus one oversized `import_jobs` row using 16 bound parameters and 360,514 bound bytes. The restored schema and typed values matched the read-only STAGING snapshot exactly across all 62 tables. Applying only 0037 locally produced 38/38 migrations with no pending file and a clean foreign-key check. Every historical column and value remained identical, all application counters remained unchanged, and the only schema changes were the two intended timetable validation triggers. Their teacher-collision abort was removed while the group-collision, teacher-unavailable, weekly, daily, working-days and consecutive-period guards remained present.
+- school 3: `academic_grade_policy_readiness = partial`, with 2 of 6 active classes configured and approved;
+- school 1: `result_card_publication_readiness = inconsistent`, with 22 cards comprising 6 draft, 4 published and 12 withdrawn.
 
-The mandatory readiness gate did not pass:
+Neither condition was repaired, neither school's data was changed, and this phase-specific exception is not a general waiver. The authorized preapply snapshot hash was `cd4981fdc425a9216294c4bfc2371a691b0f5ec062fb199622eab71c2dfd6405`.
 
-- school 3 has `academic_grade_policy_readiness = partial`: 2 of 6 active classes are configured and approved;
-- school 1 has `result_card_publication_readiness = inconsistent`: 22 cards, comprising 6 draft, 4 published and 12 withdrawn. The same inconsistency was documented before this task, but the draft count has increased by one since the Phase 20E.2 checkpoint.
+Only `0037_timetable_teacher_collision_visibility.sql` was then applied remotely, at `2026-09-15 13:56:32`, to the named STAGING database and UUID. Postflight proved `38/38` distinct migrations in repository order, 0037 exactly once as migration ID 38, no pending migration, and an empty `PRAGMA foreign_key_check`. All columns and table definitions across 62 tables remained unchanged; every historical value, row and count in the 60 application tables matched the preapply snapshot. Only D1 migration bookkeeping and the two intended timetable validation trigger definitions changed. The teacher-collision database abort was absent, while the group-collision, teacher-unavailable, weekly, daily, working-days and consecutive-period guards remained present. The postflight-before-QA snapshot hash was `91f82a31ff26c74a4a66309816bf53ee84a5d8aac89e633e107231d7115696d0`.
 
-These conditions were not repaired or waived because neither action was authorized. Consequently, no remote migration apply was run and 0037 remains pending.
+The minimum labelled fixture was created only in school 2 with marker `PH20E3-QA-20260915T142740224Z-15DE93`: temporary least-privilege `vice_principal` account 41, teacher 25, subjects 135/136, one day 15, lesson slots 50/51, loads 149/150 tied to existing sections 3/4, and exactly two entries 6/7. The entries began unlocked and non-conflicting in separate periods; no real student, teacher or timetable record was used.
 
-The exported snapshot also proved that the only clearly labelled QA tenant, school 2 (`مدرسة Staging الثانية`), has the active QA classes and sections but zero subjects, teachers/employees, timetable days, lesson slots, teaching loads or timetable entries. It has no active school-scoped administrator with documented safe credentials. The runbook explicitly requires stopping instead of creating prerequisites or using real records, so no QA lessons were created and no authenticated Preview mutation was attempted.
+Authenticated Preview acceptance then established all of the following:
 
-Machine-readable evidence remains outside Git at `C:\Users\ibrah\Documents\SmartSchoolBackups\phase20e3-staging-20260915T133234Z\phase20e3-readonly-preflight.json` and `C:\Users\ibrah\Documents\SmartSchoolBackups\phase20e3-staging-20260915T133234Z\phase20e3-local-rehearsal-evidence.json`. No Production resource or other D1 database was accessed; no remote seed/reset, deletion, manual deploy, force-push, merge or auto-merge occurred.
+- locking entry 6 disabled dragging and exposed the explicit picker without issuing a drop request; unlocking restored dragging;
+- an occupied desktop drag returned `operation = swap`, revision 14 and the same entry IDs 6/7 with the total fixed at two; its QA-only temporary load projection was restored in full immediately afterward;
+- an empty-cell drag returned `operation = move`, revision 17 and conflict metadata `teacher_collision`; both entries were saved in slot 50 and rendered with rose background/border plus `تعارض المدرّس`;
+- the same two rose conflict cards and label were verified in both section grids, the complete timetable, each class/section view, the teacher view and a visually inspected one-page A4 landscape PDF;
+- ordinary teacher-collision PUT and weekly-overage POST probes each returned 409 with zero write; all remaining hard guards stayed present and are covered by the `339/339` timetable suite;
+- at a 390 px viewport, the document had no horizontal overflow, the complete table stayed inside the viewport in its own horizontal scroller, and both conflict cards remained rendered;
+- there were zero application-console errors; seven Chrome automation-extension channel teardown messages were classified and excluded because they were not application exceptions or failed timetable actions.
+
+After acceptance, account 41 was changed from active to inactive, its `auth_version` was incremented, the stored password value was removed from the private QA context, and reloading the old browser session cleared both authentication stores and redirected to `/login`. The remaining school-2 fixture records stay explicitly QA-labelled as authorized; no deletion was performed.
+
+Machine-readable evidence is outside Git under `C:\Users\ibrah\Documents\SmartSchoolBackups\phase20e3-staging-20260915T133234Z`: `phase20e3-authorized-preapply.json`, `phase20e3-postflight-before-qa.json`, the public fixture/negative-probe/swap/account-disable JSON files, and the marker-specific `browser-qa-*` directory. The final read-only audit is `phase20e3-final-audit-PH20E3-QA-20260915T142740224Z-15DE93.json` (SHA-256 `FA24A17DA8CF4070D4EF624C0731BB11C550ADD1565A03CA8441E14125A64A4E`). It compared 49 protected school-1/3 tables and 1,755 protected rows without a difference, produced current snapshot hash `b1a9f882d1d464758b9e5f4bb44c12c2e6c084f18776cf87afaa441b87b64c3c`, and matched across two complete captures during the audit window. It is kept separate from postflight-before-QA so that migration history preservation and the later, allowlisted school-2 fixture changes remain independently reviewable.
 
 ## 1. Scope
 
@@ -92,7 +103,7 @@ The authoritative revision is intentionally opaque to the client. A simple move 
 
 Migration `0037_timetable_teacher_collision_visibility.sql` recreates the two canonical entry-validation triggers without the database-level teacher-collision abort. Every other trigger guard remains unchanged. This is required so the drag endpoint can persist a deliberately visible teacher collision; application paths other than drag/drop continue to reject it before writing.
 
-The full local migration chain is `38/38`, with a clean foreign-key check. Migration `0037` has not been applied to STAGING and must not be applied there without a fresh backup and explicit authorization.
+The repository and target STAGING migration chains are both `38/38`, with no pending migration and a clean foreign-key check. On 2026-09-15, only migration 0037 was applied to `smart-school-staging-db` (`1bdb9c3d-08d6-4023-9cbc-64369d53198a`) after the verified full backup. Postflight comparison found no historical application-data change and no table/column change; only the intended trigger definitions and D1 migration bookkeeping changed.
 
 The previous `PUT /api/timetable/entries/:id` endpoint remains available for existing callers and for the explicit confirmed unlock-and-move flow of one locked lesson into an empty slot. Drag-and-drop itself never silently unlocks a lesson.
 
@@ -114,20 +125,25 @@ The previous `PUT /api/timetable/entries/:id` endpoint remains available for exi
 - Local backup/restore: exact application snapshot across `62` tables; oversized `360,009`-byte row restored; foreign keys clean.
 - `git diff --check`: PASS.
 
-## 6. Preview acceptance checklist
+### STAGING evidence
 
-The following checks must be completed on the final Cloudflare Preview before the PR can be considered ready to merge:
+- Migration postflight and final audit: `38/38`, 0037 once and last, Wrangler reports `No migrations to apply`, empty foreign-key check, unchanged historical application data and unchanged readiness exception rows.
+- Live zero-write blockers: ordinary teacher collision returned 409 `teacher_collision`; excess weekly demand returned 409 `weekly_periods_exceeded`.
+- Live interactions: lock and explicit picker, unlock, occupied atomic swap with preserved identities, destination highlight, and saved teacher-conflict move all PASS.
+- Live rendering: both section grids, complete timetable, class/section views, teacher view, print output and the 390 px layout all display the two rose conflict entries and `تعارض المدرّس` as applicable.
+- Browser console: zero application errors; extension transport teardown noise is separately identified in the browser evidence.
+- Account shutdown: temporary account 41 is inactive, its authentication version increased, and its old session redirects to login with no stored token.
 
-- desktop mouse drag to an empty lesson cell;
-- desktop mouse drag onto an occupied lesson and confirmation that both identities swap;
-- desktop mouse drag into a teacher collision, confirmation that the move is saved and both affected lessons are rose with `تعارض المدرّس` in the weekly, master and teacher views;
-- locked source and locked destination behavior;
-- other hard scheduling-conflict rejection with unchanged visible data;
-- explicit picker behavior using keyboard controls;
-- RTL readability, destination highlight and horizontal table containment at `390px`;
-- absence of application console errors;
-- CI and Preview deployment on the exact final SHA.
+## 6. Preview acceptance — completed
 
-The cloud browser cannot open the workspace `localhost`, so visual acceptance is deferred to the public PR Preview rather than claimed from source inspection. The React DOM interaction tests are real rendered-component tests, but they do not replace final browser acceptance.
+- PASS — desktop mouse drag to an empty lesson cell saved the teacher-collision move.
+- PASS — occupied desktop drag atomically swapped entries 6/7 while preserving both identities and the total of exactly two entries.
+- PASS — both affected entries became rose and showed `تعارض المدرّس` in the editor, complete timetable, both class/section views, teacher view and print output.
+- PASS — locking blocked dragging; the explicit picker remained available and issued no drop until a destination action; unlocking restored dragging.
+- PASS — blocking conflict probes rejected without a write, and every non-teacher trigger guard remained installed.
+- PASS — RTL content, destination highlight, document containment and horizontal table scrolling were verified at 390 px.
+- PASS — one-page A4 landscape print evidence had no clipping or overlap and retained both conflict cards and labels.
+- PASS — there were no application-console errors.
+- PASS — authenticated acceptance ran on the immutable implementation Preview. Subsequent branch changes are QA documentation only and require the normal automatic CI/Preview checks before reporting the final SHA.
 
-No Production target, Remote D1, seed/reset outside disposable local state, manual deployment, force-push, merge or auto-merge is authorized by this phase.
+No Production resource or D1 database other than the explicitly named STAGING target was used. No remote seed/reset, direct administrative deletion, manual deployment, force-push, merge or auto-merge occurred. The swap endpoint's documented atomic replacement preserved both canonical entry identities and the total of exactly two QA entries.
