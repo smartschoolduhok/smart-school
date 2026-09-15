@@ -27,13 +27,26 @@ class LocalStatement {
 }
 
 class LocalD1 {
-  constructor(database) { this.database = database; this.prepareCount = 0; }
+  constructor(database) {
+    this.database = database;
+    this.prepareCount = 0;
+    this.beforeBatch = null;
+    this.failBatchAt = null;
+  }
   prepare(sql) { this.prepareCount += 1; return new LocalStatement(this.database, sql); }
   async batch(statements) {
+    if (this.beforeBatch) {
+      const beforeBatch = this.beforeBatch;
+      this.beforeBatch = null;
+      await beforeBatch();
+    }
     this.database.exec('BEGIN IMMEDIATE');
     try {
       const results = [];
-      for (const statement of statements) results.push(await statement.run());
+      for (const [index, statement] of statements.entries()) {
+        if (this.failBatchAt === index) throw new Error('injected timetable drop batch failure');
+        results.push(await statement.run());
+      }
       this.database.exec('COMMIT');
       return results;
     } catch (error) {
@@ -50,6 +63,8 @@ async function fixture() {
     '0001_initial_schema.sql', '0002_phase2_academic_tables.sql', '0010_employees.sql',
     '0016_auth_security.sql', '0023_timetable_foundation.sql',
     '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
+    '0026_timetable_adoption_locking.sql',
+    '0037_timetable_teacher_collision_visibility.sql',
   ]) database.exec(migration(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
@@ -136,6 +151,29 @@ function setup(context) {
 
 const createBody = (overrides = {}) => ({ school_id: 1, academic_year_id: 1, slot_id: 1, teaching_load_id: 1, ...overrides });
 
+function currentRevision(context, schoolId = 1, academicYearId = 1) {
+  return Number(context.database.prepare(`SELECT revision FROM timetable_revisions
+    WHERE school_id = ? AND academic_year_id = ?`).get(schoolId, academicYearId)?.revision || 0);
+}
+
+function dropBody(context, overrides = {}) {
+  return {
+    school_id: 1,
+    academic_year_id: 1,
+    source_slot_id: 1,
+    target_slot_id: 2,
+    target_entry_id: null,
+    expected_revision: currentRevision(context),
+    ...overrides,
+  };
+}
+
+function savedEntries(context) {
+  return context.database.prepare(`SELECT id, school_id, academic_year_id, slot_id, teaching_load_id,
+    is_locked, created_by_user_id, updated_by_user_id, created_at, updated_at
+    FROM timetable_entries ORDER BY id`).all();
+}
+
 test('grid API returns active days, active lessons, visible breaks and scoped loads', async () => {
   const context = await fixture(); setup(context);
   const response = await api(context, context.tokens.owner, 'GET', '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1');
@@ -146,6 +184,7 @@ test('grid API returns active days, active lessons, visible breaks and scoped lo
   assert.equal(data.slots.some((row) => row.id === 7 || row.id === 8), false);
   assert.deepEqual(data.historical_entries, []);
   assert.deepEqual(data.loads.map((row) => row.id), [1, 2]);
+  assert.equal(data.revision, currentRevision(context));
   assert.deepEqual(
     data.slots.filter((row) => row.slot_index === 1).map((row) => [row.day_of_week, row.label, row.start_time, row.end_time]),
     [[0, 'First', '08:00', '08:40'], [1, 'Monday Opening', '07:50', '08:30']],
@@ -199,7 +238,7 @@ test('grid and readiness query counts stay exactly constant as scheduling rows g
   }
   const small = await counts(false);
   const large = await counts(true);
-  assert.deepEqual(small, { grid: 12, readiness: 11 });
+  assert.deepEqual(small, { grid: 13, readiness: 11 });
   assert.deepEqual(large, small);
 });
 
@@ -344,7 +383,7 @@ test('principal and vice principal retain timetable management access', async ()
   }
 });
 
-test('teacher and accountant cannot create, move or delete schedule entries', async () => {
+test('teacher and accountant cannot create, move, drop-swap or delete schedule entries', async () => {
   for (const role of ['teacher', 'accountant']) {
     const context = await fixture(); setup(context);
     const entryId = Number(context.database.prepare(`INSERT INTO timetable_entries
@@ -352,6 +391,7 @@ test('teacher and accountant cannot create, move or delete schedule entries', as
     for (const [method, path, body] of [
       ['POST', '/api/timetable/entries', createBody({ slot_id: 2 })],
       ['PUT', `/api/timetable/entries/${entryId}`, { school_id: 1, academic_year_id: 1, slot_id: 2 }],
+      ['PUT', `/api/timetable/entries/${entryId}/drop`, dropBody(context)],
       ['DELETE', `/api/timetable/entries/${entryId}`, { school_id: 1, academic_year_id: 1 }],
     ]) assert.equal((await api(context, context.tokens[role], method, path, body)).status, 403, `${role} ${method}`);
   }
@@ -372,6 +412,26 @@ test('tenant-bound owner cannot target another school', async () => {
   const response = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ school_id: 2 }));
   assert.equal(response.status, 403);
   assert.equal((await response.json()).code, 'invalid_tenant_scope');
+});
+
+test('drop endpoint rejects forged tenant, missing admin school, wrong year and unknown fields without writes', async () => {
+  const context = await fixture(); setup(context);
+  const created = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const entryId = (await created.json()).data.id;
+  const before = savedEntries(context);
+  const valid = dropBody(context);
+  for (const [token, body, status, code] of [
+    [context.tokens.owner, { ...valid, school_id: 2 }, 403, 'invalid_tenant_scope'],
+    [context.tokens.admin, Object.fromEntries(Object.entries(valid).filter(([key]) => key !== 'school_id')), 400, 'invalid_tenant_scope'],
+    [context.tokens.owner, { ...valid, academic_year_id: 2 }, 400, 'invalid_academic_year'],
+    [context.tokens.owner, { ...valid, unexpected: true }, 400, null],
+  ]) {
+    const response = await api(context, token, 'PUT', `/api/timetable/entries/${entryId}/drop`, body);
+    assert.equal(response.status, status);
+    const responseBody = await response.json();
+    if (code) assert.equal(responseBody.code, code);
+    assert.deepEqual(savedEntries(context), before);
+  }
 });
 
 test('cross-school and cross-year slot or load references are rejected', async () => {
@@ -665,6 +725,200 @@ test('failed move keeps original placement unchanged', async () => {
   });
   assert.equal(response.status, 409);
   assert.equal(context.database.prepare('SELECT slot_id FROM timetable_entries WHERE id = ?').get(firstId).slot_id, 1);
+});
+
+test('drop into an empty slot moves one entry and advances the authoritative revision', async () => {
+  const context = await fixture(); setup(context);
+  const created = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const entryId = (await created.json()).data.id;
+  const before = savedEntries(context)[0];
+  const revision = currentRevision(context);
+  const response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${entryId}/drop`, dropBody(context));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.data.operation, 'move');
+  assert.equal(body.data.revision, revision + 1);
+  assert.deepEqual(body.data.entries.map((entry) => [entry.id, entry.slot_id]), [[entryId, 2]]);
+  const after = savedEntries(context)[0];
+  assert.equal(after.id, before.id);
+  assert.equal(after.slot_id, 2);
+  assert.equal(after.teaching_load_id, before.teaching_load_id);
+  assert.equal(after.created_at, before.created_at);
+  assert.equal(after.created_by_user_id, before.created_by_user_id);
+  assert.equal(currentRevision(context), revision + 1);
+});
+
+test('drop onto an occupied group slot swaps both entries atomically and preserves their identities', async () => {
+  const context = await fixture(); setup(context);
+  const sourceResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const targetResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2, teaching_load_id: 2 }));
+  const sourceId = (await sourceResponse.json()).data.id;
+  const targetId = (await targetResponse.json()).data.id;
+  const before = savedEntries(context);
+  const revision = currentRevision(context);
+
+  const response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(context, {
+    target_entry_id: targetId,
+  }));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.data.operation, 'swap');
+  assert.equal(body.data.revision, revision + 3);
+  assert.deepEqual(body.data.entries.map((entry) => [entry.id, entry.slot_id]), [[sourceId, 2], [targetId, 1]]);
+
+  const after = savedEntries(context);
+  assert.deepEqual(after.map((entry) => [entry.id, entry.slot_id, entry.teaching_load_id]), [
+    [sourceId, 2, 1], [targetId, 1, 2],
+  ]);
+  for (const previous of before) {
+    const saved = after.find((entry) => entry.id === previous.id);
+    assert.equal(saved.created_at, previous.created_at);
+    assert.equal(saved.created_by_user_id, previous.created_by_user_id);
+  }
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_revision_assertions').get().count, 0);
+});
+
+test('stale drop revision or target occupancy rejects without changing any entry', async () => {
+  const staleRevision = await fixture(); setup(staleRevision);
+  const source = await api(staleRevision, staleRevision.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const sourceId = (await source.json()).data.id;
+  const beforeRevision = savedEntries(staleRevision);
+  let response = await api(staleRevision, staleRevision.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(staleRevision, {
+    expected_revision: currentRevision(staleRevision) - 1,
+  }));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'stale_timetable_drop');
+  assert.deepEqual(savedEntries(staleRevision), beforeRevision);
+
+  const staleTarget = await fixture(); setup(staleTarget);
+  const sourceResponse = await api(staleTarget, staleTarget.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const targetResponse = await api(staleTarget, staleTarget.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2, teaching_load_id: 2 }));
+  const staleSourceId = (await sourceResponse.json()).data.id;
+  assert.ok((await targetResponse.json()).data.id > 0);
+  const beforeTarget = savedEntries(staleTarget);
+  response = await api(staleTarget, staleTarget.tokens.owner, 'PUT', `/api/timetable/entries/${staleSourceId}/drop`, dropBody(staleTarget, {
+    target_entry_id: null,
+  }));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'stale_timetable_drop');
+  assert.deepEqual(savedEntries(staleTarget), beforeTarget);
+});
+
+test('locked source or occupied target must be unlocked before drag and drop', async () => {
+  const lockedSource = await fixture(); setup(lockedSource);
+  const sourceResponse = await api(lockedSource, lockedSource.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const sourceId = (await sourceResponse.json()).data.id;
+  assert.equal((await api(lockedSource, lockedSource.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/lock`, {
+    school_id: 1, academic_year_id: 1, is_locked: 1,
+  })).status, 200);
+  const sourceBefore = savedEntries(lockedSource);
+  let response = await api(lockedSource, lockedSource.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(lockedSource));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'locked_entry_requires_confirmation');
+  assert.deepEqual(savedEntries(lockedSource), sourceBefore);
+
+  const lockedTarget = await fixture(); setup(lockedTarget);
+  const unlockedResponse = await api(lockedTarget, lockedTarget.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const targetResponse = await api(lockedTarget, lockedTarget.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2, teaching_load_id: 2 }));
+  const unlockedId = (await unlockedResponse.json()).data.id;
+  const targetId = (await targetResponse.json()).data.id;
+  assert.equal((await api(lockedTarget, lockedTarget.tokens.owner, 'PUT', `/api/timetable/entries/${targetId}/lock`, {
+    school_id: 1, academic_year_id: 1, is_locked: 1,
+  })).status, 200);
+  const targetBefore = savedEntries(lockedTarget);
+  response = await api(lockedTarget, lockedTarget.tokens.owner, 'PUT', `/api/timetable/entries/${unlockedId}/drop`, dropBody(lockedTarget, {
+    target_entry_id: targetId,
+  }));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'locked_drop_target');
+  assert.deepEqual(savedEntries(lockedTarget), targetBefore);
+});
+
+test('drop allows a teacher collision and both lessons remain visible with a conflict notice', async () => {
+  const context = await fixture(); setup(context);
+  const sourceResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const sourceId = (await sourceResponse.json()).data.id;
+  const conflictingResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({
+    slot_id: 2, teaching_load_id: 4,
+  }));
+  assert.equal(conflictingResponse.status, 201);
+  const conflictingId = (await conflictingResponse.json()).data.id;
+  const response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(context));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.data.operation, 'move');
+  assert.ok(body.meta.conflicts.some((notice) => notice.code === 'teacher_collision'));
+  assert.deepEqual(savedEntries(context).map((entry) => [entry.id, entry.slot_id]), [
+    [sourceId, 2], [conflictingId, 2],
+  ]);
+
+  const sourceGrid = (await (await api(context, context.tokens.owner, 'GET',
+    '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1&section_id=1')).json()).data;
+  const otherGrid = (await (await api(context, context.tokens.owner, 'GET',
+    '/api/timetable/grid?school_id=1&academic_year_id=1&class_id=2&section_id=3')).json()).data;
+  assert.ok(sourceGrid.entries.find((entry) => entry.id === sourceId).hard_conflicts
+    .some((notice) => notice.code === 'teacher_collision'));
+  assert.ok(otherGrid.entries.find((entry) => entry.id === conflictingId).hard_conflicts
+    .some((notice) => notice.code === 'teacher_collision'));
+  assert.equal(sourceGrid.loads.find((load) => load.id === 1).scheduled_periods, 1);
+  assert.equal(sourceGrid.loads.find((load) => load.id === 1).invalid_placements, 0);
+
+  const master = (await (await api(context, context.tokens.owner, 'GET',
+    '/api/timetable/master-grid?school_id=1&academic_year_id=1')).json()).data;
+  assert.deepEqual(master.entries.filter((entry) => [sourceId, conflictingId].includes(entry.id))
+    .map((entry) => entry.id).sort((left, right) => left - right), [sourceId, conflictingId]);
+  assert.equal(master.invalid_entries.some((entry) => [sourceId, conflictingId].includes(entry.id)), false);
+});
+
+test('drop still rejects teacher unavailability and keeps all entries unchanged', async () => {
+  const context = await fixture(); setup(context);
+  const sourceResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const sourceId = (await sourceResponse.json()).data.id;
+  context.database.exec(`INSERT INTO timetable_teacher_availability
+    (school_id, academic_year_id, employee_id, slot_id, status)
+    VALUES (1, 1, 1, 2, 'unavailable')`);
+  const before = savedEntries(context);
+  const response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(context));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'teacher_unavailable');
+  assert.deepEqual(savedEntries(context), before);
+});
+
+test('a concurrent revision change between validation and batch makes the drop fail closed', async () => {
+  const context = await fixture(); setup(context);
+  const sourceResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const sourceId = (await sourceResponse.json()).data.id;
+  const before = savedEntries(context);
+  const expectedRevision = currentRevision(context);
+  context.d1.beforeBatch = () => {
+    context.database.prepare('UPDATE timetable_teaching_loads SET weekly_periods = 5 WHERE id = 1').run();
+  };
+  const response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(context, {
+    expected_revision: expectedRevision,
+  }));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'stale_timetable_drop');
+  assert.deepEqual(savedEntries(context), before);
+  assert.equal(context.database.prepare('SELECT weekly_periods FROM timetable_teaching_loads WHERE id = 1').get().weekly_periods, 5);
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_revision_assertions').get().count, 0);
+});
+
+test('an injected failure during swap rolls back deletion, move, revision and assertion together', async () => {
+  const context = await fixture(); setup(context);
+  const sourceResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const targetResponse = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody({ slot_id: 2, teaching_load_id: 2 }));
+  const sourceId = (await sourceResponse.json()).data.id;
+  const targetId = (await targetResponse.json()).data.id;
+  const before = savedEntries(context);
+  const revision = currentRevision(context);
+  context.d1.failBatchAt = 3;
+  const response = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${sourceId}/drop`, dropBody(context, {
+    target_entry_id: targetId,
+  }));
+  assert.equal(response.status, 500);
+  assert.deepEqual(savedEntries(context), before);
+  assert.equal(currentRevision(context), revision);
+  assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_revision_assertions').get().count, 0);
 });
 
 test('delete removes only the entry and leaves its canonical load and slot', async () => {

@@ -201,6 +201,14 @@ export interface TimetableEntryNotice {
   message: string;
 }
 
+export function isBlockingTimetableEntryConflict(notice: TimetableEntryNotice): boolean {
+  return notice.code !== 'teacher_collision';
+}
+
+export function hasBlockingTimetableEntryConflict(notices: TimetableEntryNotice[]): boolean {
+  return notices.some(isBlockingTimetableEntryConflict);
+}
+
 export interface TimetableGridEntry extends TimetableEntry {
   subject_id: number;
   subject_name: string;
@@ -302,6 +310,7 @@ export interface TimetableEntryIssue {
 export interface TimetableGridData {
   school_id: number;
   academic_year_id: number;
+  revision: number;
   class_id: number;
   section_id: number | null;
   days: TimetableDay[];
@@ -619,6 +628,51 @@ export function validateTimetableEntryInput(input: Record<string, unknown>, requ
     return { ok: false as const, error: 'نصاب المادة غير صالح' };
   }
   return { ok: true as const, value: { academicYearId, slotId, teachingLoadId } };
+}
+
+export function validateTimetableEntryDropInput(input: Record<string, unknown>) {
+  const academicYearId = asPositiveInteger(input.academic_year_id);
+  const sourceSlotId = asPositiveInteger(input.source_slot_id);
+  const targetSlotId = asPositiveInteger(input.target_slot_id);
+  const expectedRevision = asNonNegativeInteger(input.expected_revision);
+  const hasTargetEntry = Object.prototype.hasOwnProperty.call(input, 'target_entry_id');
+  const targetEntryId = input.target_entry_id == null ? null : asPositiveInteger(input.target_entry_id);
+  if (academicYearId == null) return { ok: false as const, error: 'السنة الدراسية مطلوبة' };
+  if (sourceSlotId == null || targetSlotId == null) return { ok: false as const, error: 'موقعا الحصة قبل النقل وبعده مطلوبان' };
+  if (sourceSlotId === targetSlotId) return { ok: false as const, error: 'اختر فترة أخرى لنقل الحصة' };
+  if (expectedRevision == null) return { ok: false as const, error: 'نسخة بيانات الجدول غير صالحة' };
+  if (!hasTargetEntry || (input.target_entry_id != null && targetEntryId == null)) {
+    return { ok: false as const, error: 'حالة الفترة الهدف غير صالحة' };
+  }
+  return {
+    ok: true as const,
+    value: { academicYearId, sourceSlotId, targetSlotId, targetEntryId, expectedRevision },
+  };
+}
+
+export function timetableLoadsShareGroup(
+  left: Pick<TimetableTeachingLoad, 'class_id' | 'section_id'>,
+  right: Pick<TimetableTeachingLoad, 'class_id' | 'section_id'>,
+): boolean {
+  return Number(left.class_id) === Number(right.class_id)
+    && (left.section_id == null
+      || right.section_id == null
+      || Number(left.section_id) === Number(right.section_id));
+}
+
+export function projectTimetableEntryDrop(
+  entries: TimetableEntry[],
+  sourceEntry: TimetableEntry,
+  targetSlotId: number,
+  targetEntry: TimetableEntry | null,
+): TimetableEntry[] {
+  return entries.map((entry) => {
+    if (Number(entry.id) === Number(sourceEntry.id)) return { ...entry, slot_id: targetSlotId };
+    if (targetEntry != null && Number(entry.id) === Number(targetEntry.id)) {
+      return { ...entry, slot_id: Number(sourceEntry.slot_id) };
+    }
+    return entry;
+  });
 }
 
 export function validateTeacherAvailabilityScopeInput(input: Record<string, unknown>) {
@@ -962,11 +1016,7 @@ export function evaluateTimetableEntryPlacement(input: {
   const sameSlotEntries = otherEntries.filter((entry) => Number(entry.slot_id) === Number(slot.id));
   const groupCollision = sameSlotEntries.some((entry) => {
     const existingLoad = loadById.get(Number(entry.teaching_load_id));
-    return existingLoad != null
-      && Number(existingLoad.class_id) === Number(load.class_id)
-      && (existingLoad.section_id == null
-        || load.section_id == null
-        || Number(existingLoad.section_id) === Number(load.section_id));
+    return existingLoad != null && timetableLoadsShareGroup(existingLoad, load);
   });
   if (groupCollision) {
     hardConflicts.push(entryNotice('class_section_collision', 'توجد حصة أخرى للصف أو الشعبة في هذه الفترة'));

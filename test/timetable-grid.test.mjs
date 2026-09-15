@@ -7,6 +7,9 @@ import test from 'node:test';
 import {
   buildTimetableReadiness,
   evaluateTimetableEntryPlacement,
+  projectTimetableEntryDrop,
+  timetableLoadsShareGroup,
+  validateTimetableEntryDropInput,
   validateTimetableEntryInput,
   validateTimetableGridScopeInput,
 } from '../src/lib/timetable.ts';
@@ -479,4 +482,55 @@ test('entry and grid validators reject incomplete scope input', () => {
   assert.equal(validateTimetableEntryInput({ academic_year_id: 1, slot_id: 1 }).ok, false);
   assert.equal(validateTimetableGridScopeInput({ academic_year_id: 1, class_id: 1 }).ok, true);
   assert.equal(validateTimetableGridScopeInput({ academic_year_id: 1 }).ok, false);
+});
+
+test('drop validator requires explicit source, target, occupancy and revision state', () => {
+  assert.deepEqual(validateTimetableEntryDropInput({
+    academic_year_id: 1,
+    source_slot_id: 10,
+    target_slot_id: 11,
+    target_entry_id: null,
+    expected_revision: 0,
+  }), {
+    ok: true,
+    value: {
+      academicYearId: 1,
+      sourceSlotId: 10,
+      targetSlotId: 11,
+      targetEntryId: null,
+      expectedRevision: 0,
+    },
+  });
+  assert.equal(validateTimetableEntryDropInput({
+    academic_year_id: 1, source_slot_id: 10, target_slot_id: 11, target_entry_id: 7, expected_revision: 3,
+  }).ok, true);
+  for (const input of [
+    { academic_year_id: 1, source_slot_id: 10, target_slot_id: 10, target_entry_id: null, expected_revision: 0 },
+    { academic_year_id: 1, source_slot_id: 10, target_slot_id: 11, expected_revision: 0 },
+    { academic_year_id: 1, source_slot_id: 10, target_slot_id: 11, target_entry_id: 0, expected_revision: 0 },
+    { academic_year_id: 1, source_slot_id: 10, target_slot_id: 11, target_entry_id: null, expected_revision: -1 },
+  ]) assert.equal(validateTimetableEntryDropInput(input).ok, false);
+});
+
+test('drop group matching preserves class-wide and section collision semantics', () => {
+  const classWide = { class_id: 1, section_id: null };
+  const sectionA = { class_id: 1, section_id: 10 };
+  const sectionB = { class_id: 1, section_id: 11 };
+  assert.equal(timetableLoadsShareGroup(classWide, sectionA), true);
+  assert.equal(timetableLoadsShareGroup(sectionA, classWide), true);
+  assert.equal(timetableLoadsShareGroup(sectionA, sectionA), true);
+  assert.equal(timetableLoadsShareGroup(sectionA, sectionB), false);
+  assert.equal(timetableLoadsShareGroup(sectionA, { class_id: 2, section_id: 10 }), false);
+});
+
+test('drop projection moves into an empty slot or swaps identities without touching unrelated entries', () => {
+  const source = { id: 1, slot_id: 10, teaching_load_id: 100 };
+  const target = { id: 2, slot_id: 20, teaching_load_id: 200 };
+  const unrelated = { id: 3, slot_id: 30, teaching_load_id: 300 };
+  assert.deepEqual(projectTimetableEntryDrop([source, target, unrelated], source, 20, null), [
+    { ...source, slot_id: 20 }, target, unrelated,
+  ]);
+  assert.deepEqual(projectTimetableEntryDrop([source, target, unrelated], source, 20, target), [
+    { ...source, slot_id: 20 }, { ...target, slot_id: 10 }, unrelated,
+  ]);
 });
