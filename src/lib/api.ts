@@ -459,6 +459,33 @@ export function moveTimetableEntry(id: number, data: {
   }>;
 }
 
+export function dropTimetableEntry(id: number, data: {
+  school_id: number;
+  academic_year_id: number;
+  source_slot_id: number;
+  target_slot_id: number;
+  target_entry_id: number | null;
+  expected_revision: number;
+}) {
+  return fetchApi<{
+    operation: 'move' | 'swap';
+    entries: TimetableEntry[];
+    revision: number;
+  }>(`/api/timetable/entries/${id}/drop`, {
+    method: 'PUT', body: JSON.stringify(data),
+  }) as Promise<{
+    data?: {
+      operation: 'move' | 'swap';
+      entries: TimetableEntry[];
+      revision: number;
+    };
+    meta?: { warnings?: TimetableEntryNotice[] };
+    error?: string;
+    code?: string;
+    status?: number;
+  }>;
+}
+
 export function deleteTimetableEntry(
   id: number,
   schoolId: number,

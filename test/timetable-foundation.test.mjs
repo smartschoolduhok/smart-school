@@ -508,9 +508,10 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.get('/api/timetable/teacher-constraints'",
     "app.put('/api/timetable/teacher-constraints'",
     "app.get('/api/timetable/teacher-availability-summary'",
+    "app.put('/api/timetable/entries/:id/drop'",
   ]) assert.ok(workerSource.includes(route), route);
   const routeGuards = timetableWorkerSource.match(/app\.(?:get|post|put|delete)\('\/api\/timetable[^\n]*requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/g) || [];
-  assert.equal(routeGuards.length, 36);
+  assert.equal(routeGuards.length, 37);
   assert.match(timetableWorkerSource, /for \(const operation of \['preview', 'apply'\] as const\)/);
   assert.ok(timetableWorkerSource.includes("app.post(`/api/timetable/teaching-load-matrix/${operation}`, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES)"));
   assert.ok(timetableWorkerSource.includes("app.post(`/api/timetable/week-setup/${operation}`, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES)"));

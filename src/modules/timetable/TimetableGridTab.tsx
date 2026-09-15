@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeftRight, CalendarRange, Lock, Plus, Trash2, Unlock, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { AlertTriangle, ArrowLeftRight, CalendarRange, GripVertical, Lock, Plus, Trash2, Unlock, X } from 'lucide-react';
 import {
   createTimetableEntry,
   deleteTimetableEntry,
+  dropTimetableEntry,
   getTimetableGrid,
   moveTimetableEntry,
   setTimetableEntryLock,
@@ -72,6 +73,10 @@ export function TimetableGridTab({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [warnings, setWarnings] = useState<TimetableEntryNotice[]>([]);
+  const [draggedEntryId, setDraggedEntryId] = useState<number | null>(null);
+  const [dragOverSlotId, setDragOverSlotId] = useState<number | null>(null);
+  const [dropAnnouncement, setDropAnnouncement] = useState('');
+  const draggedEntryRef = useRef<TimetableGridEntry | null>(null);
   const requestGenerationRef = useRef(0);
   const currentScopeRef = useRef(scopeKey(schoolId, academicYearId, selectedClassId, selectedSectionId));
   currentScopeRef.current = scopeKey(schoolId, academicYearId, selectedClassId, selectedSectionId);
@@ -111,6 +116,10 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    draggedEntryRef.current = null;
+    setDraggedEntryId(null);
+    setDragOverSlotId(null);
+    setDropAnnouncement('');
     setError('');
     setLoading(false);
     setSaving(false);
@@ -122,6 +131,10 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    draggedEntryRef.current = null;
+    setDraggedEntryId(null);
+    setDragOverSlotId(null);
+    setDropAnnouncement('');
     setError('');
     setLoading(false);
     setSaving(false);
@@ -136,6 +149,10 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    draggedEntryRef.current = null;
+    setDraggedEntryId(null);
+    setDragOverSlotId(null);
+    setDropAnnouncement('');
     setError('');
     setSaving(false);
   }
@@ -147,6 +164,10 @@ export function TimetableGridTab({
     setScheduleDialog(null);
     setMoveDialog(null);
     setWarnings([]);
+    draggedEntryRef.current = null;
+    setDraggedEntryId(null);
+    setDragOverSlotId(null);
+    setDropAnnouncement('');
     setError('');
     setSaving(false);
   }
@@ -188,10 +209,73 @@ export function TimetableGridTab({
     await refreshAfterMutation(expectedScope, expectedGeneration, response.meta?.warnings || []);
   }
 
+  async function performEntryDrop(
+    entry: TimetableGridEntry,
+    targetSlotId: number,
+    targetEntry: TimetableGridEntry | null,
+  ) {
+    if (!grid || saving || Number(entry.slot_id) === Number(targetSlotId)) return;
+    if (entry.is_locked === 1) {
+      setError('الحصة مثبتة. فك تثبيتها أولًا ثم أعد النقل.');
+      setDropAnnouncement(`تعذر نقل حصة ${entry.subject_name} لأنها مثبتة.`);
+      return;
+    }
+    if (targetEntry?.is_locked === 1) {
+      setError('الحصة الموجودة في الموقع الهدف مثبتة. فك تثبيتها أولًا ثم أعد النقل.');
+      setDropAnnouncement(`تعذر نقل حصة ${entry.subject_name} لأن الموقع الهدف مثبت.`);
+      return;
+    }
+    const expectedScope = currentScopeRef.current;
+    const expectedGeneration = requestGenerationRef.current;
+    const expectedRevision = grid.revision;
+    setSaving(true);
+    setError('');
+    setWarnings([]);
+    const response = await dropTimetableEntry(entry.id, {
+      school_id: schoolId,
+      academic_year_id: academicYearId,
+      source_slot_id: entry.slot_id,
+      target_slot_id: targetSlotId,
+      target_entry_id: targetEntry?.id ?? null,
+      expected_revision: expectedRevision,
+    });
+    if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
+    setSaving(false);
+    if (response.error) {
+      if (response.code === 'stale_timetable_drop') {
+        await Promise.all([loadGrid(), onChanged()]);
+        if (currentScopeRef.current !== expectedScope) return;
+      }
+      setError(response.error);
+      setDropAnnouncement(`تعذر نقل حصة ${entry.subject_name}. لم يتغير الجدول.`);
+      return;
+    }
+    setMoveDialog(null);
+    setDropAnnouncement(response.data?.operation === 'swap'
+      ? `تم تبديل حصة ${entry.subject_name} مع حصة ${targetEntry?.subject_name || 'أخرى'}.`
+      : `تم نقل حصة ${entry.subject_name} إلى ${slotLabel(grid.slots.find((slot) => Number(slot.id) === Number(targetSlotId))!)}.`);
+    await refreshAfterMutation(expectedScope, expectedGeneration, response.meta?.warnings || []);
+  }
+
   async function moveEntry(slotId: number) {
-    if (!moveDialog) return;
-    const unlockConfirmed = moveDialog.entry.is_locked !== 1 || window.confirm('هذه الحصة مثبتة. هل تريد إلغاء التثبيت ونقلها؟');
-    if (!unlockConfirmed) return;
+    if (!moveDialog || !grid) return;
+    const targetEntries = grid.entries.filter((entry) => (
+      Number(entry.slot_id) === Number(slotId) && Number(entry.id) !== Number(moveDialog.entry.id)
+    ));
+    if (targetEntries.length > 1) {
+      setError('توجد عدة حصص في الموقع الهدف. أصلح التعارض قبل النقل.');
+      return;
+    }
+    const targetEntry = targetEntries[0] || null;
+    if (moveDialog.entry.is_locked !== 1) {
+      await performEntryDrop(moveDialog.entry, slotId, targetEntry);
+      return;
+    }
+    if (targetEntry != null) {
+      setError('لا يمكن تبديل حصة مثبتة. فك تثبيتها أولًا ثم أعد النقل.');
+      return;
+    }
+    if (!window.confirm('هذه الحصة مثبتة. هل تريد إلغاء التثبيت ونقلها؟')) return;
     const expectedScope = currentScopeRef.current;
     const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
@@ -200,7 +284,7 @@ export function TimetableGridTab({
       school_id: schoolId,
       academic_year_id: academicYearId,
       slot_id: slotId,
-      ...(moveDialog.entry.is_locked === 1 ? { confirm_unlock_locked_entry: true as const } : {}),
+      confirm_unlock_locked_entry: true,
     });
     if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setSaving(false);
@@ -209,7 +293,60 @@ export function TimetableGridTab({
       return;
     }
     setMoveDialog(null);
+    setDropAnnouncement(`تم إلغاء تثبيت حصة ${moveDialog.entry.subject_name} ونقلها.`);
     await refreshAfterMutation(expectedScope, expectedGeneration, response.meta?.warnings || []);
+  }
+
+  function beginEntryDrag(event: DragEvent<HTMLButtonElement>, entry: TimetableGridEntry) {
+    if (saving || entry.is_locked === 1) {
+      event.preventDefault();
+      setError('الحصة مثبتة. فك تثبيتها أولًا ثم ابدأ السحب.');
+      return;
+    }
+    draggedEntryRef.current = entry;
+    setDraggedEntryId(entry.id);
+    setDragOverSlotId(null);
+    setError('');
+    setDropAnnouncement(`بدأ سحب حصة ${entry.subject_name}. أفلتها في فترة فارغة للنقل أو فوق حصة أخرى للتبديل.`);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-smart-school-timetable-entry', String(entry.id));
+    event.dataTransfer.setData('text/plain', String(entry.id));
+  }
+
+  function finishEntryDrag() {
+    draggedEntryRef.current = null;
+    setDraggedEntryId(null);
+    setDragOverSlotId(null);
+  }
+
+  function markDropTarget(event: DragEvent<HTMLTableCellElement>, slotId: number) {
+    const entry = draggedEntryRef.current;
+    if (!entry || saving || Number(entry.slot_id) === Number(slotId)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDragOverSlotId(slotId);
+  }
+
+  function leaveDropTarget(event: DragEvent<HTMLTableCellElement>, slotId: number) {
+    const next = event.relatedTarget;
+    if (next instanceof Node && event.currentTarget.contains(next)) return;
+    setDragOverSlotId((current) => current === slotId ? null : current);
+  }
+
+  function dropEntryOnSlot(event: DragEvent<HTMLTableCellElement>, slotId: number) {
+    event.preventDefault();
+    const entry = draggedEntryRef.current;
+    finishEntryDrag();
+    if (!entry || saving || Number(entry.slot_id) === Number(slotId) || !grid) return;
+    const targetEntries = grid.entries.filter((candidate) => (
+      Number(candidate.slot_id) === Number(slotId) && Number(candidate.id) !== Number(entry.id)
+    ));
+    if (targetEntries.length > 1) {
+      setError('توجد عدة حصص في الموقع الهدف. أصلح التعارض قبل التبديل.');
+      setDropAnnouncement(`تعذر نقل حصة ${entry.subject_name}. لم يتغير الجدول.`);
+      return;
+    }
+    void performEntryDrop(entry, slotId, targetEntries[0] || null);
   }
 
   async function removeEntry(entry: TimetableGridEntry) {
@@ -289,6 +426,7 @@ export function TimetableGridTab({
           <AlertTriangle size={18} />{warning.message}
         </div>
       ))}
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{dropAnnouncement}</p>
 
       {!selectionReady && (
         <div className="rounded-xl border border-dashed border-gray-300 p-10 text-center text-gray-500">
@@ -307,6 +445,13 @@ export function TimetableGridTab({
                 <p className={`mt-1 text-xs ${load.invalid_placements > 0 ? 'font-semibold text-red-700' : 'text-gray-500'}`}>كل المواضع <bdi dir="ltr">{load.total_placements}</bdi> · تحتاج إصلاح <bdi dir="ltr">{load.invalid_placements}</bdi></p>
               </div>
             ))}
+          </div>
+          <div id="timetable-drag-help" className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+            <GripVertical className="mt-0.5 shrink-0" size={19} />
+            <div>
+              <p className="font-bold">تغيير مكان الحصة بالسحب والإفلات</p>
+              <p className="mt-0.5 text-blue-800">اسحب من المقبض إلى خانة فارغة للنقل، أو فوق مادة أخرى لتبديل الحصتين. الحصة المثبتة يجب فك تثبيتها أولًا. ويمكن النقر على زر النقل بدل السحب.</p>
+            </div>
           </div>
           <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
             <table className="w-full min-w-[920px] table-fixed text-sm">
@@ -332,17 +477,30 @@ export function TimetableGridTab({
                           </td>
                         );
                         const entries = grid.entries.filter((entry) => Number(entry.slot_id) === Number(slot.id));
+                        const targetIsLocked = entries.some((entry) => entry.is_locked === 1);
                         return (
-                          <td key={day.id} className="border-r p-2">
+                          <td
+                            key={day.id}
+                            data-timetable-drop-slot={slot.id}
+                            onDragEnter={(event) => markDropTarget(event, slot.id)}
+                            onDragOver={(event) => markDropTarget(event, slot.id)}
+                            onDragLeave={(event) => leaveDropTarget(event, slot.id)}
+                            onDrop={(event) => dropEntryOnSlot(event, slot.id)}
+                            className={`border-r p-2 transition-colors ${dragOverSlotId === slot.id
+                              ? targetIsLocked
+                                ? 'bg-amber-50 ring-2 ring-inset ring-amber-400'
+                                : 'bg-emerald-50 ring-2 ring-inset ring-emerald-400'
+                              : ''}`}
+                          >
                             <SlotIdentity slot={slot} />
                             {entries.length === 0 ? (
-                              <button type="button" onClick={() => setScheduleDialog({ slotId: slot.id })} className="flex min-h-24 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-primary-300 text-primary-700 hover:bg-primary-50">
+                              <button type="button" disabled={saving} onClick={() => setScheduleDialog({ slotId: slot.id })} className="flex min-h-24 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-primary-300 text-primary-700 hover:bg-primary-50 disabled:cursor-not-allowed disabled:opacity-60">
                                 <Plus size={17} />جدولة حصة
                               </button>
                             ) : entries.map((entry) => {
                               const hasHardConflicts = entry.hard_conflicts.length > 0;
                               return (
-                                <div key={entry.id} className={`mb-2 rounded-lg border p-2 last:mb-0 ${hasHardConflicts ? 'border-red-300 bg-red-50' : 'border-primary-200 bg-primary-50'}`}>
+                                <div key={entry.id} className={`mb-2 rounded-lg border p-2 transition-opacity last:mb-0 ${draggedEntryId === entry.id ? 'opacity-45' : ''} ${hasHardConflicts ? 'border-red-300 bg-red-50' : 'border-primary-200 bg-primary-50'}`}>
                                   <p className={`font-bold ${hasHardConflicts ? 'text-red-950' : 'text-primary-900'}`}>{entry.subject_name}</p>
                                   <p className={`text-xs ${entry.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-600'}`}>{entry.employee_name || 'بدون مدرس'}</p>
                                   <HardConflictNotice conflicts={entry.hard_conflicts} />
@@ -354,9 +512,24 @@ export function TimetableGridTab({
                                       </ul>
                                     </div>
                                   )}
-                                  <div className="mt-2 flex gap-1">
+                                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                                    <button
+                                      type="button"
+                                      draggable={entry.is_locked !== 1 && !saving}
+                                      data-timetable-drag-entry={entry.id}
+                                      onDragStart={(event) => beginEntryDrag(event, entry)}
+                                      onDragEnd={finishEntryDrag}
+                                      onClick={() => setMoveDialog({ entry })}
+                                      aria-label={`سحب أو نقل حصة ${entry.subject_name}`}
+                                      aria-describedby="timetable-drag-help"
+                                      title={entry.is_locked === 1 ? 'الحصة مثبتة؛ انقر لاختيار موقع أو فك تثبيتها قبل السحب' : 'اسحب لتغيير الموقع أو انقر لعرض قائمة الفترات'}
+                                      className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold ${entry.is_locked === 1
+                                        ? 'cursor-pointer bg-slate-100 text-slate-600'
+                                        : 'cursor-grab bg-blue-100 text-blue-800 hover:bg-blue-200 active:cursor-grabbing'}`}
+                                    >
+                                      <GripVertical size={15} />سحب أو نقل
+                                    </button>
                                     <button type="button" onClick={() => void toggleEntryLock(entry)} className="rounded p-1.5 text-slate-700 hover:bg-slate-100" aria-label={entry.is_locked === 1 ? 'إلغاء تثبيت الحصة' : 'تثبيت الحصة'} title={entry.is_locked === 1 ? 'حصة مثبتة' : 'تثبيت الحصة'}>{entry.is_locked === 1 ? <Lock size={15} /> : <Unlock size={15} />}</button>
-                                    <button type="button" onClick={() => setMoveDialog({ entry })} className="rounded p-1.5 text-blue-700 hover:bg-blue-100" aria-label="نقل الحصة"><ArrowLeftRight size={15} /></button>
                                     <button type="button" onClick={() => void removeEntry(entry)} className="rounded p-1.5 text-red-700 hover:bg-red-100" aria-label="حذف الحصة"><Trash2 size={15} /></button>
                                   </div>
                                 </div>
@@ -421,11 +594,24 @@ export function TimetableGridTab({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="نقل الحصة">
           <div className="w-full max-w-xl rounded-xl bg-white p-5 shadow-xl">
             <div className="flex items-center justify-between"><h2 className="font-bold">نقل حصة {moveDialog.entry.subject_name}</h2><button type="button" onClick={() => setMoveDialog(null)}><X /></button></div>
-            <p className="mt-1 text-sm text-gray-500">اختر حصة فعالة أخرى. سيعيد الخادم فحص جميع التعارضات والقيود.</p>
+            <p className="mt-1 text-sm text-gray-500">اختر فترة فعالة أخرى. الخانة الفارغة تنقل الحصة، والخانة المشغولة تبدّل الحصتين. سيعيد الخادم فحص جميع التعارضات والقيود.</p>
             <div className="mt-4 grid max-h-96 gap-2 overflow-y-auto sm:grid-cols-2">
-              {lessonSlots.filter((slot) => Number(slot.id) !== Number(moveDialog.entry.slot_id)).map((slot) => (
-                <button key={slot.id} type="button" disabled={saving} onClick={() => void moveEntry(slot.id)} className="rounded-lg border border-gray-200 p-3 text-right hover:bg-gray-50 disabled:opacity-50">{slotLabel(slot)}</button>
-              ))}
+              {lessonSlots.filter((slot) => Number(slot.id) !== Number(moveDialog.entry.slot_id)).map((slot) => {
+                const targetEntry = grid.entries.find((entry) => Number(entry.slot_id) === Number(slot.id)) || null;
+                const unavailable = targetEntry?.is_locked === 1 || (moveDialog.entry.is_locked === 1 && targetEntry != null);
+                return (
+                  <button key={slot.id} type="button" disabled={saving || unavailable} onClick={() => void moveEntry(slot.id)} className="rounded-lg border border-gray-200 p-3 text-right hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:opacity-60">
+                    <span className="block font-semibold">{slotLabel(slot)}</span>
+                    <span className={`mt-1 block text-xs ${unavailable ? 'text-amber-700' : 'text-gray-500'}`}>
+                      {targetEntry == null
+                        ? 'خانة فارغة — نقل'
+                        : unavailable
+                          ? `حصة ${targetEntry.subject_name} مثبتة أو يتطلب المصدر فك التثبيت أولًا`
+                          : `تبديل مع حصة ${targetEntry.subject_name}`}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>

@@ -30,7 +30,11 @@ test('weekly grid exposes explicit class/section flow, breaks and missing-teache
   assert.match(gridSource, /slot\.slot_type === 'break'/);
   assert.match(gridSource, /entry\.hard_conflicts\.length > 0/);
   assert.match(gridSource, /entry\.warnings\.length > 0/);
-  assert.doesNotMatch(gridSource, /draggable|onDragStart|onDrop/);
+  assert.match(gridSource, /draggable=\{entry\.is_locked !== 1 && !saving\}/);
+  assert.match(gridSource, /onDragStart/);
+  assert.match(gridSource, /onDragOver/);
+  assert.match(gridSource, /onDrop/);
+  assert.match(gridSource, /سحب أو نقل/);
 });
 
 test('each day cell renders its own slot identity without a representative-row substitution', () => {
@@ -72,12 +76,17 @@ test('grid progress distinguishes total, valid, invalid and remaining placements
   assert.ok(gridSource.includes('المجدول الصحيح'));
 });
 
-test('weekly grid uses explicit move/delete controls and server APIs', () => {
+test('weekly grid uses accessible move, atomic drop-swap and delete controls with server APIs', () => {
   assert.match(gridSource, /moveTimetableEntry/);
+  assert.match(gridSource, /dropTimetableEntry/);
   assert.match(gridSource, /deleteTimetableEntry/);
   assert.match(gridSource, /window\.confirm/);
+  assert.match(gridSource, /aria-live="polite"/);
+  assert.match(gridSource, /target_entry_id: targetEntry\?\.id \?\? null/);
+  assert.match(gridSource, /expected_revision: expectedRevision/);
   assert.match(apiSource, /\/api\/timetable\/grid/);
   assert.match(apiSource, /\/api\/timetable\/entries/);
+  assert.match(apiSource, /\/api\/timetable\/entries\/\$\{id\}\/drop/);
 });
 
 test('weekly grid ignores stale school, year, class and section responses', () => {
