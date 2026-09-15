@@ -48,6 +48,7 @@
     "test:result-publication": "node --experimental-strip-types --test --test-concurrency=1 test/result-publication.test.mjs",
     "test:official-promotion": "node --experimental-strip-types --test --test-concurrency=1 test/official-promotion.test.mjs",
     "test:official-promotion:local": "node --experimental-strip-types scripts/validate-official-promotion-local.mjs",
+    "test:official-books": "node --experimental-strip-types --test --test-concurrency=1 test/official-books.test.mjs",
     "test:settings": "node --experimental-strip-types --test test/settings-permissions.test.mjs",
     "test:subject-order": "node --experimental-strip-types --test test/subject-order.test.mjs",
     "test:subject-management": "node --experimental-strip-types --test test/subject-management.test.mjs test/subject-order.test.mjs",

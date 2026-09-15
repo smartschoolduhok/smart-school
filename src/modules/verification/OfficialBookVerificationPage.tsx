@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { verifyOfficialBook } from '../../lib/api';
+import { formatOfficialBookDate } from '../../lib/officialBookLayout';
 import { FileText, CheckCircle, XCircle, AlertTriangle, Loader2, QrCode } from 'lucide-react';
 
 interface VerificationData {
@@ -10,7 +11,7 @@ interface VerificationData {
   school_name: string;
   student_name?: string;
   employee_name?: string;
-  generated_at: string;
+  generated_at: string | number;
   status: string;
   verification_note?: string;
   cancelled_warning?: string;
@@ -115,7 +116,7 @@ export default function OfficialBookVerificationPage() {
             )}
             <div className="bg-gray-50 p-3 rounded-lg">
               <div className="text-xs text-gray-500 mb-1">تاريخ الإنشاء</div>
-              <div className="font-bold text-gray-900">{new Date(data.generated_at).toLocaleDateString('ar-IQ')}</div>
+              <div className="font-bold text-gray-900">{formatOfficialBookDate(data.generated_at)}</div>
             </div>
             <div className="bg-gray-50 p-3 rounded-lg">
               <div className="text-xs text-gray-500 mb-1">الحالة</div>

@@ -293,7 +293,7 @@ export interface OfficialBookTemplate {
 export interface OfficialBook {
   id: number;
   school_id: number;
-  template_id: number;
+  template_id: number | null;
   document_number: string;
   title: string;
   body_text: string;
