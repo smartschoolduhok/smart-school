@@ -6,7 +6,32 @@ Base: `36aabc0e42e5be2ef0d8da1d5dcb063c9caca9ef` (`main`, merged PR #47)
 
 Branch: `codex/phase-20e3-timetable-drag-drop`
 
-Status: Draft PR [#48](https://github.com/smartschoolduhok/smart-school/pull/48). The teacher-conflict visibility revision and its local quality gates are complete; push, CI, Cloudflare Preview, STAGING migration authorization and authenticated acceptance for this revision remain pending.
+Status: Draft PR [#48](https://github.com/smartschoolduhok/smart-school/pull/48). The implementation is pushed and its CI and Cloudflare Preview checks pass. The authorized STAGING continuation stopped at its mandatory preflight gate on 2026-09-15; migration 0037 and authenticated acceptance remain pending.
+
+## STAGING continuation checkpoint — stopped at preflight
+
+The authorized continuation was run from a clean, isolated worktree at implementation commit `0f152990db172d3d09b6ac4de034f52004619577` and tree `7d0d8961c11aa439159f4181a006741113b80919`. PR #48 was still open and Draft, Quality Gates run `34958910730` was successful and the immutable Preview was `https://6571ea9b.smart-school-staging.pages.dev/`. The tracked configuration contained exactly one D1 binding: `smart-school-staging-db`, ID `1bdb9c3d-08d6-4023-9cbc-64369d53198a`.
+
+A fresh full export was created outside the repository before any attempted mutation:
+
+- path: `C:\Users\ibrah\Documents\SmartSchoolBackups\phase20e3-staging-20260915T133234Z\smart-school-staging-db-full-before-0037.sql`;
+- size: `1,433,838` bytes;
+- SHA-256: `B09BCDC0DEEE64225D9AEC8CF515D9783C71A9ED92343EA3B3B4B8DDB8E1060F`.
+
+Read-only preflight proved 37 distinct migration rows in repository order through `0036_official_book_layout.sql`, exactly one pending file (`0037_timetable_teacher_collision_visibility.sql`), an empty `PRAGMA foreign_key_check`, and both canonical timetable validation triggers with the pre-0037 teacher-collision block and all other guards present. The complete typed snapshot covered 62 tables (60 application tables) and has hash `cd4981fdc425a9216294c4bfc2371a691b0f5ec062fb199622eab71c2dfd6405`.
+
+An isolated Local D1 rehearsal restored 2,295 export statements: 2,294 normal statements plus one oversized `import_jobs` row using 16 bound parameters and 360,514 bound bytes. The restored schema and typed values matched the read-only STAGING snapshot exactly across all 62 tables. Applying only 0037 locally produced 38/38 migrations with no pending file and a clean foreign-key check. Every historical column and value remained identical, all application counters remained unchanged, and the only schema changes were the two intended timetable validation triggers. Their teacher-collision abort was removed while the group-collision, teacher-unavailable, weekly, daily, working-days and consecutive-period guards remained present.
+
+The mandatory readiness gate did not pass:
+
+- school 3 has `academic_grade_policy_readiness = partial`: 2 of 6 active classes are configured and approved;
+- school 1 has `result_card_publication_readiness = inconsistent`: 22 cards, comprising 6 draft, 4 published and 12 withdrawn. The same inconsistency was documented before this task, but the draft count has increased by one since the Phase 20E.2 checkpoint.
+
+These conditions were not repaired or waived because neither action was authorized. Consequently, no remote migration apply was run and 0037 remains pending.
+
+The exported snapshot also proved that the only clearly labelled QA tenant, school 2 (`مدرسة Staging الثانية`), has the active QA classes and sections but zero subjects, teachers/employees, timetable days, lesson slots, teaching loads or timetable entries. It has no active school-scoped administrator with documented safe credentials. The runbook explicitly requires stopping instead of creating prerequisites or using real records, so no QA lessons were created and no authenticated Preview mutation was attempted.
+
+Machine-readable evidence remains outside Git at `C:\Users\ibrah\Documents\SmartSchoolBackups\phase20e3-staging-20260915T133234Z\phase20e3-readonly-preflight.json` and `C:\Users\ibrah\Documents\SmartSchoolBackups\phase20e3-staging-20260915T133234Z\phase20e3-local-rehearsal-evidence.json`. No Production resource or other D1 database was accessed; no remote seed/reset, deletion, manual deploy, force-push, merge or auto-merge occurred.
 
 ## 1. Scope
 
