@@ -8,6 +8,7 @@ import {
   Calculator,
   CalendarDays,
   ChevronDown,
+  ClipboardCheck,
   CreditCard,
   FileText,
   FolderCog,
@@ -30,6 +31,7 @@ import {
   ACADEMIC_ACCESS_ROLES,
   ACADEMIC_MANAGEMENT_ROLES,
   ANALYTICS_ACCESS_ROLES,
+  ATTENDANCE_VIEW_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   FEE_MANAGEMENT_ROLES,
   FINANCE_ACCESS_ROLES,
@@ -79,6 +81,7 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
     icon: <BookOpen size={19} />,
     items: [
       { label: 'الدرجات', path: '/grades', icon: <Calculator size={18} />, allowedRoles: GRADE_VIEW_ROLES },
+      { label: 'الحضور والغياب', path: '/attendance', icon: <ClipboardCheck size={18} />, allowedRoles: ATTENDANCE_VIEW_ROLES },
       { label: 'الجدول الدراسي', path: '/timetable', icon: <CalendarDays size={18} />, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
       { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={18} />, allowedRoles: ACADEMIC_ACCESS_ROLES },
       { label: 'المواد', path: '/subjects', icon: <BookOpen size={18} />, allowedRoles: ACADEMIC_ACCESS_ROLES },

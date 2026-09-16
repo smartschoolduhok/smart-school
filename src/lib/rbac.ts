@@ -83,6 +83,18 @@ export const DASHBOARD_ACCESS_ROLES: readonly RoleKey[] = [...ACADEMIC_ACCESS_RO
 
 export const ANALYTICS_ACCESS_ROLES: readonly RoleKey[] = ACADEMIC_ACCESS_ROLES;
 
+// Attendance is broader than timetable administration: teachers operate only
+// their linked lessons, registrars and school management supervise the school,
+// and parents use a separate resource-scoped read endpoint for linked children.
+export const ATTENDANCE_STAFF_ROLES: readonly RoleKey[] = ACADEMIC_ACCESS_ROLES;
+
+export const ATTENDANCE_MANAGEMENT_ROLES: readonly RoleKey[] = ACADEMIC_MANAGEMENT_ROLES;
+
+export const ATTENDANCE_VIEW_ROLES: readonly RoleKey[] = [
+  ...ATTENDANCE_STAFF_ROLES,
+  'parent',
+];
+
 // Accountants need the employee roster for salary workflows, but not record mutation rights.
 export const EMPLOYEE_ACCESS_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,
