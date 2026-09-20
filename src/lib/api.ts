@@ -7,6 +7,12 @@
 import type { AcademicYearRecord } from './academicYears';
 import { clearAuthentication, getStoredAuthToken } from './authStorage';
 import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan } from './weekSetup';
+import type {
+  AttendanceLessonDetail,
+  AttendanceLessonSummary,
+  AttendanceSaveRequest,
+  ParentAttendanceFeed,
+} from './attendance';
 export function getWeekSetup(scope: Required<WeekScope>) {
   return fetchApi<WeekSnapshot>(`/api/timetable/week-setup?${new URLSearchParams({school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id)})}`);
 }
@@ -118,6 +124,31 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   } catch (err: any) {
     return { error: err.message || 'خطأ في الاتصال بالخادم' };
   }
+}
+
+// ===========================================
+// Lesson attendance (Phase 21A)
+// ===========================================
+export function getAttendanceLessons(schoolId: number, date: string) {
+  const query = new URLSearchParams({ school_id: String(schoolId), date });
+  return fetchApi<AttendanceLessonSummary[]>(`/api/attendance/lessons?${query}`);
+}
+
+export function getAttendanceLesson(schoolId: number, timetableEntryId: number, date: string) {
+  const query = new URLSearchParams({ school_id: String(schoolId), date });
+  return fetchApi<AttendanceLessonDetail>(`/api/attendance/lessons/${timetableEntryId}?${query}`);
+}
+
+export function saveAttendanceLesson(timetableEntryId: number, data: AttendanceSaveRequest) {
+  return fetchApi<AttendanceLessonDetail>(`/api/attendance/lessons/${timetableEntryId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function getParentAttendance(from: string, to: string) {
+  const query = new URLSearchParams({ from, to });
+  return fetchApi<ParentAttendanceFeed>(`/api/attendance/parent?${query}`);
 }
 
 // Dashboard

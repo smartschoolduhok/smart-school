@@ -6,6 +6,7 @@
 
 import { Hono } from 'hono'
 import { registerFinanceRoutes } from './lib/financeFeesDb'
+import { registerAttendanceRoutes } from './lib/attendanceDb'
 import { parseWeekRequest, planWeekSetup, publicWeekSnapshot, WeekSetupError } from './lib/weekSetup'
 import { loadWeekSetup, buildWeekApplyStatements, readWeekJson, weekDatabaseError } from './lib/weekSetupDb'
 import { parseMatrixRequest, parseMatrixCopyRequest, planTeachingLoadMatrix, planTeachingLoadCopy, MAX_MATRIX_CHANGES } from './lib/teachingLoadMatrix'
@@ -9851,6 +9852,9 @@ function mapTreasuryDomainError(error: unknown, fallback: string): {
 
 // Finance routes share strict role/school validation and the atomic ledger engine.
 registerFinanceRoutes(app);
+
+// Lesson attendance routes share timetable, teacher-link and parent-link authority.
+registerAttendanceRoutes(app);
 
 // GET /api/verify/receipt/:token
 // Public endpoint — no JWT required
