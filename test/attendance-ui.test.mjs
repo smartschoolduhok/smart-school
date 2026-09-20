@@ -68,6 +68,10 @@ test('student attendance editor exposes every agreed state, delay and note visib
   assert.match(page, /grid gap-3 lg:grid-cols-2/);
 });
 
+test('student attendance cards can shrink inside the 390px single-column grid', () => {
+  assert.match(page, /<article className="min-w-0 rounded-2xl border border-gray-200 bg-white p-4">/);
+});
+
 test('parent view is a confirmed-only child feed and never requests broad attendance data', () => {
   for (const label of ['حضور أبنائي', 'سجلات الحصص التي اعتمدتها المدرسة فقط', 'ملاحظة المدرسة']) {
     assert.ok(page.includes(label), label);

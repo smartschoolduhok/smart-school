@@ -144,7 +144,7 @@ function StudentAttendanceRow({
   }
 
   return (
-    <article className="rounded-2xl border border-gray-200 bg-white p-4">
+    <article className="min-w-0 rounded-2xl border border-gray-200 bg-white p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h3 className="truncate font-bold text-gray-900">{record.student_name}</h3>
