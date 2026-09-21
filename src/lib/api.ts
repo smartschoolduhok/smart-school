@@ -13,6 +13,14 @@ import type {
   AttendanceSaveRequest,
   ParentAttendanceFeed,
 } from './attendance';
+import type {
+  GateAttendanceSettings,
+  GateAttendanceSettingsInput,
+  NotificationFeed,
+  ParentGateAttendanceFeed,
+  StudentGateCard,
+  StudentGateEvent,
+} from './gateAttendance';
 export function getWeekSetup(scope: Required<WeekScope>) {
   return fetchApi<WeekSnapshot>(`/api/timetable/week-setup?${new URLSearchParams({school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id)})}`);
 }
@@ -149,6 +157,94 @@ export function saveAttendanceLesson(timetableEntryId: number, data: AttendanceS
 export function getParentAttendance(from: string, to: string) {
   const query = new URLSearchParams({ from, to });
   return fetchApi<ParentAttendanceFeed>(`/api/attendance/parent?${query}`);
+}
+
+// ===========================================
+// Student school-gate attendance (Phase 21B)
+// ===========================================
+export function getGateAttendanceSettings(schoolId: number) {
+  return fetchApi<GateAttendanceSettings>(`/api/gate-attendance/settings?school_id=${schoolId}`);
+}
+
+export function saveGateAttendanceSettings(data: GateAttendanceSettingsInput) {
+  return fetchApi<GateAttendanceSettings>('/api/gate-attendance/settings', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function getStudentGateCards(schoolId: number, query = '', status: 'active' | 'revoked' | 'all' = 'active') {
+  const params = new URLSearchParams({ school_id: String(schoolId), query, status });
+  return fetchApi<StudentGateCard[]>(`/api/gate-attendance/cards?${params}`);
+}
+
+export function issueStudentGateCard(schoolId: number, studentId: number) {
+  return fetchApi<StudentGateCard>('/api/gate-attendance/cards', {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, student_id: studentId }),
+  });
+}
+
+export function revokeStudentGateCard(cardId: number, schoolId: number, reason: string) {
+  return fetchApi<StudentGateCard>(`/api/gate-attendance/cards/${cardId}/revoke`, {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, reason }),
+  });
+}
+
+export function scanStudentGateCard(data: {
+  school_id: number;
+  card_payload: string;
+  direction: 'entry' | 'exit';
+  gate_label: string | null;
+}) {
+  return fetchApi<StudentGateEvent>('/api/gate-attendance/scan', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function createManualStudentGateEvent(data: {
+  school_id: number;
+  student_id: number;
+  direction: 'entry' | 'exit';
+  occurred_at: number;
+  gate_label: string | null;
+  note: string | null;
+  reason: string;
+}) {
+  return fetchApi<StudentGateEvent>('/api/gate-attendance/manual', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function getStudentGateEvents(schoolId: number, date: string) {
+  const params = new URLSearchParams({ school_id: String(schoolId), date });
+  return fetchApi<StudentGateEvent[]>(`/api/gate-attendance/events?${params}`);
+}
+
+export function voidStudentGateEvent(eventId: number, schoolId: number, reason: string) {
+  return fetchApi<StudentGateEvent>(`/api/gate-attendance/events/${eventId}/void`, {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, reason }),
+  });
+}
+
+export function getParentGateAttendance(from: string, to: string) {
+  const params = new URLSearchParams({ from, to });
+  return fetchApi<ParentGateAttendanceFeed>(`/api/gate-attendance/parent?${params}`);
+}
+
+export function getNotifications(limit = 20) {
+  return fetchApi<NotificationFeed>(`/api/notifications?limit=${limit}`);
+}
+
+export function markNotificationRead(notificationKey: string) {
+  return fetchApi<{ notification_key: string; read_at: number }>(`/api/notifications/${notificationKey}/read`, {
+    method: 'POST',
+    body: '{}',
+  });
 }
 
 // Dashboard

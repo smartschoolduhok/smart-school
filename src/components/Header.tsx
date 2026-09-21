@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Bell, Search, Menu } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
+import { getNotifications, markNotificationRead } from '../lib/api';
+import type { NotificationFeed } from '../lib/gateAttendance';
 import { getVisibleNavigationItems } from './Sidebar';
 
 interface HeaderProps {
@@ -15,6 +17,9 @@ export default function Header({ onMenuClick }: HeaderProps) {
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [notificationFeed, setNotificationFeed] = useState<NotificationFeed>({ unread_count: 0, notifications: [] });
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notificationsError, setNotificationsError] = useState('');
   const notificationsRef = useRef<HTMLDivElement>(null);
   const notificationsButtonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLFormElement>(null);
@@ -53,6 +58,21 @@ export default function Header({ onMenuClick }: HeaderProps) {
     setIsSearchOpen(false);
   }, [location.pathname]);
 
+  async function loadNotifications() {
+    if (!user) return;
+    setNotificationsLoading(true);
+    setNotificationsError('');
+    const response = await getNotifications(20);
+    if (response.error) setNotificationsError(response.error);
+    else if (response.data) setNotificationFeed(response.data);
+    setNotificationsLoading(false);
+  }
+
+  useEffect(() => {
+    setNotificationFeed({ unread_count: 0, notifications: [] });
+    if (user) void loadNotifications();
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function go(path: string) {
     navigate(path);
     setQuery('');
@@ -62,6 +82,23 @@ export default function Header({ onMenuClick }: HeaderProps) {
   function submitSearch(event: React.FormEvent) {
     event.preventDefault();
     if (matches[0]) go(matches[0].path);
+  }
+
+  async function openNotification(notificationKey: string, referenceType: string | null) {
+    const current = notificationFeed.notifications.find((item) => item.notification_key === notificationKey);
+    if (current && current.read_at == null) {
+      const response = await markNotificationRead(notificationKey);
+      if (!response.error && response.data) {
+        setNotificationFeed((feed) => ({
+          unread_count: Math.max(0, feed.unread_count - 1),
+          notifications: feed.notifications.map((item) => item.notification_key === notificationKey
+            ? { ...item, read_at: response.data?.read_at || item.read_at }
+            : item),
+        }));
+      }
+    }
+    setIsNotificationsOpen(false);
+    if (referenceType === 'student_gate_event') navigate('/attendance');
   }
 
   return (
@@ -115,7 +152,12 @@ export default function Header({ onMenuClick }: HeaderProps) {
               id="notifications-button"
               ref={notificationsButtonRef}
               type="button"
-              onClick={() => setIsNotificationsOpen(open => !open)}
+              onClick={() => {
+                setIsNotificationsOpen((open) => {
+                  if (!open) void loadNotifications();
+                  return !open;
+                });
+              }}
               className="relative rounded-lg p-2 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
               aria-label="الإشعارات"
               aria-haspopup="menu"
@@ -123,6 +165,11 @@ export default function Header({ onMenuClick }: HeaderProps) {
               aria-controls="notifications-menu"
             >
               <Bell size={20} className="text-gray-600" />
+              {notificationFeed.unread_count > 0 && (
+                <span className="absolute -left-1 -top-1 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-black text-white">
+                  {notificationFeed.unread_count > 99 ? '99+' : notificationFeed.unread_count}
+                </span>
+              )}
             </button>
 
             {isNotificationsOpen && (
@@ -132,8 +179,28 @@ export default function Header({ onMenuClick }: HeaderProps) {
                 aria-labelledby="notifications-button"
                 className="absolute left-0 z-50 mt-2 w-72 max-w-[90vw] overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg"
               >
-                <div className="border-b border-gray-100 px-4 py-3 text-sm font-semibold text-gray-900">الإشعارات</div>
-                <p role="status" className="px-4 py-8 text-center text-sm text-gray-500">لا توجد إشعارات جديدة</p>
+                <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3"><span className="text-sm font-semibold text-gray-900">الإشعارات</span>{notificationFeed.unread_count > 0 && <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700">{notificationFeed.unread_count} جديد</span>}</div>
+                <div className="max-h-96 overflow-y-auto">
+                  {notificationsLoading ? (
+                    <p role="status" className="px-4 py-8 text-center text-sm text-gray-500">جاري تحميل الإشعارات...</p>
+                  ) : notificationsError ? (
+                    <p role="alert" className="px-4 py-6 text-center text-sm text-red-700">{notificationsError}</p>
+                  ) : notificationFeed.notifications.length === 0 ? (
+                    <p role="status" className="px-4 py-8 text-center text-sm text-gray-500">لا توجد إشعارات جديدة</p>
+                  ) : notificationFeed.notifications.map((notification) => (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      key={notification.notification_key}
+                      onClick={() => void openNotification(notification.notification_key, notification.reference_type)}
+                      className={`block w-full border-b border-gray-100 px-4 py-3 text-right last:border-0 hover:bg-gray-50 ${notification.read_at == null ? 'bg-blue-50/70' : 'bg-white'}`}
+                    >
+                      <span className="flex items-start justify-between gap-2"><strong className="text-sm text-gray-900">{notification.title}</strong>{notification.read_at == null && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-blue-600" />}</span>
+                      <span className="mt-1 block text-xs leading-5 text-gray-600">{notification.body}</span>
+                      <span className="mt-1 block text-[11px] text-gray-400">{new Date(notification.created_at * 1000).toLocaleString('ar-IQ', { timeZone: 'Asia/Baghdad' })}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>

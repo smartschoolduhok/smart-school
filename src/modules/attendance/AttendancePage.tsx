@@ -5,9 +5,12 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Clock3,
+  DoorOpen,
   Eye,
   EyeOff,
   Loader2,
+  LogIn,
+  LogOut,
   RefreshCw,
   Save,
   Send,
@@ -22,6 +25,7 @@ import {
   getAttendanceLesson,
   getAttendanceLessons,
   getParentAttendance,
+  getParentGateAttendance,
   saveAttendanceLesson,
 } from '../../lib/api';
 import {
@@ -34,6 +38,11 @@ import {
   type AttendanceStudentRecord,
   type ParentAttendanceFeed,
 } from '../../lib/attendance';
+import {
+  GATE_DIRECTION_LABELS,
+  GATE_STATUS_LABELS,
+  type ParentGateAttendanceFeed,
+} from '../../lib/gateAttendance';
 import { ATTENDANCE_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 
 const STATUS_COLORS: Record<AttendanceStatus, string> = {
@@ -455,6 +464,7 @@ function ParentAttendance() {
   const [from, setFrom] = useState(shiftDate(today, -30));
   const [to, setTo] = useState(today);
   const [feed, setFeed] = useState<ParentAttendanceFeed | null>(null);
+  const [gateFeed, setGateFeed] = useState<ParentGateAttendanceFeed | null>(null);
   const [selectedStudentId, setSelectedStudentId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -464,11 +474,15 @@ function ParentAttendance() {
     const generation = ++generationRef.current;
     setLoading(true);
     setError('');
-    const response = await getParentAttendance(from, to);
+    const [response, gateResponse] = await Promise.all([
+      getParentAttendance(from, to),
+      getParentGateAttendance(from, to),
+    ]);
     if (generation !== generationRef.current) return;
-    if (response.error) setError(response.error);
+    if (response.error || gateResponse.error) setError(response.error || gateResponse.error || 'تعذر تحميل الحضور');
     else if (response.data) {
       setFeed(response.data);
+      setGateFeed(gateResponse.data || null);
       setSelectedStudentId((current) => response.data?.students.some((student) => student.id === current) ? current : response.data?.students[0]?.id || null);
     }
     setLoading(false);
@@ -476,6 +490,7 @@ function ParentAttendance() {
 
   useEffect(() => { void load(); }, [load]);
   const records = useMemo(() => (feed?.records || []).filter((record) => selectedStudentId == null || record.student_id === selectedStudentId), [feed, selectedStudentId]);
+  const gateEvents = useMemo(() => (gateFeed?.events || []).filter((event) => selectedStudentId == null || event.student_id === selectedStudentId), [gateFeed, selectedStudentId]);
   const summary = useMemo(() => ({
     absent: records.filter((record) => record.status === 'absent').length,
     excused: records.filter((record) => record.status === 'excused').length,
@@ -489,7 +504,7 @@ function ParentAttendance() {
         <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary-50 text-primary-700"><ClipboardCheck size={23} /></div>
         <div>
           <h1 className="text-2xl font-bold text-gray-900">حضور أبنائي</h1>
-          <p className="text-sm text-gray-500">تظهر هنا سجلات الحصص التي اعتمدتها المدرسة فقط.</p>
+          <p className="text-sm text-gray-500">دخول وخروج المدرسة، وسجلات الحصص التي اعتمدتها المدرسة فقط.</p>
         </div>
       </div>
 
@@ -516,6 +531,31 @@ function ParentAttendance() {
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-center"><p className="text-xs text-rose-700">غائب</p><p className="mt-1 text-2xl font-bold text-rose-900">{summary.absent}</p></div>
             <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-center"><p className="text-xs text-sky-700">بعذر</p><p className="mt-1 text-2xl font-bold text-sky-900">{summary.excused}</p></div>
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-center"><p className="text-xs text-amber-700">متأخر</p><p className="mt-1 text-2xl font-bold text-amber-900">{summary.late}</p></div>
+          </section>
+
+          <section className="space-y-3">
+            <div className="flex items-center gap-2"><DoorOpen size={19} className="text-primary-600" /><h2 className="font-bold text-gray-900">دخول وخروج المدرسة</h2></div>
+            {gateEvents.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-6 text-center text-sm text-gray-500">لا توجد حركات بوابة ضمن هذه الفترة.</div>
+            ) : gateEvents.map((event) => (
+              <article key={`gate-${event.id}`} className="rounded-xl border border-gray-200 bg-white p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className={`mt-0.5 rounded-full p-2 ${event.event_type === 'entry' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>
+                      {event.event_type === 'entry' ? <LogIn size={18} /> : <LogOut size={18} />}
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-gray-900">{GATE_DIRECTION_LABELS[event.event_type]}</h3>
+                      <p className="mt-1 text-sm text-gray-600">{arabicDate(event.attendance_date)} · {new Date(event.occurred_at * 1000).toLocaleTimeString('ar-IQ', { timeZone: 'Asia/Baghdad', hour: '2-digit', minute: '2-digit' })}</p>
+                      {event.gate_label && <p className="mt-1 text-xs text-gray-500">{event.gate_label}</p>}
+                    </div>
+                  </div>
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${event.attendance_status === 'late' ? 'bg-amber-100 text-amber-800' : event.attendance_status === 'early_exit' ? 'bg-orange-100 text-orange-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                    {GATE_STATUS_LABELS[event.attendance_status]}{event.late_minutes > 0 ? ` · ${event.late_minutes} دقيقة` : ''}
+                  </span>
+                </div>
+              </article>
+            ))}
           </section>
 
           {records.length === 0 ? (
