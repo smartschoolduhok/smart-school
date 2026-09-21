@@ -9,6 +9,7 @@ import {
   CalendarDays,
   ChevronDown,
   ClipboardCheck,
+  Clock3,
   CreditCard,
   DoorOpen,
   FileText,
@@ -34,6 +35,7 @@ import {
   ANALYTICS_ACCESS_ROLES,
   ATTENDANCE_VIEW_ROLES,
   GATE_ATTENDANCE_VIEW_ROLES,
+  STAFF_ATTENDANCE_VIEW_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   FEE_MANAGEMENT_ROLES,
   FINANCE_ACCESS_ROLES,
@@ -98,6 +100,7 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
     items: [
       { label: 'الأقساط', path: '/fees', icon: <CreditCard size={18} />, allowedRoles: FEE_MANAGEMENT_ROLES },
       { label: 'الخزنة', path: '/treasury', icon: <Wallet size={18} />, allowedRoles: FINANCE_ACCESS_ROLES },
+      { label: 'حضور الموظفين', path: '/staff-attendance', icon: <Clock3 size={18} />, allowedRoles: STAFF_ATTENDANCE_VIEW_ROLES },
       { label: 'الموظفون والرواتب', path: '/employees', icon: <UserCheck size={18} />, allowedRoles: EMPLOYEE_ACCESS_ROLES },
     ],
   },

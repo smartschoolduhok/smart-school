@@ -6,7 +6,7 @@ Base: `54f29ff` (`main`, merged PR #48)
 
 Branch: `codex/phase-21a-lesson-attendance`
 
-Status: implementation, STAGING migration, authenticated Preview QA, responsive correction, soft cleanup and final postflight complete. PR #49 remains Draft.
+Status: implementation, STAGING migration, authenticated Preview QA, responsive correction, soft cleanup and final postflight completed; PR #49 was subsequently merged into `main` as commit `deb5125`.
 
 ## 1. Scope
 
@@ -177,4 +177,4 @@ The final read-only postflight found migration history `39`, pending `0`, foreig
 
 ## 11. Safety boundary
 
-Only `smart-school-staging-db` (`1bdb9c3d-08d6-4023-9cbc-64369d53198a`) was contacted remotely. No Production database or other Remote D1 was contacted. No remote seed/reset, manual deploy, force-push, merge or auto-merge was performed. Deployment was produced only by the existing automatic Cloudflare Pages integration, and PR #49 remains Draft.
+Only `smart-school-staging-db` (`1bdb9c3d-08d6-4023-9cbc-64369d53198a`) was contacted remotely during the documented QA. No Production database or other Remote D1 was contacted. No remote seed/reset, manual deploy, force-push or auto-merge was performed. Deployment was produced only by the existing automatic Cloudflare Pages integration; PR #49 was merged later through the normal reviewed GitHub flow.

@@ -8,6 +8,7 @@ import { Hono } from 'hono'
 import { registerFinanceRoutes } from './lib/financeFeesDb'
 import { registerAttendanceRoutes } from './lib/attendanceDb'
 import { registerGateAttendanceRoutes } from './lib/gateAttendanceDb'
+import { registerStaffAttendanceRoutes } from './lib/staffAttendanceDb'
 import { parseWeekRequest, planWeekSetup, publicWeekSnapshot, WeekSetupError } from './lib/weekSetup'
 import { loadWeekSetup, buildWeekApplyStatements, readWeekJson, weekDatabaseError } from './lib/weekSetupDb'
 import { parseMatrixRequest, parseMatrixCopyRequest, planTeachingLoadMatrix, planTeachingLoadCopy, MAX_MATRIX_CHANGES } from './lib/teachingLoadMatrix'
@@ -9859,6 +9860,9 @@ registerAttendanceRoutes(app);
 
 // School-gate cards, immutable movements and scoped parent notifications.
 registerGateAttendanceRoutes(app);
+
+// Employee/teacher cards, immutable movements, reporting and linked self-view.
+registerStaffAttendanceRoutes(app);
 
 // GET /api/verify/receipt/:token
 // Public endpoint — no JWT required

@@ -6,7 +6,7 @@ Base: `ae69565` (`main`, merged PR #45)
 
 Branch: `codex/phase-20e-result-card-customization`
 
-Status: implementation and local validation are complete on Draft PR #46; CI, Preview and visual acceptance for the latest revision are pending.
+Status: completed and merged into `main` through PR #46 as commit `9723a18` after its review gates.
 
 ## 1. Scope
 

@@ -21,6 +21,15 @@ import type {
   StudentGateCard,
   StudentGateEvent,
 } from './gateAttendance';
+import type {
+  EmployeeAttendanceCard,
+  EmployeeAttendanceEvent,
+  EmployeeAttendanceSummary,
+  MyStaffAttendanceFeed,
+  StaffAttendanceEmployee,
+  StaffAttendanceSettings,
+  StaffAttendanceSettingsInput,
+} from './staffAttendance';
 export function getWeekSetup(scope: Required<WeekScope>) {
   return fetchApi<WeekSnapshot>(`/api/timetable/week-setup?${new URLSearchParams({school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id)})}`);
 }
@@ -234,6 +243,98 @@ export function voidStudentGateEvent(eventId: number, schoolId: number, reason: 
 export function getParentGateAttendance(from: string, to: string) {
   const params = new URLSearchParams({ from, to });
   return fetchApi<ParentGateAttendanceFeed>(`/api/gate-attendance/parent?${params}`);
+}
+
+// ===========================================
+// Employee and teacher attendance (Phase 21C)
+// ===========================================
+export function getStaffAttendanceSettings(schoolId: number) {
+  return fetchApi<StaffAttendanceSettings>(`/api/staff-attendance/settings?school_id=${schoolId}`);
+}
+
+export function saveStaffAttendanceSettings(data: StaffAttendanceSettingsInput) {
+  return fetchApi<StaffAttendanceSettings>('/api/staff-attendance/settings', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function getStaffAttendanceEmployees(schoolId: number, query = '') {
+  const params = new URLSearchParams({ school_id: String(schoolId), query });
+  return fetchApi<StaffAttendanceEmployee[]>(`/api/staff-attendance/employees?${params}`);
+}
+
+export function getEmployeeAttendanceCards(
+  schoolId: number,
+  query = '',
+  status: 'active' | 'revoked' | 'all' = 'active',
+) {
+  const params = new URLSearchParams({ school_id: String(schoolId), query, status });
+  return fetchApi<EmployeeAttendanceCard[]>(`/api/staff-attendance/cards?${params}`);
+}
+
+export function issueEmployeeAttendanceCard(schoolId: number, employeeId: number) {
+  return fetchApi<EmployeeAttendanceCard>('/api/staff-attendance/cards', {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, employee_id: employeeId }),
+  });
+}
+
+export function revokeEmployeeAttendanceCard(cardId: number, schoolId: number, reason: string) {
+  return fetchApi<EmployeeAttendanceCard>(`/api/staff-attendance/cards/${cardId}/revoke`, {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, reason }),
+  });
+}
+
+export function scanEmployeeAttendanceCard(data: {
+  school_id: number;
+  card_payload: string;
+  direction: 'entry' | 'exit';
+  gate_label: string | null;
+}) {
+  return fetchApi<EmployeeAttendanceEvent>('/api/staff-attendance/scan', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function createManualEmployeeAttendanceEvent(data: {
+  school_id: number;
+  employee_id: number;
+  direction: 'entry' | 'exit';
+  occurred_at: number;
+  gate_label: string | null;
+  note: string | null;
+  reason: string;
+}) {
+  return fetchApi<EmployeeAttendanceEvent>('/api/staff-attendance/manual', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function getEmployeeAttendanceEvents(schoolId: number, date: string, employeeId?: number | null) {
+  const params = new URLSearchParams({ school_id: String(schoolId), date });
+  if (employeeId != null) params.set('employee_id', String(employeeId));
+  return fetchApi<EmployeeAttendanceEvent[]>(`/api/staff-attendance/events?${params}`);
+}
+
+export function getEmployeeAttendanceSummary(schoolId: number, date: string) {
+  const params = new URLSearchParams({ school_id: String(schoolId), date });
+  return fetchApi<EmployeeAttendanceSummary[]>(`/api/staff-attendance/summary?${params}`);
+}
+
+export function voidEmployeeAttendanceEvent(eventId: number, schoolId: number, reason: string) {
+  return fetchApi<EmployeeAttendanceEvent>(`/api/staff-attendance/events/${eventId}/void`, {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, reason }),
+  });
+}
+
+export function getMyStaffAttendance(from: string, to: string) {
+  const params = new URLSearchParams({ from, to });
+  return fetchApi<MyStaffAttendanceFeed>(`/api/staff-attendance/self?${params}`);
 }
 
 export function getNotifications(limit = 20) {
