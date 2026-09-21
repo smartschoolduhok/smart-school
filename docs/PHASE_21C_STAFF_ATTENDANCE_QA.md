@@ -6,7 +6,7 @@ Base: `719b9c8` (`main`, merged PR #50)
 
 Branch: `codex/phase-21c-staff-attendance`
 
-Status: implementation and local quality gates are complete. Remote branch, Draft PR, immutable Preview acceptance and migration `0040` on STAGING remain pending. No remote database or Production environment was contacted.
+Status: implementation and local quality gates are complete. The remote branch is published and [Draft PR #51](https://github.com/smartschoolduhok/smart-school/pull/51) is open. Immutable Preview acceptance and migration `0040` on STAGING remain pending. No remote database or Production environment was contacted.
 
 ## 1. Scope
 
