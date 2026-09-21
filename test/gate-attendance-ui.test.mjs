@@ -7,6 +7,7 @@ import {
   calculateGateStatus,
   createGateCardPayload,
   parseGateSettingsInput,
+  reconcileIssuedGateCard,
   verifyGateCardPayload,
 } from '../src/lib/gateAttendance.ts';
 import {
@@ -67,6 +68,15 @@ test('cards are printable only while active, revocable and never expose a stored
   assert.match(page, /window\.print\(\)/);
   assert.match(worker, /crypto\.randomUUID\(\)/);
   assert.doesNotMatch(migration, /signature\s+TEXT|qr_value\s+TEXT/i);
+});
+
+test('a refreshed card list cannot leave a stale printable active-card preview', () => {
+  const active = { id: 41, status: 'active', qr_value: 'active-value' };
+  const revoked = { id: 41, status: 'revoked', qr_value: 'revoked-value' };
+  assert.equal(reconcileIssuedGateCard(null, [revoked]), null);
+  assert.equal(reconcileIssuedGateCard(active, []), null);
+  assert.equal(reconcileIssuedGateCard(active, [revoked]), revoked);
+  assert.match(page, /setIssuedCard\(\(current\) => reconcileIssuedGateCard\(current, refreshedCards\)\)/);
 });
 
 test('signed QR payload validates exactly and rejects a changed signature', async () => {

@@ -55,6 +55,14 @@ export interface StudentGateCard {
   qr_value: string;
 }
 
+export function reconcileIssuedGateCard(
+  current: StudentGateCard | null,
+  refreshedCards: StudentGateCard[],
+): StudentGateCard | null {
+  if (current == null) return null;
+  return refreshedCards.find((card) => card.id === current.id) || null;
+}
+
 export interface StudentGateEvent {
   id: number;
   event_key: string;

@@ -39,6 +39,7 @@ import {
 import {
   GATE_DIRECTION_LABELS,
   GATE_STATUS_LABELS,
+  reconcileIssuedGateCard,
   type GateAttendanceSettings,
   type GateAttendanceSettingsInput,
   type GateDirection,
@@ -185,7 +186,11 @@ export default function GateAttendancePage() {
     const response = await getStudentGateCards(schoolId, '', showRevoked ? 'all' : 'active');
     if (!valid()) return;
     if (response.error) setError(response.error);
-    else setCards(response.data || []);
+    else {
+      const refreshedCards = response.data || [];
+      setCards(refreshedCards);
+      setIssuedCard((current) => reconcileIssuedGateCard(current, refreshedCards));
+    }
   }, [captureSchoolRequest, schoolId, showRevoked]);
 
   const loadAll = useCallback(async () => {
@@ -215,7 +220,9 @@ export default function GateAttendancePage() {
       });
     }
     setEvents(eventsResponse.data || []);
-    setCards(cardsResponse.data || []);
+    const refreshedCards = cardsResponse.data || [];
+    setCards(refreshedCards);
+    setIssuedCard((current) => reconcileIssuedGateCard(current, refreshedCards));
     setStudents((studentsResponse.data || []).filter((student: Record<string, any>) => student.status === 'active'));
     setLoading(false);
   }, [captureSchoolRequest, date, schoolId, showRevoked]);
