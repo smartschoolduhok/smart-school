@@ -6,7 +6,7 @@ Base: `deb5125` (`main`, merged PR #49)
 
 Branch: `codex/phase-21b-gate-attendance`
 
-Status: STAGING backup, isolated restore, migration and authenticated functional QA complete. A stale revoked-card print-preview defect found during the 390 px pass is fixed with a regression test; fixed Preview verification and soft cleanup are the remaining gate steps.
+Status: STAGING backup, isolated restore, migration, authenticated Preview QA, defect repair, soft cleanup and automatic Quality Gates/Cloudflare Preview verification complete. PR #50 remains Draft.
 
 ## 1. Scope
 
@@ -150,8 +150,25 @@ The immutable Preview for head `43842f1` was `https://b066066e.smart-school-stag
 - the parent attendance screen visibly showed the late entry and early exit, and the notification inbox showed exactly two matching notifications;
 - both sessions had zero application console errors, zero `Network.loadingFailed` events and zero HTTP responses at or above 400 during the UI pass.
 
-The pass found one real defect: if another session revoked the currently previewed card, Refresh updated the card list but left the old active-card preview and print button visible. The UI now reconciles the selected preview against every refreshed card response; a missing card clears the preview and a returned revoked card replaces it. A dedicated regression test covers both cases. Focused gate tests passed `13/13`; the complete regression matrix passed `1564/1564`, with zero failure and zero skip. TypeScript, local finance/week-setup/teaching-load/seed/backup-restore validations and both production builds passed. Fixed Preview verification remains required before cleanup.
+The pass found one real defect: if another session revoked the currently previewed card, Refresh updated the card list but left the old active-card preview and print button visible. The UI now reconciles the selected preview against every refreshed card response; a missing card clears the preview and a returned revoked card replaces it. A dedicated regression test covers both cases.
 
-## 10. Safety boundary
+The repair was committed as `9604ad2c8e89de4cf65a86be4483910e8de63cf2`. Its immutable automatic Preview, `https://7d49c01a.smart-school-staging.pages.dev`, passed the repeated 390 px/RTL check. The revoked card showed its explicit invalid-for-scan-or-print message and QR, but the print-button count was exactly zero both before and after Refresh. Console errors, network loading failures and HTTP responses at or above 400 all remained zero.
+
+Focused gate tests passed `13/13`; the complete regression matrix passed `1564/1564`, with zero failure and zero skip. TypeScript, local finance/week-setup/teaching-load/seed/backup-restore validations and both production builds passed. Automatic GitHub Quality Gates run `35567281680` passed, including locked install and `npm audit --audit-level=low`; the automatic Cloudflare Pages deployment also passed. No dependency file changed.
+
+## 10. Soft cleanup and final invariants
+
+Cleanup used status updates only; no `DELETE` statement was issued:
+
+- registrar user `45` and parent user `46` are `inactive`; both `auth_version` values advanced from `1` to `2`;
+- both previously issued bearer sessions returned `401`, and new password login attempts for both inactive accounts returned `401`;
+- parent link `11` is `inactive`;
+- enrollment `76` is `cancelled`;
+- student `71` is `archived`;
+- the revoked QR card, two gate movements and immutable audit row remain as historical evidence.
+
+A typed protected-school comparison covered every pre-existing table with `school_id` plus the `schools` rows themselves. Every school-1 and school-3 value, type and row remained identical to the preflight snapshot. All seven readiness views remained identical, including only the two accepted historical exceptions: school 3 grade policy `partial` at `2/6`, and school 1 result-card publication `inconsistent` at `22 = 6 draft + 4 published + 12 withdrawn`. Final migration history was `40`, Wrangler reported no pending migration, and `PRAGMA foreign_key_check` returned zero rows.
+
+## 11. Safety boundary
 
 No Production database or other remote D1 was contacted. No remote seed/reset, manual deployment, force-push, merge or auto-merge was used. The only remote schema write was the explicitly authorized `0039` migration on the exact STAGING UUID; fixture writes were limited to labelled school-2 QA records. PR #50 remains Draft.
