@@ -7,6 +7,7 @@
 import { Hono } from 'hono'
 import { registerFinanceRoutes } from './lib/financeFeesDb'
 import { registerAttendanceRoutes } from './lib/attendanceDb'
+import { registerGateAttendanceRoutes } from './lib/gateAttendanceDb'
 import { parseWeekRequest, planWeekSetup, publicWeekSnapshot, WeekSetupError } from './lib/weekSetup'
 import { loadWeekSetup, buildWeekApplyStatements, readWeekJson, weekDatabaseError } from './lib/weekSetupDb'
 import { parseMatrixRequest, parseMatrixCopyRequest, planTeachingLoadMatrix, planTeachingLoadCopy, MAX_MATRIX_CHANGES } from './lib/teachingLoadMatrix'
@@ -9855,6 +9856,9 @@ registerFinanceRoutes(app);
 
 // Lesson attendance routes share timetable, teacher-link and parent-link authority.
 registerAttendanceRoutes(app);
+
+// School-gate cards, immutable movements and scoped parent notifications.
+registerGateAttendanceRoutes(app);
 
 // GET /api/verify/receipt/:token
 // Public endpoint — no JWT required

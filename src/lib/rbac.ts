@@ -95,6 +95,13 @@ export const ATTENDANCE_VIEW_ROLES: readonly RoleKey[] = [
   'parent',
 ];
 
+// Gate scans expose live student movements and card issuance, so operation is
+// restricted to school management and registrars. Parents use their own
+// resource-scoped feed and teachers keep lesson-attendance access only.
+export const GATE_ATTENDANCE_MANAGEMENT_ROLES: readonly RoleKey[] = ACADEMIC_MANAGEMENT_ROLES;
+
+export const GATE_ATTENDANCE_VIEW_ROLES: readonly RoleKey[] = GATE_ATTENDANCE_MANAGEMENT_ROLES;
+
 // Accountants need the employee roster for salary workflows, but not record mutation rights.
 export const EMPLOYEE_ACCESS_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,
