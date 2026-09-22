@@ -1,12 +1,12 @@
 # Phase 21C — Employee and teacher attendance
 
-Date: 2026-09-21
+Date: 2026-09-22
 
 Base: `719b9c8` (`main`, merged PR #50)
 
 Branch: `codex/phase-21c-staff-attendance`
 
-Status: implementation and local quality gates are complete. The remote branch is published and [Draft PR #51](https://github.com/smartschoolduhok/smart-school/pull/51) is open. Immutable Preview acceptance and migration `0040` on STAGING remain pending. No remote database or Production environment was contacted.
+Status: implementation, local quality gates, the authorized STAGING migration and authenticated immutable-Preview acceptance are complete. [Draft PR #51](https://github.com/smartschoolduhok/smart-school/pull/51) remains open and unmerged. Production was not contacted.
 
 ## 1. Scope
 
@@ -77,7 +77,7 @@ The attendance domain has no trigger or route that creates salary, deduction or 
 - frontend and Worker production builds: PASS;
 - `npm audit`: zero vulnerabilities;
 - fresh isolated local D1: `41/41` migrations, ending at `0040_staff_attendance.sql`;
-- counted fresh local tables: `79`;
+- Phase 21C release-gate count after `0040`: `78` total tables, accounting for `d1_migrations` and `sqlite_sequence`, and `76` application tables when those two are excluded; `0040` creates exactly five tables;
 - fresh local `PRAGMA foreign_key_check`: zero rows;
 - local finance seed, backup/restore, official promotion, week setup and teaching-load matrix validations: PASS;
 - backup/restore preserved the exact application snapshot, restored the oversized row and ended with clean finance invariants and foreign keys;
@@ -85,21 +85,49 @@ The attendance domain has no trigger or route that creates salary, deduction or 
 
 Tests cover role and tenant isolation, explicit system-admin school targeting, signed/canonical QR validation, tamper rejection, active-card uniqueness, revocation, employee lifecycle, active academic year and hire-date boundaries, atomic duplicate rejection, required manual/void reasons, accountant field suppression, linked-teacher self scope, immutable cards/events/audit, daily summary states and the absence of payroll/treasury side effects.
 
-## 6. Manual Preview acceptance still required
+## 6. Immutable Preview acceptance — completed
 
-After the remote branch and automatic immutable Preview exist, acceptance must verify at minimum:
+The automatic immutable Preview for implementation HEAD `608a622726aff18d84f6ec82612f4c62177819cc` was [https://6d808da1.smart-school-staging.pages.dev](https://6d808da1.smart-school-staging.pages.dev). GitHub Quality Gates run [35625848899](https://github.com/smartschoolduhok/smart-school/actions/runs/35625848899) and Cloudflare Pages deployment `6d808da1-7fec-4f45-86bb-a741dc6f1d4c` passed.
 
-- management/registrar USB scan and camera fallback for entry and exit;
-- tampered and revoked QR rejection with zero writes;
-- duplicate scan rejection with unchanged event counts;
-- required reasons for manual entry, card revocation and event void;
-- accountant read-only report without internal fields;
-- linked teacher personal feed and immediate access loss after link deactivation;
-- active card printing and disappearance of printable controls after revocation/refresh;
-- 390 px width, RTL direction, keyboard use, console/network diagnostics and print layout.
+Authenticated QA used marker `PH21C-69BC450F98` and school `2` only. It verified:
 
-## 7. STAGING gate and safety boundary
+- management and registrar issuance plus entry/exit scans through the authenticated Preview;
+- tampered and revoked QR rejection with zero writes, and atomic duplicate rejection with unchanged event/audit counts;
+- mandatory manual-entry, card-revocation and event-void reasons;
+- non-destructive voiding, a single immutable audit row and rejection of audit mutation;
+- accountant read-only reporting with internal note/manual/void fields suppressed and write routes forbidden;
+- the linked teacher seeing only their own active movements, followed by immediate API and UI access loss after link deactivation;
+- a real QR SVG, active-card print control and invocation of the print command; the embedded browser does not expose its native print dialog;
+- RTL at `390px` with `innerWidth=390`, content width `382`, no horizontal page overflow, zero console errors, zero network failures and zero unexpected HTTP errors during the positive UI pass;
+- zero school-2 salary rows, deductions or treasury transactions before and after QA.
 
-Migration `0040` has not been applied remotely. The next database step requires a separate explicit authorization and must start with read-only identity/history/pending/FK/readiness checks, a verified full STAGING backup and an isolated restore rehearsal. Only then may `0040_staff_attendance.sql` be applied to the exact authorized STAGING database, followed by authenticated labelled-fixture QA, soft cleanup and a final protected-data comparison.
+## 7. Authorized STAGING gate
 
-No Production access, remote seed/reset, destructive cleanup, manual deployment, merge, auto-merge or force-push is authorized by this document.
+The only authorized database was `smart-school-staging-db` (`1bdb9c3d-08d6-4023-9cbc-64369d53198a`). The tracked `wrangler.jsonc` contained exactly that one D1 binding, and Wrangler was authenticated to the Smart School account.
+
+Preflight found `40/40` migrations ending at `0039_student_gate_attendance.sql`, with only `0040_staff_attendance.sql` pending, `73` total tables (`71` application tables under the approved gate convention), and no foreign-key violations. All seven readiness views were captured as historical baselines, including the accepted pre-existing school-1 result-card status `inconsistent` (`22 = 6 draft + 4 published + 12 withdrawn`) and school-3 grade-policy status `partial` (`2/6`).
+
+The full pre-write backup is:
+
+`C:\Users\ibrah\Documents\SmartSchoolBackups\phase21c-staging-20260922T180106Z\smart-school-staging-db-full.sql`
+
+- size: `1,488,533` bytes;
+- SHA-256: `F4B1444AF87C1DFFFFCAF2743D47E19BAFC852CF5DC9C662489FAE6123660E8A`.
+
+The backup was restored into an isolated local D1. Schema, columns, SQLite storage types, complete row multisets and values matched exactly. The oversized `import_jobs` row was removed from the bulk SQL path and restored through parameter binding. Applying only `0040` locally produced `41/41`, five new tables, `78` counted tables, clean foreign keys, unchanged readiness and unchanged historical application data. A second remote export immediately before writing was byte-for-byte identical to the backup and had the same SHA-256, proving no drift.
+
+`0040_staff_attendance.sql` was applied once to STAGING from `2026-09-22T18:22:07.3211863Z` to `2026-09-22T18:22:10.3454533Z` (`3.024s`). Postflight proved `41` distinct migration names, `0040` last and present exactly once, no pending migration, exactly five Phase 21C tables, `78` total tables and `76` application tables under the approved gate convention, clean foreign keys and unchanged historical readiness/content.
+
+## 8. Soft cleanup and final protected-data audit
+
+Cleanup used status updates only. The four labelled QA users are inactive, their authentication versions were advanced, the teacher link is inactive, and the labelled employee is archived. The QR card remains revoked; two active attendance events, one voided event and its immutable audit row remain as labelled historical evidence. No business-row `DELETE`, remote seed/reset or destructive cleanup was used.
+
+The final school-1/3 audit compared `58` protected tables and `1,755` rows against the pre-migration backup, including exact SQLite value types and complete row multisets. No difference was found. Evidence is stored outside Git under the backup directory:
+
+- `phase21c-authenticated-qa.json` — SHA-256 `7290EF79E3D2E909E55C2AEB41C2DFB39A47F78B003785958E149784A3A5149C`;
+- `schools-1-3-final-comparison.json` — SHA-256 `40DEB4EE506D270395257907CE0D9069BD389432DF36E0857B445C26A3A44FDC`;
+- `final-after-qa-cleanup.sql` — SHA-256 `2B0584503FE159A77B4C0F736E92E6AF972A2EEEB840CFE5EBE04C4F4B9299BE`.
+
+## 9. Safety boundary
+
+No Production database or other remote D1 was contacted. No remote seed/reset, destructive cleanup, manual deployment, force-push, merge or auto-merge occurred. PR #51 remains Draft.
