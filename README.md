@@ -1,6 +1,6 @@
 # نظام المدرسة الذكي — Smart School
 
-منصة عربية متعددة المدارس لإدارة الطلبة والتسجيلات والمواد والدرجات وكشوف النتائج والجداول والحضور والرسوم والإيصالات والخزنة والموظفين والرواتب.
+منصة عربية متعددة المدارس لإدارة الطلبة والتسجيلات والمواد والدرجات وكشوف النتائج والجداول والحضور والواجبات المنزلية والرسوم والإيصالات والخزنة والموظفين والرواتب.
 
 ## الحالة الحالية
 
@@ -18,7 +18,8 @@
 - Phase 20E.3 مكتملة ومندمجة في `main` عبر [PR #48](https://github.com/smartschoolduhok/smart-school/pull/48) وcommit `54f29ff`: تضيف نقل حصص الجدول الأسبوعي بالسحب والإفلات والتبديل الذري، مع إظهار تعارض المدرّس الناتج عن السحب والإبقاء على بقية القيود مانعة. Migration `0037` مطبقة على STAGING. [عقد التنفيذ والفحص](docs/PHASE_20E3_TIMETABLE_DRAG_DROP_QA.md).
 - Phase 21A مكتملة ومندمجة عبر [PR #49](https://github.com/smartschoolduhok/smart-school/pull/49) وcommit `deb5125`: تضيف حضور الطالب لكل حصة من الجدول الرسمي، مسودة خاصة ثم تأكيدًا، وتصحيحًا إداريًا موثقًا، وعرضًا لولي الأمر لا يتجاوز أبناءه والحصص المؤكدة. Migration `0038` مطبقة على STAGING. [تقرير الأدلة](docs/PHASE_21A_LESSON_ATTENDANCE_QA.md).
 - Phase 21B مكتملة ومندمجة عبر [PR #50](https://github.com/smartschoolduhok/smart-school/pull/50) وcommit `719b9c8`: تضيف حضور دخول/خروج الطلبة عند بوابة المدرسة ببطاقة QR موقعة، ومنع تكرار ذري، وإشعارات مرتبطة بولي الأمر، وإبطالًا غير هدّام مع تدقيق. Migration `0039` مطبقة على STAGING؛ السجل هناك `40/40` بلا pending عند إغلاق المرحلة. [تقرير الأدلة](docs/PHASE_21B_STUDENT_GATE_ATTENDANCE_QA.md).
-- Phase 21C مكتملة على `codex/phase-21c-staff-attendance` و[Draft PR #51](https://github.com/smartschoolduhok/smart-school/pull/51): تضيف حضور الموظفين والأساتذة كسجل مستقل تمامًا عن حضور الطلبة، مع بطاقة QR موقعة، دخول/خروج، تسجيل يدوي بسبب إلزامي، إبطال مدقق، تقرير للمحاسب للقراءة فقط، وسجل شخصي للمدرس المرتبط. طُبّقت Migration `0040` وحدها على STAGING بعد backup واستعادة محلية مطابقة؛ أصبح السجل `41/41` بلا pending وعدد جداول D1 المعتمد `78`، واجتاز الـPreview الثابت QA المصادق والتنظيف غير الهدّام. [تقرير التنفيذ وبوابة STAGING](docs/PHASE_21C_STAFF_ATTENDANCE_QA.md).
+- Phase 21C مكتملة ومندمجة في `main` عبر [PR #51](https://github.com/smartschoolduhok/smart-school/pull/51) وcommit `abc56f1899ac94987630f32b74781587025fdbf7`: تضيف حضور الموظفين والأساتذة كسجل مستقل تمامًا عن حضور الطلبة، مع بطاقة QR موقعة، دخول/خروج، تسجيل يدوي بسبب إلزامي، إبطال مدقق، تقرير للمحاسب للقراءة فقط، وسجل شخصي للمدرس المرتبط. طُبّقت Migration `0040` وحدها على STAGING بعد backup واستعادة محلية مطابقة؛ أصبح السجل `41/41` بلا pending، بعدد `78` جدولًا إجمالًا و`76` جدول تطبيق. نجحت بوابة STAGING والـPreview وQuality Gates قبل الدمج وبعده، ولم تُستخدم Production. [تقرير التنفيذ وبوابة STAGING](docs/PHASE_21C_STAFF_ATTENDANCE_QA.md).
+- Phase 21D منفذة محليًا على `codex/phase-21d-homework` ضمن تفويض Branch وDraft PR فقط: تربط الواجب بالتكليف التدريسي الفعلي، وتفصل المسودة عن النشر والسحب والنسخة المصححة، وتثبّت جمهور الطلاب ذريًا، وتعيد استخدام إشعارات ولي الأمر، وتوفر مرفقات JPEG/PNG/WebP/PDF محمية عبر binding محلي متوافق مع R2. تضيف Migration `0041` خمسة جداول؛ fresh Local D1 عند `42/42` و`83` جدولًا محسوبًا (`81` جدول تطبيق) مع FK نظيف. نجحت اختبارات الوحدة `15/15` ومصفوفة الانحدار `1593/1593`. لم يُنشأ R2 بعيد، ولم تُطبّق `0041` على STAGING، ولم يحدث وصول إلى Production. [عقد التنفيذ والأدلة المحلية](docs/PHASE_21D_HOMEWORK_QA.md).
 
 ## البنية التقنية
 
@@ -76,6 +77,7 @@ npm run dev
 
 ```bash
 npm run typecheck
+npm run test:homework
 npm run test:regressions
 npm run test:finance-seed:local
 npm run test:backup-restore:local
@@ -116,3 +118,4 @@ npm audit --audit-level=low
 - `docs/PHASE_21A_LESSON_ATTENDANCE_QA.md` لحضور الطالب لكل حصة، النشر لولي الأمر والتصحيح الموثق.
 - `docs/PHASE_21B_STUDENT_GATE_ATTENDANCE_QA.md` لبطاقات بوابة الطلبة والحركات والإشعارات والتدقيق.
 - `docs/PHASE_21C_STAFF_ATTENDANCE_QA.md` لحضور الموظفين والأساتذة وعزل الصلاحيات وبوابة STAGING.
+- `docs/PHASE_21D_HOMEWORK_QA.md` لعقود الواجبات والمرفقات المحمية والجمهور والإشعارات وأدلة التنفيذ المحلي.
