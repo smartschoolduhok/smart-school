@@ -6,7 +6,7 @@ Base: `deb5125` (`main`, merged PR #49)
 
 Branch: `codex/phase-21b-gate-attendance`
 
-Status: STAGING backup, isolated restore, migration, authenticated Preview QA, defect repair, soft cleanup and automatic Quality Gates/Cloudflare Preview verification complete. PR #50 remains Draft.
+Status: STAGING backup, isolated restore, migration, authenticated Preview QA, defect repair, soft cleanup and automatic Quality Gates/Cloudflare Preview verification completed; PR #50 was subsequently merged into `main` as commit `719b9c8`.
 
 ## 1. Scope
 
@@ -171,4 +171,4 @@ A typed protected-school comparison covered every pre-existing table with `schoo
 
 ## 11. Safety boundary
 
-No Production database or other remote D1 was contacted. No remote seed/reset, manual deployment, force-push, merge or auto-merge was used. The only remote schema write was the explicitly authorized `0039` migration on the exact STAGING UUID; fixture writes were limited to labelled school-2 QA records. PR #50 remains Draft.
+No Production database or other remote D1 was contacted. No remote seed/reset, manual deployment, force-push or auto-merge was used during the documented QA. The only remote schema write was the explicitly authorized `0039` migration on the exact STAGING UUID; fixture writes were limited to labelled school-2 QA records. PR #50 was merged later through the normal reviewed GitHub flow.

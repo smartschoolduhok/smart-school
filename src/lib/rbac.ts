@@ -102,6 +102,24 @@ export const GATE_ATTENDANCE_MANAGEMENT_ROLES: readonly RoleKey[] = ACADEMIC_MAN
 
 export const GATE_ATTENDANCE_VIEW_ROLES: readonly RoleKey[] = GATE_ATTENDANCE_MANAGEMENT_ROLES;
 
+// Employee attendance has its own records and cards. School management and
+// registrars operate the gate, accountants receive read-only reporting for
+// payroll review, and linked teachers may inspect only their personal feed.
+export const STAFF_ATTENDANCE_MANAGEMENT_ROLES: readonly RoleKey[] = [
+  ...SCHOOL_MANAGEMENT_ROLES,
+  'registrar',
+];
+
+export const STAFF_ATTENDANCE_REPORT_ROLES: readonly RoleKey[] = [
+  ...STAFF_ATTENDANCE_MANAGEMENT_ROLES,
+  'accountant',
+];
+
+export const STAFF_ATTENDANCE_VIEW_ROLES: readonly RoleKey[] = [
+  ...STAFF_ATTENDANCE_REPORT_ROLES,
+  'teacher',
+];
+
 // Accountants need the employee roster for salary workflows, but not record mutation rights.
 export const EMPLOYEE_ACCESS_ROLES: readonly RoleKey[] = [
   ...SCHOOL_MANAGEMENT_ROLES,

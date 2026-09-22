@@ -6,7 +6,7 @@ Base: `36aabc0e42e5be2ef0d8da1d5dcb063c9caca9ef` (`main`, merged PR #47)
 
 Branch: `codex/phase-20e3-timetable-drag-drop`
 
-Status: Draft PR [#48](https://github.com/smartschoolduhok/smart-school/pull/48). The explicitly authorized STAGING continuation completed on 2026-09-15 against only `smart-school-staging-db` (`1bdb9c3d-08d6-4023-9cbc-64369d53198a`). A verified full backup preceded migration 0037; database postflight and authenticated Preview acceptance passed, and the temporary QA account was disabled afterward. The PR remains open and Draft; no merge, auto-merge, manual deployment or Production use occurred.
+Status: the explicitly authorized STAGING continuation completed on 2026-09-15 against only `smart-school-staging-db` (`1bdb9c3d-08d6-4023-9cbc-64369d53198a`). A verified full backup preceded migration 0037; database postflight and authenticated Preview acceptance passed, and the temporary QA account was disabled afterward. [PR #48](https://github.com/smartschoolduhok/smart-school/pull/48) was subsequently merged into `main` as commit `54f29ff`; no Production use occurred.
 
 ## STAGING continuation checkpoint — completed under the authorized readiness exception
 

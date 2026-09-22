@@ -6,7 +6,7 @@ Base: `9723a18e1e9e5d9fa7fbd193265713439c86210d` (`main`, merged PR #46)
 
 Branch: `codex/phase-20e2-official-book-templates`
 
-Status: implementation, STAGING migration, Draft PR CI, Cloudflare Preview and visual acceptance are complete. PR #47 remains Draft.
+Status: implementation, STAGING migration, CI, Cloudflare Preview and visual acceptance completed; PR #47 was subsequently merged into `main` as commit `36aabc0`.
 
 ## 1. Scope
 
