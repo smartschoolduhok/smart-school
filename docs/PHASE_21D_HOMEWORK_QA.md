@@ -2,7 +2,7 @@
 
 ## Status and authorization
 
-Phase 21D is implemented locally on `codex/phase-21d-homework`, based on `main@abc56f1899ac94987630f32b74781587025fdbf7`. Authorization remains limited to local implementation, the feature branch, and a Draft PR.
+Phase 21D is implemented locally on `codex/phase-21d-homework`, based on `main@abc56f1899ac94987630f32b74781587025fdbf7`, and is open for review in [Draft PR #52](https://github.com/smartschoolduhok/smart-school/pull/52). Authorization remains limited to local implementation, the feature branch, and the Draft PR.
 
 The authorization does not include:
 
