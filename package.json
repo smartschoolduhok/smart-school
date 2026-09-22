@@ -56,6 +56,7 @@
     "test:subject-applicability": "node --experimental-strip-types --test test/subject-applicability.test.mjs",
     "test:timetable": "node --experimental-strip-types --test --test-concurrency=1 test/timetable-foundation.test.mjs test/timetable-availability.test.mjs test/timetable-grid.test.mjs test/timetable-api.test.mjs test/timetable-grid-api.test.mjs test/timetable-ui.test.mjs test/timetable-drag-drop-ui.test.mjs test/timetable-master-views.test.mjs test/timetable-solver.test.mjs test/timetable-solver-api.test.mjs test/timetable-solver-ui.test.mjs test/timetable-adoption.test.mjs test/timetable-adoption-api.test.mjs test/timetable-adoption-ui.test.mjs",
     "test:attendance": "node --experimental-strip-types --test --test-concurrency=1 test/attendance.test.mjs test/attendance-ui.test.mjs test/gate-attendance.test.mjs test/gate-attendance-ui.test.mjs test/staff-attendance.test.mjs test/staff-attendance-ui.test.mjs",
+    "test:homework": "node --experimental-strip-types --test --test-concurrency=1 test/homework.test.mjs test/homework-ui.test.mjs",
     "test:excel-import": "node --experimental-strip-types --test test/excel-import.test.mjs test/grade-excel-import.test.mjs"
   },
   "dependencies": {

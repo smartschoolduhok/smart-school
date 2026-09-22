@@ -9,6 +9,7 @@ import {
   ANALYTICS_ACCESS_ROLES,
   ATTENDANCE_VIEW_ROLES,
   GATE_ATTENDANCE_VIEW_ROLES,
+  HOMEWORK_VIEW_ROLES,
   STAFF_ATTENDANCE_VIEW_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   FEE_MANAGEMENT_ROLES,
@@ -36,6 +37,7 @@ const TimetablePage = lazy(() => import('./modules/timetable/TimetablePage'));
 const AttendancePage = lazy(() => import('./modules/attendance/AttendancePage'));
 const GateAttendancePage = lazy(() => import('./modules/attendance/GateAttendancePage'));
 const StaffAttendancePage = lazy(() => import('./modules/attendance/StaffAttendancePage'));
+const HomeworkPage = lazy(() => import('./modules/homework/HomeworkPage'));
 const ClassesPage = lazy(() => import('./modules/classes/ClassesPage'));
 const SubjectsPage = lazy(() => import('./modules/subjects/SubjectsPage'));
 const StudentSubjectsPage = lazy(() => import('./modules/studentSubjects/StudentSubjectsPage'));
@@ -171,6 +173,7 @@ export default function App() {
           <Route path="/attendance" element={<Layout><RoleGuard allowedRoles={ATTENDANCE_VIEW_ROLES}><AttendancePage /></RoleGuard></Layout>} />
           <Route path="/gate-attendance" element={<Layout><RoleGuard allowedRoles={GATE_ATTENDANCE_VIEW_ROLES}><GateAttendancePage /></RoleGuard></Layout>} />
           <Route path="/staff-attendance" element={<Layout><RoleGuard allowedRoles={STAFF_ATTENDANCE_VIEW_ROLES}><StaffAttendancePage /></RoleGuard></Layout>} />
+          <Route path="/homework" element={<Layout><RoleGuard allowedRoles={HOMEWORK_VIEW_ROLES}><HomeworkPage /></RoleGuard></Layout>} />
           <Route path="/classes" element={<Layout><AcademicRoute><ClassesPage /></AcademicRoute></Layout>} />
           <Route path="/subjects" element={<Layout><AcademicRoute><SubjectsPage /></AcademicRoute></Layout>} />
           <Route path="/student-subjects" element={<Layout><AcademicRoute><StudentSubjectsPage /></AcademicRoute></Layout>} />

@@ -9,6 +9,8 @@ import { registerFinanceRoutes } from './lib/financeFeesDb'
 import { registerAttendanceRoutes } from './lib/attendanceDb'
 import { registerGateAttendanceRoutes } from './lib/gateAttendanceDb'
 import { registerStaffAttendanceRoutes } from './lib/staffAttendanceDb'
+import { registerHomeworkRoutes } from './lib/homeworkDb'
+import type { HomeworkObjectStore } from './lib/homework'
 import { parseWeekRequest, planWeekSetup, publicWeekSnapshot, WeekSetupError } from './lib/weekSetup'
 import { loadWeekSetup, buildWeekApplyStatements, readWeekJson, weekDatabaseError } from './lib/weekSetupDb'
 import { parseMatrixRequest, parseMatrixCopyRequest, planTeachingLoadMatrix, planTeachingLoadCopy, MAX_MATRIX_CHANGES } from './lib/teachingLoadMatrix'
@@ -304,6 +306,7 @@ export type Bindings = {
   JWT_SECRET?: string;
   ALLOWED_ORIGINS?: string;
   APP_ENV?: string;
+  HOMEWORK_FILES?: HomeworkObjectStore;
   ASSETS?: { fetch(url: URL): Promise<{ status: number; body: ReadableStream | null }> };
 }
 
@@ -1317,7 +1320,7 @@ async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, a
 function applyCorsResponseHeaders(c: any, origin: string): void {
   c.header('Access-Control-Allow-Origin', origin);
   c.header('Vary', 'Origin');
-  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   c.header('Access-Control-Max-Age', '86400');
 }
@@ -9863,6 +9866,9 @@ registerGateAttendanceRoutes(app);
 
 // Employee/teacher cards, immutable movements, reporting and linked self-view.
 registerStaffAttendanceRoutes(app);
+
+// Homework drafts, immutable publication snapshots and protected attachments.
+registerHomeworkRoutes(app);
 
 // GET /api/verify/receipt/:token
 // Public endpoint — no JWT required

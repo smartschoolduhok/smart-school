@@ -95,6 +95,27 @@ export const ATTENDANCE_VIEW_ROLES: readonly RoleKey[] = [
   'parent',
 ];
 
+// Homework authorship is intentionally narrower than academic management:
+// teachers author only against their active employee link, registrars inspect
+// without mutating, and parents use the current-link scoped published feed.
+export const HOMEWORK_MANAGEMENT_ROLES: readonly RoleKey[] = SCHOOL_MANAGEMENT_ROLES;
+
+export const HOMEWORK_AUTHOR_ROLES: readonly RoleKey[] = [
+  ...HOMEWORK_MANAGEMENT_ROLES,
+  'teacher',
+];
+
+export const HOMEWORK_STAFF_VIEW_ROLES: readonly RoleKey[] = [
+  ...HOMEWORK_MANAGEMENT_ROLES,
+  'teacher',
+  'registrar',
+];
+
+export const HOMEWORK_VIEW_ROLES: readonly RoleKey[] = [
+  ...HOMEWORK_STAFF_VIEW_ROLES,
+  'parent',
+];
+
 // Gate scans expose live student movements and card issuance, so operation is
 // restricted to school management and registrars. Parents use their own
 // resource-scoped feed and teachers keep lesson-attendance access only.

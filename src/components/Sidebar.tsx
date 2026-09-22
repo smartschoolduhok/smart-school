@@ -18,6 +18,7 @@ import {
   LayoutDashboard,
   Layers,
   LogOut,
+  NotebookPen,
   Printer,
   School,
   Settings,
@@ -35,6 +36,7 @@ import {
   ANALYTICS_ACCESS_ROLES,
   ATTENDANCE_VIEW_ROLES,
   GATE_ATTENDANCE_VIEW_ROLES,
+  HOMEWORK_VIEW_ROLES,
   STAFF_ATTENDANCE_VIEW_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   FEE_MANAGEMENT_ROLES,
@@ -86,6 +88,7 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
     items: [
       { label: 'الدرجات', path: '/grades', icon: <Calculator size={18} />, allowedRoles: GRADE_VIEW_ROLES },
       { label: 'الحضور والغياب', path: '/attendance', icon: <ClipboardCheck size={18} />, allowedRoles: ATTENDANCE_VIEW_ROLES },
+      { label: 'الواجبات المنزلية', path: '/homework', icon: <NotebookPen size={18} />, allowedRoles: HOMEWORK_VIEW_ROLES },
       { label: 'بوابة المدرسة', path: '/gate-attendance', icon: <DoorOpen size={18} />, allowedRoles: GATE_ATTENDANCE_VIEW_ROLES },
       { label: 'الجدول الدراسي', path: '/timetable', icon: <CalendarDays size={18} />, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
       { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={18} />, allowedRoles: ACADEMIC_ACCESS_ROLES },
