@@ -162,7 +162,7 @@ npm run build
 ## 10. أولويات المستقبل بعد التنفيذ المحلي لـPhase 21D
 
 1. مراجعة [Draft PR #52](https://github.com/smartschoolduhok/smart-school/pull/52) وإغلاق Quality Gates الآلية، دون merge.
-2. بعد مراجعة الـDraft فقط: طلب تفويض مستقل لمورد R2 خاص بـSTAGING، backup/restore وتطبيق `0041` وحدها؛ لا Production.
+2. بعد مراجعة الـDraft فقط: بوابة التنفيذ الدقيقة في `docs/PHASE_21D_STAGING_GATE.md` جاهزة للمراجعة؛ طلب تفويض مستقل لفحص STAGING البعيد، مورد R2 خاص ومعاينة Pages، backup/restore وتطبيق `0041` وحدها؛ لا Production.
 3. Phase 21E: تواصل ولي الأمر مع حدود وصول وإشعارات قابلة للتدقيق.
 4. Phase 21F: توسيع مسارات الدرجات دون كسر العقود الرسمية الحالية.
 5. Phase 22A: اللوائح، ثم Phase 22B: القبول والنقل.

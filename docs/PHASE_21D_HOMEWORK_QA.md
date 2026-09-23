@@ -165,3 +165,5 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 ## Remote gate (not authorized yet)
 
 After local acceptance and Draft PR review, a separate explicit authorization is required for immutable Preview attachment infrastructure, STAGING R2, D1 backup/restore, and application of `0041` only. Production remains a separate GO decision.
+
+The scoped execution checklist, preflight expectations, recovery boundary and Preview-only R2 binding are prepared in [PHASE_21D_STAGING_GATE.md](PHASE_21D_STAGING_GATE.md). It records proposed actions only; no new remote state was verified or changed during preparation.
