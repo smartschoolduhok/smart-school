@@ -78,14 +78,15 @@ CREATE TABLE IF NOT EXISTS homework_attachments (
   mime_type           TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'application/pdf')),
   size_bytes          INTEGER NOT NULL CHECK (size_bytes BETWEEN 1 AND 5242880),
   sha256              TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
-  status              TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'removed')),
+  status              TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'removal_pending', 'removed')),
   created_by_user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   removed_by_user_id  INTEGER REFERENCES users(id) ON DELETE RESTRICT,
   removed_at          INTEGER,
   created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
   CHECK (
     (status = 'active' AND removed_by_user_id IS NULL AND removed_at IS NULL)
-    OR (status = 'removed' AND removed_by_user_id IS NOT NULL AND removed_at IS NOT NULL)
+    OR (status IN ('removal_pending', 'removed')
+        AND removed_by_user_id IS NOT NULL AND removed_at IS NOT NULL)
   )
 );
 
@@ -154,7 +155,10 @@ BEGIN
       ON section.id = load.section_id AND section.school_id = load.school_id
      AND section.class_id = load.class_id AND section.status = 'active'
     JOIN subjects subject
-      ON subject.id = load.subject_id AND subject.school_id = load.school_id AND subject.status = 'active'
+      ON subject.id = load.subject_id AND subject.school_id = load.school_id
+     AND subject.class_id = load.class_id
+     AND (subject.section_id IS NULL OR subject.section_id = load.section_id)
+     AND subject.status = 'active'
     JOIN employees employee
       ON employee.id = load.employee_id AND employee.school_id = load.school_id
      AND employee.status = 'active' AND employee.role = 'teacher'
@@ -167,6 +171,15 @@ BEGIN
       AND load.employee_id = NEW.teacher_employee_id
       AND load.status = 'active'
       AND (load.section_id IS NULL OR section.id IS NOT NULL)
+      AND (
+        load.section_id IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM sections class_section
+          WHERE class_section.school_id = load.school_id
+            AND class_section.class_id = load.class_id
+            AND class_section.status = 'active'
+        )
+      )
       AND year.name = NEW.academic_year_name_snapshot
       AND class.name = NEW.class_name_snapshot
       AND section.name IS NEW.section_name_snapshot
@@ -238,6 +251,51 @@ BEGIN
     SELECT 1 FROM academic_years year
     WHERE year.id = NEW.academic_year_id AND year.school_id = NEW.school_id
       AND NEW.assigned_date BETWEEN year.starts_at AND year.ends_at
+  );
+  SELECT RAISE(ABORT, 'homework load invalid')
+  WHERE OLD.status = 'draft' AND NEW.status = 'published' AND NOT EXISTS (
+    SELECT 1
+    FROM timetable_teaching_loads load
+    JOIN schools school ON school.id = load.school_id AND school.status = 'active'
+    JOIN academic_years year
+      ON year.id = load.academic_year_id AND year.school_id = load.school_id AND year.is_active = 1
+    JOIN classes class
+      ON class.id = load.class_id AND class.school_id = load.school_id AND class.status = 'active'
+    LEFT JOIN sections section
+      ON section.id = load.section_id AND section.school_id = load.school_id
+     AND section.class_id = load.class_id AND section.status = 'active'
+    JOIN subjects subject
+      ON subject.id = load.subject_id AND subject.school_id = load.school_id
+     AND subject.class_id = load.class_id
+     AND (subject.section_id IS NULL OR subject.section_id = load.section_id)
+     AND subject.status = 'active'
+    JOIN employees employee
+      ON employee.id = load.employee_id AND employee.school_id = load.school_id
+     AND employee.status = 'active' AND employee.role = 'teacher'
+    WHERE load.id = NEW.teaching_load_id
+      AND load.school_id = NEW.school_id
+      AND load.academic_year_id = NEW.academic_year_id
+      AND load.class_id = NEW.class_id
+      AND load.section_id IS NEW.section_id
+      AND load.subject_id = NEW.subject_id
+      AND load.employee_id = NEW.teacher_employee_id
+      AND load.status = 'active'
+      AND (load.section_id IS NULL OR section.id IS NOT NULL)
+      AND (
+        load.section_id IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM sections class_section
+          WHERE class_section.school_id = load.school_id
+            AND class_section.class_id = load.class_id
+            AND class_section.status = 'active'
+        )
+      )
+      AND NEW.assigned_date BETWEEN year.starts_at AND year.ends_at
+  );
+  SELECT RAISE(ABORT, 'homework attachment cleanup pending')
+  WHERE OLD.status = 'draft' AND NEW.status = 'published' AND EXISTS (
+    SELECT 1 FROM homework_attachments attachment
+    WHERE attachment.homework_id = OLD.id AND attachment.status = 'removal_pending'
   );
   SELECT RAISE(ABORT, 'homework write guard missing')
   WHERE NEW.status != OLD.status
@@ -367,15 +425,22 @@ BEGIN
      OR NEW.sha256 != OLD.sha256 OR NEW.created_by_user_id != OLD.created_by_user_id
      OR NEW.created_at != OLD.created_at;
   SELECT RAISE(ABORT, 'homework attachment draft required')
-  WHERE NOT EXISTS (
+  WHERE OLD.status = 'active' AND NOT EXISTS (
     SELECT 1 FROM homework_assignments homework
     WHERE homework.id = NEW.homework_id AND homework.school_id = NEW.school_id
       AND homework.status = 'draft'
   );
   SELECT RAISE(ABORT, 'homework attachment transition invalid')
-  WHERE OLD.status != 'active' OR NEW.status != 'removed';
+  WHERE NOT (
+    (OLD.status = 'active' AND NEW.status = 'removal_pending'
+      AND NEW.removed_by_user_id IS NOT NULL AND NEW.removed_at IS NOT NULL)
+    OR
+    (OLD.status = 'removal_pending' AND NEW.status = 'removed'
+      AND NEW.removed_by_user_id = OLD.removed_by_user_id
+      AND NEW.removed_at = OLD.removed_at)
+  );
   SELECT RAISE(ABORT, 'homework attachment actor invalid')
-  WHERE NOT EXISTS (
+  WHERE OLD.status = 'active' AND NOT EXISTS (
     SELECT 1
     FROM homework_assignments homework
     JOIN users actor ON actor.id = NEW.removed_by_user_id AND actor.status = 'active'

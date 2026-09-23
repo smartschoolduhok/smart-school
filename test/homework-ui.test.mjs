@@ -77,6 +77,8 @@ test('homework page is Arabic, role-aware and safe at 390px', () => {
     'تاريخ التكليف',
     'للقراءة فقط',
     'JPEG أو PNG أو WebP أو PDF',
+    'بانتظار تنظيف التخزين',
+    'إعادة محاولة تنظيف المرفق',
   ]) assert.ok(page.includes(label), label);
   assert.match(page, /dir="rtl"/);
   assert.match(page, /className="min-w-0 space-y-5"/);
@@ -123,6 +125,8 @@ test('migration makes published homework, audience and audit non-destructive', (
   assert.match(migration, /homework audit immutable/);
   assert.match(migration, /homework attachment limit exceeded/);
   assert.match(migration, /homework attachment total exceeded/);
+  assert.match(migration, /removal_pending/);
+  assert.match(migration, /homework attachment cleanup pending/);
   assert.match(migration, /trg_homework_assignments_audit_insert/);
   assert.match(migration, /trg_homework_assignments_audit_update/);
   assert.match(migration, /'replaced'/);

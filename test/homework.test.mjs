@@ -37,6 +37,7 @@ class MemoryHomeworkFiles {
   constructor() {
     this.objects = new Map();
     this.onPut = null;
+    this.deleteFailures = 0;
   }
 
   async put(key, value, options = {}) {
@@ -61,6 +62,10 @@ class MemoryHomeworkFiles {
   }
 
   async delete(key) {
+    if (this.deleteFailures > 0) {
+      this.deleteFailures -= 1;
+      throw new Error('simulated object-store delete failure');
+    }
     this.objects.delete(key);
   }
 }
@@ -246,6 +251,58 @@ test('drafts are private and updates use optimistic revisions', async t => {
   assert.equal(staleLoadPublish.body.code, 'invalid_homework_load');
 });
 
+test('canonical load drift blocks scopes, new drafts and publication', async t => {
+  const fixture = createFixture(t);
+  const created = await createDraft(fixture);
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+
+  fixture.database.prepare('UPDATE subjects SET class_id=2,section_id=NULL WHERE id=1').run();
+
+  const scopes = await request(fixture, 'teacher', 'GET', '/api/homework/scopes?school_id=1');
+  assert.equal(scopes.status, 200, JSON.stringify(scopes.body));
+  assert.deepEqual(scopes.body.data.loads.map(load => load.id), []);
+
+  const rejectedDraft = await createDraft(fixture, 'teacher', { title: 'Stale subject placement' });
+  assert.equal(rejectedDraft.status, 409, JSON.stringify(rejectedDraft.body));
+  assert.equal(rejectedDraft.body.code, 'invalid_homework_load');
+
+  const rejectedPublish = await publishDraft(fixture, created.body.data, 'owner');
+  assert.equal(rejectedPublish.status, 409, JSON.stringify(rejectedPublish.body));
+  assert.equal(rejectedPublish.body.code, 'invalid_homework_load');
+  assert.equal(
+    fixture.database.prepare('SELECT status FROM homework_assignments WHERE homework_key=?').get(created.body.data.homework_key).status,
+    'draft',
+  );
+
+  assert.throws(
+    () => fixture.database.prepare(`
+      INSERT INTO homework_assignments (
+        homework_key,school_id,academic_year_id,teaching_load_id,class_id,section_id,
+        subject_id,teacher_employee_id,academic_year_name_snapshot,class_name_snapshot,
+        section_name_snapshot,subject_name_snapshot,teacher_name_snapshot,title,instructions,
+        assigned_date,created_by_user_id,updated_by_user_id
+      ) VALUES (
+        '00000000-0000-4000-8000-000000000099',1,1,2,1,2,1,2,
+        '2026-2027','Class A','B','Math','Teacher B','Invalid direct draft','Blocked',
+        '2026-09-22',3,3
+      )
+    `).run(),
+    /homework load invalid/,
+  );
+
+  fixture.database.prepare('UPDATE subjects SET class_id=1,section_id=NULL WHERE id=1').run();
+  fixture.database.prepare("INSERT INTO sections(id,school_id,class_id,name,status) VALUES(20,1,2,'New Section','active')").run();
+  const ownerScopes = await request(fixture, 'owner', 'GET', '/api/homework/scopes?school_id=1');
+  assert.equal(ownerScopes.status, 200, JSON.stringify(ownerScopes.body));
+  assert.deepEqual(ownerScopes.body.data.loads.map(load => load.id), [2]);
+  const staleWholeClassDraft = await createDraft(fixture, 'owner', {
+    teaching_load_id: 3,
+    title: 'Stale whole-class load',
+  });
+  assert.equal(staleWholeClassDraft.status, 409, JSON.stringify(staleWholeClassDraft.body));
+  assert.equal(staleWholeClassDraft.body.code, 'invalid_homework_load');
+});
+
 test('protected attachments round-trip locally and reject spoofing with cleanup', async t => {
   const fixture = createFixture(t);
   const created = await createDraft(fixture);
@@ -323,6 +380,55 @@ test('database attachment limits reject both a sixth file and totals over 20 MiB
   const countDraft = await createDraft(fixture, 'teacher', { title: 'Attachment count guard' });
   for (let index = 0; index < 5; index += 1) insertMetadata(countDraft.body.data.homework_key, 1);
   assert.throws(() => insertMetadata(countDraft.body.data.homework_key, 1), /homework attachment limit exceeded/);
+});
+
+test('attachment removal remains retryable when object cleanup fails', async t => {
+  const fixture = createFixture(t);
+  const created = await createDraft(fixture);
+  const homework = created.body.data;
+  const pdf = new TextEncoder().encode('%PDF-1.7\ncleanup');
+  const form = new FormData();
+  form.set('school_id', '1');
+  form.set('revision', String(homework.revision));
+  form.set('file', new File([pdf], 'cleanup.pdf', { type: 'application/pdf' }));
+  const uploaded = await request(fixture, 'teacher', 'POST', `/api/homework/${homework.homework_key}/attachments`, form);
+  assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+  assert.equal(fixture.files.objects.size, 1);
+
+  fixture.files.deleteFailures = 1;
+  const failedRemoval = await request(
+    fixture,
+    'teacher',
+    'POST',
+    `/api/homework/${homework.homework_key}/attachments/${uploaded.body.data.attachment_key}/remove`,
+    { school_id: 1, revision: homework.revision },
+  );
+  assert.equal(failedRemoval.status, 503, JSON.stringify(failedRemoval.body));
+  assert.equal(failedRemoval.body.code, 'homework_attachment_cleanup_pending');
+  assert.equal(
+    fixture.database.prepare('SELECT status FROM homework_attachments WHERE attachment_key=?').get(uploaded.body.data.attachment_key).status,
+    'removal_pending',
+  );
+  assert.equal(fixture.files.objects.size, 1);
+
+  const blockedPublish = await publishDraft(fixture, homework);
+  assert.equal(blockedPublish.status, 409, JSON.stringify(blockedPublish.body));
+  assert.equal(blockedPublish.body.code, 'homework_attachment_cleanup_pending');
+
+  const retriedRemoval = await request(
+    fixture,
+    'teacher',
+    'POST',
+    `/api/homework/${homework.homework_key}/attachments/${uploaded.body.data.attachment_key}/remove`,
+    { school_id: 1, revision: homework.revision },
+  );
+  assert.equal(retriedRemoval.status, 200, JSON.stringify(retriedRemoval.body));
+  assert.equal(retriedRemoval.body.data.status, 'removed');
+  assert.equal(
+    fixture.database.prepare('SELECT status FROM homework_attachments WHERE attachment_key=?').get(uploaded.body.data.attachment_key).status,
+    'removed',
+  );
+  assert.equal(fixture.files.objects.size, 0);
 });
 
 test('publish snapshots eligible students and notifications exactly once', async t => {
@@ -423,8 +529,32 @@ test('parent feed and protected downloads re-check the current active link', asy
   const feed = await request(fixture, 'parent1', 'GET', '/api/homework/parent');
   assert.equal(feed.status, 200, JSON.stringify(feed.body));
   assert.equal(feed.body.data.homework.length, 1);
-  assert.deepEqual(feed.body.data.homework[0].students.map(student => student.id), [101]);
-  assert.equal(feed.body.data.homework[0].attachments.length, 1);
+  const parentItem = feed.body.data.homework[0];
+  assert.deepEqual(parentItem.students.map(student => student.id), [101]);
+  assert.equal(parentItem.attachments.length, 1);
+  assert.deepEqual(Object.keys(parentItem).sort(), [
+    'assigned_date',
+    'attachments',
+    'class_name',
+    'due_at',
+    'homework_key',
+    'instructions',
+    'section_name',
+    'students',
+    'subject_name',
+    'teacher_name',
+    'title',
+  ]);
+  assert.deepEqual(Object.keys(parentItem.attachments[0]).sort(), [
+    'attachment_key',
+    'mime_type',
+    'original_name',
+    'size_bytes',
+  ]);
+  const parentDetail = await request(fixture, 'parent1', 'GET', `/api/homework/${homework.homework_key}`);
+  assert.equal(parentDetail.status, 200, JSON.stringify(parentDetail.body));
+  assert.deepEqual(Object.keys(parentDetail.body.data).sort(), Object.keys(parentItem).sort());
+  assert.deepEqual(parentDetail.body.data.students.map(student => student.id), [101]);
   assert.equal((await request(fixture, 'parent2', 'GET', '/api/homework/parent')).body.data.homework.length, 0);
   assert.equal((await request(fixture, 'foreignParent', 'GET', '/api/homework/parent')).body.data.homework.length, 0);
   assert.equal((await request(fixture, 'parent2', 'GET', `/api/homework/attachments/${uploaded.body.data.attachment_key}`)).status, 404);

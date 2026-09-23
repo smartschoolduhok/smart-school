@@ -62,6 +62,8 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 - Object keys are random and never exposed as public URLs.
 - Every download revalidates session, tenant, role, audience, and current parent link.
 - Attachments can be added or soft-removed only while homework is a draft.
+- Removal first records `removal_pending`, then deletes the object, then records `removed`; an object-store failure returns `503` and the same endpoint safely retries cleanup.
+- A draft with pending object cleanup cannot be published, and the staff UI keeps the pending item visible without offering a stale download.
 - Local tests use an in-memory R2-compatible binding. A remote STAGING bucket needs separate approval.
 
 ## Required API behavior
@@ -92,6 +94,7 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 
 - A draft creates no audience and no notification.
 - Publish snapshots only eligible active students in the load's year/class/section/subject.
+- Scope, draft creation, and publication revalidate the subject's current class/section placement and reject a whole-class load once the class has active sections.
 - Publish creates one student notification and all active linked parent recipients without duplication.
 - A repeated or stale publish request performs no second write.
 - Withdrawal is audited, preserves history, and withdraws related notifications.
@@ -102,8 +105,10 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 - Valid files round-trip through the protected endpoint.
 - Invalid signature, MIME, size, count, or total size leaves no object or metadata row.
 - A D1 failure after object storage triggers compensating object deletion.
+- An object-delete failure leaves retryable metadata in `removal_pending`, blocks publication, and performs no destructive metadata deletion.
 - Published attachments cannot be added, removed, renamed, or replaced.
 - Unrelated parents, teachers, accountants, and other schools cannot download the file.
+- Parent feed and detail responses use an explicit minimal DTO and do not expose school, year, load, class, section, subject, employee, revision, actor, audit, hash, status, or timestamp internals.
 
 ### UI
 
@@ -121,7 +126,7 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 - Full regressions, TypeScript, frontend/Worker build, dependency audit, finance seed, backup/restore, official promotion, week setup, and teaching-load validations pass with no skips.
 - No grade, fee, treasury, payroll, attendance, or result-card row is created by homework workflows.
 
-## Local implementation evidence — 2026-09-22
+## Local implementation evidence — 2026-09-23
 
 ### Delivered
 
@@ -130,22 +135,24 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 - `src/lib/homeworkDb.ts` owns all homework routes; `src/worker.ts` only registers the route module and the optional `HOMEWORK_FILES` interface.
 - The Arabic RTL page is lazy-loaded at `/homework`; navigation visibility follows `HOMEWORK_VIEW_ROLES`, staff can filter by state/load/date, parents can filter by linked child/timing, and the accountant has no route or menu access.
 - Uploads use an optional protected object-store binding. No binding was added to `wrangler.jsonc`, so environments without an explicitly approved store fail closed with `503` instead of exposing a public fallback.
+- Draft creation and publication now revalidate the complete canonical teaching load, including subject placement and the whole-class-versus-active-sections rule, in API queries, guarded publish SQL, and database triggers.
+- Parent endpoints serialize only the documented presentation DTO. Attachment deletion is a retryable `active → removal_pending → removed` flow and publication fails closed while cleanup is pending.
 
 ### Focused proof
 
-- Homework tests: `15/15`, zero failures and zero skips.
-- Covered: role/school isolation, explicit system-admin targeting, active teacher-link/load scope, optimistic revision, spoofed-file rejection, compensating cleanup after metadata or ambiguous object-store failure, guarded/idempotent publish, in-boundary roster/load race rollback, current parent-link revocation, protected download, audited withdrawal and unique audited replacement.
+- Homework tests: `17/17`, zero failures and zero skips.
+- Covered: role/school isolation, explicit system-admin targeting, complete canonical-load drift, whole-class load invalidation, optimistic revision, spoofed-file rejection, compensating upload cleanup, retryable object-delete cleanup, publication blocking while cleanup is pending, minimal parent DTOs, guarded/idempotent publish, in-boundary roster/load race rollback, current parent-link revocation, protected download, audited withdrawal and unique audited replacement.
 - UI/static contract verifies Arabic RTL, `390px`-safe classes, route/sidebar role wiring, all protected API paths, accepted MIME signatures and migration immutability markers.
 
 ### Full local gates
 
-- Full regression matrix after adding Phase 21D: `1593/1593`, zero failures and zero skips.
+- Full regression matrix after review hardening: `1595/1595`, zero failures and zero skips.
 - TypeScript: PASS.
 - Frontend and Worker production builds: PASS.
 - `npm audit --audit-level=low`: PASS, zero vulnerabilities.
 - Genuine local D1 validators for finance, week setup, teaching-load matrix, finance seed and official promotion: PASS.
 - Fresh local D1: `42` migrations; `PRAGMA foreign_key_check` empty.
-- Backup/restore: exact schema, columns, SQLite types, values and complete row multisets across `83` counted tables; final logical schema SHA-256 is `027B36F4735DA566614B3C52F0F0CA131DB30D511468DE4ABC483C52787A61F1`. The `360,009`-byte `import_jobs` text round-tripped through parameter binding with matching hash.
+- Backup/restore: exact schema, columns, SQLite types, values and complete row multisets across `83` counted tables; final logical schema SHA-256 is `2D6879E0650CC4665490E7F6AE8A2B41AA46FE1551E10EE7771B9D8571DEA7AB`, and the local export is `768,475` bytes. The `360,009`-byte `import_jobs` text round-tripped through parameter binding with matching hash.
 - As the exported schema now exceeds Wrangler's single SQL-file boundary, the restore utility splits base SQL only at parsed statement boundaries into three local chunks; each chunk remains local and the final complete snapshot is identical.
 
 ### Explicitly not performed

@@ -158,23 +158,38 @@ function AttachmentButton({
   onDownload,
   onRemove,
 }: {
-  attachment: HomeworkRecord['attachments'][number];
-  onDownload: () => void;
+  attachment: Pick<HomeworkRecord['attachments'][number], 'original_name' | 'size_bytes'> & {
+    status?: HomeworkRecord['attachments'][number]['status'];
+  };
+  onDownload?: () => void;
   onRemove?: () => void;
 }) {
+  const cleanupPending = attachment.status === 'removal_pending';
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-      <FileText size={17} className="shrink-0 text-primary-600" />
-      <button type="button" onClick={onDownload} className="min-w-0 flex-1 truncate text-right text-sm font-medium text-primary-700 hover:underline">
-        {attachment.original_name}
-      </button>
+    <div className={`flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2 ${cleanupPending ? 'border-amber-200 bg-amber-50' : 'border-gray-200 bg-gray-50'}`}>
+      <FileText size={17} className={`shrink-0 ${cleanupPending ? 'text-amber-700' : 'text-primary-600'}`} />
+      {onDownload ? (
+        <button type="button" onClick={onDownload} className="min-w-0 flex-1 truncate text-right text-sm font-medium text-primary-700 hover:underline">
+          {attachment.original_name}
+        </button>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-right text-sm font-medium text-gray-700">{attachment.original_name}</span>
+      )}
+      {cleanupPending && <span className="shrink-0 text-xs font-semibold text-amber-800">بانتظار تنظيف التخزين</span>}
       <span className="shrink-0 text-xs text-gray-500">{Math.ceil(attachment.size_bytes / 1024)} ك.ب</span>
-      <button type="button" onClick={onDownload} className="shrink-0 rounded p-1 text-gray-500 hover:bg-white hover:text-primary-700" aria-label="تنزيل المرفق">
-        <Download size={16} />
-      </button>
+      {onDownload && (
+        <button type="button" onClick={onDownload} className="shrink-0 rounded p-1 text-gray-500 hover:bg-white hover:text-primary-700" aria-label="تنزيل المرفق">
+          <Download size={16} />
+        </button>
+      )}
       {onRemove && (
-        <button type="button" onClick={onRemove} className="shrink-0 rounded p-1 text-red-500 hover:bg-red-50" aria-label="إزالة المرفق">
-          <Trash2 size={16} />
+        <button
+          type="button"
+          onClick={onRemove}
+          className={`shrink-0 rounded p-1 ${cleanupPending ? 'text-amber-700 hover:bg-amber-100' : 'text-red-500 hover:bg-red-50'}`}
+          aria-label={cleanupPending ? 'إعادة محاولة تنظيف المرفق' : 'إزالة المرفق'}
+        >
+          {cleanupPending ? <RefreshCw size={16} /> : <Trash2 size={16} />}
         </button>
       )}
     </div>
@@ -398,13 +413,33 @@ export default function HomeworkPage() {
     );
   }
 
-  async function removeAttachment(item: HomeworkRecord, attachmentKey: string): Promise<void> {
-    if (schoolId == null || !window.confirm('إزالة هذا المرفق من المسودة؟')) return;
-    await runAction(
-      `${item.homework_key}:${attachmentKey}`,
-      () => removeHomeworkAttachment(item.homework_key, attachmentKey, schoolId, item.revision),
-      'أُزيل المرفق من المسودة.',
+  async function removeAttachment(
+    item: HomeworkRecord,
+    attachment: HomeworkRecord['attachments'][number],
+  ): Promise<void> {
+    if (schoolId == null) return;
+    const cleanupPending = attachment.status === 'removal_pending';
+    const confirmation = cleanupPending
+      ? 'إعادة محاولة تنظيف هذا المرفق من التخزين؟'
+      : 'إزالة هذا المرفق من المسودة؟';
+    if (!window.confirm(confirmation)) return;
+    const actionKey = `${item.homework_key}:${attachment.attachment_key}`;
+    setBusyKey(actionKey);
+    setError('');
+    setNotice('');
+    const response = await removeHomeworkAttachment(
+      item.homework_key,
+      attachment.attachment_key,
+      schoolId,
+      item.revision,
     );
+    setBusyKey(null);
+    await loadData();
+    if (response.error) {
+      setError(response.error);
+      return;
+    }
+    setNotice(cleanupPending ? 'اكتمل تنظيف المرفق من التخزين.' : 'أُزيل المرفق من المسودة.');
   }
 
   async function download(attachmentKey: string, attachmentName: string): Promise<void> {
@@ -675,6 +710,8 @@ export default function HomeworkPage() {
             <div className="grid min-w-0 gap-5 xl:grid-cols-2">
               {homework.map(item => {
                 const itemBusy = busyKey === item.homework_key || busyKey?.startsWith(`${item.homework_key}:`);
+                const activeAttachmentCount = item.attachments.filter(attachment => attachment.status === 'active').length;
+                const hasPendingCleanup = item.attachments.some(attachment => attachment.status === 'removal_pending');
                 return (
                   <article key={item.homework_key} className="min-w-0 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                     <div className="flex min-w-0 items-start justify-between gap-3">
@@ -698,7 +735,7 @@ export default function HomeworkPage() {
 
                     <div className="mt-4 space-y-2 border-t border-gray-100 pt-4">
                       <div className="flex items-center justify-between gap-2">
-                        <h4 className="text-sm font-bold text-gray-800">المرفقات ({item.attachments.length}/5)</h4>
+                        <h4 className="text-sm font-bold text-gray-800">المرفقات الفعالة ({activeAttachmentCount}/5)</h4>
                         {canAuthor && item.status === 'draft' && (
                           <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-primary-200 px-2.5 py-1.5 text-xs font-semibold text-primary-700 hover:bg-primary-50">
                             <Paperclip size={15} /> إضافة مرفق
@@ -706,7 +743,7 @@ export default function HomeworkPage() {
                               type="file"
                               className="hidden"
                               accept="image/jpeg,image/png,image/webp,application/pdf"
-                              disabled={itemBusy || item.attachments.length >= 5}
+                              disabled={itemBusy || activeAttachmentCount >= 5}
                               onChange={event => {
                                 const file = event.target.files?.[0];
                                 event.target.value = '';
@@ -721,9 +758,11 @@ export default function HomeworkPage() {
                         <AttachmentButton
                           key={attachment.attachment_key}
                           attachment={attachment}
-                          onDownload={() => void download(attachment.attachment_key, attachment.original_name)}
+                          onDownload={attachment.status === 'active'
+                            ? () => void download(attachment.attachment_key, attachment.original_name)
+                            : undefined}
                           onRemove={canAuthor && item.status === 'draft'
-                            ? () => void removeAttachment(item, attachment.attachment_key)
+                            ? () => void removeAttachment(item, attachment)
                             : undefined}
                         />
                       ))}
@@ -734,7 +773,15 @@ export default function HomeworkPage() {
                         {item.status === 'draft' && (
                           <>
                             <button type="button" disabled={itemBusy} onClick={() => openEdit(item)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"><Pencil size={15} /> تعديل</button>
-                            <button type="button" disabled={itemBusy} onClick={() => void publish(item)} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><Send size={15} /> نشر الواجب</button>
+                            <button
+                              type="button"
+                              disabled={itemBusy || hasPendingCleanup}
+                              title={hasPendingCleanup ? 'أكمل تنظيف المرفق المعلّق قبل النشر' : undefined}
+                              onClick={() => void publish(item)}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                            >
+                              <Send size={15} /> نشر الواجب
+                            </button>
                           </>
                         )}
                         {item.status === 'published' && (

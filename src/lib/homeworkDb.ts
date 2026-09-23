@@ -27,6 +27,7 @@ import {
   type HomeworkObjectBody,
   type HomeworkRecord,
   type HomeworkScope,
+  type ParentHomeworkAttachment,
   type ParentHomeworkFeed,
   type ParentHomeworkItem,
 } from './homework';
@@ -161,12 +162,24 @@ async function loadTeachingLoad(db: D1Database, schoolId: number, loadId: number
       ON section.id = load.section_id AND section.school_id = load.school_id
      AND section.class_id = load.class_id AND section.status = 'active'
     JOIN subjects subject
-      ON subject.id = load.subject_id AND subject.school_id = load.school_id AND subject.status = 'active'
+      ON subject.id = load.subject_id AND subject.school_id = load.school_id
+     AND subject.class_id = load.class_id
+     AND (subject.section_id IS NULL OR subject.section_id = load.section_id)
+     AND subject.status = 'active'
     JOIN employees employee
       ON employee.id = load.employee_id AND employee.school_id = load.school_id
      AND employee.status = 'active' AND employee.role = 'teacher'
     WHERE load.id = ? AND load.school_id = ? AND load.status = 'active'
       AND (load.section_id IS NULL OR section.id IS NOT NULL)
+      AND (
+        load.section_id IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM sections class_section
+          WHERE class_section.school_id = load.school_id
+            AND class_section.class_id = load.class_id
+            AND class_section.status = 'active'
+        )
+      )
   `).bind(loadId, schoolId).first<Row>();
 }
 
@@ -193,8 +206,41 @@ function publicAttachment(row: Row): HomeworkAttachment {
     mime_type: row.mime_type,
     size_bytes: Number(row.size_bytes),
     sha256: String(row.sha256),
-    status: row.status === 'removed' ? 'removed' : 'active',
+    status: row.status === 'removed'
+      ? 'removed'
+      : row.status === 'removal_pending'
+        ? 'removal_pending'
+        : 'active',
     created_at: Number(row.created_at),
+  };
+}
+
+function publicParentAttachment(row: Row): ParentHomeworkAttachment {
+  return {
+    attachment_key: String(row.attachment_key),
+    original_name: String(row.original_name),
+    mime_type: row.mime_type,
+    size_bytes: Number(row.size_bytes),
+  };
+}
+
+function publicParentHomework(
+  row: Row,
+  attachments: ParentHomeworkAttachment[],
+  students: ParentHomeworkItem['students'],
+): ParentHomeworkItem {
+  return {
+    homework_key: String(row.homework_key),
+    class_name: String(row.class_name),
+    section_name: row.section_name == null ? null : String(row.section_name),
+    subject_name: String(row.subject_name),
+    teacher_name: String(row.teacher_name),
+    title: String(row.title),
+    instructions: String(row.instructions),
+    assigned_date: String(row.assigned_date),
+    due_at: row.due_at == null ? null : Number(row.due_at),
+    attachments,
+    students,
   };
 }
 
@@ -244,7 +290,7 @@ async function hydrateHomeworkRows(db: D1Database, rows: Row[]): Promise<Homewor
       SELECT homework_id, attachment_key, original_name, mime_type,
              size_bytes, sha256, status, created_at
       FROM homework_attachments
-      WHERE homework_id IN (${placeholders}) AND status = 'active'
+      WHERE homework_id IN (${placeholders}) AND status IN ('active', 'removal_pending')
       ORDER BY id
     `).bind(...ids).all<Row>(),
     db.prepare(`
@@ -275,6 +321,54 @@ async function hydrateHomeworkRows(db: D1Database, rows: Row[]): Promise<Homewor
     row,
     attachments.get(Number(row.id)) || [],
     audience.get(Number(row.id)) || [],
+  ));
+}
+
+async function hydrateParentHomeworkRows(
+  db: D1Database,
+  rows: Row[],
+  parentUserId: number,
+): Promise<ParentHomeworkItem[]> {
+  if (rows.length === 0) return [];
+  const ids = rows.map(row => Number(row.id));
+  const placeholders = ids.map(() => '?').join(',');
+  const [studentResult, attachmentResult] = await Promise.all([
+    db.prepare(`
+      SELECT audience.homework_id, student.id, student.full_name, student.student_number
+      FROM homework_audience audience
+      JOIN parent_student_links link
+        ON link.school_id = audience.school_id AND link.student_id = audience.student_id
+       AND link.parent_user_id = ? AND link.status = 'active'
+      JOIN students student
+        ON student.id = audience.student_id AND student.school_id = audience.school_id
+       AND student.status = 'active'
+      WHERE audience.homework_id IN (${placeholders})
+      ORDER BY student.full_name, student.id
+    `).bind(parentUserId, ...ids).all<Row>(),
+    db.prepare(`
+      SELECT attachment.homework_id, attachment.attachment_key,
+             attachment.original_name, attachment.mime_type, attachment.size_bytes
+      FROM homework_attachments attachment
+      WHERE attachment.homework_id IN (${placeholders}) AND attachment.status = 'active'
+      ORDER BY attachment.id
+    `).bind(...ids).all<Row>(),
+  ]);
+  const students = new Map<number, ParentHomeworkItem['students']>();
+  for (const row of studentResult.results || []) {
+    const list = students.get(Number(row.homework_id)) || [];
+    list.push({ id: Number(row.id), full_name: String(row.full_name), student_number: String(row.student_number) });
+    students.set(Number(row.homework_id), list);
+  }
+  const attachments = new Map<number, ParentHomeworkAttachment[]>();
+  for (const row of attachmentResult.results || []) {
+    const list = attachments.get(Number(row.homework_id)) || [];
+    list.push(publicParentAttachment(row));
+    attachments.set(Number(row.homework_id), list);
+  }
+  return rows.map(row => publicParentHomework(
+    row,
+    attachments.get(Number(row.id)) || [],
+    students.get(Number(row.id)) || [],
   ));
 }
 
@@ -386,12 +480,24 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
         ON section.id = load.section_id AND section.school_id = load.school_id
        AND section.class_id = load.class_id AND section.status = 'active'
       JOIN subjects subject
-        ON subject.id = load.subject_id AND subject.school_id = load.school_id AND subject.status = 'active'
+        ON subject.id = load.subject_id AND subject.school_id = load.school_id
+       AND subject.class_id = load.class_id
+       AND (subject.section_id IS NULL OR subject.section_id = load.section_id)
+       AND subject.status = 'active'
       JOIN employees employee
         ON employee.id = load.employee_id AND employee.school_id = load.school_id
        AND employee.status = 'active' AND employee.role = 'teacher'
       WHERE load.school_id = ? AND load.status = 'active'
         AND (load.section_id IS NULL OR section.id IS NOT NULL)
+        AND (
+          load.section_id IS NOT NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM sections class_section
+            WHERE class_section.school_id = load.school_id
+              AND class_section.class_id = load.class_id
+              AND class_section.status = 'active'
+          )
+        )
         ${teacherSql}
       ORDER BY load.id
     `).bind(...binds).all<Row>();
@@ -430,55 +536,7 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
       LIMIT 50
     `).bind(user.school_id, user.id).all<Row>();
     const rows = rowsResult.results || [];
-    if (rows.length === 0) return c.json({ data: { homework: [] } satisfies ParentHomeworkFeed });
-    const ids = rows.map(row => Number(row.id));
-    const placeholders = ids.map(() => '?').join(',');
-    const [studentResult, attachmentResult] = await Promise.all([
-      c.env.DB.prepare(`
-        SELECT audience.homework_id, student.id, student.full_name, student.student_number
-        FROM homework_audience audience
-        JOIN parent_student_links link
-          ON link.school_id = audience.school_id AND link.student_id = audience.student_id
-         AND link.parent_user_id = ? AND link.status = 'active'
-        JOIN students student
-          ON student.id = audience.student_id AND student.school_id = audience.school_id
-         AND student.status = 'active'
-        WHERE audience.homework_id IN (${placeholders})
-        ORDER BY student.full_name, student.id
-      `).bind(user.id, ...ids).all<Row>(),
-      c.env.DB.prepare(`
-        SELECT attachment.homework_id, attachment.attachment_key,
-               attachment.original_name, attachment.mime_type,
-               attachment.size_bytes, attachment.sha256,
-               attachment.status, attachment.created_at
-        FROM homework_attachments attachment
-        WHERE attachment.homework_id IN (${placeholders}) AND attachment.status = 'active'
-        ORDER BY attachment.id
-      `).bind(...ids).all<Row>(),
-    ]);
-    const students = new Map<number, ParentHomeworkItem['students']>();
-    for (const row of studentResult.results || []) {
-      const list = students.get(Number(row.homework_id)) || [];
-      list.push({ id: Number(row.id), full_name: String(row.full_name), student_number: String(row.student_number) });
-      students.set(Number(row.homework_id), list);
-    }
-    const attachments = new Map<number, HomeworkAttachment[]>();
-    for (const row of attachmentResult.results || []) {
-      const list = attachments.get(Number(row.homework_id)) || [];
-      list.push(publicAttachment(row));
-      attachments.set(Number(row.homework_id), list);
-    }
-    const homework: ParentHomeworkItem[] = rows.map(row => {
-      const full = publicHomework(row, attachments.get(Number(row.id)) || []);
-      const {
-        created_by_user_id: _createdBy,
-        revision: _revision,
-        withdrawal_reason: _withdrawalReason,
-        audience: _audience,
-        ...safe
-      } = full;
-      return { ...safe, students: students.get(Number(row.id)) || [] };
-    });
+    const homework = await hydrateParentHomeworkRows(c.env.DB, rows, user.id);
     return c.json({ data: { homework } satisfies ParentHomeworkFeed });
   });
 
@@ -573,7 +631,10 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
          AND active_section.class_id = active_load.class_id AND active_section.status = 'active'
         JOIN subjects active_subject
           ON active_subject.id = active_load.subject_id
-         AND active_subject.school_id = active_load.school_id AND active_subject.status = 'active'
+         AND active_subject.school_id = active_load.school_id
+         AND active_subject.class_id = active_load.class_id
+         AND (active_subject.section_id IS NULL OR active_subject.section_id = active_load.section_id)
+         AND active_subject.status = 'active'
         JOIN employees active_teacher
           ON active_teacher.id = active_load.employee_id
          AND active_teacher.school_id = active_load.school_id
@@ -587,6 +648,15 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
           AND active_load.employee_id = homework.teacher_employee_id
           AND active_load.status = 'active'
           AND (active_load.section_id IS NULL OR active_section.id IS NOT NULL)
+          AND (
+            active_load.section_id IS NOT NULL
+            OR NOT EXISTS (
+              SELECT 1 FROM sections active_class_section
+              WHERE active_class_section.school_id = active_load.school_id
+                AND active_class_section.class_id = active_load.class_id
+                AND active_class_section.status = 'active'
+            )
+          )
       )`);
       binds.push(user.id, user.id);
     }
@@ -703,21 +773,39 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
     await assertHomeworkMutationAccess(c, homework);
     requireHomework(homework.status === 'draft', 'homework_draft_required', 409);
     requireHomework(Number(homework.revision) === input.revision, 'homework_stale', 409);
+    requireHomework(c.env.HOMEWORK_FILES, 'homework_files_unavailable', 503);
     const user = c.get('user');
-    const removed = await c.env.DB.prepare(`
+    const attachmentKey = routeParam(c, 'attachmentKey');
+    let pending = await c.env.DB.prepare(`
       UPDATE homework_attachments
-      SET status = 'removed', removed_by_user_id = ?, removed_at = unixepoch()
+      SET status = 'removal_pending', removed_by_user_id = ?, removed_at = unixepoch()
       WHERE homework_id = ? AND school_id = ? AND attachment_key = ? AND status = 'active'
       RETURNING object_key, attachment_key, original_name, mime_type, size_bytes, sha256, status, created_at
-    `).bind(user.id, homework.id, schoolId, routeParam(c, 'attachmentKey')).first<Row>();
-    requireHomework(removed, 'homework_attachment_not_found', 404);
-    if (c.env.HOMEWORK_FILES) {
-      try {
-        await c.env.HOMEWORK_FILES.delete(String(removed.object_key));
-      } catch {
-        console.error('[homework] removed attachment object cleanup failed', { attachmentKey: removed.attachment_key });
-      }
+    `).bind(user.id, homework.id, schoolId, attachmentKey).first<Row>();
+    if (!pending) {
+      pending = await c.env.DB.prepare(`
+        SELECT object_key, attachment_key, original_name, mime_type,
+               size_bytes, sha256, status, created_at
+        FROM homework_attachments
+        WHERE homework_id = ? AND school_id = ? AND attachment_key = ?
+          AND status = 'removal_pending'
+      `).bind(homework.id, schoolId, attachmentKey).first<Row>();
     }
+    requireHomework(pending, 'homework_attachment_not_found', 404);
+    try {
+      await c.env.HOMEWORK_FILES.delete(String(pending.object_key));
+    } catch {
+      console.error('[homework] attachment object cleanup pending', { attachmentKey });
+      throw new HomeworkError('homework_attachment_cleanup_pending', 503);
+    }
+    const removed = await c.env.DB.prepare(`
+      UPDATE homework_attachments
+      SET status = 'removed'
+      WHERE homework_id = ? AND school_id = ? AND attachment_key = ?
+        AND status = 'removal_pending'
+      RETURNING attachment_key, original_name, mime_type, size_bytes, sha256, status, created_at
+    `).bind(homework.id, schoolId, attachmentKey).first<Row>();
+    requireHomework(removed, 'homework_attachment_cleanup_pending', 503);
     return c.json({ data: publicAttachment(removed) });
   });
 
@@ -730,6 +818,17 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
     requireHomework(row.status === 'draft' && Number(row.revision) === input.revision, 'homework_stale', 409);
     const activeLoad = await loadTeachingLoad(c.env.DB, schoolId, Number(row.teaching_load_id));
     requireHomework(activeLoad && homeworkMatchesActiveLoad(row, activeLoad), 'invalid_homework_load', 409);
+    requireHomework(
+      row.assigned_date >= activeLoad.starts_at && row.assigned_date <= activeLoad.ends_at,
+      'invalid_homework_date',
+    );
+    const pendingAttachment = await c.env.DB.prepare(`
+      SELECT 1 AS pending
+      FROM homework_attachments
+      WHERE homework_id = ? AND school_id = ? AND status = 'removal_pending'
+      LIMIT 1
+    `).bind(row.id, schoolId).first<Row>();
+    requireHomework(!pendingAttachment, 'homework_attachment_cleanup_pending', 409);
     const roster = await eligibleAudience(c.env.DB, row);
     requireHomework(roster.length > 0, 'homework_audience_empty', 409);
     const audience = roster.map(student => ({
@@ -771,7 +870,10 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
            AND guarded_section.class_id = guarded_load.class_id AND guarded_section.status = 'active'
           JOIN subjects guarded_subject
             ON guarded_subject.id = guarded_load.subject_id
-           AND guarded_subject.school_id = guarded_load.school_id AND guarded_subject.status = 'active'
+           AND guarded_subject.school_id = guarded_load.school_id
+           AND guarded_subject.class_id = guarded_load.class_id
+           AND (guarded_subject.section_id IS NULL OR guarded_subject.section_id = guarded_load.section_id)
+           AND guarded_subject.status = 'active'
           JOIN employees guarded_teacher
             ON guarded_teacher.id = guarded_load.employee_id
            AND guarded_teacher.school_id = guarded_load.school_id
@@ -779,6 +881,21 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
           WHERE guarded_homework.id = ? AND guarded_homework.school_id = ?
             AND guarded_homework.status = 'draft' AND guarded_homework.revision = ?
             AND (guarded_load.section_id IS NULL OR guarded_section.id IS NOT NULL)
+            AND (
+              guarded_load.section_id IS NOT NULL
+              OR NOT EXISTS (
+                SELECT 1 FROM sections guarded_class_section
+                WHERE guarded_class_section.school_id = guarded_load.school_id
+                  AND guarded_class_section.class_id = guarded_load.class_id
+                  AND guarded_class_section.status = 'active'
+              )
+            )
+            AND guarded_homework.assigned_date BETWEEN guarded_year.starts_at AND guarded_year.ends_at
+            AND NOT EXISTS (
+              SELECT 1 FROM homework_attachments pending_attachment
+              WHERE pending_attachment.homework_id = guarded_homework.id
+                AND pending_attachment.status = 'removal_pending'
+            )
         )
       `).bind(token, row.id, schoolId, input.revision),
       c.env.DB.prepare(`
@@ -990,15 +1107,9 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
           )
       `).bind(user.school_id, routeParam(c, 'key'), user.id).first<Row>();
       requireHomework(row, 'homework_not_found', 404);
-      const full = (await hydrateHomeworkRows(c.env.DB, [row]))[0];
-      const {
-        created_by_user_id: _createdBy,
-        revision: _revision,
-        withdrawal_reason: _withdrawalReason,
-        audience: _audience,
-        ...safe
-      } = full;
-      return c.json({ data: safe });
+      const homework = (await hydrateParentHomeworkRows(c.env.DB, [row], user.id))[0];
+      requireHomework(homework, 'homework_not_found', 404);
+      return c.json({ data: homework });
     }
     const schoolId = await resolveStaffSchool(c, c.req.query('school_id'));
     const key = routeParam(c, 'key');

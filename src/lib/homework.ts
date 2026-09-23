@@ -48,8 +48,15 @@ export interface HomeworkAttachment {
   mime_type: HomeworkMimeType;
   size_bytes: number;
   sha256: string;
-  status: 'active' | 'removed';
+  status: 'active' | 'removal_pending' | 'removed';
   created_at: number;
+}
+
+export interface ParentHomeworkAttachment {
+  attachment_key: string;
+  original_name: string;
+  mime_type: HomeworkMimeType;
+  size_bytes: number;
 }
 
 export interface HomeworkAudienceStudent {
@@ -89,9 +96,17 @@ export interface HomeworkRecord {
   audience: HomeworkAudienceStudent[];
 }
 
-export interface ParentHomeworkItem extends Omit<HomeworkRecord,
-  'created_by_user_id' | 'revision' | 'withdrawal_reason' | 'audience'
-> {
+export interface ParentHomeworkItem {
+  homework_key: string;
+  class_name: string;
+  section_name: string | null;
+  subject_name: string;
+  teacher_name: string;
+  title: string;
+  instructions: string;
+  assigned_date: string;
+  due_at: number | null;
+  attachments: ParentHomeworkAttachment[];
   students: Array<{ id: number; full_name: string; student_number: string }>;
 }
 
@@ -170,6 +185,7 @@ export function homeworkErrorMessage(code: string): string {
     homework_attachment_too_large: 'حجم الملف يتجاوز 5 ميغابايت',
     homework_attachment_limit: 'الحد الأقصى خمسة مرفقات فعالة للواجب',
     homework_attachment_total_limit: 'إجمالي المرفقات يتجاوز 20 ميغابايت',
+    homework_attachment_cleanup_pending: 'تعذر تنظيف المرفق من التخزين؛ أعد محاولة الإزالة قبل نشر الواجب',
     invalid_homework_attachment_type: 'نوع الملف غير مدعوم',
     invalid_homework_attachment_signature: 'محتوى الملف لا يطابق نوعه المعلن',
     invalid_homework_attachment_name: 'اسم الملف غير صالح',
@@ -347,6 +363,7 @@ export function homeworkDatabaseError(error: unknown): HomeworkError {
   if (error instanceof HomeworkError) return error;
   const detail = String((error as { message?: unknown })?.message || error);
   const mappings: Array<[string, string, HomeworkErrorStatus]> = [
+    ['homework attachment cleanup pending', 'homework_attachment_cleanup_pending', 409],
     ['homework attachment limit exceeded', 'homework_attachment_limit', 409],
     ['homework attachment total exceeded', 'homework_attachment_total_limit', 409],
     ['homework attachment draft required', 'homework_draft_required', 409],
