@@ -2,14 +2,25 @@
 
 ## Status and authorization
 
-Phase 21D is implemented locally on `codex/phase-21d-homework`, based on `main@abc56f1899ac94987630f32b74781587025fdbf7`, and is open for review in [Draft PR #52](https://github.com/smartschoolduhok/smart-school/pull/52). Authorization remains limited to local implementation, the feature branch, and the Draft PR.
+Phase 21D is implemented on `codex/phase-21d-homework`, based on `main@abc56f1899ac94987630f32b74781587025fdbf7`, and is open for review in [Draft PR #52](https://github.com/smartschoolduhok/smart-school/pull/52). STAGING-only execution was explicitly authorized on 2026-09-23 for the fixed Pages/D1/R2 targets; Production and merge remained excluded.
+
+The gate pinned HEAD `d169df3ac97c9a91c7b84753698f7b8fb7796a78` and tree `a9861b34e4599987bcfab04179516774e1149014`. Read-only D1 preflight, the external backup, exact local restore, local `0041` rehearsal, and the immediate pre-write drift check passed. Execution then stopped before the first remote write because the verified Cloudflare account returned R2 API code `10042` (`Please enable R2 through the Cloudflare Dashboard`).
 
 The authorization does not include:
 
-- creating or binding a remote R2 bucket;
-- applying `0041_homework.sql` to STAGING;
 - accessing or deploying Production;
 - merging or enabling auto-merge.
+
+## Partial STAGING gate evidence — 2026-09-23/24
+
+- Account: `smartschool.duhok@gmail.com`, Cloudflare account ID `8d30029482b5722704371f03169c5ca1`.
+- Target: Pages `smart-school-staging`; D1 `smart-school-staging-db` / `1bdb9c3d-08d6-4023-9cbc-64369d53198a`; immutable Preview source `d169df3`.
+- Preflight: `41` distinct migrations through `0040`, only `0041_homework.sql` pending, `78/76` counted/application tables, clean FK, and full typed snapshot hash `5a8c437a4a7f07abda120cd822e06297d779dc19ad7732f7399d423477833204`.
+- Backup: `1,509,194` bytes, SHA-256 `2B0584503FE159A77B4C0F736E92E6AF972A2EEEB840CFE5EBE04C4F4B9299BE`, stored outside Git under `SmartSchoolBackups/phase-21d-staging-20260923T213116Z`.
+- Local restoration matched the remote schema, columns, SQLite storage types, values and complete row multisets exactly. The oversized `import_jobs` row used `16` bound parameters totaling `360,514` bytes.
+- Applying only `0041` to that isolated local D1 produced `42` migrations and `83/81` tables, with the five expected homework tables, clean FK, unchanged historical rows/types/values and unchanged readiness.
+- The immediate pre-write export was byte-for-byte identical to the approved backup, with the same size and SHA-256; `0041` remained the only pending migration.
+- Blocker: R2 inventory/name availability could not be checked because R2 is not enabled for the account (`10042`). No bucket, remote migration, binding, Preview configuration change, school-2 QA, Production action or merge occurred.
 
 ## Product boundary
 

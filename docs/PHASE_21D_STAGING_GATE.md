@@ -1,6 +1,22 @@
-# Phase 21D — STAGING gate (prepared; remote execution pending)
+# Phase 21D — STAGING gate (steps 1–4 passed; blocked before remote writes)
 
-Prepared: 2026-09-23. This is an execution checklist, not evidence that STAGING was changed. The local implementation and tests are recorded in [PHASE_21D_HOMEWORK_QA.md](PHASE_21D_HOMEWORK_QA.md). Draft [PR #52](https://github.com/smartschoolduhok/smart-school/pull/52) remains open; the implementation tree last checked during preparation was `2ff7fa9be4ec48ef046d9f55bbb82a693b94a518`.
+Prepared: 2026-09-23; partially executed: 2026-09-23/24. The local implementation and tests are recorded in [PHASE_21D_HOMEWORK_QA.md](PHASE_21D_HOMEWORK_QA.md). Draft [PR #52](https://github.com/smartschoolduhok/smart-school/pull/52) remains open. Execution pinned the authorized commit `d169df3ac97c9a91c7b84753698f7b8fb7796a78` and tree `a9861b34e4599987bcfab04179516774e1149014`.
+
+## Execution record — stopped before step 5
+
+The explicit STAGING-only authorization was used for read-only D1 inspection and export, local restore/rehearsal, and the final pre-write drift guard. The verified Cloudflare account was `8d30029482b5722704371f03169c5ca1` (`smartschool.duhok@gmail.com`); the Pages project, D1 name/UUID, Draft PR HEAD/tree and immutable Preview source all matched the approved scope.
+
+| Gate | Actual evidence |
+|---|---|
+| Remote D1 preflight | `41` distinct migrations ending at `0040_staff_attendance.sql`; only `0041_homework.sql` pending; `78` counted / `76` application tables; zero FK violations; all seven readiness views captured without redefining their accepted historical values |
+| Typed snapshot | Full schema, columns, SQLite storage types, values and row multisets captured; snapshot SHA-256 `5a8c437a4a7f07abda120cd822e06297d779dc19ad7732f7399d423477833204` |
+| Backup | `SmartSchoolBackups/phase-21d-staging-20260923T213116Z/smart-school-staging-db-20260923T213116Z.sql`; `1,509,194` bytes; SHA-256 `2B0584503FE159A77B4C0F736E92E6AF972A2EEEB840CFE5EBE04C4F4B9299BE` |
+| Local restore | Exact equality to the remote typed snapshot across all `78` historical tables. The export contained `2,442` statements; the single oversized `import_jobs` row was restored with `16` bound parameters totaling `360,514` bytes |
+| Local `0041` rehearsal | Migration SHA-256 `36D432D2C1AE18ABC6E4A3B08BC3BD625C972D5695BD9C199ECE6D20F1462C16`; exactly once and last; `42` migrations, the five expected tables, `83` counted / `81` application tables, clean FK, unchanged historical rows/types/values and unchanged readiness |
+| Immediate pre-write guard | Re-exported at `2026-09-24T14:29:43Z`; byte-for-byte identical to the backup with the same size and SHA-256; `0041_homework.sql` still the only pending migration |
+| R2 blocker | `wrangler r2 bucket list` failed on the verified account with Cloudflare API code `10042`: `Please enable R2 through the Cloudflare Dashboard`. Bucket inventory and proposed-name availability therefore could not be proven |
+
+The stop condition was honored. No R2 bucket was created, no D1 migration was applied remotely, no `HOMEWORK_FILES` binding was added, no Preview configuration was changed, and no authenticated school-2 QA was started. Production, merge, auto-merge, seed/reset and manual deployment were not touched. Evidence, including the blocker log and both SQL exports, remains outside Git in the dated `SmartSchoolBackups` folder.
 
 ## Fixed scope and stop conditions
 
@@ -13,7 +29,7 @@ Prepared: 2026-09-23. This is an execution checklist, not evidence that STAGING 
 | QA | School `2` only, with a unique marker; schools `1` and `3` are protected comparators |
 | Excluded | Production resources, Pages production deployment, merge, auto-merge, destructive fixture deletion, public bucket access |
 
-Remote D1 reads/exports, bucket creation, binding changes and migration application require an explicit STAGING authorization for this gate. The Cloudflare dashboard could not be inspected during preparation because this browser repeatedly returned its human-verification page. No live R2 inventory, D1 status or Cloudflare account identity has been confirmed on 2026-09-23. A stale historical STAGING snapshot is not a substitute for fresh preflight.
+Remote D1 reads/exports, bucket creation, binding changes and migration application required explicit STAGING authorization for this gate; that authorization was granted. Read-only D1 work and the local rehearsal completed, but R2 is not enabled on the verified account, so the gate stopped before its first remote write. A future continuation must repeat the pre-write export/hash comparison and pending-migration check after R2 is enabled.
 
 Stop if the account, resource UUID, project, PR implementation tree, migration contents or number of pending migrations differs from the approved target; if the R2 name already exists and ownership is uncertain; if the backup cannot be restored exactly; or if the pre-write drift check differs. Do not broaden the migration set to make `wrangler d1 migrations apply` succeed. Record the actual SHA and evidence in the QA document once the gate runs.
 
