@@ -103,9 +103,18 @@ const exportedSql = readFileSync(backupPath, 'utf8');
 const plan = prepareLocalRestore(exportedSql);
 assert.equal(plan.inserts.length, 1, 'The drill must exercise one oversized bound row');
 assert.equal(plan.baseStatementCount, plan.statementCount - 1);
-const basePath = join(drillRoot, 'restore-base.sql');
-writeFileSync(basePath, plan.baseSql);
-runLocal(restored, ['execute', restored.databaseName, '--local', '--file', basePath], 'restore-base-import');
+const basePaths = plan.baseChunks.map((chunk, index) => {
+  const path = join(drillRoot, `restore-base-${String(index + 1).padStart(2, '0')}.sql`);
+  writeFileSync(path, chunk);
+  return path;
+});
+for (const [index, path] of basePaths.entries()) {
+  runLocal(
+    restored,
+    ['execute', restored.databaseName, '--local', '--file', path],
+    `restore-base-import-${String(index + 1).padStart(2, '0')}`,
+  );
+}
 
 const sourceProxy = await openLocal(source);
 const restoredProxy = await openLocal(restored);
@@ -139,6 +148,7 @@ try {
     large_row_hash: digest(largeText),
     statements_before: plan.statementCount,
     restore_base_statements: plan.baseStatementCount,
+    restore_base_chunks: plan.baseChunks.length,
     backup_bytes: readFileSync(backupPath).byteLength,
     exact_application_snapshot: true,
     finance,

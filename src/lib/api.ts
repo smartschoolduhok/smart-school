@@ -30,6 +30,16 @@ import type {
   StaffAttendanceSettings,
   StaffAttendanceSettingsInput,
 } from './staffAttendance';
+import type {
+  HomeworkAttachment,
+  HomeworkDraftInput,
+  HomeworkEditInput,
+  HomeworkRecord,
+  HomeworkReplacementInput,
+  HomeworkScope,
+  HomeworkStatus,
+  ParentHomeworkFeed,
+} from './homework';
 export function getWeekSetup(scope: Required<WeekScope>) {
   return fetchApi<WeekSnapshot>(`/api/timetable/week-setup?${new URLSearchParams({school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id)})}`);
 }
@@ -109,7 +119,8 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
     const { headers: optionHeaders, ...requestOptions } = options || {};
     const headers = new Headers(optionHeaders);
     if (!headers.has('Accept')) headers.set('Accept', 'application/json');
-    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+    const hasFormDataBody = typeof FormData !== 'undefined' && requestOptions.body instanceof FormData;
+    if (!headers.has('Content-Type') && !hasFormDataBody) headers.set('Content-Type', 'application/json');
 
     if (token) {
       headers.set('Authorization', `Bearer ${token}`);
@@ -346,6 +357,124 @@ export function markNotificationRead(notificationKey: string) {
     method: 'POST',
     body: '{}',
   });
+}
+
+// ===========================================
+// Homework (Phase 21D)
+// ===========================================
+export function getHomeworkScopes(schoolId: number) {
+  return fetchApi<{ loads: HomeworkScope[] }>(`/api/homework/scopes?school_id=${schoolId}`);
+}
+
+export function getHomework(
+  schoolId: number,
+  status: HomeworkStatus | 'all' = 'all',
+  filters: { teachingLoadId?: number | null; assignedDate?: string } = {},
+) {
+  const params = new URLSearchParams({ school_id: String(schoolId), status });
+  if (filters.teachingLoadId != null) params.set('teaching_load_id', String(filters.teachingLoadId));
+  if (filters.assignedDate) params.set('assigned_date', filters.assignedDate);
+  return fetchApi<HomeworkRecord[]>(`/api/homework?${params}`);
+}
+
+export function getHomeworkByKey(homeworkKey: string, schoolId?: number | null) {
+  const query = schoolId == null ? '' : `?school_id=${schoolId}`;
+  return fetchApi<HomeworkRecord>(`/api/homework/${encodeURIComponent(homeworkKey)}${query}`);
+}
+
+export function createHomeworkDraft(data: HomeworkDraftInput) {
+  return fetchApi<HomeworkRecord>('/api/homework', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateHomeworkDraft(homeworkKey: string, data: HomeworkEditInput) {
+  return fetchApi<HomeworkRecord>(`/api/homework/${encodeURIComponent(homeworkKey)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export function publishHomework(homeworkKey: string, schoolId: number, revision: number) {
+  return fetchApi<HomeworkRecord>(`/api/homework/${encodeURIComponent(homeworkKey)}/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, revision }),
+  });
+}
+
+export function withdrawHomework(homeworkKey: string, schoolId: number, revision: number, reason: string) {
+  return fetchApi<HomeworkRecord>(`/api/homework/${encodeURIComponent(homeworkKey)}/withdraw`, {
+    method: 'POST',
+    body: JSON.stringify({ school_id: schoolId, revision, reason }),
+  });
+}
+
+export function createHomeworkReplacement(homeworkKey: string, data: HomeworkReplacementInput) {
+  return fetchApi<HomeworkRecord>(`/api/homework/${encodeURIComponent(homeworkKey)}/replacement`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function uploadHomeworkAttachment(
+  homeworkKey: string,
+  schoolId: number,
+  revision: number,
+  file: File,
+) {
+  const form = new FormData();
+  form.set('school_id', String(schoolId));
+  form.set('revision', String(revision));
+  form.set('file', file);
+  return fetchApi<HomeworkAttachment>(`/api/homework/${encodeURIComponent(homeworkKey)}/attachments`, {
+    method: 'POST',
+    body: form,
+  });
+}
+
+export function removeHomeworkAttachment(
+  homeworkKey: string,
+  attachmentKey: string,
+  schoolId: number,
+  revision: number,
+) {
+  return fetchApi<HomeworkAttachment>(
+    `/api/homework/${encodeURIComponent(homeworkKey)}/attachments/${encodeURIComponent(attachmentKey)}/remove`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ school_id: schoolId, revision }),
+    },
+  );
+}
+
+export function getParentHomework() {
+  return fetchApi<ParentHomeworkFeed>('/api/homework/parent');
+}
+
+export async function downloadHomeworkAttachment(
+  attachmentKey: string,
+  schoolId?: number | null,
+): Promise<{ data?: Blob; fileName?: string; error?: string }> {
+  try {
+    const token = getStoredAuthToken();
+    const query = schoolId == null ? '' : `?school_id=${schoolId}`;
+    const response = await fetch(`/api/homework/attachments/${encodeURIComponent(attachmentKey)}${query}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      return { error: body.error || `خطأ ${response.status}` };
+    }
+    const disposition = response.headers.get('content-disposition') || '';
+    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    return {
+      data: await response.blob(),
+      fileName: encodedName ? decodeURIComponent(encodedName) : 'homework-file',
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'تعذر تنزيل المرفق' };
+  }
 }
 
 // Dashboard

@@ -51,6 +51,32 @@ export function sqlStatements(sql) {
 const quote = s => '"' + s.replaceAll('"', '""') + '"';
 export const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+// Wrangler sends an execute --file payload as one SQL request. Once the schema
+// grows past the platform statement-size boundary, even individually small SQL
+// statements can fail as one oversized file. Split only at parsed statement
+// boundaries and keep foreign keys deferred inside every disposable chunk.
+export function localRestoreChunks(sql, maximumBytes = 180000) {
+  assert.ok(Number.isSafeInteger(maximumBytes) && maximumBytes >= 20000 && maximumBytes <= 500000);
+  const prefix = 'PRAGMA defer_foreign_keys=TRUE;\n';
+  const chunks = [];
+  let current = '';
+  for (const statement of sqlStatements(sql)) {
+    const text = sql.slice(statement.start, statement.end).trim();
+    if (!text || /^PRAGMA\s+defer_foreign_keys\s*=\s*TRUE\s*;$/i.test(text)) continue;
+    const addition = `${text}\n`;
+    assert.ok(Buffer.byteLength(prefix + addition) <= maximumBytes, 'Restore statement exceeds chunk limit');
+    if (current && Buffer.byteLength(prefix + current + addition) > maximumBytes) {
+      chunks.push(prefix + current);
+      current = '';
+    }
+    current += addition;
+  }
+  if (current) chunks.push(prefix + current);
+  assert.ok(chunks.length > 0, 'Restore SQL has no executable statements');
+  assert.ok(chunks.every(chunk => Buffer.byteLength(chunk) <= maximumBytes), 'Restore chunk exceeds limit');
+  return chunks;
+}
+
 // Deliberately fail closed for other oversized SQL. This fallback restores
 // import_jobs rows without rewriting literals or bypassing financial triggers.
 export function prepareLocalRestore(sql) {
@@ -99,7 +125,13 @@ export function prepareLocalRestore(sql) {
     let offset = 0, baseSql = '';
     for (const statement of oversized) { baseSql += sql.slice(offset, statement.start); offset = statement.end; }
     baseSql += sql.slice(offset);
-    return { baseSql, inserts, statementCount: statements.length, baseStatementCount: statements.length - oversized.length };
+    return {
+      baseSql,
+      baseChunks: localRestoreChunks(baseSql),
+      inserts,
+      statementCount: statements.length,
+      baseStatementCount: statements.length - oversized.length,
+    };
   } finally { baseline.close(); }
 }
 

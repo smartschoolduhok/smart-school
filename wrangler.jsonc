@@ -12,5 +12,22 @@
       "database_name": "smart-school-staging-db",
       "database_id": "1bdb9c3d-08d6-4023-9cbc-64369d53198a"
     }
-  ]
+  ],
+  "env": {
+    "preview": {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "smart-school-staging-db",
+          "database_id": "1bdb9c3d-08d6-4023-9cbc-64369d53198a"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "HOMEWORK_FILES",
+          "bucket_name": "smart-school-homework-staging"
+        }
+      ]
+    }
+  }
 }
