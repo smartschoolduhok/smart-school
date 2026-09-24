@@ -1,3 +1,4 @@
+import GradeProgressPage from '../gradeProgress/GradeProgressPage';
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
@@ -164,6 +165,7 @@ export default function GradesPage() {
   // Reset to first visible tab if current tab becomes hidden
   const effectiveTab = visibleTabs.find((t) => t.key === activeTab) ? activeTab : visibleTabs[0]?.key || 'student';
 
+  if (user?.role_key === 'parent') return <GradeProgressPage />;
   return (
     <div className="space-y-6" dir="rtl">
       <div className="flex flex-wrap items-center justify-between gap-3">

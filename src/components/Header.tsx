@@ -99,6 +99,9 @@ export default function Header({ onMenuClick }: HeaderProps) {
     }
     setIsNotificationsOpen(false);
     if (referenceType === 'student_gate_event') navigate('/attendance');
+    if (referenceType === 'parent_conversation') navigate(`/communication?conversation=${encodeURIComponent(current?.reference_key || '')}`);
+    if (referenceType === 'grade_progress') navigate('/grade-progress');
+    if (referenceType === 'homework') navigate('/homework');
   }
 
   return (

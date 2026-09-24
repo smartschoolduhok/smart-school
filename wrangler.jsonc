@@ -29,5 +29,11 @@
         }
       ]
     }
-  }
+  },
+  "r2_buckets": [
+    {
+      "binding": "HOMEWORK_FILES",
+      "bucket_name": "smart-school-homework-staging"
+    }
+  ]
 }

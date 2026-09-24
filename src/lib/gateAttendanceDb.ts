@@ -1,3 +1,4 @@
+import { communicationNotificationAccessSql } from './parentCommunicationDb';
 import type { Context, Hono } from 'hono';
 import type { Bindings, Variables } from '../worker';
 import { businessDate } from './businessTime';
@@ -618,6 +619,7 @@ export function registerGateAttendanceRoutes(app: Hono<GateEnv>): void {
             ON notification.notification_key = recipient.notification_key
            AND notification.school_id = recipient.school_id
            AND notification.status = 'active'
+            AND ${communicationNotificationAccessSql}
           WHERE recipient.user_id = ? AND recipient.school_id = ?
             AND (
               notification.student_id IS NULL
@@ -644,6 +646,7 @@ export function registerGateAttendanceRoutes(app: Hono<GateEnv>): void {
             ON notification.notification_key = recipient.notification_key
            AND notification.school_id = recipient.school_id
            AND notification.status = 'active'
+            AND ${communicationNotificationAccessSql}
           WHERE recipient.user_id = ? AND recipient.school_id = ? AND recipient.read_at IS NULL
             AND (
               notification.student_id IS NULL
@@ -699,6 +702,7 @@ export function registerGateAttendanceRoutes(app: Hono<GateEnv>): void {
             WHERE notification.notification_key = notification_recipients.notification_key
               AND notification.school_id = notification_recipients.school_id
               AND notification.status = 'active'
+              AND ${communicationNotificationAccessSql.replace(/recipient\.user_id/g, 'notification_recipients.user_id')}
               AND (
                 notification.student_id IS NULL
                 OR EXISTS (

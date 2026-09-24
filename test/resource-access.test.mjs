@@ -66,7 +66,7 @@ async function api(fixture, role, method, path, body) {
 test('parent access fails closed and broad academic routes stay unavailable', async t => {
   const fixture = createFixture(t);
   assert.deepEqual((await api(fixture, 'parent', 'GET', '/api/students?school_id=1')).body.data, []);
-  assert.deepEqual((await api(fixture, 'parent', 'GET', '/api/grades?school_id=1')).body.data, []);
+  assert.equal((await api(fixture, 'parent', 'GET', '/api/grades?school_id=1')).status, 403);
   for (const path of [
     '/api/students/1',
     '/api/students/1/subjects',
@@ -93,10 +93,10 @@ test('an explicit parent link exposes only that child and can be revoked', async
   const students = await api(fixture, 'parent', 'GET', '/api/students?school_id=1');
   assert.deepEqual(students.body.data.map(row => row.id), [1]);
   const grades = await api(fixture, 'parent', 'GET', '/api/grades?school_id=1');
-  assert.deepEqual(grades.body.data.map(row => row.id), [1]);
+  assert.equal(grades.status, 403); // Parents read delivered, published progress snapshots.
   assert.equal((await api(fixture, 'parent', 'GET', '/api/students/1')).status, 200);
   assert.equal((await api(fixture, 'parent', 'GET', '/api/students/1/subjects')).status, 200);
-  assert.equal((await api(fixture, 'parent', 'GET', '/api/students/1/grades')).status, 200);
+  assert.equal((await api(fixture, 'parent', 'GET', '/api/students/1/grades')).status, 403);
   assert.equal((await api(fixture, 'parent', 'GET', '/api/students/2')).status, 403);
 
   const revoked = await api(
@@ -272,7 +272,8 @@ test('student grade and subject endpoints restrict a teacher to the assigned sub
   assert.deepEqual(summary.body.data.subjects.map(s=>s.subject_id), [1]);
   await api(f, 'owner', 'POST', '/api/access-links/parents', {school_id:1,parent_user_id:8,student_id:1});
   for (const role of ['parent','owner']) {
-    assert.deepEqual((await api(f,role,'GET','/api/students/1/grades')).body.data.grades.map(g=>g.id), [1,4]);
+    if(role==='parent') assert.equal((await api(f,role,'GET','/api/students/1/grades')).status,403);
+    else assert.deepEqual((await api(f,role,'GET','/api/students/1/grades')).body.data.grades.map(g=>g.id), [1,4]);
     assert.deepEqual((await api(f,role,'GET','/api/students/1/subjects')).body.data.map(s=>s.subject_id), [1,2]);
   }
 });

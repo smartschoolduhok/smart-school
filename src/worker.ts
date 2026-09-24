@@ -10,6 +10,10 @@ import { registerAttendanceRoutes } from './lib/attendanceDb'
 import { registerGateAttendanceRoutes } from './lib/gateAttendanceDb'
 import { registerStaffAttendanceRoutes } from './lib/staffAttendanceDb'
 import { registerHomeworkRoutes } from './lib/homeworkDb'
+import { registerAdmissionsRoutes } from './lib/admissionsDb'
+import { registerAdmissionRegulationRoutes } from './lib/admissionRegulationsDb'
+import { registerGradeProgressRoutes } from './lib/gradeProgressDb'
+import { registerParentCommunicationRoutes } from './lib/parentCommunicationDb'
 import type { HomeworkObjectStore } from './lib/homework'
 import { parseWeekRequest, planWeekSetup, publicWeekSnapshot, WeekSetupError } from './lib/weekSetup'
 import { loadWeekSetup, buildWeekApplyStatements, readWeekJson, weekDatabaseError } from './lib/weekSetupDb'
@@ -7171,7 +7175,7 @@ async function getActiveStudentSubjects(db: D1Database, studentId: number, schoo
 // GET /api/grades
 // ===========================================
 
-app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(GRADE_VIEW_ROLES), async (c) => {
+app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const user = c.get('user') as UserContext;
   try {
@@ -7254,7 +7258,7 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(GRADE_VIEW_ROLES
 // GET /api/students/:id/grades
 // ===========================================
 
-app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(GRADE_VIEW_ROLES), async (c) => {
+app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const studentId = Number(c.req.param('id'));
@@ -7720,7 +7724,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
 // GET /api/grades/:id/history - audit log
 // ===========================================
 
-app.get('/api/grades/:id/history', requireAuthEnforced(), requireRoles(GRADE_VIEW_ROLES), async (c) => {
+app.get('/api/grades/:id/history', requireAuthEnforced(), requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB;
   const user: UserContext | null = c.get('user') || null;
   const gradeId = Number(c.req.param('id'));
@@ -9869,6 +9873,10 @@ registerStaffAttendanceRoutes(app);
 
 // Homework drafts, immutable publication snapshots and protected attachments.
 registerHomeworkRoutes(app);
+registerParentCommunicationRoutes(app);
+registerGradeProgressRoutes(app);
+registerAdmissionRegulationRoutes(app);
+registerAdmissionsRoutes(app);
 
 // GET /api/verify/receipt/:token
 // Public endpoint — no JWT required
