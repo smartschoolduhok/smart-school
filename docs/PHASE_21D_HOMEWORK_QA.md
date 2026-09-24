@@ -2,25 +2,31 @@
 
 ## Status and authorization
 
-Phase 21D is implemented on `codex/phase-21d-homework`, based on `main@abc56f1899ac94987630f32b74781587025fdbf7`, and is open for review in [Draft PR #52](https://github.com/smartschoolduhok/smart-school/pull/52). STAGING-only execution was explicitly authorized on 2026-09-23 for the fixed Pages/D1/R2 targets; Production and merge remained excluded.
+Phase 21D is implemented on `codex/phase-21d-homework`, based on `main@abc56f1899ac94987630f32b74781587025fdbf7`, and is open for review in [Draft PR #52](https://github.com/smartschoolduhok/smart-school/pull/52). STAGING-only execution was explicitly authorized on 2026-09-23 for the fixed Pages/D1/R2 targets and extended on 2026-09-24 with a mandatory account budget check and fail-closed 1 GB attachment-store ceiling; Production and merge remained excluded.
 
-The gate pinned HEAD `d169df3ac97c9a91c7b84753698f7b8fb7796a78` and tree `a9861b34e4599987bcfab04179516774e1149014`. Read-only D1 preflight, the external backup, exact local restore, local `0041` rehearsal, and the immediate pre-write drift check passed. Execution then stopped before the first remote write because the verified Cloudflare account returned R2 API code `10042` (`Please enable R2 through the Cloudflare Dashboard`).
+The gate pinned the authorized starting HEAD `d169df3ac97c9a91c7b84753698f7b8fb7796a78` and tree `a9861b34e4599987bcfab04179516774e1149014`. Read-only D1 preflight, the external backup, exact local restore, local `0041` rehearsal, the quota-guard implementation at `39cf7c0e5627a41b7f747f67e3cbef80f94c2b8c`, and the immediate pre-write drift check passed. The private bucket was created, only `0041` was applied remotely, and the Preview-only binding deployed automatically. Authenticated QA then stopped on a false `409 homework_stale` response after D1 had committed publication.
 
 The authorization does not include:
 
 - accessing or deploying Production;
 - merging or enabling auto-merge.
 
-## Partial STAGING gate evidence — 2026-09-23/24
+## STAGING gate evidence — 2026-09-23/24
 
 - Account: `smartschool.duhok@gmail.com`, Cloudflare account ID `8d30029482b5722704371f03169c5ca1`.
-- Target: Pages `smart-school-staging`; D1 `smart-school-staging-db` / `1bdb9c3d-08d6-4023-9cbc-64369d53198a`; immutable Preview source `d169df3`.
+- Target: Pages `smart-school-staging`; D1 `smart-school-staging-db` / `1bdb9c3d-08d6-4023-9cbc-64369d53198a`; private R2 `smart-school-homework-staging`; immutable Preview source `39cf7c0` at `36514216.smart-school-staging.pages.dev`.
 - Preflight: `41` distinct migrations through `0040`, only `0041_homework.sql` pending, `78/76` counted/application tables, clean FK, and full typed snapshot hash `5a8c437a4a7f07abda120cd822e06297d779dc19ad7732f7399d423477833204`.
 - Backup: `1,509,194` bytes, SHA-256 `2B0584503FE159A77B4C0F736E92E6AF972A2EEEB840CFE5EBE04C4F4B9299BE`, stored outside Git under `SmartSchoolBackups/phase-21d-staging-20260923T213116Z`.
 - Local restoration matched the remote schema, columns, SQLite storage types, values and complete row multisets exactly. The oversized `import_jobs` row used `16` bound parameters totaling `360,514` bytes.
-- Applying only `0041` to that isolated local D1 produced `42` migrations and `83/81` tables, with the five expected homework tables, clean FK, unchanged historical rows/types/values and unchanged readiness.
-- The immediate pre-write export was byte-for-byte identical to the approved backup, with the same size and SHA-256; `0041` remained the only pending migration.
-- Blocker: R2 inventory/name availability could not be checked because R2 is not enabled for the account (`10042`). No bucket, remote migration, binding, Preview configuration change, school-2 QA, Production action or merge occurred.
+- Applying the final `0041` bytes (SHA-256 `0280D23DDBCF1EBC96F03A8653B3C30E0F3512473BBD3F8D2CA7C8022C3C5791`) to the isolated restored D1 produced `42` migrations and `83/81` tables, with the five expected homework tables, clean FK, unchanged historical rows/types/values and unchanged readiness.
+- Before the first remote write, Wrangler showed R2 enabled, an empty account bucket inventory and therefore zero stored account bytes; the proposed name was unused. The final pre-write export at `2026-09-24T15:57:00Z` was byte-for-byte identical to the approved backup, and `0041` was still the only pending migration.
+- Created `smart-school-homework-staging` as a private bucket with no `r2.dev` or custom-domain publication. Applied only `0041`; remote postflight has `42` migrations, none pending, `83/81` tables, clean FK, all 76 historical application tables unchanged, and snapshot SHA-256 `4ec45c2f3511274daded1aca8f3536a41c37a580911c01dde267da64642c0136`.
+- `HOMEWORK_FILES` exists only under `env.preview.r2_buckets`; the same Preview block repeats the D1 binding because bindings are non-inheritable. No manual deployment was used.
+- Local homework tests are `20/20`; the full regression matrix is `1598/1598`. TypeScript, builds, audit, local D1 validators, seed and backup/restore all pass. GitHub Quality Gates run `36024156884` and the automatic Pages deployment passed on `39cf7c0`.
+- Authenticated school-2 QA used marker `PH21D-39CF7C0-20260924T1604Z`. The total request payload across oversized, spoofed and two valid attachment files was `5,243,002` bytes, below the `100,000,000`-byte QA cap. The one retained object is 56 bytes and matches SHA-256 `902514066257ffbc6438aad93f9e81c792eaaaf89d78449a0386899841b4d174`; the removed key does not exist.
+- QA stopped when publish committed the homework, audience and notification but returned `409 homework_stale`. Cleanup withdrawal also committed while returning the same false conflict. All six QA users, both links, the temporary teaching load, subject and employee were soft-disabled; the homework is withdrawn, audit/business rows remain, and credentials were cleared from the external state file.
+- Final protected comparison found exact pre-write equality for schools 1 and 3 across 62 school-scoped tables. The only changed historical row is school 2's active timetable revision (`23` to `25`) from creating and soft-disabling the QA load. Final D1 is `42`, none pending, `83/81`, FK clean.
+- Not completed after the stop: correction/replacement, full parent notification/link-revocation matrix, all remaining cross-role cases, and browser RTL/390 px QA. Production, merge, auto-merge, force-push, seed/reset and manual deployment were not touched.
 
 ## Product boundary
 
@@ -75,7 +81,9 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 - Attachments can be added or soft-removed only while homework is a draft.
 - Removal first records `removal_pending`, then deletes the object, then records `removed`; an object-store failure returns `503` and the same endpoint safely retries cleanup.
 - A draft with pending object cleanup cannot be published, and the staff UI keeps the pending item visible without offering a stale download.
-- Local tests use an in-memory R2-compatible binding. A remote STAGING bucket needs separate approval.
+- The dedicated store has a fail-closed aggregate ceiling of `1,000,000,000` bytes. Before every upload, the app paginates the complete R2 listing and reconciles every key, size and custom-metadata record against each non-removed D1 row. List errors, orphan objects, missing active objects, mismatches and pending cleanup all reject the upload.
+- A D1 `upload_pending` reservation is created before `put`, so concurrent requests are serialized by the database trigger and pending/orphan cleanup still consumes budget. A failed write or activation uses compensating cleanup and remains fail-closed if compensation cannot be proven.
+- Local tests use an in-memory R2-compatible binding; the real binding exists only in Pages Preview.
 
 ## Required API behavior
 
@@ -145,19 +153,20 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 - `src/lib/homework.ts` owns validation, limits, signatures, types and safe error mapping.
 - `src/lib/homeworkDb.ts` owns all homework routes; `src/worker.ts` only registers the route module and the optional `HOMEWORK_FILES` interface.
 - The Arabic RTL page is lazy-loaded at `/homework`; navigation visibility follows `HOMEWORK_VIEW_ROLES`, staff can filter by state/load/date, parents can filter by linked child/timing, and the accountant has no route or menu access.
-- Uploads use an optional protected object-store binding. No binding was added to `wrangler.jsonc`, so environments without an explicitly approved store fail closed with `503` instead of exposing a public fallback.
+- Uploads use an optional protected object-store binding. `HOMEWORK_FILES` is configured only for Pages Preview; root and Production remain unbound and fail closed with `503` instead of exposing a public fallback.
+- Upload admission reconciles the full bucket against D1 and reserves bytes atomically before `put`. The database enforces the same `1,000,000,000`-byte aggregate ceiling across active, upload-pending and removal-pending rows.
 - Draft creation and publication now revalidate the complete canonical teaching load, including subject placement and the whole-class-versus-active-sections rule, in API queries, guarded publish SQL, and database triggers.
 - Parent endpoints serialize only the documented presentation DTO. Attachment deletion is a retryable `active → removal_pending → removed` flow and publication fails closed while cleanup is pending.
 
 ### Focused proof
 
-- Homework tests: `17/17`, zero failures and zero skips.
-- Covered: role/school isolation, explicit system-admin targeting, complete canonical-load drift, whole-class load invalidation, optimistic revision, spoofed-file rejection, compensating upload cleanup, retryable object-delete cleanup, publication blocking while cleanup is pending, minimal parent DTOs, guarded/idempotent publish, in-boundary roster/load race rollback, current parent-link revocation, protected download, audited withdrawal and unique audited replacement.
+- Homework tests: `20/20`, zero failures and zero skips.
+- Covered: role/school isolation, explicit system-admin targeting, complete canonical-load drift, whole-class load invalidation, optimistic revision, spoofed-file rejection, fail-closed full-bucket reconciliation, orphan detection, concurrent reservations at the exact 1 GB boundary, pending-cleanup accounting, compensating upload cleanup, retryable object-delete cleanup, publication blocking while cleanup is pending, minimal parent DTOs, guarded/idempotent publish, in-boundary roster/load race rollback, current parent-link revocation, protected download, audited withdrawal and unique audited replacement.
 - UI/static contract verifies Arabic RTL, `390px`-safe classes, route/sidebar role wiring, all protected API paths, accepted MIME signatures and migration immutability markers.
 
 ### Full local gates
 
-- Full regression matrix after review hardening: `1595/1595`, zero failures and zero skips.
+- Full regression matrix after quota hardening: `1598/1598`, zero failures and zero skips.
 - TypeScript: PASS.
 - Frontend and Worker production builds: PASS.
 - `npm audit --audit-level=low`: PASS, zero vulnerabilities.
@@ -168,13 +177,14 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 
 ### Explicitly not performed
 
-- No remote R2 resource or binding.
-- No application of `0041` to STAGING.
-- No remote D1 read or write.
-- No manual deployment, Production access, merge, auto-merge or force-push.
+- No Production access or deployment.
+- No manual Pages deployment.
+- No merge, auto-merge or force-push.
+- No seed/reset or destructive deletion of homework, attachment metadata or audit rows.
+- No continuation of functional or browser QA after the false remote conflict response.
 
-## Remote gate (not authorized yet)
+## Remote gate disposition
 
-After local acceptance and Draft PR review, a separate explicit authorization is required for immutable Preview attachment infrastructure, STAGING R2, D1 backup/restore, and application of `0041` only. Production remains a separate GO decision.
+The authorized STAGING infrastructure and migration steps completed. The gate is stopped, not passed, because remote publish and withdraw returned `409 homework_stale` after their D1 batches committed. This must be corrected and re-rehearsed locally before a new immutable Preview can finish the unexecuted QA matrix. Do not create another bucket or reapply `0041`.
 
-The scoped execution checklist, preflight expectations, recovery boundary and Preview-only R2 binding are prepared in [PHASE_21D_STAGING_GATE.md](PHASE_21D_STAGING_GATE.md). It records proposed actions only; no new remote state was verified or changed during preparation.
+The scoped execution checklist, evidence hashes, exact stop point, cleanup record and Preview-only R2 binding are in [PHASE_21D_STAGING_GATE.md](PHASE_21D_STAGING_GATE.md). Production remains a separate, ungranted GO decision.
