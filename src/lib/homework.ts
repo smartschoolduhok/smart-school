@@ -1,6 +1,7 @@
 export const HOMEWORK_MAX_ATTACHMENTS = 5;
 export const HOMEWORK_MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const HOMEWORK_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+export const HOMEWORK_STORAGE_MAX_BYTES = 1_000_000_000;
 export const HOMEWORK_ACCEPTED_MIME_TYPES = [
   'image/jpeg',
   'image/png',
@@ -21,10 +22,26 @@ export interface HomeworkObjectStore {
   put(
     key: string,
     value: Uint8Array | ArrayBuffer | ReadableStream<Uint8Array>,
-    options?: { httpMetadata?: { contentType?: string; contentDisposition?: string } },
+    options?: {
+      httpMetadata?: { contentType?: string; contentDisposition?: string };
+      customMetadata?: Record<string, string>;
+    },
   ): Promise<unknown>;
   get(key: string): Promise<HomeworkObjectBody | null>;
   delete(key: string): Promise<unknown>;
+  list(options?: {
+    cursor?: string;
+    limit?: number;
+    include?: Array<'httpMetadata' | 'customMetadata'>;
+  }): Promise<{
+    objects: Array<{
+      key: string;
+      size: number;
+      customMetadata?: Record<string, string>;
+    }>;
+    truncated: boolean;
+    cursor?: string;
+  }>;
 }
 
 export interface HomeworkScope {
@@ -48,7 +65,7 @@ export interface HomeworkAttachment {
   mime_type: HomeworkMimeType;
   size_bytes: number;
   sha256: string;
-  status: 'active' | 'removal_pending' | 'removed';
+  status: 'upload_pending' | 'active' | 'removal_pending' | 'removed';
   created_at: number;
 }
 
@@ -140,7 +157,7 @@ export interface HomeworkReplacementInput {
   due_at: number | null;
 }
 
-export type HomeworkErrorStatus = 400 | 403 | 404 | 409 | 413 | 500 | 503;
+export type HomeworkErrorStatus = 400 | 403 | 404 | 409 | 413 | 500 | 503 | 507;
 
 export class HomeworkError extends Error {
   readonly code: string;
@@ -186,6 +203,8 @@ export function homeworkErrorMessage(code: string): string {
     homework_attachment_limit: 'الحد الأقصى خمسة مرفقات فعالة للواجب',
     homework_attachment_total_limit: 'إجمالي المرفقات يتجاوز 20 ميغابايت',
     homework_attachment_cleanup_pending: 'تعذر تنظيف المرفق من التخزين؛ أعد محاولة الإزالة قبل نشر الواجب',
+    homework_storage_quota_exceeded: 'بلغ مخزن مرفقات الواجبات في بيئة الاختبار سقف التخزين المسموح',
+    homework_storage_reconciliation_failed: 'تعذر إثبات تطابق مخزن المرفقات مع بياناته الوصفية؛ أُوقف الرفع احترازيًا',
     invalid_homework_attachment_type: 'نوع الملف غير مدعوم',
     invalid_homework_attachment_signature: 'محتوى الملف لا يطابق نوعه المعلن',
     invalid_homework_attachment_name: 'اسم الملف غير صالح',
@@ -363,6 +382,7 @@ export function homeworkDatabaseError(error: unknown): HomeworkError {
   if (error instanceof HomeworkError) return error;
   const detail = String((error as { message?: unknown })?.message || error);
   const mappings: Array<[string, string, HomeworkErrorStatus]> = [
+    ['homework storage quota exceeded', 'homework_storage_quota_exceeded', 507],
     ['homework attachment cleanup pending', 'homework_attachment_cleanup_pending', 409],
     ['homework attachment limit exceeded', 'homework_attachment_limit', 409],
     ['homework attachment total exceeded', 'homework_attachment_total_limit', 409],

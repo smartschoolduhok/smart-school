@@ -7,6 +7,7 @@ import {
 } from './rbac';
 import {
   HOMEWORK_MAX_FILE_BYTES,
+  HOMEWORK_STORAGE_MAX_BYTES,
   HomeworkError,
   homeworkDatabaseError,
   homeworkErrorMessage,
@@ -206,7 +207,9 @@ function publicAttachment(row: Row): HomeworkAttachment {
     mime_type: row.mime_type,
     size_bytes: Number(row.size_bytes),
     sha256: String(row.sha256),
-    status: row.status === 'removed'
+    status: row.status === 'upload_pending'
+      ? 'upload_pending'
+      : row.status === 'removed'
       ? 'removed'
       : row.status === 'removal_pending'
         ? 'removal_pending'
@@ -290,7 +293,7 @@ async function hydrateHomeworkRows(db: D1Database, rows: Row[]): Promise<Homewor
       SELECT homework_id, attachment_key, original_name, mime_type,
              size_bytes, sha256, status, created_at
       FROM homework_attachments
-      WHERE homework_id IN (${placeholders}) AND status IN ('active', 'removal_pending')
+      WHERE homework_id IN (${placeholders}) AND status IN ('upload_pending', 'active', 'removal_pending')
       ORDER BY id
     `).bind(...ids).all<Row>(),
     db.prepare(`
@@ -428,6 +431,85 @@ function safeContentDisposition(fileName: string): string {
 function storedBody(object: HomeworkObjectBody): BodyInit | null {
   if (object.body) return object.body as BodyInit;
   return null;
+}
+
+async function reconcileHomeworkStorage(db: D1Database, store: NonNullable<Bindings['HOMEWORK_FILES']>): Promise<void> {
+  const metadataResult = await db.prepare(`
+    SELECT attachment_key, object_key, size_bytes, sha256, status
+    FROM homework_attachments
+    WHERE status != 'removed'
+  `).all<Row>();
+  const metadata = new Map<string, Row>();
+  let reservedBytes = 0;
+  for (const row of metadataResult.results || []) {
+    const objectKey = String(row.object_key);
+    requireHomework(!metadata.has(objectKey), 'homework_storage_reconciliation_failed', 503);
+    metadata.set(objectKey, row);
+    reservedBytes += Number(row.size_bytes);
+    requireHomework(Number.isSafeInteger(reservedBytes) && reservedBytes <= HOMEWORK_STORAGE_MAX_BYTES, 'homework_storage_quota_exceeded', 507);
+  }
+
+  const seen = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  let storedBytes = 0;
+  do {
+    let page;
+    try {
+      page = await store.list({ cursor, limit: 1000, include: ['customMetadata'] });
+    } catch {
+      throw new HomeworkError('homework_storage_reconciliation_failed', 503);
+    }
+    requireHomework(page && Array.isArray(page.objects), 'homework_storage_reconciliation_failed', 503);
+    for (const object of page.objects) {
+      const objectKey = String(object.key);
+      const row = metadata.get(objectKey);
+      requireHomework(row && !seen.has(objectKey), 'homework_storage_reconciliation_failed', 503);
+      requireHomework(Number(object.size) === Number(row.size_bytes), 'homework_storage_reconciliation_failed', 503);
+      requireHomework(
+        object.customMetadata?.attachment_key === String(row.attachment_key)
+          && object.customMetadata?.sha256 === String(row.sha256)
+          && object.customMetadata?.size_bytes === String(row.size_bytes),
+        'homework_storage_reconciliation_failed',
+        503,
+      );
+      seen.add(objectKey);
+      storedBytes += Number(object.size);
+      requireHomework(Number.isSafeInteger(storedBytes) && storedBytes <= HOMEWORK_STORAGE_MAX_BYTES, 'homework_storage_quota_exceeded', 507);
+    }
+    if (!page.truncated) {
+      cursor = undefined;
+      break;
+    }
+    requireHomework(typeof page.cursor === 'string' && page.cursor.length > 0 && !cursors.has(page.cursor), 'homework_storage_reconciliation_failed', 503);
+    cursors.add(page.cursor);
+    cursor = page.cursor;
+  } while (cursor);
+
+  for (const [objectKey, row] of metadata) {
+    requireHomework(row.status !== 'active' || seen.has(objectKey), 'homework_storage_reconciliation_failed', 503);
+  }
+}
+
+async function compensatePendingUpload(
+  db: D1Database,
+  store: NonNullable<Bindings['HOMEWORK_FILES']>,
+  attachmentKey: string,
+  objectKey: string,
+  actorId: number,
+): Promise<boolean> {
+  try {
+    await store.delete(objectKey);
+    const result = await db.prepare(`
+      UPDATE homework_attachments
+      SET status = 'removed', removed_by_user_id = ?, removed_at = unixepoch()
+      WHERE attachment_key = ? AND object_key = ? AND status = 'upload_pending'
+    `).bind(actorId, attachmentKey, objectKey).run();
+    return resultChanges(result) === 1;
+  } catch {
+    console.error('[homework] pending upload compensation failed', { attachmentKey, objectKey });
+    return false;
+  }
 }
 
 export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
@@ -727,40 +809,51 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
     requireHomework(bytes.byteLength === file.size, 'invalid_homework_request');
     requireHomework(validateHomeworkAttachmentBytes(file.type, bytes), 'invalid_homework_attachment_signature');
     requireHomework(c.env.HOMEWORK_FILES, 'homework_files_unavailable', 503);
+    await reconcileHomeworkStorage(c.env.DB, c.env.HOMEWORK_FILES);
     const attachmentKey = crypto.randomUUID();
     const objectKey = `homework/${schoolId}/${row.homework_key}/${attachmentKey}`;
     const sha256 = await sha256Hex(bytes);
+    const user = c.get('user');
+    const reserved = await c.env.DB.prepare(`
+      INSERT INTO homework_attachments (
+        attachment_key, school_id, homework_id, object_key,
+        original_name, mime_type, size_bytes, sha256, status, created_by_user_id
+      )
+      SELECT ?, ?, homework.id, ?, ?, ?, ?, ?, 'upload_pending', ?
+      FROM homework_assignments homework
+      WHERE homework.id = ? AND homework.school_id = ?
+        AND homework.status = 'draft' AND homework.revision = ?
+      RETURNING attachment_key
+    `).bind(
+      attachmentKey, schoolId, objectKey, name, file.type,
+      bytes.byteLength, sha256, user.id,
+      row.id, schoolId, input.revision,
+    ).first<Row>();
+    requireHomework(reserved, 'homework_stale', 409);
     try {
       await c.env.HOMEWORK_FILES.put(objectKey, bytes, {
         httpMetadata: {
           contentType: file.type,
           contentDisposition: safeContentDisposition(name),
         },
+        customMetadata: {
+          attachment_key: attachmentKey,
+          sha256,
+          size_bytes: String(bytes.byteLength),
+        },
       });
-      const user = c.get('user');
       const created = await c.env.DB.prepare(`
-        INSERT INTO homework_attachments (
-          attachment_key, school_id, homework_id, object_key,
-          original_name, mime_type, size_bytes, sha256, created_by_user_id
-        )
-        SELECT ?, ?, homework.id, ?, ?, ?, ?, ?, ?
-        FROM homework_assignments homework
-        WHERE homework.id = ? AND homework.school_id = ?
-          AND homework.status = 'draft' AND homework.revision = ?
+        UPDATE homework_attachments
+        SET status = 'active'
+        WHERE attachment_key = ? AND object_key = ? AND school_id = ?
+          AND homework_id = ? AND status = 'upload_pending'
         RETURNING attachment_key, original_name, mime_type, size_bytes, sha256, status, created_at
-      `).bind(
-        attachmentKey, schoolId, objectKey, name, file.type,
-        bytes.byteLength, sha256, user.id,
-        row.id, schoolId, input.revision,
-      ).first<Row>();
-      requireHomework(created, 'homework_stale', 409);
+      `).bind(attachmentKey, objectKey, schoolId, row.id).first<Row>();
+      requireHomework(created, 'homework_attachment_cleanup_pending', 503);
       return c.json({ data: publicAttachment(created) }, 201);
     } catch (error) {
-      try {
-        await c.env.HOMEWORK_FILES.delete(objectKey);
-      } catch {
-        console.error('[homework] attachment compensation failed', { objectKey });
-      }
+      const compensated = await compensatePendingUpload(c.env.DB, c.env.HOMEWORK_FILES, attachmentKey, objectKey, user.id);
+      requireHomework(compensated, 'homework_attachment_cleanup_pending', 503);
       throw error;
     }
   });
@@ -788,7 +881,7 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
                size_bytes, sha256, status, created_at
         FROM homework_attachments
         WHERE homework_id = ? AND school_id = ? AND attachment_key = ?
-          AND status = 'removal_pending'
+          AND status IN ('upload_pending', 'removal_pending')
       `).bind(homework.id, schoolId, attachmentKey).first<Row>();
     }
     requireHomework(pending, 'homework_attachment_not_found', 404);
@@ -800,11 +893,13 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
     }
     const removed = await c.env.DB.prepare(`
       UPDATE homework_attachments
-      SET status = 'removed'
+      SET status = 'removed',
+          removed_by_user_id = coalesce(removed_by_user_id, ?),
+          removed_at = coalesce(removed_at, unixepoch())
       WHERE homework_id = ? AND school_id = ? AND attachment_key = ?
-        AND status = 'removal_pending'
+        AND status IN ('upload_pending', 'removal_pending')
       RETURNING attachment_key, original_name, mime_type, size_bytes, sha256, status, created_at
-    `).bind(homework.id, schoolId, attachmentKey).first<Row>();
+    `).bind(user.id, homework.id, schoolId, attachmentKey).first<Row>();
     requireHomework(removed, 'homework_attachment_cleanup_pending', 503);
     return c.json({ data: publicAttachment(removed) });
   });
@@ -825,7 +920,7 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
     const pendingAttachment = await c.env.DB.prepare(`
       SELECT 1 AS pending
       FROM homework_attachments
-      WHERE homework_id = ? AND school_id = ? AND status = 'removal_pending'
+      WHERE homework_id = ? AND school_id = ? AND status IN ('upload_pending', 'removal_pending')
       LIMIT 1
     `).bind(row.id, schoolId).first<Row>();
     requireHomework(!pendingAttachment, 'homework_attachment_cleanup_pending', 409);
@@ -894,7 +989,7 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
             AND NOT EXISTS (
               SELECT 1 FROM homework_attachments pending_attachment
               WHERE pending_attachment.homework_id = guarded_homework.id
-                AND pending_attachment.status = 'removal_pending'
+                AND pending_attachment.status IN ('upload_pending', 'removal_pending')
             )
         )
       `).bind(token, row.id, schoolId, input.revision),

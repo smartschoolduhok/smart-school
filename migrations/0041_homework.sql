@@ -78,13 +78,13 @@ CREATE TABLE IF NOT EXISTS homework_attachments (
   mime_type           TEXT NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/webp', 'application/pdf')),
   size_bytes          INTEGER NOT NULL CHECK (size_bytes BETWEEN 1 AND 5242880),
   sha256              TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
-  status              TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'removal_pending', 'removed')),
+  status              TEXT NOT NULL DEFAULT 'upload_pending' CHECK (status IN ('upload_pending', 'active', 'removal_pending', 'removed')),
   created_by_user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   removed_by_user_id  INTEGER REFERENCES users(id) ON DELETE RESTRICT,
   removed_at          INTEGER,
   created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
   CHECK (
-    (status = 'active' AND removed_by_user_id IS NULL AND removed_at IS NULL)
+    (status IN ('upload_pending', 'active') AND removed_by_user_id IS NULL AND removed_at IS NULL)
     OR (status IN ('removal_pending', 'removed')
         AND removed_by_user_id IS NOT NULL AND removed_at IS NOT NULL)
   )
@@ -295,7 +295,7 @@ BEGIN
   SELECT RAISE(ABORT, 'homework attachment cleanup pending')
   WHERE OLD.status = 'draft' AND NEW.status = 'published' AND EXISTS (
     SELECT 1 FROM homework_attachments attachment
-    WHERE attachment.homework_id = OLD.id AND attachment.status = 'removal_pending'
+    WHERE attachment.homework_id = OLD.id AND attachment.status IN ('upload_pending', 'removal_pending')
   );
   SELECT RAISE(ABORT, 'homework write guard missing')
   WHERE NEW.status != OLD.status
@@ -407,11 +407,16 @@ BEGIN
   );
   SELECT RAISE(ABORT, 'homework attachment limit exceeded')
   WHERE (SELECT COUNT(*) FROM homework_attachments existing
-         WHERE existing.homework_id = NEW.homework_id AND existing.status = 'active') >= 5;
+         WHERE existing.homework_id = NEW.homework_id AND existing.status != 'removed') >= 5;
   SELECT RAISE(ABORT, 'homework attachment total exceeded')
   WHERE coalesce((SELECT SUM(existing.size_bytes) FROM homework_attachments existing
-                  WHERE existing.homework_id = NEW.homework_id AND existing.status = 'active'), 0)
+                  WHERE existing.homework_id = NEW.homework_id AND existing.status != 'removed'), 0)
         + NEW.size_bytes > 20971520;
+  SELECT RAISE(ABORT, 'homework storage quota exceeded')
+  WHERE NEW.status != 'removed'
+    AND coalesce((SELECT SUM(existing.size_bytes) FROM homework_attachments existing
+                  WHERE existing.status != 'removed'), 0)
+        + NEW.size_bytes > 1000000000;
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_homework_attachments_validate_update
@@ -425,13 +430,19 @@ BEGIN
      OR NEW.sha256 != OLD.sha256 OR NEW.created_by_user_id != OLD.created_by_user_id
      OR NEW.created_at != OLD.created_at;
   SELECT RAISE(ABORT, 'homework attachment draft required')
-  WHERE OLD.status = 'active' AND NOT EXISTS (
+  WHERE OLD.status IN ('upload_pending', 'active') AND NEW.status IN ('active', 'removal_pending') AND NOT EXISTS (
     SELECT 1 FROM homework_assignments homework
     WHERE homework.id = NEW.homework_id AND homework.school_id = NEW.school_id
       AND homework.status = 'draft'
   );
   SELECT RAISE(ABORT, 'homework attachment transition invalid')
   WHERE NOT (
+    (OLD.status = 'upload_pending' AND NEW.status = 'active'
+      AND NEW.removed_by_user_id IS NULL AND NEW.removed_at IS NULL)
+    OR
+    (OLD.status = 'upload_pending' AND NEW.status = 'removed'
+      AND NEW.removed_by_user_id IS NOT NULL AND NEW.removed_at IS NOT NULL)
+    OR
     (OLD.status = 'active' AND NEW.status = 'removal_pending'
       AND NEW.removed_by_user_id IS NOT NULL AND NEW.removed_at IS NOT NULL)
     OR
@@ -440,7 +451,10 @@ BEGIN
       AND NEW.removed_at = OLD.removed_at)
   );
   SELECT RAISE(ABORT, 'homework attachment actor invalid')
-  WHERE OLD.status = 'active' AND NOT EXISTS (
+  WHERE (
+    (OLD.status = 'active' AND NEW.status = 'removal_pending')
+    OR (OLD.status = 'upload_pending' AND NEW.status = 'removed')
+  ) AND NOT EXISTS (
     SELECT 1
     FROM homework_assignments homework
     JOIN users actor ON actor.id = NEW.removed_by_user_id AND actor.status = 'active'

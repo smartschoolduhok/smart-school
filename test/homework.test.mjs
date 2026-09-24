@@ -37,16 +37,21 @@ class MemoryHomeworkFiles {
   constructor() {
     this.objects = new Map();
     this.onPut = null;
+    this.onList = null;
     this.deleteFailures = 0;
   }
 
   async put(key, value, options = {}) {
     const bytes = value instanceof Uint8Array ? value : new Uint8Array(await value.arrayBuffer());
-    this.objects.set(key, { bytes, httpMetadata: options.httpMetadata || null });
+    this.objects.set(key, {
+      bytes,
+      httpMetadata: options.httpMetadata || null,
+      customMetadata: options.customMetadata || undefined,
+    });
     if (this.onPut) {
       const callback = this.onPut;
       this.onPut = null;
-      callback(key);
+      await callback(key);
     }
   }
 
@@ -67,6 +72,26 @@ class MemoryHomeworkFiles {
       throw new Error('simulated object-store delete failure');
     }
     this.objects.delete(key);
+  }
+
+  async list(options = {}) {
+    if (this.onList) {
+      const callback = this.onList;
+      this.onList = null;
+      await callback();
+    }
+    const start = Number(options.cursor || 0);
+    const limit = Math.max(1, Math.min(Number(options.limit || 1000), 1000));
+    const entries = [...this.objects.entries()].sort(([left], [right]) => left.localeCompare(right));
+    const page = entries.slice(start, start + limit).map(([key, object]) => ({
+      key,
+      size: object.bytes.byteLength,
+      customMetadata: object.customMetadata,
+    }));
+    const next = start + page.length;
+    return next < entries.length
+      ? { objects: page, truncated: true, cursor: String(next) }
+      : { objects: page, truncated: false };
   }
 }
 
@@ -152,6 +177,55 @@ async function publishDraft(fixture, homework, role = 'teacher') {
     school_id: 1,
     revision: homework.revision,
   });
+}
+
+function reserveHomeworkStorage(fixture, sourceHomeworkKey, bytes, status = 'upload_pending') {
+  const maxFileBytes = 5 * 1024 * 1024;
+  const perDraft = 4;
+  let remaining = bytes;
+  let draftIndex = 0;
+  while (remaining > 0) {
+    const homeworkKey = crypto.randomUUID();
+    fixture.database.prepare(`
+      INSERT INTO homework_assignments (
+        homework_key, school_id, academic_year_id, teaching_load_id,
+        class_id, section_id, subject_id, teacher_employee_id,
+        academic_year_name_snapshot, class_name_snapshot, section_name_snapshot,
+        subject_name_snapshot, teacher_name_snapshot,
+        title, instructions, assigned_date, due_at,
+        created_by_user_id, updated_by_user_id
+      )
+      SELECT ?, school_id, academic_year_id, teaching_load_id,
+             class_id, section_id, subject_id, teacher_employee_id,
+             academic_year_name_snapshot, class_name_snapshot, section_name_snapshot,
+             subject_name_snapshot, teacher_name_snapshot,
+             ?, instructions, assigned_date, due_at,
+             created_by_user_id, updated_by_user_id
+      FROM homework_assignments WHERE homework_key = ?
+    `).run(homeworkKey, `Quota reservation ${draftIndex += 1}`, sourceHomeworkKey);
+    const homeworkId = fixture.database.prepare('SELECT id FROM homework_assignments WHERE homework_key=?').get(homeworkKey).id;
+    for (let attachment = 0; attachment < perDraft && remaining > 0; attachment += 1) {
+      const size = Math.min(maxFileBytes, remaining);
+      fixture.database.prepare(`
+        INSERT INTO homework_attachments (
+          attachment_key, school_id, homework_id, object_key, original_name,
+          mime_type, size_bytes, sha256, status, created_by_user_id
+        ) VALUES (?, 1, ?, ?, 'quota.pdf', 'application/pdf', ?, ?, ?, 3)
+      `).run(
+        crypto.randomUUID(), homeworkId, `quota/${crypto.randomUUID()}`,
+        size, 'a'.repeat(64), status,
+      );
+      remaining -= size;
+    }
+  }
+}
+
+function attachmentForm(homework, bytes, name = 'quota.pdf') {
+  const form = new FormData();
+  form.set('school_id', '1');
+  form.set('revision', String(homework.revision));
+  form.set('file', new File([bytes], name, { type: 'application/pdf' }));
+  return form;
 }
 
 test('0041 is additive on a populated 0040 database and leaves foreign keys clean', t => {
@@ -332,8 +406,8 @@ test('protected attachments round-trip locally and reject spoofing with cleanup'
   assert.equal(spoofed.body.code, 'invalid_homework_attachment_signature');
   assert.equal(fixture.files.objects.size, 1);
 
-  const second = await createDraft(fixture, 'teacher', { title: 'Failure cleanup' });
-  fixture.files.onPut = () => {
+  const second = await createDraft(fixture, 'teacher', { title: 'Failure before reservation' });
+  fixture.files.onList = () => {
     fixture.database.exec("INSERT INTO homework_write_guards(token,valid) VALUES('attachment-race',1)");
     fixture.database.prepare("UPDATE homework_assignments SET status='published', published_by_user_id=1, published_at=unixepoch(), updated_by_user_id=1, revision=revision+1 WHERE homework_key=?").run(second.body.data.homework_key);
     fixture.database.exec("DELETE FROM homework_write_guards WHERE token='attachment-race'");
@@ -344,10 +418,12 @@ test('protected attachments round-trip locally and reject spoofing with cleanup'
   failureForm.set('file', new File([png], 'cleanup.png', { type: 'image/png' }));
   const failed = await request(fixture, 'teacher', 'POST', `/api/homework/${second.body.data.homework_key}/attachments`, failureForm);
   assert.equal(failed.status, 409, JSON.stringify(failed.body));
-  assert.equal(fixture.files.objects.size, 1, 'failed metadata write must remove the just-uploaded object');
+  assert.equal(fixture.files.objects.size, 1, 'a failed reservation must not create an object');
 
   const third = await createDraft(fixture, 'teacher', { title: 'Ambiguous object write cleanup' });
-  fixture.files.onPut = () => {
+  let observedPendingStatus = null;
+  fixture.files.onPut = key => {
+    observedPendingStatus = fixture.database.prepare('SELECT status FROM homework_attachments WHERE object_key=?').get(key)?.status;
     throw new Error('simulated object-store failure after write');
   };
   const objectFailureForm = new FormData();
@@ -356,7 +432,87 @@ test('protected attachments round-trip locally and reject spoofing with cleanup'
   objectFailureForm.set('file', new File([png], 'ambiguous.png', { type: 'image/png' }));
   const objectFailure = await request(fixture, 'teacher', 'POST', `/api/homework/${third.body.data.homework_key}/attachments`, objectFailureForm);
   assert.equal(objectFailure.status, 500, JSON.stringify(objectFailure.body));
+  assert.equal(observedPendingStatus, 'upload_pending', 'quota must be reserved before R2 put');
   assert.equal(fixture.files.objects.size, 1, 'ambiguous object-store failure must attempt cleanup');
+  assert.equal(
+    fixture.database.prepare('SELECT status FROM homework_attachments WHERE homework_id=(SELECT id FROM homework_assignments WHERE homework_key=?)').get(third.body.data.homework_key).status,
+    'removed',
+  );
+});
+
+test('storage reconciliation fails closed on an orphan R2 object', async t => {
+  const fixture = createFixture(t);
+  const created = await createDraft(fixture, 'teacher', { title: 'Orphan guard' });
+  fixture.files.objects.set('homework/orphan', {
+    bytes: new TextEncoder().encode('%PDF-'),
+    httpMetadata: null,
+    customMetadata: {
+      attachment_key: crypto.randomUUID(),
+      sha256: 'b'.repeat(64),
+      size_bytes: '5',
+    },
+  });
+  const response = await request(
+    fixture,
+    'teacher',
+    'POST',
+    `/api/homework/${created.body.data.homework_key}/attachments`,
+    attachmentForm(created.body.data, new TextEncoder().encode('%PDF-'), 'blocked.pdf'),
+  );
+  assert.equal(response.status, 503, JSON.stringify(response.body));
+  assert.equal(response.body.code, 'homework_storage_reconciliation_failed');
+  assert.equal(fixture.files.objects.size, 1);
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) count FROM homework_attachments').get().count, 0);
+});
+
+test('the decimal 1 GB reservation is atomic across concurrent uploads', async t => {
+  const fixture = createFixture(t);
+  const source = await createDraft(fixture, 'teacher', { title: 'Quota source' });
+  reserveHomeworkStorage(fixture, source.body.data.homework_key, 999_999_995);
+  const target = await createDraft(fixture, 'teacher', { title: 'Concurrent quota edge' });
+  const pdf = new TextEncoder().encode('%PDF-');
+  const results = await Promise.all([
+    request(fixture, 'teacher', 'POST', `/api/homework/${target.body.data.homework_key}/attachments`, attachmentForm(target.body.data, pdf, 'first.pdf')),
+    request(fixture, 'teacher', 'POST', `/api/homework/${target.body.data.homework_key}/attachments`, attachmentForm(target.body.data, pdf, 'second.pdf')),
+  ]);
+  assert.deepEqual(results.map(result => result.status).sort((left, right) => left - right), [201, 507]);
+  assert.equal(results.find(result => result.status === 507).body.code, 'homework_storage_quota_exceeded');
+  assert.equal(fixture.files.objects.size, 1);
+  assert.equal(
+    fixture.database.prepare("SELECT SUM(size_bytes) bytes FROM homework_attachments WHERE status!='removed'").get().bytes,
+    1_000_000_000,
+  );
+  assert.equal(
+    fixture.database.prepare("SELECT COUNT(*) count FROM homework_attachments WHERE status='active'").get().count,
+    1,
+  );
+});
+
+test('pending cleanup keeps its bytes reserved until removal completes', async t => {
+  const fixture = createFixture(t);
+  const source = await createDraft(fixture, 'teacher', { title: 'Pending cleanup quota source' });
+  reserveHomeworkStorage(fixture, source.body.data.homework_key, 1_000_000_000, 'active');
+  const pending = fixture.database.prepare("SELECT attachment_key FROM homework_attachments WHERE status='active' LIMIT 1").get();
+  fixture.database.prepare(`
+    UPDATE homework_attachments
+    SET status='removal_pending', removed_by_user_id=3, removed_at=unixepoch()
+    WHERE attachment_key=?
+  `).run(pending.attachment_key);
+  const target = await createDraft(fixture, 'teacher', { title: 'Pending cleanup target' });
+  const targetId = fixture.database.prepare('SELECT id FROM homework_assignments WHERE homework_key=?').get(target.body.data.homework_key).id;
+  assert.throws(() => fixture.database.prepare(`
+    INSERT INTO homework_attachments (
+      attachment_key, school_id, homework_id, object_key, original_name,
+      mime_type, size_bytes, sha256, status, created_by_user_id
+    ) VALUES (?, 1, ?, ?, 'blocked.pdf', 'application/pdf', 1, ?, 'upload_pending', 3)
+  `).run(crypto.randomUUID(), targetId, `quota/${crypto.randomUUID()}`, 'c'.repeat(64)), /homework storage quota exceeded/);
+  fixture.database.prepare("UPDATE homework_attachments SET status='removed' WHERE attachment_key=?").run(pending.attachment_key);
+  assert.doesNotThrow(() => fixture.database.prepare(`
+    INSERT INTO homework_attachments (
+      attachment_key, school_id, homework_id, object_key, original_name,
+      mime_type, size_bytes, sha256, status, created_by_user_id
+    ) VALUES (?, 1, ?, ?, 'allowed.pdf', 'application/pdf', 1, ?, 'upload_pending', 3)
+  `).run(crypto.randomUUID(), targetId, `quota/${crypto.randomUUID()}`, 'd'.repeat(64)));
 });
 
 test('database attachment limits reject both a sixth file and totals over 20 MiB', async t => {
