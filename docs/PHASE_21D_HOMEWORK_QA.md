@@ -11,7 +11,22 @@ The authorization does not include:
 - accessing or deploying Production;
 - merging or enabling auto-merge.
 
-## STAGING gate evidence — 2026-09-23/24
+## Resumed authenticated STAGING QA — PASS, 2026-09-24 UTC
+
+The user explicitly resumed QA at `febcb19622e4133599586b221907caf56ff4031c` / [immutable Preview 73ed1705](https://73ed1705.smart-school-staging.pages.dev). HEAD, Draft status, Preview source, Wrangler account, D1 name/UUID and `42` migrations / no pending / `83/81` tables / clean FK matched. A fresh `1,544,695`-byte backup (SHA-256 `09180b6e928ea94eccdb8313fa694a01717e3b34addbdaf795f69a3fa5c0ed40`) and typed snapshot were saved outside Git, then independently re-exported and matched immediately before school-2 fixture writes.
+
+- Publish and withdraw both returned HTTP `200` with exact status/revision and one correct transition audit. Stale/duplicate edit, publish, withdraw and replacement returned `409` with no additional homework/audience/attachment/audit/notification/recipient writes.
+- Corrected publication, fixed student audience, parent notification fan-out, minimal parent DTO, immediate link-revocation denial, role/tenant isolation, oversized/spoofed-file rejection, valid protected downloads and draft attachment removal passed.
+- Real authenticated browser checks at `390 × 844` passed for teacher, parent and registrar: RTL, no horizontal overflow, registrar read-only controls, corrected parent feed and notification. `106` captured network responses; zero unexpected HTTP/network/Console errors or runtime exceptions, and no truncated event buffer.
+- The complete account inventory was `56` bytes before QA and `154` bytes afterward in one private bucket (`3` objects), with exact D1 key/size/hash-metadata reconciliation and no pending cleanup. New file payload `5,243,036`; cumulative both rounds `10,486,038 < 100,000,000` bytes. The unchanged `1,000,000,000`-byte fail-closed store guard remains covered by passing concurrency/orphan/pending-cleanup tests; account usage is below `10,000,000,000` bytes.
+- Marker `PH21D-FEBCB19-20260924T2133Z`: seven users and both links plus the QA load/subject/employee soft-disabled. Both new homework records and notifications withdrawn, old sessions invalidated, all business/audit rows retained (`11` total homework audits).
+- Schools `1` and `3` are exactly unchanged across `66` school-scoped tables. Financial, grade and attendance tables for all schools and all seven readiness views are unchanged. Recorded operational exceptions: school-2 timetable revision `25→27`; authentication middleware removed two previously expired school-2 revocations, while three QA browser logout revocations were added. No manual business/audit deletion or session-row restoration was performed.
+- Final D1 remains `42`, none pending, `83/81`, clean FK; snapshot hash `43c8145a273269c6b4e097eab0dec6e6bc56cd31e1b7e656005849cf81ebfcd2`. Final SQL backup: `1,558,490` bytes / SHA-256 `d9d39d531401827773013d23f8ec47a8f2f8743e5d021eaa3494275c1bed6dda`.
+- Focused tests rerun `21/21`; approved app HEAD's full regression `1599/1599`, [Quality Gates](https://github.com/smartschoolduhok/smart-school/actions/runs/36045142262) and automatic Preview passed. This resumption changed documentation only; no migration, binding, bucket or application-code change. Final documentation HEAD checks are recorded in the PR/Notion closure record.
+
+Full timestamped transcript, harness corrections, backup manifests, snapshots, R2 inventories and comparison are outside Git in `SmartSchoolBackups/phase21d-resume-febcb19`; [the gate report](PHASE_21D_STAGING_GATE.md) contains detailed identifiers and evidence. The first-round stop below is historical and resolved, not erased. PR remains Draft and unmerged; no Production or manual deployment.
+
+## Historical first STAGING execution — 2026-09-23/24
 
 - Account: `smartschool.duhok@gmail.com`, Cloudflare account ID `8d30029482b5722704371f03169c5ca1`.
 - Target: Pages `smart-school-staging`; D1 `smart-school-staging-db` / `1bdb9c3d-08d6-4023-9cbc-64369d53198a`; private R2 `smart-school-homework-staging`; immutable Preview source `39cf7c0` at `36514216.smart-school-staging.pages.dev`.
@@ -160,13 +175,13 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 
 ### Focused proof
 
-- Homework tests: `20/20`, zero failures and zero skips.
+- Homework tests after the response correction: `21/21`, zero failures and zero skips; rerun during resumed QA.
 - Covered: role/school isolation, explicit system-admin targeting, complete canonical-load drift, whole-class load invalidation, optimistic revision, spoofed-file rejection, fail-closed full-bucket reconciliation, orphan detection, concurrent reservations at the exact 1 GB boundary, pending-cleanup accounting, compensating upload cleanup, retryable object-delete cleanup, publication blocking while cleanup is pending, minimal parent DTOs, guarded/idempotent publish, in-boundary roster/load race rollback, current parent-link revocation, protected download, audited withdrawal and unique audited replacement.
 - UI/static contract verifies Arabic RTL, `390px`-safe classes, route/sidebar role wiring, all protected API paths, accepted MIME signatures and migration immutability markers.
 
 ### Full local gates
 
-- Full regression matrix after quota hardening: `1598/1598`, zero failures and zero skips.
+- Full regression matrix after quota hardening and response correction: `1599/1599`, zero failures and zero skips.
 - TypeScript: PASS.
 - Frontend and Worker production builds: PASS.
 - `npm audit --audit-level=low`: PASS, zero vulnerabilities.
@@ -185,12 +200,12 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 
 ## Remote gate disposition
 
-The authorized STAGING infrastructure and migration steps completed. The gate is stopped, not passed, because remote publish and withdraw returned `409 homework_stale` after their D1 batches committed. This must be corrected and re-rehearsed locally before a new immutable Preview can finish the unexecuted QA matrix. Do not create another bucket or reapply `0041`.
+The authorized STAGING infrastructure and migration steps completed. The first execution stopped on false `409 homework_stale` responses after committed transitions. The corrected implementation and explicitly authorized resumption above passed the remaining authenticated QA and final audit. Do not create another bucket or reapply `0041`.
 
 ### Response fix after the QA stop — 2026-09-24
 
 The false conflict came from comparing `DB.batch()` `meta.changes` only after D1 had committed the publish/withdraw transaction. Both routes now enforce stale revision and completed transition with SQL guards **inside** their batches, where a failed `valid = 1` check rolls back the full transaction. A test simulates `meta.changes: 0` on committed batches and confirms HTTP `200` for publish and withdraw, exactly one notification, audited transitions, and a true `409` with no extra audit on a repeated withdrawal. The original roster/load race rollback tests also pass. Focused suite: `21/21`; TypeScript and both builds: PASS. Migration `0041` and the 1 GB R2 guard are unchanged.
 
-The earlier STAGING QA stop remains unresolved until a fresh Preview runs the unfinished school-2 authenticated checks and proves correct HTTP responses. Retain the existing bucket and already-applied migration; compare schools 1 and 3 and R2 again before closing the gate. No Production or merge is authorized.
+The resumed school-2 checks on the approved immutable Preview prove correct HTTP responses and resolve the earlier stop. Existing infrastructure was retained, protected schools compared and R2 reconciled. No Production or merge is authorized.
 
 The scoped execution checklist, evidence hashes, exact stop point, cleanup record and Preview-only R2 binding are in [PHASE_21D_STAGING_GATE.md](PHASE_21D_STAGING_GATE.md). Production remains a separate, ungranted GO decision.
