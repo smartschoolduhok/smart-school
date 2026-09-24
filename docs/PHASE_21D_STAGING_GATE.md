@@ -2,6 +2,12 @@
 
 Prepared and executed: 2026-09-23/24. The local implementation and tests are recorded in [PHASE_21D_HOMEWORK_QA.md](PHASE_21D_HOMEWORK_QA.md). Draft [PR #52](https://github.com/smartschoolduhok/smart-school/pull/52) remains open. The initial authorization was pinned to commit `d169df3ac97c9a91c7b84753698f7b8fb7796a78` and tree `a9861b34e4599987bcfab04179516774e1149014`; the reviewed quota-guard implementation was pushed as `39cf7c0e5627a41b7f747f67e3cbef80f94c2b8c`.
 
+## Response correction — local verification, STAGING QA pending
+
+Investigation of the stopped QA found that `publish` and `withdraw` checked `DB.batch()` result `meta.changes` **after** the transaction had committed. STAGING recorded the correct state and audit, but the response incorrectly reported `409 homework_stale`. The implementation now enforces the initial revision guard and the resulting status/revision inside the same D1 batch through the existing `homework_write_guards.valid = 1` constraint. An invalid guard aborts the entire batch; successful batches no longer depend on the reported `meta.changes` for their HTTP response. `0041_homework.sql`, R2 configuration, and storage limits are unchanged.
+
+The local homework suite passes `21/21`, including a regression that simulates a successful D1 batch reporting zero changes for both publish and withdraw. The existing in-boundary roster/load race tests still require rollback with `409`, without audience or notification writes. Typecheck, frontend build and Worker build pass. The original STAGING failure remains historical evidence; authenticated QA on a new immutable Preview, correction/parent/notification/RTL checks, final school-1/3 comparison and bucket reconciliation remain pending. Do not reapply `0041`, recreate the bucket, merge or access Production.
+
 ## Execution record — stopped during step 7
 
 The explicit STAGING-only authorization was used for read-only D1 inspection and export, local restore/rehearsal, the final pre-write drift guard, private R2 provisioning, application of only `0041_homework.sql`, the Preview-only binding, and labelled school-2 QA. The verified Cloudflare account was `8d30029482b5722704371f03169c5ca1` (`smartschool.duhok@gmail.com`); the Pages project and D1 name/UUID matched the approved scope.

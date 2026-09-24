@@ -187,4 +187,10 @@ The fresh local chain is `42/42`. It contains `83` counted tables including `d1_
 
 The authorized STAGING infrastructure and migration steps completed. The gate is stopped, not passed, because remote publish and withdraw returned `409 homework_stale` after their D1 batches committed. This must be corrected and re-rehearsed locally before a new immutable Preview can finish the unexecuted QA matrix. Do not create another bucket or reapply `0041`.
 
+### Response fix after the QA stop — 2026-09-24
+
+The false conflict came from comparing `DB.batch()` `meta.changes` only after D1 had committed the publish/withdraw transaction. Both routes now enforce stale revision and completed transition with SQL guards **inside** their batches, where a failed `valid = 1` check rolls back the full transaction. A test simulates `meta.changes: 0` on committed batches and confirms HTTP `200` for publish and withdraw, exactly one notification, audited transitions, and a true `409` with no extra audit on a repeated withdrawal. The original roster/load race rollback tests also pass. Focused suite: `21/21`; TypeScript and both builds: PASS. Migration `0041` and the 1 GB R2 guard are unchanged.
+
+The earlier STAGING QA stop remains unresolved until a fresh Preview runs the unfinished school-2 authenticated checks and proves correct HTTP responses. Retain the existing bucket and already-applied migration; compare schools 1 and 3 and R2 again before closing the gate. No Production or merge is authorized.
+
 The scoped execution checklist, evidence hashes, exact stop point, cleanup record and Preview-only R2 binding are in [PHASE_21D_STAGING_GATE.md](PHASE_21D_STAGING_GATE.md). Production remains a separate, ungranted GO decision.

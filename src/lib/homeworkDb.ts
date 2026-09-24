@@ -935,11 +935,10 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
     const token = crypto.randomUUID();
     const audienceValidationToken = `${token}:audience`;
     const user = c.get('user');
-    const results = await c.env.DB.batch([
+    await c.env.DB.batch([
       c.env.DB.prepare(`
         INSERT INTO homework_write_guards(token, valid)
-        SELECT ?, 1
-        WHERE EXISTS (
+        SELECT ?, CASE WHEN EXISTS (
           SELECT 1
           FROM homework_assignments guarded_homework
           JOIN timetable_teaching_loads guarded_load
@@ -991,7 +990,7 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
               WHERE pending_attachment.homework_id = guarded_homework.id
                 AND pending_attachment.status IN ('upload_pending', 'removal_pending')
             )
-        )
+        ) THEN 1 ELSE 0 END
       `).bind(token, row.id, schoolId, input.revision),
       c.env.DB.prepare(`
         UPDATE homework_assignments
@@ -1045,12 +1044,18 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
               )
           ) = ?
           AND (SELECT COUNT(*) FROM homework_audience WHERE homework_id = ?) = ?
+          AND EXISTS (
+            SELECT 1 FROM homework_assignments
+            WHERE id = ? AND school_id = ? AND status = 'published'
+              AND revision = ? AND published_by_user_id = ?
+          )
           THEN 1 ELSE 0 END
         WHERE EXISTS (SELECT 1 FROM homework_write_guards WHERE token = ? AND valid = 1)
       `).bind(
         audienceValidationToken,
         row.school_id, row.academic_year_id, row.class_id, row.section_id, row.subject_id,
-        audience.length, row.id, audience.length, token,
+        audience.length, row.id, audience.length,
+        row.id, schoolId, input.revision + 1, user.id, token,
       ),
       c.env.DB.prepare(`
         INSERT INTO school_notifications (
@@ -1082,7 +1087,6 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
       `).bind(row.id, audienceValidationToken),
       c.env.DB.prepare('DELETE FROM homework_write_guards WHERE token IN (?, ?)').bind(token, audienceValidationToken),
     ]);
-    requireHomework(resultChanges(results[0]) === 1 && resultChanges(results[1]) === 1, 'homework_stale', 409);
     const homework = await loadHomeworkDetail(c.env.DB, schoolId, String(row.homework_key));
     requireHomework(homework, 'homework_failed', 500);
     return c.json({ data: homework });
@@ -1097,13 +1101,13 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
     requireHomework(row.status === 'published' && Number(row.revision) === input.revision, 'homework_stale', 409);
     const token = crypto.randomUUID();
     const user = c.get('user');
-    const results = await c.env.DB.batch([
+    await c.env.DB.batch([
       c.env.DB.prepare(`
         INSERT INTO homework_write_guards(token, valid)
-        SELECT ?, 1 WHERE EXISTS (
+        SELECT ?, CASE WHEN EXISTS (
           SELECT 1 FROM homework_assignments
           WHERE id = ? AND school_id = ? AND status = 'published' AND revision = ?
-        )
+        ) THEN 1 ELSE 0 END
       `).bind(token, row.id, schoolId, input.revision),
       c.env.DB.prepare(`
         UPDATE homework_assignments
@@ -1114,6 +1118,15 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
           AND EXISTS (SELECT 1 FROM homework_write_guards WHERE token = ? AND valid = 1)
       `).bind(user.id, input.reason, user.id, row.id, schoolId, input.revision, token),
       c.env.DB.prepare(`
+        UPDATE homework_write_guards
+        SET valid = CASE WHEN EXISTS (
+          SELECT 1 FROM homework_assignments
+          WHERE id = ? AND school_id = ? AND status = 'withdrawn'
+            AND revision = ? AND withdrawn_by_user_id = ?
+        ) THEN 1 ELSE 0 END
+        WHERE token = ?
+      `).bind(row.id, schoolId, input.revision + 1, user.id, token),
+      c.env.DB.prepare(`
         UPDATE school_notifications
         SET status = 'withdrawn', withdrawn_at = unixepoch()
         WHERE school_id = ? AND reference_type = 'homework' AND reference_key = ?
@@ -1122,7 +1135,6 @@ export function registerHomeworkRoutes(app: Hono<HomeworkEnv>): void {
       `).bind(schoolId, row.homework_key, token),
       c.env.DB.prepare('DELETE FROM homework_write_guards WHERE token = ?').bind(token),
     ]);
-    requireHomework(resultChanges(results[0]) === 1 && resultChanges(results[1]) === 1, 'homework_stale', 409);
     const homework = await loadHomeworkDetail(c.env.DB, schoolId, String(row.homework_key));
     requireHomework(homework, 'homework_failed', 500);
     return c.json({ data: homework });

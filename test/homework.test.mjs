@@ -632,6 +632,43 @@ test('publish snapshots eligible students and notifications exactly once', async
   assert.equal(fixture.database.prepare('SELECT COUNT(*) count FROM notification_recipients').get().count, 1);
 });
 
+test('committed publish and withdrawal return success even when D1 reports zero batch changes', async t => {
+  const fixture = createFixture(t);
+  const created = await createDraft(fixture);
+  const batch = fixture.d1.batch.bind(fixture.d1);
+  fixture.d1.batch = async statements => (await batch(statements)).map(result => ({
+    ...result,
+    meta: { ...result.meta, changes: 0 },
+  }));
+
+  const published = await publishDraft(fixture, created.body.data);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  assert.equal(published.body.data.revision, 1);
+  const withdrawn = await request(fixture, 'teacher', 'POST', `/api/homework/${created.body.data.homework_key}/withdraw`, {
+    school_id: 1,
+    revision: published.body.data.revision,
+    reason: 'تصحيح السؤال',
+  });
+  assert.equal(withdrawn.status, 200, JSON.stringify(withdrawn.body));
+  assert.equal(withdrawn.body.data.revision, 2);
+  assert.equal(withdrawn.body.data.status, 'withdrawn');
+  assert.deepEqual(
+    fixture.database.prepare('SELECT action FROM homework_audit ORDER BY id').all().map(row => row.action),
+    ['created', 'published', 'withdrawn'],
+  );
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) count FROM homework_write_guards').get().count, 0);
+  assert.equal(fixture.database.prepare("SELECT COUNT(*) count FROM school_notifications WHERE status='withdrawn'").get().count, 1);
+
+  const retried = await request(fixture, 'teacher', 'POST', `/api/homework/${created.body.data.homework_key}/withdraw`, {
+    school_id: 1,
+    revision: published.body.data.revision,
+    reason: 'إعادة الطلب',
+  });
+  assert.equal(retried.status, 409, JSON.stringify(retried.body));
+  assert.equal(retried.body.code, 'homework_stale');
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) count FROM homework_audit').get().count, 3);
+});
+
 test('publish rolls back when the eligible roster changes inside the write boundary', async t => {
   const fixture = createFixture(t);
   const created = await createDraft(fixture);
