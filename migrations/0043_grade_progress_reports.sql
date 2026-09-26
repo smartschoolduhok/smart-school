@@ -28,16 +28,14 @@ CREATE TABLE grade_progress_audit (
 );
 CREATE TABLE workflow_write_guards(token TEXT PRIMARY KEY,valid INTEGER NOT NULL CONSTRAINT workflow_write_guard CHECK(valid=1));
 CREATE TRIGGER grade_progress_valid_insert BEFORE INSERT ON grade_progress_reports BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM students s JOIN academic_years y ON y.school_id=s.school_id
- WHERE s.id=NEW.student_id AND s.school_id=NEW.school_id AND y.id=NEW.academic_year_id)
- THEN RAISE(ABORT,'grade_progress_tenant_invalid') END;
+ SELECT RAISE(ABORT,'grade_progress_tenant_invalid') WHERE NOT EXISTS(SELECT 1 FROM students s JOIN academic_years y ON y.school_id=s.school_id
+ WHERE s.id=NEW.student_id AND s.school_id=NEW.school_id AND y.id=NEW.academic_year_id);
 END;
 CREATE TRIGGER grade_progress_immutable BEFORE UPDATE ON grade_progress_reports BEGIN
- SELECT CASE WHEN NEW.id<>OLD.id OR NEW.report_key<>OLD.report_key OR NEW.school_id<>OLD.school_id OR NEW.student_id<>OLD.student_id
+ SELECT RAISE(ABORT,'grade_progress_immutable') WHERE NEW.id<>OLD.id OR NEW.report_key<>OLD.report_key OR NEW.school_id<>OLD.school_id OR NEW.student_id<>OLD.student_id
  OR NEW.academic_year_id<>OLD.academic_year_id OR NEW.period<>OLD.period OR NEW.snapshot_json<>OLD.snapshot_json OR NEW.source_json<>OLD.source_json
  OR NEW.source_digest<>OLD.source_digest OR NEW.created_by_user_id<>OLD.created_by_user_id OR NEW.created_at<>OLD.created_at
- OR NEW.delivered_to_student<>OLD.delivered_to_student OR OLD.status<>'published' OR NEW.status<>'withdrawn' OR NEW.revision<>OLD.revision+1
- THEN RAISE(ABORT,'grade_progress_immutable') END;
+ OR NEW.delivered_to_student<>OLD.delivered_to_student OR OLD.status<>'published' OR NEW.status<>'withdrawn' OR NEW.revision<>OLD.revision+1;
 END;
 CREATE TRIGGER grade_progress_publish_audit AFTER INSERT ON grade_progress_reports BEGIN
  INSERT INTO grade_progress_audit(report_id,actor_user_id,action) VALUES(NEW.id,NEW.created_by_user_id,'published');

@@ -60,6 +60,14 @@ Storage controls are unchanged: homework cap `1,000,000,000` bytes, user account
 
 ## Remaining acceptance
 
+### STAGING gate resumption — 2026-09-26
+
+Authenticated identity, immutable preview, the complete R2 inventory and the 42-migration preflight passed. R2 contains three objects totaling 154 bytes. The full D1 export is 1,558,490 bytes, SHA-256 `d9d39d531401827773013d23f8ec47a8f2f8743e5d021eaa3494275c1bed6dda`. Its isolated restore matched every schema object, row, SQLite type and value; the immediate second export was byte-identical.
+
+The first remote migration attempt failed with D1 `incomplete input` before any migration committed. A fresh read-only preflight confirmed exactly the same full snapshot hash `43c8145a273269c6b4e097eab0dec6e6bc56cd31e1b7e656005849cf81ebfcd2`, 42 migrations, 83/81 tables and four pending files. No fixture writes had started.
+
+The still-unapplied 0042–0045 triggers now express guards as `SELECT RAISE(...) WHERE ...` and use `iif` for conditional values. This preserves their semantics while avoiding bare `CASE ... END` expressions that the remote D1 statement parser can confuse with a trigger terminator ([Cloudflare issue 4727](https://github.com/cloudflare/workers-sdk/issues/4727)). Local migration success did not detect this remote parser difference. The corrected bytes require a repeated restore/upgrade rehearsal, CI, immediate drift check and authenticated STAGING gate before acceptance.
+
 1. Authenticated STAGING backup/rehearsal and migrations `0042`–`0045`, then school-2-only browser QA and non-destructive fixture cleanup.
 2. Verify the existing homework R2 binding on the STAGING main deployment after this branch is eventually merged; remeasure/reconcile usage first.
 3. Real official-source configuration, school-staff pilot, and a separately identified Production release environment remain operational work. No claim of Production readiness, legal certification or completed staff pilot is made.

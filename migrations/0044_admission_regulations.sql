@@ -30,20 +30,18 @@ CREATE TABLE admission_regulation_audit (
  reason TEXT, created_at INTEGER NOT NULL DEFAULT(unixepoch())
 );
 CREATE TRIGGER regulation_validate_insert BEFORE INSERT ON admission_regulations BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM academic_years y JOIN classes c ON c.school_id=y.school_id
- WHERE y.id=NEW.academic_year_id AND c.id=NEW.class_id AND y.school_id=NEW.school_id AND c.status='active')
- THEN RAISE(ABORT,'regulation_scope_invalid') END;
- SELECT CASE WHEN NEW.status<>'draft' OR NEW.revision<>1 THEN RAISE(ABORT,'regulation_draft_required') END;
+ SELECT RAISE(ABORT,'regulation_scope_invalid') WHERE NOT EXISTS(SELECT 1 FROM academic_years y JOIN classes c ON c.school_id=y.school_id
+ WHERE y.id=NEW.academic_year_id AND c.id=NEW.class_id AND y.school_id=NEW.school_id AND c.status='active');
+ SELECT RAISE(ABORT,'regulation_draft_required') WHERE NEW.status<>'draft' OR NEW.revision<>1;
 END;
 CREATE TRIGGER regulation_identity_immutable BEFORE UPDATE ON admission_regulations BEGIN
- SELECT CASE WHEN NEW.id<>OLD.id OR NEW.regulation_key<>OLD.regulation_key OR NEW.school_id<>OLD.school_id
+ SELECT RAISE(ABORT,'regulation_immutable_or_transition_invalid') WHERE NEW.id<>OLD.id OR NEW.regulation_key<>OLD.regulation_key OR NEW.school_id<>OLD.school_id
  OR NEW.academic_year_id<>OLD.academic_year_id OR NEW.class_id<>OLD.class_id OR NEW.process<>OLD.process OR NEW.version<>OLD.version
  OR NEW.title<>OLD.title OR NEW.jurisdiction<>OLD.jurisdiction OR NEW.source_reference<>OLD.source_reference OR NEW.source_url<>OLD.source_url
  OR NEW.effective_from<>OLD.effective_from OR NEW.effective_to<>OLD.effective_to OR NEW.rules_json<>OLD.rules_json
  OR NEW.created_by_user_id<>OLD.created_by_user_id OR NEW.created_at<>OLD.created_at OR NEW.revision<>OLD.revision+1
  OR NOT ((OLD.status='draft' AND NEW.status='approved') OR (OLD.status='approved' AND NEW.status='retired'))
- OR NEW.change_reason IS NULL OR length(trim(NEW.change_reason))=0
- THEN RAISE(ABORT,'regulation_immutable_or_transition_invalid') END;
+ OR NEW.change_reason IS NULL OR length(trim(NEW.change_reason))=0;
 END;
 CREATE TRIGGER regulation_created_audit AFTER INSERT ON admission_regulations BEGIN
  INSERT INTO admission_regulation_audit(regulation_id,actor_user_id,action) VALUES(NEW.id,NEW.created_by_user_id,'draft');

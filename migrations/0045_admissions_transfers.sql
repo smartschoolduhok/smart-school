@@ -39,21 +39,20 @@ CREATE TABLE admission_application_audit (
  created_at INTEGER NOT NULL DEFAULT(unixepoch())
 );
 CREATE TRIGGER admission_application_insert BEFORE INSERT ON admission_applications BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM academic_years y JOIN classes c ON c.school_id=y.school_id WHERE y.id=NEW.academic_year_id AND c.id=NEW.class_id AND y.school_id=NEW.school_id AND c.status='active')
+ SELECT RAISE(ABORT,'admission_scope_invalid') WHERE NOT EXISTS(SELECT 1 FROM academic_years y JOIN classes c ON c.school_id=y.school_id WHERE y.id=NEW.academic_year_id AND c.id=NEW.class_id AND y.school_id=NEW.school_id AND c.status='active')
  OR (NEW.student_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM students s WHERE s.id=NEW.student_id AND s.school_id=NEW.school_id))
  OR (NEW.section_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=NEW.section_id AND s.class_id=NEW.class_id AND s.school_id=NEW.school_id AND s.status='active'))
- OR NEW.status<>'submitted' OR NEW.revision<>1 THEN RAISE(ABORT,'admission_scope_invalid') END;
+ OR NEW.status<>'submitted' OR NEW.revision<>1;
 END;
 CREATE TRIGGER admission_application_update BEFORE UPDATE ON admission_applications BEGIN
- SELECT CASE WHEN NEW.id<>OLD.id OR NEW.application_key<>OLD.application_key OR NEW.school_id<>OLD.school_id OR NEW.academic_year_id<>OLD.academic_year_id
+ SELECT RAISE(ABORT,'admission_history_or_transition_invalid') WHERE NEW.id<>OLD.id OR NEW.application_key<>OLD.application_key OR NEW.school_id<>OLD.school_id OR NEW.academic_year_id<>OLD.academic_year_id
  OR NEW.class_id<>OLD.class_id OR NEW.section_id IS NOT OLD.section_id OR NEW.process<>OLD.process OR NEW.applicant_json IS NOT OLD.applicant_json
  OR NEW.external_school IS NOT OLD.external_school OR NEW.document_reference IS NOT OLD.document_reference
  OR NEW.created_by_user_id<>OLD.created_by_user_id OR NEW.created_at<>OLD.created_at OR NEW.revision<>OLD.revision+1
  OR (NEW.student_id IS NOT OLD.student_id AND NOT (OLD.student_id IS NULL AND OLD.status='approved' AND NEW.status='executed' AND EXISTS(SELECT 1 FROM students s WHERE s.id=NEW.student_id AND s.school_id=NEW.school_id AND s.student_number=json_extract(OLD.applicant_json,'$.student_number'))))
  OR NOT ((OLD.status='submitted' AND NEW.status IN ('submitted','approved','rejected','cancelled')) OR (OLD.status='approved' AND NEW.status IN ('submitted','executed','cancelled')))
  OR (OLD.status<>'submitted' AND NEW.facts_json<>OLD.facts_json)
- OR NEW.action_reason IS NULL OR length(trim(NEW.action_reason))=0
- THEN RAISE(ABORT,'admission_history_or_transition_invalid') END;
+ OR NEW.action_reason IS NULL OR length(trim(NEW.action_reason))=0;
 END;
 CREATE TRIGGER admission_application_created AFTER INSERT ON admission_applications BEGIN
  INSERT INTO admission_application_audit(application_id,actor_user_id,new_status,revision,facts_json) VALUES(NEW.id,NEW.created_by_user_id,NEW.status,NEW.revision,NEW.facts_json);

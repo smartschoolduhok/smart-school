@@ -82,39 +82,34 @@ CREATE TABLE parent_conversation_audit (
 CREATE TABLE communication_write_guards(token TEXT PRIMARY KEY, valid INTEGER NOT NULL CONSTRAINT communication_guard CHECK(valid=1));
 
 CREATE TRIGGER communication_thread_insert BEFORE INSERT ON parent_conversations BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM communication_contacts c WHERE c.school_id=NEW.school_id
+ SELECT RAISE(ABORT,'communication_access_changed') WHERE NOT EXISTS(SELECT 1 FROM communication_contacts c WHERE c.school_id=NEW.school_id
   AND c.student_id=NEW.student_id AND c.academic_year_id=NEW.academic_year_id
-  AND c.parent_user_id=NEW.parent_user_id AND c.staff_user_id=NEW.staff_user_id)
- THEN RAISE(ABORT,'communication_access_changed') END;
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=NEW.created_by_user_id AND u.status='active'
-  AND (r.key='system_admin' OR (u.school_id=NEW.school_id AND (u.id IN (NEW.parent_user_id,NEW.staff_user_id) OR r.key IN ('school_owner','principal','vice_principal')))))
- THEN RAISE(ABORT,'communication_access_changed') END;
+  AND c.parent_user_id=NEW.parent_user_id AND c.staff_user_id=NEW.staff_user_id);
+ SELECT RAISE(ABORT,'communication_access_changed') WHERE NOT EXISTS(SELECT 1 FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=NEW.created_by_user_id AND u.status='active'
+  AND (r.key='system_admin' OR (u.school_id=NEW.school_id AND (u.id IN (NEW.parent_user_id,NEW.staff_user_id) OR r.key IN ('school_owner','principal','vice_principal')))));
 END;
 CREATE TRIGGER communication_thread_created AFTER INSERT ON parent_conversations BEGIN
  INSERT INTO parent_conversation_audit(conversation_id,actor_user_id,action,revision) VALUES(NEW.id,NEW.created_by_user_id,'created',NEW.revision);
 END;
 CREATE TRIGGER communication_thread_update BEFORE UPDATE ON parent_conversations BEGIN
- SELECT CASE WHEN NEW.id<>OLD.id OR NEW.conversation_key<>OLD.conversation_key OR NEW.school_id<>OLD.school_id
+ SELECT RAISE(ABORT,'communication_history_immutable') WHERE NEW.id<>OLD.id OR NEW.conversation_key<>OLD.conversation_key OR NEW.school_id<>OLD.school_id
   OR NEW.student_id<>OLD.student_id OR NEW.academic_year_id<>OLD.academic_year_id OR NEW.parent_user_id<>OLD.parent_user_id
   OR NEW.staff_user_id<>OLD.staff_user_id OR NEW.title<>OLD.title OR NEW.student_name<>OLD.student_name
   OR NEW.parent_name<>OLD.parent_name OR NEW.staff_name<>OLD.staff_name OR NEW.created_by_user_id<>OLD.created_by_user_id
-  OR NEW.created_at<>OLD.created_at OR NEW.revision<>OLD.revision+1
- THEN RAISE(ABORT,'communication_history_immutable') END;
- SELECT CASE WHEN NEW.status<>OLD.status AND (NEW.status_reason IS NULL OR length(trim(NEW.status_reason))=0)
- THEN RAISE(ABORT,'communication_reason_required') END;
+  OR NEW.created_at<>OLD.created_at OR NEW.revision<>OLD.revision+1;
+ SELECT RAISE(ABORT,'communication_reason_required') WHERE NEW.status<>OLD.status AND (NEW.status_reason IS NULL OR length(trim(NEW.status_reason))=0);
 END;
 CREATE TRIGGER communication_status_audit AFTER UPDATE OF status ON parent_conversations WHEN NEW.status<>OLD.status BEGIN
  INSERT INTO parent_conversation_audit(conversation_id,actor_user_id,action,revision,reason)
- VALUES(NEW.id,NEW.updated_by_user_id, CASE NEW.status WHEN 'closed' THEN 'closed' ELSE 'reopened' END ,NEW.revision,NEW.status_reason);
+ VALUES(NEW.id,NEW.updated_by_user_id, iif(NEW.status='closed','closed','reopened') ,NEW.revision,NEW.status_reason);
 END;
 CREATE TRIGGER communication_message_insert BEFORE INSERT ON parent_messages BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM parent_conversations t
+ SELECT RAISE(ABORT,'communication_access_or_revision_changed') WHERE NOT EXISTS(SELECT 1 FROM parent_conversations t
  JOIN communication_contacts c ON c.school_id=t.school_id AND c.student_id=t.student_id AND c.academic_year_id=t.academic_year_id
   AND c.parent_user_id=t.parent_user_id AND c.staff_user_id=t.staff_user_id
  JOIN users u ON u.id=NEW.sender_user_id AND u.status='active' JOIN roles r ON r.id=u.role_id
  WHERE t.id=NEW.conversation_id AND t.school_id=NEW.school_id AND t.status='open' AND t.revision=NEW.thread_revision
-  AND (r.key='system_admin' OR (u.school_id=t.school_id AND (u.id IN (t.parent_user_id,t.staff_user_id) OR r.key IN ('school_owner','principal','vice_principal')))))
- THEN RAISE(ABORT,'communication_access_or_revision_changed') END;
+  AND (r.key='system_admin' OR (u.school_id=t.school_id AND (u.id IN (t.parent_user_id,t.staff_user_id) OR r.key IN ('school_owner','principal','vice_principal')))));
 END;
 CREATE TRIGGER communication_message_created AFTER INSERT ON parent_messages BEGIN
  UPDATE parent_conversations SET revision=revision+1,updated_by_user_id=NEW.sender_user_id,updated_at=unixepoch() WHERE id=NEW.conversation_id;
@@ -124,7 +119,7 @@ CREATE TRIGGER communication_message_created AFTER INSERT ON parent_messages BEG
  SELECT NEW.message_key,t.school_id,t.student_id,'parent_message','رسالة جديدة','لديك رسالة جديدة في تواصل ولي الأمر','parent_conversation',t.conversation_key,NEW.sender_user_id
  FROM parent_conversations t WHERE t.id=NEW.conversation_id;
  INSERT INTO notification_recipients(notification_key,school_id,user_id)
- SELECT NEW.message_key,t.school_id, CASE WHEN NEW.sender_user_id=t.parent_user_id THEN t.staff_user_id ELSE t.parent_user_id END
+ SELECT NEW.message_key,t.school_id, iif(NEW.sender_user_id=t.parent_user_id,t.staff_user_id,t.parent_user_id)
  FROM parent_conversations t WHERE t.id=NEW.conversation_id;
 END;
 CREATE TRIGGER communication_message_no_update BEFORE UPDATE ON parent_messages BEGIN SELECT RAISE(ABORT,'communication_history_immutable'); END;
@@ -133,11 +128,9 @@ CREATE TRIGGER communication_thread_no_delete BEFORE DELETE ON parent_conversati
 CREATE TRIGGER communication_audit_no_update BEFORE UPDATE ON parent_conversation_audit BEGIN SELECT RAISE(ABORT,'communication_history_immutable'); END;
 CREATE TRIGGER communication_audit_no_delete BEFORE DELETE ON parent_conversation_audit BEGIN SELECT RAISE(ABORT,'communication_history_immutable'); END;
 CREATE TRIGGER communication_read_insert BEFORE INSERT ON parent_conversation_reads BEGIN
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM parent_messages m WHERE m.id=NEW.last_message_id AND m.conversation_id=NEW.conversation_id)
- THEN RAISE(ABORT,'communication_read_invalid') END;
+ SELECT RAISE(ABORT,'communication_read_invalid') WHERE NOT EXISTS(SELECT 1 FROM parent_messages m WHERE m.id=NEW.last_message_id AND m.conversation_id=NEW.conversation_id);
 END;
 CREATE TRIGGER communication_read_update BEFORE UPDATE ON parent_conversation_reads BEGIN
- SELECT CASE WHEN NEW.conversation_id<>OLD.conversation_id OR NEW.user_id<>OLD.user_id OR NEW.last_message_id<OLD.last_message_id
-  OR NOT EXISTS(SELECT 1 FROM parent_messages m WHERE m.id=NEW.last_message_id AND m.conversation_id=NEW.conversation_id)
- THEN RAISE(ABORT,'communication_read_invalid') END;
+ SELECT RAISE(ABORT,'communication_read_invalid') WHERE NEW.conversation_id<>OLD.conversation_id OR NEW.user_id<>OLD.user_id OR NEW.last_message_id<OLD.last_message_id
+  OR NOT EXISTS(SELECT 1 FROM parent_messages m WHERE m.id=NEW.last_message_id AND m.conversation_id=NEW.conversation_id);
 END;
