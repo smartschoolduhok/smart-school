@@ -1,11 +1,11 @@
 // ===========================================
-// API Client - JWT Bearer Token Authentication
+// API Client - HttpOnly cookie sessions with CSRF protection
 // Connects React frontend to Hono backend
-// Automatically injects Authorization: Bearer <token> header
+// Session credentials are never exposed to JavaScript or Web Storage.
 // ===========================================
 
 import type { AcademicYearRecord } from './academicYears';
-import { clearAuthentication, getStoredAuthToken } from './authStorage';
+import { clearAuthentication, getSessionCsrfToken } from './authStorage';
 import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan } from './weekSetup';
 import type {
   AttendanceLessonDetail,
@@ -115,19 +115,19 @@ function showError(message: string) {
 
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string; code?: string; status?: number }> {
   try {
-    const token = getStoredAuthToken();
     const { headers: optionHeaders, ...requestOptions } = options || {};
     const headers = new Headers(optionHeaders);
     if (!headers.has('Accept')) headers.set('Accept', 'application/json');
     const hasFormDataBody = typeof FormData !== 'undefined' && requestOptions.body instanceof FormData;
     if (!headers.has('Content-Type') && !hasFormDataBody) headers.set('Content-Type', 'application/json');
 
-    if (token) {
-      headers.set('Authorization', `Bearer ${token}`);
-    }
+    headers.delete('Authorization');
+    const csrf = getSessionCsrfToken();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes((requestOptions.method || 'GET').toUpperCase()) && csrf) headers.set('X-CSRF-Token', csrf);
 
     const res = await fetch(`${API_BASE}${path}`, {
       ...requestOptions,
+      credentials: 'same-origin', cache: 'no-store',
       headers,
     });
 
@@ -138,8 +138,10 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
     }
 
     if (res.status === 403) {
-      showError('غير مسموح: لا تملك صلاحية الوصول');
-      return { error: 'غير مسموح: لا تملك صلاحية الوصول' };
+      const body = await res.json().catch(() => ({}));
+      const error = body.error || 'غير مسموح: لا تملك صلاحية الوصول';
+      showError(error);
+      return { error, code: body.code, status: 403 };
     }
 
     if (!res.ok) {
@@ -457,10 +459,9 @@ export async function downloadHomeworkAttachment(
   schoolId?: number | null,
 ): Promise<{ data?: Blob; fileName?: string; error?: string }> {
   try {
-    const token = getStoredAuthToken();
     const query = schoolId == null ? '' : `?school_id=${schoolId}`;
     const response = await fetch(`/api/homework/attachments/${encodeURIComponent(attachmentKey)}${query}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      credentials: 'same-origin', cache: 'no-store',
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));

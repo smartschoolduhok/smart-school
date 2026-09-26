@@ -248,7 +248,7 @@ try {
   };
 
   const logins = await Promise.all(Object.entries(emails).map(async ([key, email]) => [key, await api('/api/auth/login', {
-    method: 'POST', body: { email, password },
+    method: 'POST', body: { email, password, session_mode: 'bearer' },
   })]));
   const loginByRole = Object.fromEntries(logins);
   ownerToken = loginByRole.owner.data.token;

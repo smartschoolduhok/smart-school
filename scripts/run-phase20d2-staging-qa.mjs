@@ -120,8 +120,8 @@ try {
       const snapshot=cardSnapshot(key,kind,outcome);return `(${ctx.schoolId},${ctx.rows[key].studentId},${ctx.sourceClassId},${ctx.sourceSectionId},${ctx.sourceYearId},${q(ctx.marker+'-'+key)},${q(randomBytes(24).toString('hex'))},${q(randomBytes(32).toString('hex'))},${q(ctx.marker+' '+key)},${q(ctx.marker+' Source')},${q(ctx.marker+' Source section')},'QA ONLY',${q(String(ctx.sourceYearId))},0,${q(snapshot.summary.academic_status)},${q(JSON.stringify(snapshot))},${ctx.ownerId},unixepoch(),'active',${q(key==='incomplete'?'published':'draft')},${key==='incomplete'?1:0},${key==='incomplete'?'unixepoch()':'NULL'},${key==='incomplete'?ctx.ownerId:'NULL'})`;
     }).join(',')} RETURNING id,student_id;`);
     for(const row of Object.values(ctx.rows))row.cardId=cards.find(r=>r.student_id===row.studentId).id;save();
-    ctx.ownerToken=(await api('/api/auth/login',{token:null,body:{email:ctx.ownerEmail,password:ctx.password}})).data.token;
-    ctx.otherToken=(await api('/api/auth/login',{token:null,body:{email:ctx.otherEmail,password:ctx.password}})).data.token;save();
+    ctx.ownerToken=(await api('/api/auth/login',{token:null,body:{email:ctx.ownerEmail,password:ctx.password,session_mode:'bearer'}})).data.token;
+    ctx.otherToken=(await api('/api/auth/login',{token:null,body:{email:ctx.otherEmail,password:ctx.password,session_mode:'bearer'}})).data.token;save();
     for(const [key] of scenarios)if(!['draft','incomplete'].includes(key))await api(`/api/result-cards/${ctx.rows[key].cardId}/publish`,{method:'PUT',body:{school_id:ctx.schoolId,expected_revision:0,note:ctx.marker+' synthetic QA only'}});
     await api(`/api/result-cards/${ctx.rows.withdrawn.cardId}/withdraw`,{method:'PUT',body:{school_id:ctx.schoolId,expected_revision:1,reason:ctx.marker+' withdrawn fixture'}});
     report.identifiers={school_id:ctx.schoolId,source_year_id:ctx.sourceYearId,target_year_id:ctx.targetYearId,source_class_id:ctx.sourceClassId,target_class_id:ctx.targetClassId,rows:ctx.rows};

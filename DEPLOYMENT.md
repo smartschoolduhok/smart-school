@@ -18,6 +18,7 @@ npm ci
 npm audit --audit-level=low
 npm run typecheck
 npm run test:regressions
+npm run test:school-workflows:local
 npm run test:finance-seed:local
 npm run test:backup-restore:local
 npm run build
@@ -62,7 +63,7 @@ npm run preview
 
 ملف `wrangler.jsonc` المتعقب خاص بـSTAGING (`smart-school-staging` و`smart-school-staging-db`). لا تستخدمه كإعداد Production.
 
-لـPhase 21D، راجع [بوابة STAGING المجهزة](docs/PHASE_21D_STAGING_GATE.md) قبل أي قراءة/كتابة بعيدة. تشمل فحص مورد R2 الخاص ومعاينة Pages وربط `HOMEWORK_FILES` ونسخة D1 الكاملة واستعادة معزولة وفحص انجراف مباشر. لم تُنفّذ هذه البوابة بعد.
+أُغلقت بوابة Phases 21E–22B في PR #53، ودُمجت إلى `da58d59`، ونجح CI والنشر التلقائي وتنزيل R2 المصادق. [تقرير التنفيذ](docs/ROADMAP_21E_22B_STAGING_QA.md) هو الدليل التاريخي؛ ملفات بوابات المراحل القديمة ليست preflight للترقية الجديدة. راجع [بوابة الجلسات والجاهزية](docs/OPERATIONAL_READINESS_GATE.md) لتطبيق `0046` فقط بعد استعادة نسخة حديثة ومقارنتها.
 
 قبل أي migration بعيد، نفّذ الإجراءات التالية ضمن نافذة تغيير مصرح بها:
 
@@ -83,11 +84,7 @@ npx wrangler d1 export DB --remote --output <dated-staging-backup.sql> --config 
 npx wrangler d1 migrations apply DB --remote --config wrangler.jsonc
 ```
 
-لنشر الحزمة على مشروع STAGING المتعقب بعد نجاح migration وQA:
-
-```bash
-npm run deploy
-```
+مشروع Pages مرتبط بـGit: ادفع فرع PR للحصول على المعاينة التلقائية، وتحقق أن commit والمعرّفات والـbindings تطابق المرشح. بعد بوابة STAGING ودمج PR، ينتج نشر `main` تلقائيًا. لا تشغّل `npm run deploy` أو نشرًا يدويًا موازيًا لهذا المسار. وجود deployment باسم Production داخل مشروع Pages هذا لا يغيّر كون موارده STAGING.
 
 ## 5. Production
 
@@ -115,7 +112,7 @@ npx wrangler pages deploy dist --config <approved-production-config>
 
 ## 6. الترحيلات الحالية
 
-المصدر المعتمد للترتيب هو مجلد `migrations/`. يوجد 46 ملفًا حتى `0045`، مع ملفي `0014` التاريخيين بترتيب الاسم الكامل. آخر قياس STAGING في بوابة PR #53 بتاريخ 2026-09-26: `46/46` و`95/93` جدولًا، بلا pending وFK نظيف. [الأدلة](docs/ROADMAP_21E_22B_STAGING_QA.md). افحص الهوية والسجل والقائمة المعلقة قبل أي كتابة بعيدة؛ لا تعِد تطبيق ملفات سابقة.
+المصدر المعتمد للترتيب هو مجلد `migrations/`. يوجد 47 ملفًا حتى `0046`، مع ملفي `0014` التاريخيين بترتيب الاسم الكامل. آخر قياس STAGING في بوابة PR #53 بتاريخ 2026-09-26: 46 ملفًا حتى `0045` و`95/93` جدولًا وFK نظيف. `0046` معلقة في هذا الفرع ولم تُنفذ بعيدًا. [الأدلة السابقة](docs/ROADMAP_21E_22B_STAGING_QA.md). افحص الهوية والسجل والقائمة المعلقة قبل أي كتابة بعيدة؛ لا تعِد تطبيق ملفات سابقة.
 
 أحدث الترحيلات:
 
@@ -139,6 +136,7 @@ npx wrangler pages deploy dist --config <approved-production-config>
 | `0043_grade_progress_reports.sql` | المتابعات المنشورة وحراسة الكتابة؛ مطبقة على STAGING |
 | `0044_admission_regulations.sql` | اللوائح الموثقة بإصدارات؛ مطبقة على STAGING |
 | `0045_admissions_transfers.sql` | القبول والنقل وتدقيق التنفيذ؛ مطبقة على STAGING |
+| `0046_cancelled_draft_readiness.sql` | تصحيح تشخيص المسودة الملغاة قبل النشر، view فقط؛ محليًا فقط حتى إغلاق البوابة الجديدة |
 
 لا تعدّل migration مطبقًا. أي تغيير لاحق يكون في ملف جديد مع اختبار ترقية بيانات قديمة واختبار قاعدة جديدة.
 

@@ -116,7 +116,7 @@ test('0034 preserves old card values and backfills historical publication state'
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys=ON');
   const migrations = readdirSync(join(root, 'migrations')).filter(name => name.endsWith('.sql')).sort();
-  for (const name of migrations.filter(name => !name.startsWith('0034_'))) {
+  for (const name of migrations.filter(name => name.slice(0,4) < '0034')) {
     db.exec(readFileSync(join(root, 'migrations', name), 'utf8'));
   }
   db.exec(fixtureSQL);
@@ -333,4 +333,40 @@ test('result publication UI separates review, publish, withdrawal and parent rea
   assert.match(print, /isResultCardPrintable\(loaded\.status, loaded\.publication_status\)/);
   assert.match(print, /card\?\.status === 'active'/);
   assert.match(print, /shouldRegisterResultCardPrint/);
+});
+
+
+test('cancelling an unpublished card remains healthy without creating publication history', async t => {
+ const f=publicationFixture(t);
+ const before={...f.db.prepare('SELECT * FROM result_cards WHERE id=1').get()};
+ const r=await api(f,'owner','PUT','/api/result-cards/1/cancel',{school_id:1});assert.equal(r.status,200);
+ const after={...f.db.prepare('SELECT * FROM result_cards WHERE id=1').get()};
+ assert.deepEqual({...after,status:before.status,updated_at:before.updated_at},before);
+ assert.equal(after.status,'cancelled');assert.equal(after.publication_status,'draft');
+ assert.equal(f.db.prepare('SELECT status FROM result_card_publication_readiness WHERE school_id=1').get().status,'healthy');
+ assert.equal(f.db.prepare('SELECT count(*) n FROM result_card_publication_logs WHERE result_card_id=1').get().n,0);
+ const parent=await api(f,'parent','GET','/api/parent/students/1/result-cards');assert.deepEqual(parent.body.data.cards,[]);
+ const verification=await publicApi(f,'/api/verify/result-card/draft-token');assert.equal(verification.body.valid,false);
+ assert.equal((await api(f,'owner','PUT','/api/result-cards/1/publish',{school_id:1,expected_revision:0})).status,409);
+});
+
+test('0046 fixes only valid cancelled drafts and preserves every stored row on upgrade', t => {
+ const f=publicationFixture(t);f.db.exec("UPDATE result_cards SET status='cancelled' WHERE id=1");
+ const currentView=f.db.prepare("SELECT sql FROM sqlite_schema WHERE name='result_card_publication_readiness'").get().sql;
+ f.db.exec('DROP VIEW result_card_publication_readiness');
+ const oldMigration=readFileSync(join(root,'migrations/0034_result_card_publication.sql'),'utf8');
+ f.db.exec(oldMigration.slice(oldMigration.indexOf('CREATE VIEW result_card_publication_readiness')));
+ assert.equal(f.db.prepare('SELECT status FROM result_card_publication_readiness WHERE school_id=1').get().status,'inconsistent');
+ const tables=f.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all().map(r=>r.name);
+ const snap=()=>Object.fromEntries(tables.map(n=>[n,f.db.prepare('SELECT * FROM "'+n+'"').all()]));
+ const before=snap();f.db.exec(readFileSync(join(root,'migrations/0046_cancelled_draft_readiness.sql'),'utf8'));
+ assert.deepEqual(snap(),before);assert.equal(f.db.prepare('SELECT status FROM result_card_publication_readiness WHERE school_id=1').get().status,'healthy');
+ assert.equal(f.db.prepare("SELECT sql FROM sqlite_schema WHERE name='result_card_publication_readiness'").get().sql,currentView);
+ // Historical malformed data must still be flagged, not hidden by the correction.
+ f.db.exec('DROP TRIGGER trg_result_card_publication_transition');
+ f.db.exec('UPDATE result_cards SET published_at=1 WHERE id=1');
+ assert.equal(f.db.prepare('SELECT status FROM result_card_publication_readiness WHERE school_id=1').get().status,'inconsistent');
+ f.db.exec("UPDATE result_cards SET status='active',publication_status='withdrawn' WHERE id=2");
+ assert.equal(f.db.prepare('SELECT status FROM result_card_publication_readiness WHERE school_id=2').get().status,'inconsistent');
+ assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
 });

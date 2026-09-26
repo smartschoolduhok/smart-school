@@ -22,8 +22,8 @@ test('authenticated role_key is preserved from login and /api/auth/me through us
   const useAuth = source('src/hooks/useAuth.tsx');
 
   assert.match(worker, /role_key:\s*row\.role_key/);
-  assert.match(worker, /app\.get\('\/api\/auth\/me'[\s\S]*?return c\.json\(\{ data: user \}\)/);
-  assert.match(useAuth, /const \{ token, user \} = body\.data/);
+  assert.match(worker, /app\.get\('\/api\/auth\/me'[\s\S]*?return c\.json\(\{ data: user,/);
+  assert.match(useAuth, /const \{ user \} = body\.data/);
   assert.match(useAuth, /user:\s*body\.data/);
 });
 

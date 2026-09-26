@@ -25,7 +25,8 @@ const { default: LoginPage } = await vite.ssrLoadModule('/src/modules/auth/Login
 const { default: StudentsPage } = await vite.ssrLoadModule('/src/modules/students/StudentsPage.tsx');
 const { default: GradesPage } = await vite.ssrLoadModule('/src/modules/grades/GradesPage.tsx');
 const { AuthProvider, useAuth } = await vite.ssrLoadModule('/src/hooks/useAuth.tsx');
-const { fetchApi, getDashboardStats } = await vite.ssrLoadModule('/src/lib/api.ts');
+const { setSessionCsrfToken, clearAuthentication } = await vite.ssrLoadModule('/src/lib/authStorage.ts');
+const { fetchApi, getDashboardStats, downloadHomeworkAttachment } = await vite.ssrLoadModule('/src/lib/api.ts');
 const { NAVIGATION_GROUPS, getVisibleNavigationItems } = await vite.ssrLoadModule('/src/components/Sidebar.tsx');
 const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
 
@@ -159,11 +160,13 @@ test('navigation is grouped, hides future placeholders, and scopes parent destin
   assert.ok(!parentPaths.includes('/fees'));
 });
 
-test('login uses session storage by default, remember-me uses local storage, and help is honest', async t => {
+test('cookie login never stores a browser credential and sends remember-me to the server', async t => {
   const user = { id: 1, role_key: 'school_owner', role_id: 2, school_id: 1, full_name: 'مالك المدرسة', email: 'owner@example.test', role_name: 'مالك المدرسة', school_name: 'مدرسة الاختبار' };
   const apiAuthorizations = [];
+  const loginOptions = [];
   globalThis.fetch = async (url, options) => {
-    if (String(url).endsWith('/api/auth/login')) return new Response(JSON.stringify({ data: { token: 'generated-token', user } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (String(url).endsWith('/api/auth/me')) return new Response('{}', {status:401});
+    if (String(url).endsWith('/api/auth/login')) { loginOptions.push(JSON.parse(options.body)); assert.equal(options.credentials,'same-origin'); return new Response(JSON.stringify({ data: { csrf_token: 'a'.repeat(64), user } }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
     if (String(url).endsWith('/api/dashboard/stats')) {
       apiAuthorizations.push(new Headers(options?.headers).get('Authorization'));
       return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -191,18 +194,22 @@ test('login uses session storage by default, remember-me uses local storage, and
     };
   }
 
-  assert.deepEqual(await login(false), { local: null, session: 'generated-token', authorization: 'Bearer generated-token' });
-  assert.deepEqual(await login(true), { local: 'generated-token', session: null, authorization: 'Bearer generated-token' });
+  assert.deepEqual(await login(false), { local: null, session: null, authorization: null });
+  assert.deepEqual(await login(true), { local: null, session: null, authorization: null });
+  assert.deepEqual(loginOptions.map(o=>[o.session_mode,o.remember_me]), [['cookie',false],['cookie',true]]);
 });
 
-test('API option headers merge without removing stored authorization', async t => {
+test('API strips legacy authorization and attaches only the session CSRF header to writes', async t => {
   const previousFetch = globalThis.fetch;
   let receivedHeaders;
+  let receivedCredentials;
   localStorage.clear();
   sessionStorage.clear();
   sessionStorage.setItem('smart_school_token', 'session-api-token');
+  setSessionCsrfToken('b'.repeat(64));
   globalThis.fetch = async (_url, options) => {
     receivedHeaders = new Headers(options?.headers);
+    receivedCredentials = options?.credentials;
     return new Response(JSON.stringify({ data: { ok: true } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
   t.after(() => {
@@ -212,14 +219,31 @@ test('API option headers merge without removing stored authorization', async t =
   });
 
   const result = await fetchApi('/api/header-merge-check', {
-    headers: { Authorization: '', 'X-QA-Header': 'preserved' },
+    method: 'POST', headers: { Authorization: 'Bearer stale-token', 'X-QA-Header': 'preserved' },
   });
 
   assert.deepEqual(result.data, { ok: true });
-  assert.equal(receivedHeaders.get('Authorization'), 'Bearer session-api-token');
+  assert.equal(receivedHeaders.get('Authorization'), null);
+  assert.equal(receivedHeaders.get('X-CSRF-Token'), 'b'.repeat(64));
+  assert.equal(receivedCredentials,'same-origin');
+  setSessionCsrfToken(null);
   assert.equal(receivedHeaders.get('X-QA-Header'), 'preserved');
   assert.equal(receivedHeaders.get('Accept'), 'application/json');
   assert.equal(receivedHeaders.get('Content-Type'), 'application/json');
+});
+
+test('attachment downloads use cookies and preserve exact response bytes and filename',async t=>{
+  const previousFetch=globalThis.fetch;t.after(()=>{globalThis.fetch=previousFetch;localStorage.clear();sessionStorage.clear();});
+  sessionStorage.setItem('smart_school_token','obsolete');
+  const bytes=new Uint8Array([0,1,127,128,255]);
+  globalThis.fetch=async(url,options)=>{
+    assert.equal(url,'/api/homework/attachments/test%2Fkey?school_id=1');
+    assert.equal(options.credentials,'same-origin');assert.equal(options.cache,'no-store');
+    assert.equal(new Headers(options.headers).get('Authorization'),null);
+    return new Response(bytes,{headers:{'Content-Type':'application/octet-stream','Content-Disposition':"attachment; filename*=UTF-8''homework.bin"}});
+  };
+  const result=await downloadHomeworkAttachment('test/key',1);
+  assert.equal(result.error,undefined);assert.equal(result.fileName,'homework.bin');assert.deepEqual(new Uint8Array(await result.data.arrayBuffer()),bytes);
 });
 
 test('401 clears both auth stores and removes the authenticated UI state immediately', async t => {
@@ -441,4 +465,26 @@ test('accountant student directory exposes only finance fields and builds filter
   await select(filters[2], '102');
   assert.equal(container.textContent.includes('FIN-001'), false);
   assert.ok(container.textContent.includes('FIN-002'));
+});
+
+
+test('logout failure keeps the authenticated state and requires retry', async t => {
+ const user={id:1,role_key:'school_owner',school_id:1,full_name:'COOKIE USER'};
+ let alerts=0;const previousAlert=window.alert;window.alert=()=>{alerts++};t.after(()=>{window.alert=previousAlert;});
+ globalThis.fetch=async(url,init)=>{
+  if(String(url).endsWith('/api/auth/me'))return new Response(JSON.stringify({data:user,csrf_token:'c'.repeat(64)}));
+  if(String(url).endsWith('/api/auth/logout')){assert.equal(new Headers(init.headers).get('X-CSRF-Token'),'c'.repeat(64));throw new Error('offline');}
+  throw new Error('Unexpected request');
+ };
+ function Probe(){const {user,logout}=useAuth();return createElement('button',{onClick:()=>void logout()},user?.full_name||'SIGNED_OUT');}
+ const container=await render(t,createElement(AuthProvider,null,createElement(Probe)));await waitForContent(container,'COOKIE USER');
+ await act(async()=>container.querySelector('button').click());assert.match(container.textContent,/COOKIE USER/);assert.equal(alerts,1);
+});
+test('late session bootstrap cannot restore UI after a 401 clears authentication', async t => {
+ let resolve;const pending=new Promise(r=>resolve=r);globalThis.fetch=()=>pending;
+ function Probe(){const {user}=useAuth();return createElement('div',null,user?.full_name||'SIGNED_OUT');}
+ const container=await render(t,createElement(AuthProvider,null,createElement(Probe)));
+ await act(async()=>clearAuthentication());
+ await act(async()=>resolve(new Response(JSON.stringify({data:{id:1,full_name:'STALE USER'},csrf_token:'d'.repeat(64)}))));
+ assert.equal(container.textContent,'SIGNED_OUT');
 });

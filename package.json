@@ -34,7 +34,7 @@
     "db:seed": "wrangler d1 execute DB --local --file=./seed.sql",
     "db:reset": "node scripts/reset-local-d1.mjs && npm run db:migrate && npm run db:seed",
     "test:api": "curl -s http://localhost:3000/api/schools | head -c 200",
-    "test:security": "node --experimental-strip-types --test test/auth-security.test.mjs",
+    "test:security": "node --experimental-strip-types --test test/auth-security.test.mjs test/session-cookie.test.mjs",
     "test:academic-years": "node --experimental-strip-types --test test/academic-years.test.mjs",
     "test:student-enrollments": "node --experimental-strip-types --test test/student-enrollments.test.mjs test/student-enrollment-bridge.test.mjs test/student-placement-ux.test.mjs",
     "test:student-promotion": "node --experimental-strip-types --test test/student-promotion.test.mjs test/student-promotion-ui.test.mjs",
@@ -62,7 +62,9 @@
     "test:grade-progress": "node --experimental-strip-types --test --test-concurrency=1 test/grade-progress.test.mjs",
     "test:admissions": "node --experimental-strip-types --test --test-concurrency=1 test/admissions.test.mjs",
     "test:school-workflow-ui": "node --experimental-strip-types --test --test-concurrency=1 test/school-workflow-ui.test.mjs",
-    "test:school-workflows:local": "node --experimental-strip-types scripts/validate-school-workflows-local.mjs"
+    "test:school-workflows:local": "node --experimental-strip-types scripts/validate-school-workflows-local.mjs",
+    "readiness:staging": "node scripts/run-operational-readiness.mjs",
+    "test:operational-readiness": "node --experimental-strip-types --test test/operational-readiness.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
