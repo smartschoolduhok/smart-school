@@ -12,7 +12,7 @@ export default function GradeProgressPage(){
  const [preview,setPreview]=useState<{snapshot:GradeProgressSnapshot;preview_digest:string}|null>(null),[delivered,setDelivered]=useState(false);
  const [error,setError]=useState(''),[busy,setBusy]=useState(false),[reason,setReason]=useState(''),[selected,setSelected]=useState<string|null>(null),[cursor,setCursor]=useState<number|null>(null);
  const epoch=useRef(0),key=useRef('');
- async function load(before?:number){if(!schoolId)return;const token=epoch.current;const r=await fetchApi<{reports:GradeProgressReport[];next_cursor:number|null}>(`/api/grade-progress?school_id=${schoolId}${before?`&before=${before}`:''}`);if(token!==epoch.current)return;if(r.error)setError(r.error);else if(r.data){setReports(old=>before?[...old,...r.data!.reports]:r.data!.reports);setCursor(r.data.next_cursor);}}
+ async function load(before?:number){if(!schoolId)return;const token=epoch.current;const r=await fetchApi<{reports:GradeProgressReport[];next_cursor:number|null}>(`/api/grade-progress?school_id=${schoolId}${before?`&before=${before}`:''}`);if(token!==epoch.current)return;if(r.error)setError(r.error);else if(r.data){setError('');setReports(old=>before?[...old,...r.data!.reports]:r.data!.reports);setCursor(r.data.next_cursor);}}
  useEffect(()=>{epoch.current++;setReports([]);setStudents([]);setStudent('');setPreview(null);setDelivered(false);setSelected(null);setError('');setBusy(false);setReason('');key.current='';void load();const token=epoch.current;
  if(schoolId&&!parent)fetchApi<Array<{id:number;full_name:string}>>(`/api/students?school_id=${schoolId}`).then(r=>{if(token===epoch.current){if(r.error)setError(r.error);else setStudents(r.data||[]);}});
  return()=>{epoch.current++;};},[schoolId,parent]);

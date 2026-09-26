@@ -58,6 +58,18 @@ test('progress publishing needs delivery confirmation and sends the exact previe
  assert.equal(button(v,'نشر لولي الأمر المرتبط').disabled,true);await click(v.container.querySelector('input[type="checkbox"]'));await click(button(v,'نشر لولي الأمر المرتبط'));
  const post=v.calls.find(c=>c.path.endsWith('/publish'));assert.equal(post.body.confirm_delivered,true);assert.equal(post.body.preview_digest,'a'.repeat(64));assert.match(post.body.report_key,/^[a-f0-9-]{36}$/);
 });
+
+test('progress refresh clears a failed request after the next successful response',async t=>{
+ let unavailable=true;
+ const v=await mount(t,'progress','parent',{'/api/grade-progress':()=>unavailable
+  ?new Response(JSON.stringify({error:'Temporary network failure'}),{status:503,headers:{'Content-Type':'application/json'}})
+  :response({reports:[report],next_cursor:null})});
+ assert.equal(v.container.querySelector('[role="alert"]')?.textContent,'Temporary network failure');
+ unavailable=false;
+ await click(button(v,'تحديث'));
+ assert.equal(v.container.querySelector('[role="alert"]')!==null,false);
+ assert.ok(buttons(v).some(b=>b.textContent.includes('طالب تجريبي')));
+});
 test('regulation selection discards an obsolete audit response and approval requires source verification',async t=>{
  const first=defer(),second=defer();const v=await mount(t,'regulations','school_owner',{'/api/regulations':()=>response([regulation('one','الأولى'),regulation('two','الثانية')]),'/api/regulations/one/audit':()=>first.promise,'/api/regulations/two/audit':()=>second.promise});
  await click(buttons(v).find(b=>b.textContent.includes('الأولى')));await click(buttons(v).find(b=>b.textContent.includes('الثانية')));
