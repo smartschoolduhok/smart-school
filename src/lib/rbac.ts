@@ -30,7 +30,7 @@ export const ACADEMIC_ACCESS_ROLES: readonly RoleKey[] = [
   'registrar',
 ];
 
-// Parents use resource-scoped student/grade routes. Accountants receive only
+// Parents use linked-student routes and published grade snapshots. Accountants receive only
 // the student directory fields required by finance workflows.
 export const STUDENT_DIRECTORY_ROLES: readonly RoleKey[] = [
   ...ACADEMIC_ACCESS_ROLES,
@@ -115,6 +115,8 @@ export const HOMEWORK_VIEW_ROLES: readonly RoleKey[] = [
   ...HOMEWORK_STAFF_VIEW_ROLES,
   'parent',
 ];
+
+export const COMMUNICATION_ROLES: readonly RoleKey[] = [...ACADEMIC_ACCESS_ROLES, 'parent'];
 
 // Gate scans expose live student movements and card issuance, so operation is
 // restricted to school management and registrars. Parents use their own

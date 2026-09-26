@@ -232,7 +232,7 @@ test('0041 is additive on a populated 0040 database and leaves foreign keys clea
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys=ON');
   t.after(() => database.close());
-  for (const file of migrationFiles.filter(file => file !== '0041_homework.sql')) database.exec(migrationSQL(file));
+  for (const file of migrationFiles.filter(file => file < '0041_homework.sql')) database.exec(migrationSQL(file));
   database.exec(fixtureSQL);
   const before = snapshot(database);
   database.exec(migrationSQL('0041_homework.sql'));

@@ -10,6 +10,7 @@ import {
   ATTENDANCE_VIEW_ROLES,
   GATE_ATTENDANCE_VIEW_ROLES,
   HOMEWORK_VIEW_ROLES,
+  COMMUNICATION_ROLES,
   STAFF_ATTENDANCE_VIEW_ROLES,
   EMPLOYEE_ACCESS_ROLES,
   FEE_MANAGEMENT_ROLES,
@@ -38,6 +39,10 @@ const AttendancePage = lazy(() => import('./modules/attendance/AttendancePage'))
 const GateAttendancePage = lazy(() => import('./modules/attendance/GateAttendancePage'));
 const StaffAttendancePage = lazy(() => import('./modules/attendance/StaffAttendancePage'));
 const HomeworkPage = lazy(() => import('./modules/homework/HomeworkPage'));
+const RegulationsPage = lazy(() => import('./modules/admissions/RegulationsPage'));
+const AdmissionsPage = lazy(() => import('./modules/admissions/AdmissionsPage'));
+const GradeProgressPage = lazy(() => import('./modules/gradeProgress/GradeProgressPage'));
+const CommunicationPage = lazy(() => import('./modules/communication/CommunicationPage'));
 const ClassesPage = lazy(() => import('./modules/classes/ClassesPage'));
 const SubjectsPage = lazy(() => import('./modules/subjects/SubjectsPage'));
 const StudentSubjectsPage = lazy(() => import('./modules/studentSubjects/StudentSubjectsPage'));
@@ -174,6 +179,10 @@ export default function App() {
           <Route path="/gate-attendance" element={<Layout><RoleGuard allowedRoles={GATE_ATTENDANCE_VIEW_ROLES}><GateAttendancePage /></RoleGuard></Layout>} />
           <Route path="/staff-attendance" element={<Layout><RoleGuard allowedRoles={STAFF_ATTENDANCE_VIEW_ROLES}><StaffAttendancePage /></RoleGuard></Layout>} />
           <Route path="/homework" element={<Layout><RoleGuard allowedRoles={HOMEWORK_VIEW_ROLES}><HomeworkPage /></RoleGuard></Layout>} />
+          <Route path="/regulations" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><RegulationsPage /></RoleGuard></Layout>} />
+          <Route path="/admissions" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><AdmissionsPage /></RoleGuard></Layout>} />
+          <Route path="/grade-progress" element={<Layout><RoleGuard allowedRoles={GRADE_VIEW_ROLES}><GradeProgressPage /></RoleGuard></Layout>} />
+          <Route path="/communication" element={<Layout><RoleGuard allowedRoles={COMMUNICATION_ROLES}><CommunicationPage /></RoleGuard></Layout>} />
           <Route path="/classes" element={<Layout><AcademicRoute><ClassesPage /></AcademicRoute></Layout>} />
           <Route path="/subjects" element={<Layout><AcademicRoute><SubjectsPage /></AcademicRoute></Layout>} />
           <Route path="/student-subjects" element={<Layout><AcademicRoute><StudentSubjectsPage /></AcademicRoute></Layout>} />
