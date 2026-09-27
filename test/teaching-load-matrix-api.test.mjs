@@ -10,7 +10,7 @@ const vite=await createServer({root,appType:'custom',server:{middlewareMode:true
 const {default:app}=await vite.ssrLoadModule('/src/worker.ts');
 after(()=>vite.close());
 const secret='matrix-api-local-only-testing-secret-more-than-32-characters';
-const tokens=Object.fromEntries(await Promise.all(['owner','admin','teacher','accountant','principal','vice','registrar'].map(async r=>[r,await signJWT({email:r+'@matrix.test',auth_version:1},secret)])));
+const tokens=Object.fromEntries(await Promise.all(['owner','admin','teacher','accountant','principal','vice','registrar'].map(async r=>[r,await signJWT({id: ({ owner: 1, admin: 2, teacher: 3, accountant: 4, principal: 5, vice: 6, registrar: 7, parent: 8 })[r], email:r+'@matrix.test',auth_version:1},secret)])));
 const prefix='/api/timetable/teaching-load-matrix';
 const up=(subject_id=1,section_id=1,employee_id=1,weekly_periods=4)=>({subject_id,section_id,employee_id,weekly_periods,action:'upsert'});
 const body=(f,changes=[up()])=>({school_id:1,academic_year_id:1,class_id:1,expected_revision:revision(f.db),changes});

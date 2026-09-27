@@ -9,7 +9,7 @@ import {loadWeekSetup} from '../src/lib/weekSetupDb.ts';
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
 const {default:app}=await vite.ssrLoadModule('/src/worker.ts');after(()=>vite.close());
 const secret='week-local-generated-only-test-secret-over-32-characters';
-const tokens=Object.fromEntries(await Promise.all(['owner','admin','teacher','accountant','principal','vice','registrar'].map(async role=>[role,await signJWT({email:role+'@matrix.test',auth_version:1},secret)])));
+const tokens=Object.fromEntries(await Promise.all(['owner','admin','teacher','accountant','principal','vice','registrar'].map(async role=>[role,await signJWT({id: ({ owner: 1, admin: 2, teacher: 3, accountant: 4, principal: 5, vice: 6, registrar: 7, parent: 8 })[role], email:role+'@matrix.test',auth_version:1},secret)])));
 const prefix='/api/timetable/week-setup';
 async function call(f,method,suffix='',input,role='owner') {
  f.d1.resetQueryBudget(49);

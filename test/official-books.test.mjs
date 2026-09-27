@@ -116,9 +116,9 @@ async function createFixture() {
     database,
     env: { DB: new LocalD1(database), JWT_SECRET: secret, APP_ENV: 'test' },
     tokens: {
-      ownerOne: await signJWT({ email: 'owner-one@example.test', auth_version: 1 }, secret),
-      ownerTwo: await signJWT({ email: 'owner-two@example.test', auth_version: 1 }, secret),
-      parent: await signJWT({ email: 'parent-one@example.test', auth_version: 1 }, secret),
+      ownerOne: await signJWT({ id: 1, email: 'owner-one@example.test', auth_version: 1 }, secret),
+      ownerTwo: await signJWT({ id: 2, email: 'owner-two@example.test', auth_version: 1 }, secret),
+      parent: await signJWT({ id: 3, email: 'parent-one@example.test', auth_version: 1 }, secret),
     },
   };
 }

@@ -68,7 +68,7 @@ test('current role, school isolation, account disable and auth-version revocatio
  const fresh=await login(f);f.db.exec("UPDATE users SET status='inactive' WHERE id=1");assert.equal((await req(f,'/api/auth/me',{headers:auth(fresh)})).res.status,401);
 });
 test('expired and tampered cookie sessions cannot read data and are cleared',async t=>{
- const f=fixture(t);const token=await signJWT({email:'owner@matrix.test',auth_version:1,session_transport:'cookie'},secret,{nowSeconds:100,expiresInSeconds:60});
+ const f=fixture(t);const token=await signJWT({id:1,email:'owner@matrix.test',auth_version:1,session_transport:'cookie'},secret,{nowSeconds:100,expiresInSeconds:60});
  for(const value of [token,'tampered']){const r=await req(f,'/api/auth/me',{headers:{Cookie:'__Host-smart_school_session='+value}});assert.equal(r.res.status,401);assert.match(r.res.headers.get('set-cookie'),/Max-Age=0/);}
 });
 test('HTTPS is mandatory outside explicitly local loopback development',async t=>{
@@ -81,4 +81,59 @@ test('malformed login options never create a session',async t=>{
  const f=fixture(t);for(const body of [null,{}, {email:'owner@matrix.test',password,session_mode:'unknown'},{email:'owner@matrix.test',password,remember_me:'true'}]){
   const r=await req(f,'/api/auth/login',{method:'POST',body});assert.equal(r.res.status,400);assert.equal(r.res.headers.get('set-cookie'),null);
  }
+});
+
+test('school detail routes enforce the same tenant boundary as school lists',async t=>{
+ const f=fixture(t),owner=await login(f);
+ assert.equal((await req(f,'/api/schools/1',{headers:auth(owner)})).res.status,200);
+ const before=snapshot(f.db);
+ assert.equal((await req(f,'/api/schools/2',{headers:auth(owner)})).res.status,403);
+ assert.deepEqual(snapshot(f.db),before);
+ f.db.prepare('UPDATE users SET password_hash=? WHERE id=2').run(hash);
+ const admin=await login(f,{email:'admin@matrix.test'});
+ assert.equal((await req(f,'/api/schools/2',{headers:auth(admin)})).res.status,200);
+});
+
+test('an existing session cannot assume another account after its email is reassigned',async t=>{
+ const f=fixture(t),owner=await login(f);
+ f.db.prepare('UPDATE users SET password_hash=? WHERE id=2').run(hash);
+ const admin=await login(f,{email:'admin@matrix.test'});
+ assert.equal((await req(f,'/api/users/1',{method:'PUT',headers:auth(admin),body:{school_id:1,email:'former-owner@matrix.test'}})).res.status,200);
+ assert.equal((await req(f,'/api/users',{method:'POST',headers:auth(admin),body:{full_name:'Replacement Admin',role_key:'system_admin',email:'owner@matrix.test',password}})).res.status,201);
+ const stale=await req(f,'/api/auth/me',{headers:auth(owner)});
+ assert.equal(stale.res.status,401,JSON.stringify(stale.json));
+ assert.equal(stale.json.data,undefined);
+});
+
+test('sessions without an immutable account id are rejected',async t=>{
+ const f=fixture(t),token=await signJWT({email:'owner@matrix.test',auth_version:1,session_transport:'cookie'},secret);
+ assert.equal((await req(f,'/api/auth/me',{headers:{Cookie:'__Host-smart_school_session='+token}})).res.status,401);
+});
+
+test('bearer authentication also rejects a signed email/account-id mismatch',async t=>{
+ const f=fixture(t),token=await signJWT({id:1,email:'admin@matrix.test',auth_version:1,session_transport:'bearer'},secret);
+ const before=snapshot(f.db);
+ assert.equal((await req(f,'/api/auth/me',{headers:{Authorization:`Bearer ${token}`}})).res.status,401);
+ assert.deepEqual(snapshot(f.db),before);
+});
+
+test('disabling then re-enabling an account does not revive its previous session',async t=>{
+ const f=fixture(t),owner=await login(f);
+ f.db.prepare('UPDATE users SET password_hash=? WHERE id=2').run(hash);
+ const admin=await login(f,{email:'admin@matrix.test'});
+ for(const status of ['inactive','active']) assert.equal((await req(f,'/api/users/1/status',{method:'PUT',headers:auth(admin),body:{status}})).res.status,200);
+ assert.equal((await req(f,'/api/auth/me',{headers:auth(owner)})).res.status,401);
+ assert.equal((await login(f)).res.status,200);
+});
+
+test('editing email uses the same canonical identity and duplicate check as login',async t=>{
+ const f=fixture(t);f.db.prepare('UPDATE users SET password_hash=? WHERE id=2').run(hash);
+ const admin=await login(f,{email:'admin@matrix.test'}),before=snapshot(f.db);
+ const duplicate=await req(f,'/api/users/2',{method:'PUT',headers:auth(admin),body:{school_id:null,email:'  OWNER@matrix.test  '}});
+ assert.equal(duplicate.res.status,409);
+ assert.deepEqual(snapshot(f.db),before);
+ const changed=await req(f,'/api/users/1',{method:'PUT',headers:auth(admin),body:{school_id:1,email:'  NEW-OWNER@matrix.test  '}});
+ assert.equal(changed.res.status,200);
+ assert.equal(changed.json.data.email,'new-owner@matrix.test');
+ assert.equal((await login(f,{email:'new-owner@matrix.test'})).res.status,200);
 });

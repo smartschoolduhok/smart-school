@@ -14,10 +14,10 @@ after(() => vite.close());
 
 const secret = 'generated-result-publication-test-secret';
 const tokens = {
-  owner: await signJWT({ email: 'owner@matrix.test', auth_version: 1 }, secret),
-  teacher: await signJWT({ email: 'teacher@matrix.test', auth_version: 1 }, secret),
-  parent: await signJWT({ email: 'parent@matrix.test', auth_version: 1 }, secret),
-  otherParent: await signJWT({ email: 'other-parent@matrix.test', auth_version: 1 }, secret),
+  owner: await signJWT({ id: 1, email: 'owner@matrix.test', auth_version: 1 }, secret),
+  teacher: await signJWT({ id: 3, email: 'teacher@matrix.test', auth_version: 1 }, secret),
+  parent: await signJWT({ id: 8, email: 'parent@matrix.test', auth_version: 1 }, secret),
+  otherParent: await signJWT({ id: 9, email: 'other-parent@matrix.test', auth_version: 1 }, secret),
 };
 
 const publishedSnapshot = {

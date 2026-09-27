@@ -12,7 +12,7 @@ import {root,financeFixture,legacyFinanceSQL,migrationFiles,migrationSQL,snapsho
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
 const {default:app}=await vite.ssrLoadModule('/src/worker.ts');after(()=>vite.close());
 const secret='generated-local-finance-review-only-secret';
-const token=await signJWT({email:'owner@matrix.test',auth_version:1},secret);
+const token=await signJWT({id: 1, email: 'owner@matrix.test',auth_version:1},secret);
 async function call(f,method,path,input){const r=await app.request('http://localhost/api/'+path,{method,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:input===undefined?undefined:JSON.stringify(input)},{DB:f.d1,JWT_SECRET:secret,APP_ENV:'test'});return {status:r.status,body:await r.json()};}
 function legacy(t,change=''){
  const f=financeFixture(t,{through:'0027',legacy:legacyFinanceSQL.replaceAll('60000','20000')});

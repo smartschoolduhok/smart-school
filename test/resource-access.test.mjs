@@ -9,6 +9,7 @@ import {
   migrationFiles,
   migrationSQL,
   root,
+  snapshot,
 } from './helpers/teaching-load-matrix-fixture.mjs';
 
 const vite = await createServer({ root, appType: 'custom', server: { middlewareMode: true, hmr: false } });
@@ -21,7 +22,7 @@ const tokens = Object.fromEntries(await Promise.all([
   ['teacher', 'teacher@matrix.test'],
   ['accountant', 'accountant@matrix.test'],
   ['parent', 'parent@matrix.test'],
-].map(async ([key, email]) => [key, await signJWT({ email, auth_version: 1 }, secret)])));
+].map(async ([key, email]) => [key, await signJWT({ id: ({ owner: 1, teacher: 3, accountant: 4, parent: 8 })[key], email, auth_version: 1 }, secret)])));
 
 function createFixture(t) {
   const database = new DatabaseSync(':memory:');
@@ -323,4 +324,77 @@ test('accountant has a minimal finance directory and finance routes, never acade
     assert.equal((await api(f,'accountant','GET',path)).status,403,path);
   for(const path of ['/api/dashboard/stats?school_id=1','/api/student-fees?school_id=1','/api/treasury/summary?school_id=1','/api/employees?school_id=1','/api/salaries?school_id=1'])
     assert.equal((await api(f,'accountant','GET',path)).status,200,path);
+});
+
+test('editing a populated section cannot move its students and teaching references into another class',async t=>{
+  const f=createFixture(t),before=snapshot(f.database);
+  const response=await api(f,'owner','PUT','/api/sections/1',{school_id:1,class_id:2,name:'Moved',capacity:30,status:'active'});
+  assert.equal(response.status,409,JSON.stringify(response.body));
+  assert.equal(response.body.code,'section_has_references');
+  assert.deepEqual(snapshot(f.database),before);
+});
+
+for(const resource of ['classes','sections']) test(`${resource} cannot bypass active-student archive protection through ordinary editing`,async t=>{
+  const f=createFixture(t),before=snapshot(f.database);
+  for(const status of ['archived','inactive']) {
+    const body=resource==='classes'?{school_id:1,name:'Class A',stage:'ابتدائي',order_index:2,status}:{school_id:1,class_id:1,name:'A',capacity:30,status};
+    const response=await api(f,'owner','PUT',`/api/${resource}/1`,body);
+    assert.equal(response.status,409,JSON.stringify(response.body));
+    assert.deepEqual(snapshot(f.database),before);
+  }
+});
+
+test('a class with active sections cannot be archived via the API',async t=>{
+  const f=createFixture(t);
+  f.database.exec("INSERT INTO sections(id,school_id,class_id,name,status) VALUES(10,1,2,'Empty Active Section','active')");
+  const before=snapshot(f.database);
+  const response=await api(f,'owner','PUT','/api/classes/2/archive',{school_id:1});
+  assert.equal(response.status,409,JSON.stringify(response.body));
+  assert.deepEqual(snapshot(f.database),before);
+});
+
+test('an unreferenced section can change class and both empty section and class can be archived',async t=>{
+  const f=createFixture(t);
+  f.database.exec("INSERT INTO classes(id,school_id,name,stage,status) VALUES(10,1,'Empty','ابتدائي','active'); INSERT INTO sections(id,school_id,class_id,name,status) VALUES(10,1,1,'Unused','active')");
+  const moved=await api(f,'owner','PUT','/api/sections/10',{school_id:1,class_id:10,name:'Moved',capacity:30,status:'active'});
+  assert.equal(moved.status,200,JSON.stringify(moved.body));
+  assert.equal(f.database.prepare('SELECT class_id FROM sections WHERE id=10').get().class_id,10);
+  assert.equal((await api(f,'owner','PUT','/api/sections/10/archive',{school_id:1})).status,200);
+  assert.equal((await api(f,'owner','PUT','/api/classes/10/archive',{school_id:1})).status,200);
+});
+
+test('section move guard checks references atomically when a student is added during the request',async t=>{
+  const f=createFixture(t);
+  f.database.exec("INSERT INTO sections(id,school_id,class_id,name,status) VALUES(10,1,1,'Unused','active')");
+  const record=f.d1.record.bind(f.d1);let inserted=false;
+  f.d1.record=statement=>{
+    record(statement);
+    if(!inserted && /UPDATE sections SET class_id/.test(statement.sql)) {
+      inserted=true;
+      f.database.exec("INSERT INTO students(id,school_id,student_number,full_name,gender,status,class_id,section_id) VALUES(10,1,'LATE','Generated late student','ذكر','active',1,10)");
+    }
+  };
+  const response=await api(f,'owner','PUT','/api/sections/10',{school_id:1,class_id:2,name:'Moved',capacity:30,status:'active'});
+  assert.equal(inserted,true);
+  assert.equal(response.status,409,JSON.stringify(response.body));
+  assert.equal(f.database.prepare('SELECT class_id FROM sections WHERE id=10').get().class_id,1);
+});
+
+test('historical student references keep a section in its original class',async t=>{
+  const f=createFixture(t);
+  f.database.exec("INSERT INTO sections(id,school_id,class_id,name,status) VALUES(10,1,1,'Historical','active'); INSERT INTO students(id,school_id,student_number,full_name,gender,status,class_id,section_id) VALUES(10,1,'OLD','Generated historical student','ذكر','archived',1,10)");
+  const before=snapshot(f.database);
+  const response=await api(f,'owner','PUT','/api/sections/10',{school_id:1,class_id:2,name:'Moved',capacity:30,status:'active'});
+  assert.equal(response.status,409);
+  assert.deepEqual(snapshot(f.database),before);
+  assert.equal((await api(f,'owner','PUT','/api/sections/10/archive',{school_id:1})).status,200);
+});
+
+test('active enrollment prevents section archival even when the legacy student placement differs',async t=>{
+  const f=createFixture(t);
+  f.database.exec("INSERT INTO sections(id,school_id,class_id,name,status) VALUES(10,1,1,'Current Enrollment','active'); INSERT INTO student_enrollments(school_id,student_id,academic_year_id,class_id,section_id,created_by_user_id,updated_by_user_id) VALUES(1,1,1,1,10,1,1)");
+  const before=snapshot(f.database);
+  const response=await api(f,'owner','PUT','/api/sections/10/archive',{school_id:1});
+  assert.equal(response.status,409);
+  assert.deepEqual(snapshot(f.database),before);
 });

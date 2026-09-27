@@ -7,7 +7,7 @@ import {legacyFinanceSQL,migrationSQL} from './helpers/finance-fixture.mjs';
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
 const {default:app}=await vite.ssrLoadModule('/src/worker.ts');after(()=>vite.close());
 const secret='generated-local-finance-only-secret-no-remote-usage';
-const tokens=Object.fromEntries(await Promise.all(['owner','admin','teacher','accountant','principal','vice','registrar','parent'].map(async role=>[role,await signJWT({email:role+'@matrix.test',auth_version:1},secret)])));
+const tokens=Object.fromEntries(await Promise.all(['owner','admin','teacher','accountant','principal','vice','registrar','parent'].map(async role=>[role,await signJWT({id: ({ owner: 1, admin: 2, teacher: 3, accountant: 4, principal: 5, vice: 6, registrar: 7, parent: 8 })[role], email:role+'@matrix.test',auth_version:1},secret)])));
 
 test('legacy non-IQD fees preserved but payments/edits blocked after migration',async t=>{
  const f=financeFixture(t,{through:'0027',legacy:legacyFinanceSQL});f.db.exec(migrationSQL('0028_finance_fee_payment_integrity.sql'));

@@ -18,7 +18,7 @@ after(() => vite.close());
 const secret = 'generated-local-treasury-payroll-secret-no-remote-usage';
 const tokens = Object.fromEntries(await Promise.all(
   ['owner', 'admin', 'teacher', 'accountant', 'principal', 'vice', 'registrar', 'parent']
-    .map(async (role) => [role, await signJWT({ email: `${role}@matrix.test`, auth_version: 1 }, secret)]),
+    .map(async (role) => [role, await signJWT({ id: ({ owner: 1, admin: 2, teacher: 3, accountant: 4, principal: 5, vice: 6, registrar: 7, parent: 8 })[role], email: `${role}@matrix.test`, auth_version: 1 }, secret)]),
 ));
 
 function businessDate(offsetDays = 0) {

@@ -131,8 +131,8 @@ test('valid JWTs include a jti and are accepted', async () => {
 });
 
 test('generated JWT identifiers are random per session', async () => {
-  const first = decodeJwtPayloadUnsafe(await signJWT({ email: 'admin@example.test', auth_version: 1 }, secureSecret));
-  const second = decodeJwtPayloadUnsafe(await signJWT({ email: 'admin@example.test', auth_version: 1 }, secureSecret));
+  const first = decodeJwtPayloadUnsafe(await signJWT({ id: 1, email: 'admin@example.test', auth_version: 1 }, secureSecret));
+  const second = decodeJwtPayloadUnsafe(await signJWT({ id: 1, email: 'admin@example.test', auth_version: 1 }, secureSecret));
   assert.ok(first?.jti);
   assert.ok(second?.jti);
   assert.notEqual(first?.jti, second?.jti);
@@ -140,7 +140,7 @@ test('generated JWT identifiers are random per session', async () => {
 
 test('expired, tampered, and malformed JWTs are rejected', async () => {
   const token = await signJWT(
-    { email: 'admin@example.test', auth_version: 1 },
+    { id: 1, email: 'admin@example.test', auth_version: 1 },
     secureSecret,
     { nowSeconds: 1_000, expiresInSeconds: 60, jti: 'abcdefghijklmnop' },
   );
@@ -151,17 +151,24 @@ test('expired, tampered, and malformed JWTs are rejected', async () => {
 
 test('JWTs without a valid authentication version are rejected', async () => {
   const missingVersion = await signJWT(
-    { email: 'admin@example.test' },
+    { id: 1, email: 'admin@example.test' },
     secureSecret,
     { nowSeconds: 1_000, expiresInSeconds: 60, jti: 'abcdefghijklmnop' },
   );
   const invalidVersion = await signJWT(
-    { email: 'admin@example.test', auth_version: 0 },
+    { id: 1, email: 'admin@example.test', auth_version: 0 },
     secureSecret,
     { nowSeconds: 1_000, expiresInSeconds: 60, jti: 'ponmlkjihgfedcba' },
   );
   assert.equal(await verifyJWT(missingVersion, secureSecret, 1_001), null);
   assert.equal(await verifyJWT(invalidVersion, secureSecret, 1_001), null);
+});
+
+test('JWTs require a positive immutable account id', async () => {
+  for (const id of [undefined, null, '1', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const token = await signJWT({ id, email: 'admin@example.test', auth_version: 1 }, secureSecret);
+    assert.equal(await verifyJWT(token, secureSecret), null);
+  }
 });
 
 test('the public API allowlist contains only login and QR verification routes', () => {

@@ -90,7 +90,7 @@ try{
   (await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,
   migrationFiles.length,
  );
- const secret='generated-local-finance-workerd-test-secret-only',token=await signJWT({email:'owner@matrix.test',auth_version:1},secret);
+ const secret='generated-local-finance-workerd-test-secret-only',token=await signJWT({id: 1, email: 'owner@matrix.test',auth_version:1},secret);
  async function api(label,method,path,input,{failAt=null,failSql=null,database=db,authToken=token}={}){
   let count=0,maxParameters=0;
   const wrap=(real,sql)=>({real,sql,bind(...args){maxParameters=Math.max(maxParameters,args.length);return wrap(real.bind(...args),sql);},async first(...args){count++;return real.first(...args);},async all(...args){count++;return real.all(...args);},async run(...args){count++;return real.run(...args);}});
@@ -100,7 +100,7 @@ try{
  }
  async function fee(label,patch={}){const r=await api(label,'POST','student-fees',feeDraft({fee_type:label,...patch}));assert.equal(r.status,201,JSON.stringify(r));return r.body.data.id;}
  const driftProxy=await open(upgrade);
- try{const adminToken=await signJWT({email:'admin@matrix.test',auth_version:1},secret);
+ try{const adminToken=await signJWT({id: 2, email: 'admin@matrix.test',auth_version:1},secret);
   for(const [label,schoolId,feeId,paymentId]of [['fee',1,3,2],['treasury',2,4,3]])for(const op of ['payment','metadata','amount','cancel']){
    const before=await snap(driftProxy.env.DB),options={database:driftProxy.env.DB,authToken:adminToken};
    const r=op==='payment'?await api('legacy-'+label+'-'+op,'POST','fee-payments',paymentDraft(feeId,{school_id:schoolId,amount:1000}),options):
@@ -128,7 +128,7 @@ try{
  assert.equal(installmentDocument.status,200,JSON.stringify(installmentDocument));assert.equal(installmentDocument.body.data.receipt.receipt_schema_version,2);
  assert.equal(JSON.parse(installmentDocument.body.data.receipt.installment_plan_snapshot_json)[0].items[0].paid_amount,25000);checks++;
  await db.prepare("INSERT INTO parent_student_links(school_id,parent_user_id,student_id,status,created_by_user_id) VALUES(1,8,1,'active',1)").run();
- const parentToken=await signJWT({email:'parent@matrix.test',auth_version:1},secret),parentFinance=await api('parent-installment-view','GET','parent/students/1/finance',undefined,{authToken:parentToken});
+ const parentToken=await signJWT({id: 8, email: 'parent@matrix.test',auth_version:1},secret),parentFinance=await api('parent-installment-view','GET','parent/students/1/finance',undefined,{authToken:parentToken});
  assert.equal(parentFinance.status,200,JSON.stringify(parentFinance));const parentFee=parentFinance.body.data.fees.find(fee=>fee.id===installmentFee);assert.equal(parentFee.installment_plan.items[0].paid_amount,25000);
  assert.ok(!JSON.stringify(parentFinance.body).includes('PRIVATE LOCAL D1 PLAN NOTE'));assert.ok(!JSON.stringify(parentFinance.body).includes('PRIVATE LOCAL D1 PAYMENT NOTE'));checks++;
  await db.prepare("UPDATE parent_student_links SET status='inactive',updated_at=unixepoch() WHERE school_id=1 AND parent_user_id=8 AND student_id=1").run();
