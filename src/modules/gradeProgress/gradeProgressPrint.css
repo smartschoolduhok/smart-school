@@ -1,0 +1,49 @@
+@media print {
+  @page { size: A4; margin: 12mm; }
+
+  html:has(.grade-progress-print),
+  body:has(.grade-progress-print) {
+    height: auto !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  /* Remove controls and report lists from page flow, not only from sight. */
+  body:has(.grade-progress-print) *:not(.grade-progress-print):not(.grade-progress-print *):not(:has(.grade-progress-print)) {
+    display: none !important;
+  }
+
+  /* The app shell uses viewport heights, grid columns and sidebar margins.
+     Keep only the selected report's ancestor chain, with natural page height. */
+  body:has(.grade-progress-print) *:has(.grade-progress-print) {
+    display: block !important;
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    overflow: visible !important;
+    background: #fff !important;
+    box-shadow: none !important;
+  }
+
+  body .grade-progress-print {
+    position: static !important;
+    width: 100%;
+    height: auto !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #fff !important;
+  }
+  .grade-progress-print thead { display: table-header-group; }
+  .grade-progress-print tr { break-inside: avoid; }
+}
