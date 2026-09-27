@@ -74,6 +74,28 @@ test('progress print removes surrounding page flow and shell height without chan
  assert.equal(window.getComputedStyle(doc).position,'static');assert.equal(doc.querySelectorAll('tbody tr').length,1);assert.match(doc.textContent,/طالب تجريبي.*الرياضيات/s);
  setMedia('screen');assert.notEqual(window.getComputedStyle(refresh).display,'none');assert.equal(window.getComputedStyle(shell).marginRight,'256px');
 });
+test('loaded progress print CSS assigns A4 only to its named report page after route changes',()=>{
+ const css=readFileSync(join(root,'src/modules/gradeProgress/gradeProgressPrint.css'),'utf8');
+ // A lazy route's stylesheet remains loaded after navigation. An unnamed
+ // @page would alter other reports even when no progress report is mounted.
+ const pageSelectors=[...css.matchAll(/@page\s*([^{}]*)\{/g)].map(match=>match[1].trim());
+ assert.deepEqual(pageSelectors,['grade-progress-report']);
+ assert.match(css,/@page grade-progress-report\s*\{\s*size:\s*A4;\s*margin:\s*12mm;/);
+ const style=document.createElement('style'),other=document.createElement('article'),report=document.createElement('article');
+ other.textContent='تقرير آخر';report.className='grade-progress-print';report.textContent='متابعة الدرجات';
+ const previousMedia=window.happyDOM.settings.device.mediaType;
+ try{
+  window.happyDOM.settings.device.mediaType='print';
+  document.body.append(other);const previousPage=window.getComputedStyle(other).getPropertyValue('page');
+  style.textContent=css;document.head.append(style);
+  assert.equal(window.getComputedStyle(other).getPropertyValue('page'),previousPage);
+  document.body.append(report);
+  assert.equal(window.getComputedStyle(report).getPropertyValue('page'),'grade-progress-report');
+  report.remove();
+  assert.equal(window.getComputedStyle(other).getPropertyValue('page'),previousPage);
+  assert.notEqual(window.getComputedStyle(other).display,'none');
+ }finally{window.happyDOM.settings.device.mediaType=previousMedia;style.remove();other.remove();report.remove();}
+});
 test('progress publishing needs delivery confirmation and sends the exact preview digest',async t=>{
  const v=await mount(t,'progress','teacher',{'/api/grade-progress/preview':()=>response({snapshot,preview_digest:'a'.repeat(64)}),'/api/grade-progress/publish':()=>response(report,201)});
  await input(v.container.querySelector('select'),'1');await click(button(v,'معاينة الدرجات'));

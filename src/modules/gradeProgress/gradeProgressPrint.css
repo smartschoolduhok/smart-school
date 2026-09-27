@@ -1,5 +1,5 @@
 @media print {
-  @page { size: A4; margin: 12mm; }
+  @page grade-progress-report { size: A4; margin: 12mm; }
 
   html:has(.grade-progress-print),
   body:has(.grade-progress-print) {
@@ -33,6 +33,7 @@
   }
 
   body .grade-progress-print {
+    page: grade-progress-report;
     position: static !important;
     width: 100%;
     height: auto !important;
