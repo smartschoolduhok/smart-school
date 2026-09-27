@@ -87,9 +87,9 @@ async function createApiFixture() {
   database.exec(migration('0024_teacher_timetable_constraints.sql'));
   database.exec(migration('0025_timetable_entries.sql'));
   const tokens = {
-    owner: await signJWT({ email: 'owner-a@example.test', auth_version: 1 }, secret),
-    admin: await signJWT({ email: 'admin@example.test', auth_version: 1 }, secret),
-    teacher: await signJWT({ email: 'teacher@example.test', auth_version: 1 }, secret),
+    owner: await signJWT({ id: 1, email: 'owner-a@example.test', auth_version: 1 }, secret),
+    admin: await signJWT({ id: 2, email: 'admin@example.test', auth_version: 1 }, secret),
+    teacher: await signJWT({ id: 3, email: 'teacher@example.test', auth_version: 1 }, secret),
   };
   return { database, env: { DB: new LocalD1(database), JWT_SECRET: secret, APP_ENV: 'test' }, tokens };
 }

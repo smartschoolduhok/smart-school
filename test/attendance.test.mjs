@@ -24,7 +24,7 @@ const tokens = Object.fromEntries(await Promise.all([
   ['accountant', 'accountant@matrix.test'],
   ['parent', 'parent@attendance.test'],
   ['foreignParent', 'foreign-parent@attendance.test'],
-].map(async ([key, email]) => [key, await signJWT({ email, auth_version: 1 }, secret)])));
+].map(async ([key, email]) => [key, await signJWT({ id: ({ owner: 1, teacher: 3, principal: 5, registrar: 7, accountant: 4, parent: 8, foreignParent: 9 })[key], email, auth_version: 1 }, secret)])));
 
 const sessionDate = '2026-09-13'; // Sunday, matching timetable day 0.
 

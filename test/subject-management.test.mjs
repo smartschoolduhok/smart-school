@@ -96,9 +96,9 @@ async function createFixture(hooks = {}) {
       (3, 1, 'Teacher A', 'teacher-a@example.test', 5, 'active', 1);
   `);
   const tokens = {
-    owner: await signJWT({ email: 'owner-a@example.test', auth_version: 1 }, secret),
-    admin: await signJWT({ email: 'admin@example.test', auth_version: 1 }, secret),
-    teacher: await signJWT({ email: 'teacher-a@example.test', auth_version: 1 }, secret),
+    owner: await signJWT({ id: 1, email: 'owner-a@example.test', auth_version: 1 }, secret),
+    admin: await signJWT({ id: 2, email: 'admin@example.test', auth_version: 1 }, secret),
+    teacher: await signJWT({ id: 3, email: 'teacher-a@example.test', auth_version: 1 }, secret),
   };
   return { database, env: { DB: new LocalD1(database, hooks), JWT_SECRET: secret, APP_ENV: 'test' }, tokens };
 }

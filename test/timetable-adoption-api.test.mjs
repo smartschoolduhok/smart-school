@@ -101,11 +101,11 @@ async function fixture() {
       (11,1,3,6,4,1,1);
   `);
   const tokens = {
-    owner: await signJWT({ email: 'owner@example.test', auth_version: 1 }, secret),
-    admin: await signJWT({ email: 'admin@example.test', auth_version: 1 }, secret),
-    teacher: await signJWT({ email: 'teacher@example.test', auth_version: 1 }, secret),
-    accountant: await signJWT({ email: 'accountant@example.test', auth_version: 1 }, secret),
-    principal: await signJWT({ email: 'principal@example.test', auth_version: 1 }, secret),
+    owner: await signJWT({ id: 1, email: 'owner@example.test', auth_version: 1 }, secret),
+    admin: await signJWT({ id: 2, email: 'admin@example.test', auth_version: 1 }, secret),
+    teacher: await signJWT({ id: 3, email: 'teacher@example.test', auth_version: 1 }, secret),
+    accountant: await signJWT({ id: 4, email: 'accountant@example.test', auth_version: 1 }, secret),
+    principal: await signJWT({ id: 5, email: 'principal@example.test', auth_version: 1 }, secret),
   };
   const d1 = new LocalD1(database);
   return { database, d1, env: { DB: d1, JWT_SECRET: secret, APP_ENV: 'test' }, tokens };

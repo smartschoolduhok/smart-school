@@ -30,7 +30,7 @@ const identities = {
 };
 const tokens = Object.fromEntries(await Promise.all(Object.entries(identities).map(async ([key, email]) => [
   key,
-  await signJWT({ email, auth_version: 1 }, secret),
+  await signJWT({ id: ({ owner: 1, admin: 2, teacher: 3, principal: 5, registrar: 7, accountant: 4, parentOne: 8, parentTwo: 9, foreignParent: 10 })[key], email, auth_version: 1 }, secret),
 ])));
 
 function createFixture(t) {

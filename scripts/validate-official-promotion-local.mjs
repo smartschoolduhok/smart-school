@@ -143,7 +143,7 @@ try {
 
   const { default: app } = await vite.ssrLoadModule('/src/worker.ts');
   const secret = 'official-promotion-genuine-local-d1-secret';
-  const token = await signJWT({ email: 'owner@matrix.test', auth_version: 1 }, secret);
+  const token = await signJWT({ id: 1, email: 'owner@matrix.test', auth_version: 1 }, secret);
   async function api(path, body) {
     const response = await app.request(`http://localhost${path}`, {
       method: 'POST',

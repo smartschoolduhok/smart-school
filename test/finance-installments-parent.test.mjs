@@ -9,7 +9,7 @@ const vite=await createServer({root,appType:'custom',server:{middlewareMode:true
 const {default:app}=await vite.ssrLoadModule('/src/worker.ts');
 after(()=>vite.close());
 const secret='generated-local-installment-parent-secret';
-const tokens=Object.fromEntries(await Promise.all(['owner','parent','teacher','accountant'].map(async role=>[role,await signJWT({email:role+'@matrix.test',auth_version:1},secret)])));
+const tokens=Object.fromEntries(await Promise.all(['owner','parent','teacher','accountant'].map(async role=>[role,await signJWT({id: ({ owner: 1, admin: 2, teacher: 3, accountant: 4, principal: 5, vice: 6, registrar: 7, parent: 8 })[role], email:role+'@matrix.test',auth_version:1},secret)])));
 
 async function call(f,method,path,input,role='owner'){
  const response=await app.request('http://localhost/api/'+path,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+tokens[role]},body:input===undefined?undefined:JSON.stringify(input)},{DB:f.d1,JWT_SECRET:secret,APP_ENV:'test'});

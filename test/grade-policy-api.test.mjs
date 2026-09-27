@@ -11,9 +11,9 @@ after(() => vite.close());
 
 const secret = 'generated-grade-policy-api-test-secret-only';
 const tokens = {
-  owner: await signJWT({ email: 'owner@matrix.test', auth_version: 1 }, secret),
-  teacher: await signJWT({ email: 'teacher@matrix.test', auth_version: 1 }, secret),
-  admin: await signJWT({ email: 'admin@matrix.test', auth_version: 1 }, secret),
+  owner: await signJWT({ id: 1, email: 'owner@matrix.test', auth_version: 1 }, secret),
+  teacher: await signJWT({ id: 3, email: 'teacher@matrix.test', auth_version: 1 }, secret),
+  admin: await signJWT({ id: 2, email: 'admin@matrix.test', auth_version: 1 }, secret),
 };
 
 function gradeFixture(t) {

@@ -89,7 +89,7 @@ try{
  try {
   const {default:app}=await vite.ssrLoadModule('/src/worker.ts');
   const secret='generated-local-week-review-secret-never-used-remotely';
-  const token=await signJWT({email:'owner@matrix.test',auth_version:1},secret);
+  const token=await signJWT({id: 1, email: 'owner@matrix.test',auth_version:1},secret);
   let queryCount=0,maxParameters=0;
   const wrap=real=>({real,bind(...args){maxParameters=Math.max(maxParameters,args.length);return wrap(real.bind(...args));},
     async first(...args){queryCount++;return real.first(...args);},async all(...args){queryCount++;return real.all(...args);},async run(...args){queryCount++;return real.run(...args);}});
