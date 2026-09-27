@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test, {after} from 'node:test';
+import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {Window} from 'happy-dom';
 import {createServer} from 'vite';
 import {root} from './helpers/finance-fixture.mjs';
@@ -51,6 +53,26 @@ test('linked-parent progress shows missing scores and print, without publishing 
  assert.match(v.container.textContent,/لم تُدخل/);assert.match(v.container.textContent,/درجات غير مدخلة: 1/);assert.ok(button(v,'طباعة A4'));
  assert.equal(v.container.querySelector('select'),null);assert.equal(v.container.querySelector('input'),null);
  assert.equal(v.calls.some(c=>c.path==='/api/grades'||c.path==='/api/students'),false);
+});
+
+test('progress print removes surrounding page flow and shell height without changing screen layout or report content',async t=>{
+ const v=await mount(t,'progress','parent');await click(buttons(v).find(b=>b.textContent.includes('طالب تجريبي')));
+ const style=document.createElement('style'),css=readFileSync(join(root,'src/modules/gradeProgress/gradeProgressPrint.css'),'utf8');style.textContent=css;document.head.append(style);
+ const previousMedia=window.happyDOM.settings.device.mediaType;
+ t.after(()=>{window.happyDOM.settings.device.mediaType=previousMedia;style.remove();});
+ const shell=document.createElement('main');v.container.before(shell);shell.append(v.container);
+ shell.style.cssText='min-height:100vh;display:grid;margin-right:256px;padding:24px;background:#eef2f6';
+ const unrelated=document.createElement('aside');unrelated.textContent='غير مطبوع';unrelated.style.height='2500px';shell.prepend(unrelated);
+ t.after(()=>shell.remove());
+ const doc=v.container.querySelector('.grade-progress-print'),refresh=button(v,'تحديث');
+ const setMedia=media=>{window.happyDOM.settings.device.mediaType=media;style.textContent=css+`\n/* ${media} */`;};
+ setMedia('screen');
+ assert.notEqual(window.getComputedStyle(refresh).display,'none');assert.equal(window.getComputedStyle(shell).minHeight,`${window.innerHeight}px`);
+ setMedia('print');
+ assert.equal(window.getComputedStyle(unrelated).display,'none');assert.equal(window.getComputedStyle(refresh).display,'none');
+ assert.equal(Number.parseFloat(window.getComputedStyle(shell).minHeight),0);assert.equal(Number.parseFloat(window.getComputedStyle(shell).marginRight),0);assert.equal(window.getComputedStyle(shell).display,'block');
+ assert.equal(window.getComputedStyle(doc).position,'static');assert.equal(doc.querySelectorAll('tbody tr').length,1);assert.match(doc.textContent,/طالب تجريبي.*الرياضيات/s);
+ setMedia('screen');assert.notEqual(window.getComputedStyle(refresh).display,'none');assert.equal(window.getComputedStyle(shell).marginRight,'256px');
 });
 test('progress publishing needs delivery confirmation and sends the exact preview digest',async t=>{
  const v=await mount(t,'progress','teacher',{'/api/grade-progress/preview':()=>response({snapshot,preview_digest:'a'.repeat(64)}),'/api/grade-progress/publish':()=>response(report,201)});
