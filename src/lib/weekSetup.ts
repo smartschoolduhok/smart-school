@@ -15,7 +15,7 @@ export class WeekSetupError extends Error {
 }
 export const staleWeek = () => new WeekSetupError('stale_week_setup', STALE_WEEK_MESSAGE, 409);
 export type WeekPeriod = Pick<TimetableSlot, 'slot_index' | 'slot_type' | 'lesson_number' | 'label' | 'start_time' | 'end_time' | 'is_active'>;
-export type WeekMode = 'fill_empty_days' | 'update_matching_keep_extra';
+export type WeekMode = 'fill_empty_days' | 'update_matching_keep_extra' | 'configure_day';
 export interface WeekScope { school_id?: number; academic_year_id: number }
 export interface WeekRequest extends WeekScope {
   expected_revision: number; mode: WeekMode; source_day_of_week: number | null;
@@ -34,8 +34,8 @@ export interface WeekSnapshot extends WeekScope {
   references: WeekReferences[]; summary: ReturnType<typeof summarizeWeekDay>[];
 }
 export interface WeekNotice {
-  code: string; message: string; entry_id?: number; employee_id?: number;
-  evidence?: { dimension: 'capacity_deficit' | 'working_days'; actual: number; limit: number; excess: number };
+  code: string; message: string; entry_id?: number; employee_id?: number; class_id?: number; section_id?: number | null;
+  evidence?: { dimension: 'capacity_deficit' | 'placement_capacity_deficit' | 'working_days'; actual: number; limit: number; excess: number };
 }
 export interface WeekChange { day_of_week: number; id: number | null; before: WeekPeriod | null; after: WeekPeriod; action: 'create' | 'update' | 'unchanged' | 'retained' }
 export interface WeekDayPlan {
@@ -90,7 +90,7 @@ export function parseWeekRequest(raw: unknown, apply = false): WeekRequest {
   if (!object(raw) || !keys(raw, ['school_id', 'academic_year_id', 'expected_revision', 'mode', 'source_day_of_week', 'targets', 'template',
     ...(apply ? ['confirm_apply', 'preview_digest', 'acknowledge_availability_impact'] : [])])) return fail();
   if ((raw.school_id !== undefined && !integer(raw.school_id)) || !integer(raw.academic_year_id)
-    || !integer(raw.expected_revision, 0) || (raw.mode !== 'fill_empty_days' && raw.mode !== 'update_matching_keep_extra')
+    || !integer(raw.expected_revision, 0) || (raw.mode !== 'fill_empty_days' && raw.mode !== 'update_matching_keep_extra' && raw.mode !== 'configure_day')
     || (raw.source_day_of_week !== null && !integer(raw.source_day_of_week, 0, 6))) return fail();
   if (!Array.isArray(raw.targets) || !raw.targets.length || raw.targets.length > 7) return fail('اختر يومًا واحدًا على الأقل.', 'invalid_target_days');
   const targets = raw.targets.map(t => {
@@ -99,6 +99,8 @@ export function parseWeekRequest(raw: unknown, apply = false): WeekRequest {
     return {day_of_week: t.day_of_week, activate_day: t.activate_day};
   }).sort((a, b) => a.day_of_week - b.day_of_week);
   if (new Set(targets.map(t => t.day_of_week)).size !== targets.length) return fail('لا تكرر الأيام المستهدفة.', 'duplicate_target_day');
+  if (raw.mode === 'configure_day' && (targets.length !== 1 || raw.source_day_of_week !== null))
+    return fail('تعديل عدد حصص اليوم يتطلب يومًا واحدًا دون مصدر للنسخ.', 'invalid_day_profile_scope');
   if (apply && (raw.confirm_apply !== true || typeof raw.preview_digest !== 'string' || !/^[a-f0-9]{64}$/.test(raw.preview_digest)
     || (raw.acknowledge_availability_impact !== undefined && typeof raw.acknowledge_availability_impact !== 'boolean'))) return fail('يلزم تأكيد معاينة صحيحة.', 'confirmation_required');
   return { ...(raw.school_id === undefined ? {} : {school_id: raw.school_id as number}), academic_year_id: raw.academic_year_id,
@@ -143,11 +145,17 @@ export function summarizeWeekDay(dayOfWeek: number, periods: WeekPeriod[], activ
   const duration = (p: WeekPeriod) => minuteOfDay(p.end_time) - minuteOfDay(p.start_time);
   const start = periods.length ? [...periods].sort((a, b) => a.start_time.localeCompare(b.start_time))[0].start_time : null;
   const end = periods.length ? [...periods].sort((a, b) => b.end_time.localeCompare(a.end_time))[0].end_time : null;
+  const activePeriods = periods.filter(p => p.is_active === 1);
+  const activeStart = activePeriods.length ? [...activePeriods].sort((a, b) => a.start_time.localeCompare(b.start_time))[0].start_time : null;
+  const activeEnd = activePeriods.length ? [...activePeriods].sort((a, b) => b.end_time.localeCompare(a.end_time))[0].end_time : null;
   return {day_of_week: dayOfWeek, order_index: orderIndex, is_active: active, saved_periods: periods.length,
     empty: periods.length === 0, lessons: periods.filter(p => p.is_active === 1 && p.slot_type === 'lesson').length,
     breaks: periods.filter(p => p.is_active === 1 && p.slot_type === 'break').length, inactive: periods.filter(p => p.is_active === 0).length,
     first_start: start, last_end: end, teaching_minutes: periods.filter(p => p.slot_type === 'lesson').reduce((s, p) => s + duration(p), 0),
     break_minutes: periods.filter(p => p.slot_type === 'break').reduce((s, p) => s + duration(p), 0),
+    active_first_start: activeStart, active_last_end: activeEnd,
+    active_teaching_minutes: activePeriods.filter(p => p.slot_type === 'lesson').reduce((s, p) => s + duration(p), 0),
+    active_break_minutes: activePeriods.filter(p => p.slot_type === 'break').reduce((s, p) => s + duration(p), 0),
     elapsed_minutes: start && end ? minuteOfDay(end) - minuteOfDay(start) : 0};
 }
 export function weekReferences(c: WeekContext): WeekReferences[] {
@@ -187,27 +195,45 @@ function scheduleEvidence(c: WeekContext) {
       evidence.set(`entry:${entry.id}:${n.code}`, {notice: {...n, entry_id: entry.id}, severity: metrics[n.code] ?? 1});
   }
   const activeSlots = activeTimetableLessonSlots(c.days, c.slots);
-  for (const constraint of c.constraints) {
-    const teacherLoads = c.loads.filter(l => l.employee_id === constraint.employee_id);
+  const activeLoads = c.loads.filter(l => l.status === 'active');
+  for (const classId of new Set(activeLoads.map(l => l.class_id))) {
+    const classLoads = activeLoads.filter(l => l.class_id === classId);
+    const sections = [...new Set(classLoads.filter(l => l.section_id != null).map(l => l.section_id))];
+    for (const sectionId of sections.length ? sections : [null]) {
+      const className = classLoads[0].class_name || 'المحدد';
+      const sectionName = classLoads.find(l => l.section_id === sectionId)?.section_name || 'المحددة';
+      const demand = classLoads.filter(l => l.section_id == null || l.section_id === sectionId).reduce((total, l) => total + l.weekly_periods, 0);
+      const shortage = Math.max(0, demand - activeSlots.length);
+      if (shortage > 0) evidence.set(`placement:${classId}:${sectionId ?? 'none'}:capacity_deficit`, {severity: shortage, notice: {
+        code: 'placement_weekly_capacity_exceeded', class_id: classId, section_id: sectionId,
+        message: `أنصبة الصف ${className}${sectionId == null ? '' : ` / الشعبة ${sectionName}`} تحتاج ${demand} حصة؛ السعة الأسبوعية ${activeSlots.length}.`,
+        evidence: {dimension: 'placement_capacity_deficit', actual: demand, limit: activeSlots.length, excess: shortage},
+      }});
+    }
+  }
+  const teacherIds = new Set([...c.constraints.map(item => item.employee_id), ...c.loads.filter(l => l.status === 'active' && l.employee_id != null).map(l => l.employee_id!)]);
+  for (const employeeId of teacherIds) {
+    const constraint = c.constraints.find(item => item.employee_id === employeeId);
+    const teacherLoads = c.loads.filter(l => l.employee_id === employeeId);
     const demand = teacherLoads.filter(l => l.status === 'active').reduce((n, l) => n + l.weekly_periods, 0);
-    const summary = calculateTeacherAvailabilitySummary({schoolId: c.school_id, academicYearId: c.academic_year_id, employeeId: constraint.employee_id,
+    const summary = calculateTeacherAvailabilitySummary({schoolId: c.school_id, academicYearId: c.academic_year_id, employeeId,
       employeeName: '', assignedWeeklyPeriods: demand, days: c.days, slots: c.slots, overrides: c.availability, constraints: constraint});
     const shortage = Math.max(0, summary.assigned_weekly_periods - summary.hard_weekly_capacity);
     if (shortage > 0 && summary.blockers[0]) {
       // Diagnostic wording may change as capacity improves; constraint identity
       // and numerical severity must not. Demand is never reduced to fit capacity.
-      evidence.set(`teacher:${constraint.employee_id}:capacity_deficit`, {severity: shortage, notice: {
-        ...summary.blockers[0], employee_id: constraint.employee_id,
+      evidence.set(`teacher:${employeeId}:capacity_deficit`, {severity: shortage, notice: {
+        ...summary.blockers[0], employee_id: employeeId,
         message: `${summary.blockers[0].message} العجز المتبقي: ${shortage} حصة.`,
         evidence: {dimension: 'capacity_deficit', actual: summary.assigned_weekly_periods, limit: summary.hard_weekly_capacity, excess: shortage},
       }});
     }
-    if (constraint.max_working_days != null) {
+    if (constraint?.max_working_days != null) {
       const loadIds = new Set(teacherLoads.map(l => l.id));
       const workingDays = occupiedTimetableDays(c.entries.filter(e => loadIds.has(e.teaching_load_id)), activeSlots).size;
       const excess = Math.max(0, workingDays - constraint.max_working_days);
-      if (excess > 0) evidence.set(`teacher:${constraint.employee_id}:working_days`, {severity: excess, notice: {
-        code: 'teacher_max_working_days', employee_id: constraint.employee_id,
+      if (excess > 0) evidence.set(`teacher:${employeeId}:working_days`, {severity: excess, notice: {
+        code: 'teacher_max_working_days', employee_id: employeeId,
         message: `أيام عمل المدرس المشغولة فعليًا: ${workingDays}؛ الحد الأقصى: ${constraint.max_working_days}.`,
         evidence: {dimension: 'working_days', actual: workingDays, limit: constraint.max_working_days, excess},
       }});
@@ -244,11 +270,11 @@ export async function planWeekSetup(context: WeekContext, input: WeekRequest): P
         matched.add(old.id);
         if (old.slot_type !== template.slot_type || old.lesson_number !== template.lesson_number)
           p.blockers.push({code: 'incompatible_period_identity', message: 'نوع أو رقم الفترة المتطابقة مختلف. استخدم تخصيص اليوم دون نقل هوية الفترة.'});
-        if (old.is_active !== template.is_active) p.blockers.push({code: 'explicit_period_activation_required', message: 'تغيير حالة فترة محفوظة يتم من التحكم الفردي الصريح في تخصيص اليوم.'});
+        if (old.is_active !== template.is_active && input.mode !== 'configure_day') p.blockers.push({code: 'explicit_period_activation_required', message: 'تغيير حالة فترة محفوظة يتم من التحكم الفردي الصريح في تخصيص اليوم.'});
         const ref = refs.find(r => r.slot_id === old.id)!;
         if (change.action === 'update') {
           const timing = old.start_time !== template.start_time || old.end_time !== template.end_time;
-          if (ref.scheduled_entries && (timing || old.slot_type !== template.slot_type || old.lesson_number !== template.lesson_number))
+          if (ref.scheduled_entries && (timing || old.slot_type !== template.slot_type || old.lesson_number !== template.lesson_number || template.is_active === 0))
             p.blockers.push({code: 'slot_has_scheduled_entries', message: 'توجد حصص مجدولة مرتبطة بالفترة؛ لا يمكن تغيير أوقاتها أو هويتها. تبقى الحصص والأقفال دون تعديل.'});
           if (ref.availability_overrides && timing) {
             needsAck = true; p.warnings.push({code: 'availability_time_change', message: `ستبقى إعدادات التوفر (${ref.availability_overrides}) مرتبطة بمعرف الفترة نفسه بعد تعديل الوقت؛ يلزم الإقرار.`});
@@ -258,7 +284,16 @@ export async function planWeekSetup(context: WeekContext, input: WeekRequest): P
         Object.assign(projected.slots.find(s => s.id === old.id)!, template);
       } else projected.slots.push({...template, id: projectedId--, school_id: context.school_id, academic_year_id: context.academic_year_id, day_of_week: target.day_of_week, created_at: 0, updated_at: 0});
     }
-    for (const old of slots.filter(s => !matched.has(s.id))) p.changes.push({day_of_week: target.day_of_week, id: old.id, before: periodValues(old), after: periodValues(old), action: 'retained'});
+    for (const old of slots.filter(s => !matched.has(s.id))) {
+      const deactivate = input.mode === 'configure_day' && old.is_active === 1;
+      const after = {...periodValues(old), ...(deactivate ? {is_active: 0 as const} : {})};
+      p.changes.push({day_of_week: target.day_of_week, id: old.id, before: periodValues(old), after, action: deactivate ? 'update' : 'retained'});
+      if (deactivate) {
+        const ref = refs.find(r => r.slot_id === old.id)!;
+        if (ref.scheduled_entries) p.blockers.push({code: 'slot_has_scheduled_entries', message: 'لا يمكن تقليل الحصص بإيقاف فترة تحتوي حصصًا مجدولة أو مثبتة. انقل الحصص أولًا من شبكة التحرير.'});
+        Object.assign(projected.slots.find(s => s.id === old.id)!, after);
+      }
+    }
     // A changed break or activated day can affect lessons in other periods.
     // Count all existing links on such a day, not just links on the edited row.
     const affectsDay = p.activate_day || p.changes.some(c => c.action === 'create' || (c.action === 'update'

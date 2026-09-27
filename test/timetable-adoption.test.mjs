@@ -101,6 +101,19 @@ test('0026 adds a default-unlocked canonical timetable entry field', () => {
   assert.equal(db.prepare('SELECT is_locked FROM timetable_entries').get().is_locked, 0);
 });
 
+test('whole adoption and restoration detect working-day excess with multiple lessons per day', () => {
+  const context = validationContext({ loads: [load(1, { weekly_periods: 4 })], constraints: [{ id: 1, school_id: 1, academic_year_id: 1,
+    employee_id: 1, max_periods_per_day: null, max_consecutive_periods: null, max_working_days: 1,
+    prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0 }] });
+  const entries = [1, 2, 3, 4].map(slot_id => ({ slot_id, teaching_load_id: 1, is_locked: 1 }));
+  const adoption = validateCompleteTimetableSchedule(context, entries);
+  const restoration = validateRestorableTimetableSchedule(context, entries);
+  assert.equal(adoption.complete, false);
+  assert.equal(restoration.structurally_valid, false);
+  assert.ok(adoption.blockers.some(issue => issue.code === 'teacher_max_working_days'));
+  assert.ok(restoration.blockers.some(issue => issue.code === 'teacher_max_working_days'));
+});
+
 test('0026 rejects lock values outside zero and one', () => {
   const db = databaseFixture();
   assert.throws(() => db.prepare('INSERT INTO timetable_entries (school_id, academic_year_id, slot_id, teaching_load_id, is_locked) VALUES (1,1,1,1,2)').run());

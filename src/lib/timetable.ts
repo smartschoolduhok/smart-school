@@ -135,6 +135,7 @@ export interface TimetableTeachingLoad {
   academic_year_id: number;
   class_id: number;
   class_name?: string;
+  class_stage?: string;
   class_status?: string | null;
   class_school_id?: number | null;
   active_section_count?: number;
@@ -969,6 +970,8 @@ export function evaluateTimetableEntryPlacement(input: {
   // Optional evidence from the SAME validator for projected configuration
   // comparisons. Does not alter placement acceptance or response shapes.
   onConstraintMetric?: (code: TimetableEntryHardConflictCode, count: number) => void;
+  // Whole schedules must also detect already-occupied excess working days.
+  validateWholeSchedule?: boolean;
 }): { hard_conflicts: TimetableEntryNotice[]; warnings: TimetableEntryNotice[] } {
   const hardConflicts: TimetableEntryNotice[] = [];
   const warnings: TimetableEntryNotice[] = [];
@@ -1062,8 +1065,8 @@ export function evaluateTimetableEntryPlacement(input: {
     const addsWorkingDay = !teacherWorkingDays.has(Number(slot.day_of_week));
     input.onConstraintMetric?.('teacher_max_working_days', teacherWorkingDays.size + Number(addsWorkingDay));
     if (constraints?.max_working_days != null
-      && addsWorkingDay
-      && teacherWorkingDays.size >= Number(constraints.max_working_days)) {
+      && (input.validateWholeSchedule || addsWorkingDay)
+      && teacherWorkingDays.size + Number(addsWorkingDay) > Number(constraints.max_working_days)) {
       hardConflicts.push(entryNotice('teacher_max_working_days', 'تجاوز المدرس الحد الأقصى لأيام العمل الأسبوعية'));
     }
 
@@ -1174,6 +1177,7 @@ export function buildTimetableReadiness(input: {
   const validEntryIds = new Set<number>();
   for (const entry of entries) {
     const evaluation = evaluateTimetableEntryPlacement({
+      validateWholeSchedule: true,
       candidate: {
         id: entry.id,
         slot_id: entry.slot_id,

@@ -5,6 +5,8 @@
 // ===========================================
 
 import { Hono } from 'hono'
+import { parseTimetableScope, timetableLoadMatchesScope, scopedTimetableSolverLoads, collectTimetableFixedEntries, type TimetableScope } from './lib/timetableScope'
+import { signTimetableScope, verifyTimetableScope } from './lib/timetableScopeIntegrity'
 import { getCookie, setCookie } from 'hono/cookie'
 import { CSRF_HEADER, createSessionCsrfToken, hasBrowserMetadata, isSameOriginBrowserRequest, isUnsafeMethod, sessionCookieOptions, verifySessionCsrfToken } from './lib/sessionSecurity'
 import { registerFinanceRoutes } from './lib/financeFeesDb'
@@ -281,6 +283,7 @@ import {
   compareTimetableSchedules,
   computeTimetableProposalDigest,
   validateCompleteTimetableSchedule,
+  validateScopedTimetableSchedule,
   validateRestorableTimetableSchedule,
   type TimetableAdoptionPreview,
   type TimetableProposalPlacement,
@@ -827,7 +830,7 @@ async function loadTimetableSchedulingContext(
     `).bind(schoolId, academicYearId).all<TimetableSlot>(),
     db.prepare(`
       SELECT load.*,
-             class.name AS class_name, class.status AS class_status, class.school_id AS class_school_id,
+             class.name AS class_name, class.stage AS class_stage, class.status AS class_status, class.school_id AS class_school_id,
              COALESCE(class_sections.active_section_count, 0) AS active_section_count,
              section.name AS section_name, section.status AS section_status,
              section.school_id AS section_school_id, section.class_id AS section_class_id,
@@ -875,7 +878,7 @@ async function loadTimetableSchedulingContext(
 }
 
 type TimetableProposalPayloadValidation =
-  | { ok: true; revision: number; digest: string; entries: TimetableProposalPlacement[] }
+  | { ok: true; revision: number; digest: string; entries: TimetableProposalPlacement[]; scope: TimetableScope; scopeLoadIds?: number[]; scopeToken?: string }
   | { ok: false; error: string };
 
 function hasOnlyObjectKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
@@ -943,7 +946,19 @@ function parseTimetableProposalPayload(
   if (!/^[a-f0-9]{64}$/.test(digest)) return { ok: false, error: 'بصمة المقترح غير صالحة' };
   const parsedEntries = parseTimetableProposalEntries(body.entries);
   if (!parsedEntries.ok) return parsedEntries;
-  return { ok: true, revision, digest, entries: parsedEntries.entries };
+  const scope = parseTimetableScope(body.generation_scope);
+  if (!scope) return { ok: false, error: 'نطاق توليد الجدول غير صالح' };
+  if (scope.kind === 'school') {
+    if (body.scope_load_ids !== undefined || body.scope_token !== undefined) return { ok: false, error: 'بصمة النطاق لا تطابق طلب المدرسة كاملة' };
+    return { ok: true, revision, digest, entries: parsedEntries.entries, scope };
+  }
+  const ids = body.scope_load_ids;
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 5_000
+    || !ids.every(id => typeof id === 'number' && Number.isSafeInteger(id) && id > 0)
+    || new Set(ids).size !== ids.length || typeof body.scope_token !== 'string' || !/^[a-f0-9]{64}$/.test(body.scope_token))
+    return { ok: false, error: 'يلزم إثبات نطاق التوليد الأصلي. أنشئ المعاينة من جديد.' };
+  return { ok: true, revision, digest, entries: parsedEntries.entries, scope,
+    scopeLoadIds: [...ids].sort((a, b) => a - b), scopeToken: body.scope_token };
 }
 
 async function loadCurrentTimetableRevision(db: D1Database, schoolId: number, academicYearId: number): Promise<number> {
@@ -954,9 +969,41 @@ async function loadCurrentTimetableRevision(db: D1Database, schoolId: number, ac
   return Number(row?.revision || 0);
 }
 
+// Stage metadata is not covered by the legacy timetable revision triggers.
+// Assert scope membership in the same transaction as the write, as well as its revision.
+function timetableRevisionAssertion(db: D1Database, token: string, schoolId: number, academicYearId: number,
+  revision: number, scope?: TimetableScope, loadIds?: number[]) {
+  if (!scope || !loadIds) return db.prepare(`
+    INSERT INTO timetable_revision_assertions (token, school_id, academic_year_id, expected_revision) VALUES (?, ?, ?, ?)
+  `).bind(token, schoolId, academicYearId, revision);
+  const predicate = scope.kind === 'stage' ? 'class.stage = ?' : scope.kind === 'class' ? 'load.class_id = ?'
+    : scope.kind === 'section' ? 'load.class_id = ? AND load.section_id = ?' : '1 = 1';
+  const values = scope.kind === 'stage' ? [scope.stage] : scope.kind === 'class' ? [scope.class_id]
+    : scope.kind === 'section' ? [scope.class_id, scope.section_id] : [];
+  return db.prepare(`
+    INSERT INTO timetable_revision_assertions (token, school_id, academic_year_id, expected_revision)
+    SELECT ?, ?, ?, CASE WHEN (
+      SELECT json_group_array(id) FROM (
+        SELECT load.id FROM timetable_teaching_loads load LEFT JOIN classes class ON class.id = load.class_id
+        WHERE load.school_id = ? AND load.academic_year_id = ? AND ${predicate} ORDER BY load.id
+      )
+    ) = ? THEN ? ELSE COALESCE((SELECT revision FROM timetable_revisions WHERE school_id = ? AND academic_year_id = ?), 0) + 1 END
+  `).bind(token, schoolId, academicYearId, schoolId, academicYearId, ...values, JSON.stringify([...loadIds].sort((a, b) => a - b)), revision, schoolId, academicYearId);
+}
+
+async function timetableProposalScopeIsCurrent(parsed: Extract<TimetableProposalPayloadValidation, { ok: true }>,
+  context: TimetableSchedulingContext, schoolId: number, academicYearId: number, secret: string): Promise<boolean> {
+  if (parsed.scope.kind === 'school') return true;
+  if (!parsed.scopeLoadIds || !parsed.scopeToken) return false;
+  const actual = context.loads.filter(load => timetableLoadMatchesScope(load, parsed.scope)).map(load => load.id).sort((a, b) => a - b);
+  return JSON.stringify(actual) === JSON.stringify(parsed.scopeLoadIds)
+    && await verifyTimetableScope({ schoolId, academicYearId, revision: parsed.revision, scope: parsed.scope, loadIds: parsed.scopeLoadIds }, parsed.scopeToken, secret);
+}
+
 function countInvalidCurrentTimetableEntries(context: TimetableSchedulingContext): number {
   return context.entries.filter((entry) => {
     const evaluation = evaluateTimetableEntryPlacement({
+      validateWholeSchedule: true,
       candidate: entry,
       days: context.days,
       slots: context.slots,
@@ -994,6 +1041,8 @@ async function buildTimetableAdoptionPreview(input: {
   digest: string;
   entries: TimetableProposalPlacement[];
   context: TimetableSchedulingContext;
+  generationScope?: TimetableScope;
+  scopeLoadIds?: number[];
   options:
     | { validationMode: 'complete'; preserveCurrentLocks: true }
     | { validationMode: 'restore'; preserveCurrentLocks: false };
@@ -1003,6 +1052,8 @@ async function buildTimetableAdoptionPreview(input: {
     academicYearId: input.academicYearId,
     revision: input.revision,
     entries: input.entries,
+    generationScope: input.generationScope,
+    scopeLoadIds: input.scopeLoadIds,
   });
   const validationContext = {
     schoolId: input.schoolId,
@@ -1015,7 +1066,7 @@ async function buildTimetableAdoptionPreview(input: {
   };
   const validation = input.options.validationMode === 'complete'
     ? (() => {
-      const result = validateCompleteTimetableSchedule(validationContext, input.entries);
+      const result = validateScopedTimetableSchedule(validationContext, input.entries, input.context.entries, input.generationScope || { kind: 'school' });
       return { allowsApply: result.complete, blockers: result.blockers, weeklyDemand: result.weekly_demand };
     })()
     : (() => {
@@ -1030,10 +1081,14 @@ async function buildTimetableAdoptionPreview(input: {
     ...(input.options.validationMode === 'restore' && !validation.weeklyDemand.current_demand_complete
       ? ['هذا الإصدار لا يغطي جميع الأنصبة الأسبوعية الحالية.']
       : []),
+    ...(input.generationScope && input.generationScope.kind !== 'school'
+      ? ['يعتمد هذا الإجراء النطاق المختار فقط. تبقى حصص باقي الصفوف والشعب وأنصبتها دون تعديل.'] : []),
   ];
   const blockers = [
     ...(recomputedDigest === input.digest ? [] : [{ code: 'proposal_digest_mismatch', message: 'بصمة المقترح لا تطابق محتواه الحالي.' }]),
     ...validation.blockers,
+    ...(input.generationScope && input.generationScope.kind !== 'school' && !input.context.loads.some(load => load.status === 'active' && timetableLoadMatchesScope(load, input.generationScope!))
+      ? [{ code: 'empty_timetable_scope', message: 'لا توجد أنصبة فعالة ضمن النطاق المختار في هذه المدرسة والسنة.' }] : []),
     ...(input.options.preserveCurrentLocks
       ? currentLockedEntriesArePreserved(input.context.entries, input.entries)
       : []),
@@ -1082,17 +1137,18 @@ async function replaceOfficialTimetableAtomically(input: {
   userId: number;
   source: 'automatic_adoption' | 'manual_restore';
   restoredFromVersionId?: number | null;
+  replaceLoadIds?: number[];
+  generationScope?: TimetableScope;
 }) {
   const assertionToken = crypto.randomUUID();
   const versionKey = crypto.randomUUID();
   const unlockTokenPrefix = crypto.randomUUID();
   const canonicalEntries = canonicalTimetableProposalEntries(input.entries);
-  const entriesJson = JSON.stringify(canonicalEntries);
+  const entriesJson = JSON.stringify(input.replaceLoadIds ? canonicalEntries.filter(entry => input.replaceLoadIds!.includes(entry.teaching_load_id)) : canonicalEntries);
+  const scopeFilter = input.replaceLoadIds ? ' AND teaching_load_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))' : '';
+  const scopeBindings = input.replaceLoadIds ? [JSON.stringify(input.replaceLoadIds)] : [];
   const statements = [
-    input.db.prepare(`
-      INSERT INTO timetable_revision_assertions (token, school_id, academic_year_id, expected_revision)
-      VALUES (?, ?, ?, ?)
-    `).bind(assertionToken, input.schoolId, input.academicYearId, input.expectedRevision),
+    timetableRevisionAssertion(input.db, assertionToken, input.schoolId, input.academicYearId, input.expectedRevision, input.generationScope, input.replaceLoadIds),
     input.db.prepare(`
       INSERT INTO timetable_schedule_versions (
         version_key, school_id, academic_year_id, source, previous_revision,
@@ -1135,12 +1191,12 @@ async function replaceOfficialTimetableAtomically(input: {
       SELECT ? || ':' || CAST(entry.id AS TEXT), entry.id,
              entry.school_id, entry.academic_year_id, 'delete'
       FROM timetable_entries entry
-      WHERE entry.school_id = ? AND entry.academic_year_id = ? AND entry.is_locked = 1
-    `).bind(unlockTokenPrefix, input.schoolId, input.academicYearId),
+      WHERE entry.school_id = ? AND entry.academic_year_id = ? AND entry.is_locked = 1${scopeFilter}
+    `).bind(unlockTokenPrefix, input.schoolId, input.academicYearId, ...scopeBindings),
     input.db.prepare(`
       DELETE FROM timetable_entries
-      WHERE school_id = ? AND academic_year_id = ?
-    `).bind(input.schoolId, input.academicYearId),
+      WHERE school_id = ? AND academic_year_id = ?${scopeFilter}
+    `).bind(input.schoolId, input.academicYearId, ...scopeBindings),
     input.db.prepare(`
       INSERT INTO timetable_entries (
         school_id, academic_year_id, slot_id, teaching_load_id, is_locked,
@@ -3261,7 +3317,7 @@ app.get('/api/timetable/teacher-workloads', requireSameSchoolOrAdmin(), requireR
 app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const body = await readJsonObject(c)
   if (!body) return c.json({ error: 'بيانات طلب التوليد غير صالحة' }, 400)
-  if (!hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'fixed_entries', 'use_current_locked_entries'])) {
+  if (!hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'fixed_entries', 'use_current_locked_entries', 'generation_scope'])) {
     return c.json({ error: 'يحتوي طلب التوليد على حقول غير معروفة' }, 400)
   }
   const user: UserContext | null = c.get('user') || null
@@ -3278,6 +3334,8 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
   }
   const fixedValidation = parseTimetableFixedEntries(body.fixed_entries)
   if (!fixedValidation.ok) return c.json({ error: fixedValidation.error }, 400)
+  const generationScope = parseTimetableScope(body.generation_scope)
+  if (!generationScope) return c.json({ error: 'نطاق توليد الجدول غير صالح' }, 400)
 
   try {
     const [context, placementsResult, timetableRevision] = await Promise.all([
@@ -3295,19 +3353,20 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
       `).bind(targetSchool.schoolId).all<TimetablePlacement>(),
       loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
     ])
-    const fixedEntries = body.use_current_locked_entries === true
-      ? context.entries.filter((entry) => Number(entry.is_locked) === 1).map((entry) => ({
-        slot_id: Number(entry.slot_id),
-        teaching_load_id: Number(entry.teaching_load_id),
-      }))
-      : fixedValidation.entries
+    if (generationScope.kind !== 'school' && !context.loads.some(load => load.status === 'active' && timetableLoadMatchesScope(load, generationScope))) {
+      return c.json({ error: 'لا توجد أنصبة فعالة ضمن النطاق المختار في هذه المدرسة والسنة.', code: 'empty_timetable_scope' }, 400)
+    }
+    const fixedEntries = collectTimetableFixedEntries(context.loads, context.entries, generationScope, fixedValidation.entries)
+    const solverLoads = scopedTimetableSolverLoads(context.loads, context.entries, generationScope)
+    const scopeLoadIds = generationScope.kind === 'school' ? undefined
+      : context.loads.filter(load => timetableLoadMatchesScope(load, generationScope)).map(load => load.id).sort((a, b) => a - b)
     const solverData = solveTimetable({
       schoolId: targetSchool.schoolId,
       academicYearId,
       days: context.days,
       slots: context.slots,
       placements: placementsResult.results || [],
-      loads: context.loads,
+      loads: solverLoads,
       currentEntries: context.entries,
       teacherAvailability: context.availability,
       teacherConstraints: context.constraints,
@@ -3320,12 +3379,22 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
     }))
     const data: TimetableSolverProposalWithIntegrity = {
       ...solverData,
+      warnings: [...solverData.warnings, ...(generationScope.kind !== 'school'
+        ? ['اكتمال المقترح يعني اكتمال النطاق المختار. تشمل المعاينة الحصص المحفوظة خارجه لحساب التعارضات، دون إكمال أنصبة باقي النطاقات.'] : [])],
+      generation_scope: generationScope,
+      ...(scopeLoadIds ? { scope_load_ids: scopeLoadIds, scope_token: await signTimetableScope({
+        schoolId: targetSchool.schoolId, academicYearId, revision: timetableRevision, scope: generationScope, loadIds: scopeLoadIds,
+      }, getValidatedJwtSecret(c.env.JWT_SECRET)) } : {}),
+      entries: solverData.entries.map(entry => ({ ...entry, is_preserved: context.entries.some(current => current.slot_id === entry.slot_id && current.teaching_load_id === entry.teaching_load_id
+        && (current.is_locked === 1 || !timetableLoadMatchesScope(context.loads.find(load => load.id === current.teaching_load_id)!, generationScope))) })),
       timetable_revision: timetableRevision,
       proposal_digest: await computeTimetableProposalDigest({
         schoolId: targetSchool.schoolId,
         academicYearId,
         revision: timetableRevision,
         entries: proposalEntries,
+        generationScope,
+        scopeLoadIds,
       }),
     }
     return c.json({ data })
@@ -3342,7 +3411,7 @@ app.post('/api/timetable/solver/adoption-preview', requireSameSchoolOrAdmin(), r
   const user = c.get('user') as UserContext
   const body = await readJsonObject(c)
   if (!body || !hasOnlyObjectKeys(body, [
-    'school_id', 'academic_year_id', 'proposal_revision', 'proposal_digest', 'entries',
+    'school_id', 'academic_year_id', 'proposal_revision', 'proposal_digest', 'entries', 'generation_scope', 'scope_load_ids', 'scope_token',
   ])) return c.json({ error: 'بيانات معاينة الاعتماد غير صالحة أو تحتوي على حقول غير معروفة' }, 400)
   const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
   if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
@@ -3360,6 +3429,8 @@ app.post('/api/timetable/solver/adoption-preview', requireSameSchoolOrAdmin(), r
     if (revision !== parsed.revision) {
       return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
     }
+    if (!await timetableProposalScopeIsCurrent(parsed, context, targetSchool.schoolId, academicYearId, getValidatedJwtSecret(c.env.JWT_SECRET)))
+      return c.json({ error: 'تغير نطاق التوليد أو إثباته. أنشئ المعاينة من جديد.', code: 'stale_timetable_scope' }, 409)
     const data = await buildTimetableAdoptionPreview({
       schoolId: targetSchool.schoolId,
       academicYearId,
@@ -3367,6 +3438,8 @@ app.post('/api/timetable/solver/adoption-preview', requireSameSchoolOrAdmin(), r
       digest: parsed.digest,
       entries: parsed.entries,
       context,
+      generationScope: parsed.scope,
+      scopeLoadIds: parsed.scopeLoadIds,
       options: { validationMode: 'complete', preserveCurrentLocks: true },
     })
     return c.json({ data })
@@ -3379,7 +3452,7 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
   const user = c.get('user') as UserContext
   const body = await readJsonObject(c)
   if (!body || !hasOnlyObjectKeys(body, [
-    'school_id', 'academic_year_id', 'expected_revision', 'proposal_digest', 'entries', 'confirm_apply',
+    'school_id', 'academic_year_id', 'expected_revision', 'proposal_digest', 'entries', 'confirm_apply', 'generation_scope', 'scope_load_ids', 'scope_token',
   ])) return c.json({ error: 'بيانات اعتماد الجدول غير صالحة أو تحتوي على حقول غير معروفة' }, 400)
   if (body.confirm_apply !== true) return c.json({ error: 'يلزم تأكيد اعتماد الجدول الرسمي' }, 400)
   const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
@@ -3398,6 +3471,8 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
     if (revision !== parsed.revision) {
       return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
     }
+    if (!await timetableProposalScopeIsCurrent(parsed, context, targetSchool.schoolId, academicYearId, getValidatedJwtSecret(c.env.JWT_SECRET)))
+      return c.json({ error: 'تغير نطاق التوليد أو إثباته. أنشئ المعاينة من جديد.', code: 'stale_timetable_scope' }, 409)
     const preview = await buildTimetableAdoptionPreview({
       schoolId: targetSchool.schoolId,
       academicYearId,
@@ -3405,6 +3480,8 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
       digest: parsed.digest,
       entries: parsed.entries,
       context,
+      generationScope: parsed.scope,
+      scopeLoadIds: parsed.scopeLoadIds,
       options: { validationMode: 'complete', preserveCurrentLocks: true },
     })
     if (!preview.can_apply) {
@@ -3420,6 +3497,7 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
       entries: parsed.entries,
       userId: user.id,
       source: 'automatic_adoption',
+      ...(parsed.scope.kind === 'school' ? {} : { generationScope: parsed.scope, replaceLoadIds: parsed.scopeLoadIds }),
     })
     return c.json({
       data: {
@@ -3687,6 +3765,7 @@ app.get('/api/timetable/master-grid', requireSameSchoolOrAdmin(), requireRoles(A
         }
       }
       const evaluation = evaluateTimetableEntryPlacement({
+        validateWholeSchedule: true,
         candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
         days: context.days,
         slots: context.slots,
@@ -3791,6 +3870,7 @@ app.get('/api/timetable/grid', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
           && Number(item.day_of_week) === Number(slot.day_of_week)
         )) || null
         const evaluation = evaluateTimetableEntryPlacement({
+          validateWholeSchedule: true,
           candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
           days: context.days,
           slots: context.slots,
@@ -3906,6 +3986,47 @@ app.post('/api/timetable/entries', requireSameSchoolOrAdmin(), requireRoles(ACAD
     const conflict = timetableEntryConstraintError(error)
     if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
     return c.json({ error: 'فشل في جدولة الحصة' }, 500)
+  }
+})
+
+app.put('/api/timetable/entries/lock-scope', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'expected_revision', 'scope', 'is_locked'])
+    || !Number.isSafeInteger(body.academic_year_id) || Number(body.academic_year_id) <= 0
+    || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0
+    || (body.is_locked !== 0 && body.is_locked !== 1)) return c.json({ error: 'بيانات تثبيت النطاق غير صالحة' }, 400)
+  const scope = parseTimetableScope(body.scope)
+  if (!scope || body.scope == null) return c.json({ error: 'حدد نطاق التثبيت صراحةً' }, 400)
+  const user = c.get('user') as UserContext
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
+  const schoolId = targetSchool.schoolId, academicYearId = Number(body.academic_year_id)
+  const year = await validateTimetableAcademicYear(c.env.DB, schoolId, academicYearId)
+  if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+  try {
+    const context = await loadTimetableSchedulingContext(c.env.DB, schoolId, academicYearId)
+    const loadIds = new Set(context.loads.filter(load => timetableLoadMatchesScope(load, scope)).map(load => load.id))
+    const selected = context.entries.filter(entry => loadIds.has(entry.teaching_load_id))
+    if (!selected.length) return c.json({ error: 'لا توجد حصص محفوظة ضمن النطاق المختار لتثبيتها.', code: 'empty_timetable_scope' }, 400)
+    const ids = JSON.stringify(selected.filter(entry => entry.is_locked !== body.is_locked).map(entry => entry.id))
+    const token = crypto.randomUUID()
+    const predicate = 'school_id = ? AND academic_year_id = ? AND id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))'
+    const statements = [timetableRevisionAssertion(c.env.DB, token, schoolId, academicYearId, Number(body.expected_revision), scope, [...loadIds])]
+    if (body.is_locked === 0) statements.push(c.env.DB.prepare(`
+      INSERT INTO timetable_locked_entry_overrides (token, entry_id, school_id, academic_year_id, action)
+      SELECT ? || ':' || CAST(id AS TEXT), id, school_id, academic_year_id, 'unlock'
+      FROM timetable_entries WHERE ${predicate} AND is_locked = 1
+    `).bind(token, schoolId, academicYearId, ids))
+    statements.push(c.env.DB.prepare(`UPDATE timetable_entries SET is_locked = ?, updated_by_user_id = ?, updated_at = unixepoch() WHERE ${predicate}`)
+      .bind(body.is_locked, user.id, schoolId, academicYearId, ids))
+    statements.push(c.env.DB.prepare(`DELETE FROM timetable_locked_entry_overrides WHERE token LIKE ?`).bind(`${token}:%`))
+    statements.push(c.env.DB.prepare('DELETE FROM timetable_revision_assertions WHERE token = ?').bind(token))
+    await c.env.DB.batch(statements)
+    return c.json({ data: { affected_count: JSON.parse(ids).length, is_locked: body.is_locked, revision: await loadCurrentTimetableRevision(c.env.DB, schoolId, academicYearId) } })
+  } catch (error) {
+    if (/stale_timetable_proposal/.test(error instanceof Error ? error.message : String(error)))
+      return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
+    return c.json({ error: 'فشل في تغيير تثبيت النطاق. لم يتغير الجدول.' }, 500)
   }
 })
 

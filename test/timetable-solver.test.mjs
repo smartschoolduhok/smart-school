@@ -99,6 +99,29 @@ test('fixed lesson is preserved at the exact slot and marked locked', () => {
   assert.equal(fixed?.is_locked, 1);
 });
 
+test('multiple fixed lessons on each day cannot hide an exceeded working-day limit', () => {
+  const { days, slots } = week(2, 4);
+  const constraints = [{ id: 1, school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null,
+    max_consecutive_periods: null, max_working_days: 1, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0 }];
+  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1, { weekly_periods: 4 })],
+    placements: [placement(1)], constraints, fixedEntries: [1, 2, 5, 6].map(slot_id => ({ slot_id, teaching_load_id: 1 })) }));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some(conflict => conflict.code === 'fixed_working_days_limit'));
+});
+
+test('unequal weekday capacity preserves manual placements and prevents shared teacher collisions', () => {
+  const { days, slots: allSlots } = week(5, 7);
+  const dailyCounts = [7, 7, 6, 6, 5];
+  const slots = allSlots.filter(slot => slot.lesson_number <= dailyCounts[slot.day_of_week]);
+  const result = solveTimetable(solverInput({ days, slots,
+    loads: [teachingLoad(1, { weekly_periods: 12 }), teachingLoad(2, { employee_id: 1, weekly_periods: 12 })],
+    placements: [placement(1), placement(2)], fixedEntries: [{ slot_id: 7, teaching_load_id: 1 }, { slot_id: 14, teaching_load_id: 1 }] }));
+  assert.equal(result.status, 'complete');
+  assert.equal(result.statistics.active_lesson_slot_count, 31);
+  assert.equal(new Set(result.entries.map(entry => entry.slot_id)).size, result.entries.length);
+  assert.deepEqual(result.entries.filter(entry => entry.is_locked).map(entry => entry.slot_id), [7, 14]);
+});
+
 test('section-specific fixed lesson remains in its exact canonical placement', () => {
   const { days, slots } = week(3, 4);
   const result = solveTimetable(solverInput({

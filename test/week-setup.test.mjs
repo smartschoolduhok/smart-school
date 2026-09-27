@@ -5,6 +5,71 @@ import {loadWeekSetup,buildWeekApplyStatements,readWeekJson} from '../src/lib/we
 import {weekFixture,example,maximum,request,snapshot,revision,assertPreserved,entry,addConstraints,addAvailability,historySQL} from './helpers/week-setup-fixture.mjs';
 import {capacityEvidenceSQL,workingDaysEvidenceSQL,reviewLessons,evidenceRequest,reviewCapacity,unrelatedEvidenceSQL} from './helpers/week-setup-fixture.mjs';
 
+test('day profile is explicitly one day, with no copy source', () => {
+ const raw={school_id:1,academic_year_id:1,expected_revision:0,mode:'configure_day',source_day_of_week:null,targets:[{day_of_week:0,activate_day:false}],template:reviewLessons(6)};
+ assert.equal(parseWeekRequest(raw).mode,'configure_day');
+ for(const patch of [{targets:[...raw.targets,{day_of_week:1,activate_day:false}]},{source_day_of_week:1}])
+  assert.throws(()=>parseWeekRequest({...raw,...patch}),e=>e.code==='invalid_day_profile_scope');
+});
+
+test('day profile reduces 7 to 6 with explicit deactivation, keeps IDs and restores same slot on increase', async t => {
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(7));
+ const before=snapshot(f.db),c=await loadWeekSetup(f.d1,1,40);
+ const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(6)),mode:'configure_day'});
+ assert.equal(p.can_apply,true,JSON.stringify(p));
+ const stopped=p.days[0].changes.find(change=>change.before?.lesson_number===7);
+ assert.equal(stopped.after.is_active,0);assert.equal(stopped.action,'update');assert.equal(p.days[0].after.lessons,6);
+ assert.equal(p.days[0].after.active_last_end,'12:00');assert.equal(p.days[0].after.active_teaching_minutes,240);assert.equal(p.days[0].after.last_end,'12:40');
+ await f.d1.batch(buildWeekApplyStatements(f.d1,1,40,p).statements);
+ const shorter=await loadWeekSetup(f.d1,1,40);
+ assert.equal(shorter.slots.filter(s=>s.is_active===1).length,6);assert.equal(shorter.slots.length,7);
+ assert.deepEqual(shorter.slots.map(s=>s.id),c.slots.map(s=>s.id));assertPreserved(before,snapshot(f.db));
+ const restore=await planWeekSetup(shorter,{...evidenceRequest(shorter,reviewLessons(7)),mode:'configure_day'});
+ assert.equal(restore.can_apply,true);await f.d1.batch(buildWeekApplyStatements(f.d1,1,40,restore).statements);
+ const expanded=await loadWeekSetup(f.d1,1,40);assert.equal(expanded.slots.filter(s=>s.is_active===1).length,7);assert.deepEqual(expanded.slots.map(s=>s.id),c.slots.map(s=>s.id));
+});
+
+for(const locked of [0,1])test(`day profile cannot deactivate occupied period (locked=${locked})`,async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(7));
+ f.db.exec(`INSERT INTO timetable_entries(school_id,academic_year_id,slot_id,teaching_load_id,is_locked,created_by_user_id,updated_by_user_id) VALUES(1,40,4006,40,${locked},1,1)`);
+ const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db),p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(6)),mode:'configure_day'});
+ assert.equal(p.can_apply,false);assert.ok(p.days[0].blockers.some(b=>b.code==='slot_has_scheduled_entries'));
+ assert.throws(()=>buildWeekApplyStatements(f.d1,1,40,p),e=>e.code==='blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+});
+
+test('day profile cannot increase teacher capacity deficit when reducing unused periods',async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(4));const c=await loadWeekSetup(f.d1,1,40);
+ const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(3)),mode:'configure_day'});
+ assert.equal(p.can_apply,false);assert.ok(p.blockers.some(b=>b.code==='teacher_load_exceeds_availability'));
+});
+
+test('day profile capacity protection includes teachers without a constraints row',async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(4));f.db.exec('DELETE FROM timetable_teacher_constraints WHERE academic_year_id=40');
+ const c=await loadWeekSetup(f.d1,1,40);assert.equal(c.constraints.length,0);
+ const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(3)),mode:'configure_day'});
+ assert.equal(p.can_apply,false);assert.ok(p.blockers.some(b=>b.employee_id===1&&b.evidence?.dimension==='capacity_deficit'));
+});
+
+test('day profile checks combined section demand across teachers and unassigned loads',async t=>{
+ const f=weekFixture(t),context=await loadWeekSetup(f.d1,1,1);
+ const loads=[{...context.loads.find(l=>l.class_id===1),id:101,class_id:1,section_id:1,employee_id:1,weekly_periods:2},
+  {...context.loads.find(l=>l.class_id===1),id:102,class_id:1,section_id:1,employee_id:2,weekly_periods:2}];
+ for(const employeeId of [2,null]) {
+  const c={...context,loads:[loads[0],{...loads[1],employee_id:employeeId}]};
+  const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(1)),mode:'configure_day'});
+  assert.equal(p.can_apply,false);const issue=p.blockers.find(b=>b.code==='placement_weekly_capacity_exceeded');
+  assert.equal(issue.class_id,1);assert.equal(issue.section_id,1);assert.deepEqual(issue.evidence,{dimension:'placement_capacity_deficit',actual:4,limit:3,excess:1});
+ }
+});
+
+test('day profile class-wide demand is counted in every specific section once',async t=>{
+ const f=weekFixture(t),context=await loadWeekSetup(f.d1,1,1),load=context.loads[0];
+ const c={...context,loads:[{...load,id:101,section_id:null,employee_id:null,weekly_periods:2},{...load,id:102,section_id:1,employee_id:null,weekly_periods:2},{...load,id:103,section_id:2,employee_id:null,weekly_periods:1}]};
+ const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(1)),mode:'configure_day'});
+ const blockers=p.blockers.filter(b=>b.code==='placement_weekly_capacity_exceeded');
+ assert.equal(blockers.length,1);assert.equal(blockers[0].section_id,1);assert.equal(blockers[0].evidence.actual,4);
+});
+
 test('review capacity 0 -> 2 demand 4: safe incremental setup is allowed with AFTER shortage',async t=>{
  const f=weekFixture(t);f.db.exec(capacityEvidenceSQL());const c=await loadWeekSetup(f.d1,1,40);
  const p=await planWeekSetup(c,evidenceRequest(c,reviewLessons(2)));
@@ -34,7 +99,7 @@ test(`review capacity ${beforeCapacity} -> ${afterCapacity} day ${day}: AFTER ev
 test('review unchanged shortage: harmless metadata save retains truthful warning, not a readiness claim',async t=>{
  const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(2));const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
  const p=await planWeekSetup(c,evidenceRequest(c,reviewLessons(2).map((s,i)=>({...s,label:'Label '+i}))));
- assert.equal(p.can_apply,true);assert.deepEqual(p.warnings[0].evidence,{dimension:'capacity_deficit',actual:4,limit:2,excess:2});
+ assert.equal(p.can_apply,true);assert.deepEqual(p.warnings.find(w=>w.evidence?.dimension==='capacity_deficit').evidence,{dimension:'capacity_deficit',actual:4,limit:2,excess:2});
  await f.d1.batch(buildWeekApplyStatements(f.d1,1,40,p).statements);assertPreserved(before,snapshot(f.db));
  assert.equal(reviewCapacity(await loadWeekSetup(f.d1,1,40)).feasible,false);
 });

@@ -28,6 +28,7 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
   const [generator, setGenerator] = useState(blankGenerator);
   const [rows, setRows] = useState<DraftPeriod[]>([]);
   const [source, setSource] = useState<number | null>(null), [draftRevision, setDraftRevision] = useState(0);
+  const [profileDay, setProfileDay] = useState<number | null>(null);
   const [targets, setTargets] = useState<WeekRequest['targets']>([]);
   const [mode, setMode] = useState<WeekMode>('fill_empty_days');
   const [preview, setPreview] = useState<WeekPlan | null>(null), [previewInput, setPreviewInput] = useState<WeekRequest | null>(null);
@@ -58,7 +59,7 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
     if (scopeLoaded.current === currentScope && openRef.current) return;
     if (scopeLoaded.current !== currentScope) {
       scopeLoaded.current = currentScope; setSnapshot(null); setOpen(false); openRef.current = false;
-      setExpanded(null); setPreview(null); setRows([]); setSuccess(''); markDirty(false);
+      setExpanded(null); setProfileDay(null); setPreview(null); setRows([]); setSuccess(''); markDirty(false);
     }
     void load();
   }, [schoolId, academicYearId, dataVersion]);
@@ -78,16 +79,35 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
   function begin(day: number | null) {
     if (!snapshot || !allowLeave()) return;
     fence.invalidate(); opener.current = document.activeElement as HTMLElement;
-    setSource(day); setDraftRevision(snapshot.revision); setTargets([]); setMode('fill_empty_days'); setGenerator(blankGenerator());
+    setSource(day); setProfileDay(null); setDraftRevision(snapshot.revision); setTargets([]); setMode('fill_empty_days'); setGenerator(blankGenerator());
     setRows(day === null ? [] : editablePeriods(snapshot.periods.filter(p => p.day_of_week === day).map(periodValues)));
     setPreview(null); setPreviewInput(null); setAck(false); setError(''); setSuccess(''); setBusy(null); setExpanded(null);
     markDirty(day !== null); setOpen(true); openRef.current = true;
+  }
+  function beginDayProfile(day: number) {
+    if (!snapshot || !allowLeave()) return;
+    fence.invalidate(); opener.current = document.activeElement as HTMLElement;
+    const periods = snapshot.periods.filter(p => p.day_of_week === day).sort((a, b) => a.slot_index - b.slot_index);
+    const active = periods.filter(p => p.is_active === 1);
+    const sourcePeriods = active.length ? active : snapshot.periods.filter(p => p.day_of_week === snapshot.summary.find(d => d.lessons > 0)?.day_of_week && p.is_active === 1).sort((a, b) => a.slot_index - b.slot_index);
+    const lesson = sourcePeriods.find(p => p.slot_type === 'lesson');
+    let lessons = 0;
+    const breaks = sourcePeriods.flatMap(p => {
+      if (p.slot_type === 'lesson') { lessons++; return []; }
+      return lessons > 0 ? [{after: String(lessons), minutes: String(minuteOfDay(p.end_time) - minuteOfDay(p.start_time)), label: p.label}] : [];
+    });
+    const count = active.filter(p => p.slot_type === 'lesson').length || 6;
+    setGenerator({start: sourcePeriods[0]?.start_time || '08:00', count: String(count), minutes: lesson ? String(minuteOfDay(lesson.end_time) - minuteOfDay(lesson.start_time)) : '40', desired: '', breaks: breaks.filter(b => Number(b.after) < count)});
+    setSource(null); setProfileDay(day); setDraftRevision(snapshot.revision); setMode('configure_day');
+    setTargets([{day_of_week: day, activate_day: false}]); setRows([]);
+    setPreview(null); setPreviewInput(null); setAck(false); setError(''); setSuccess(''); setBusy(null); setExpanded(null);
+    markDirty(false); setOpen(true); openRef.current = true;
   }
   function generate() {
     if (rows.length && !window.confirm('سيتم استبدال فترات المسودة وتعديلاتها بالتوليد الجديد. هل تريد المتابعة؟')) return;
     try {
       const generated = generateWeekTemplate({start_time: generator.start, lesson_count: Number(generator.count), lesson_minutes: Number(generator.minutes), desired_end_time: generator.desired,
-        breaks: generator.breaks.map(b => ({after_lesson: Number(b.after), minutes: Number(b.minutes), label: b.label}))});
+        breaks: generator.breaks.filter(b => profileDay === null || Number(b.after) < Number(generator.count)).map(b => ({after_lesson: Number(b.after), minutes: Number(b.minutes), label: b.label}))});
       edit(); setRows(editablePeriods(generated));
     } catch (e) { setError(e instanceof Error ? e.message : 'تحقق من بيانات التوليد.'); }
   }
@@ -133,7 +153,7 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
   try { summary = summarizeWeekDay(0, compilePeriods(rows)); if (generator.desired && summary.last_end) difference = minuteOfDay(summary.last_end) - minuteOfDay(generator.desired); } catch { /* Errors are shown on generation/preview; unfinished fields remain local. */ }
 
   return <div className="min-w-0 space-y-4" dir="rtl">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-gray-900">أيام الأسبوع وفترات الجرس</h2><p className="text-sm text-gray-500">اختر الأيام المتشابهة فقط؛ يبقى كل يوم مستقلًا بعد الحفظ.</p></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-gray-900">أيام الأسبوع وفترات الجرس</h2><p className="text-sm text-gray-500">عدد حصص مستقل لكل يوم: يمكن جعل يوم أو يومين أو ثلاثة أيام 7 حصص، وباقي الأيام 6 أو أي عدد آخر.</p><p className="text-sm text-gray-500">للأيام الفارغة: ولّد 7 حصص وحدد الأيام المطلوبة فقط، ثم كرر لباقي الأيام. لتعديل يوم محفوظ استخدم «عدد حصص هذا اليوم».</p></div>
       <button className={primaryClass} disabled={!snapshot || busy === 'load'} onClick={() => begin(null)}>إعداد سريع للحصص والاستراحات</button></div>
     {success && <p role="status" className="rounded-lg border border-green-200 bg-green-50 p-3 text-green-800">{success}</p>}
     {!open && error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>}
@@ -146,7 +166,7 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
         {day.inactive > 0 && <p className="text-sm text-amber-800">فترات محفوظة غير نشطة: {day.inactive}</p>}
         <p className="my-2 text-xs text-gray-600">{day.empty ? 'فارغ — لا توجد فترات محفوظة' : `غير فارغ — ${day.saved_periods} فترة محفوظة`}</p>
         <p className="text-xs">أول بداية محفوظة: <bdi dir="ltr">{day.first_start || '—'}</bdi> · آخر نهاية محفوظة: <bdi dir="ltr">{day.last_end || '—'}</bdi></p>
-        <div className="mt-3 flex flex-wrap gap-2"><button className={buttonClass} disabled={day.empty || busy === 'load'} onClick={() => begin(day.day_of_week)}>نسخ فترات هذا اليوم إلى…</button><button className={buttonClass} aria-expanded={expanded === day.day_of_week} onClick={() => customize(day.day_of_week)}>تخصيص اليوم</button></div>
+        <div className="mt-3 flex flex-wrap gap-2"><button className={primaryClass} disabled={busy === 'load'} onClick={() => beginDayProfile(day.day_of_week)}>عدد حصص هذا اليوم</button><button className={buttonClass} disabled={day.empty || busy === 'load'} onClick={() => begin(day.day_of_week)}>نسخ فترات هذا اليوم إلى…</button><button className={buttonClass} aria-expanded={expanded === day.day_of_week} onClick={() => customize(day.day_of_week)}>تخصيص اليوم</button></div>
         {expanded === day.day_of_week && <div className="mt-3 space-y-3 border-t pt-3">
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={day.is_active} disabled={saving} onChange={e => void onDayChange(day.day_of_week, {is_active: e.target.checked ? 1 : 0})}/>تفعيل {TIMETABLE_DAY_NAMES[day.day_of_week]}</label>
           <label className="flex items-center gap-2 text-sm">ترتيب اليوم<input aria-label={`ترتيب ${TIMETABLE_DAY_NAMES[day.day_of_week]}`} className="w-20 rounded border p-2" type="number" min="0" disabled={saving} value={day.order_index} onChange={e => void onDayChange(day.day_of_week, {order_index: Number(e.target.value)})}/></label>
@@ -166,8 +186,9 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
           else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
         }
       }}>
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h2 id="week-editor-title" className="text-lg font-bold">{source === null ? 'إعداد سريع للحصص والاستراحات' : `نسخ فترات ${TIMETABLE_DAY_NAMES[source]} إلى أيام محددة`}</h2><button className={buttonClass} onClick={close}>إغلاق المسودة</button></div>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h2 id="week-editor-title" className="text-lg font-bold">{profileDay !== null ? `عدد حصص ${TIMETABLE_DAY_NAMES[profileDay]}` : source === null ? 'إعداد سريع للحصص والاستراحات' : `نسخ فترات ${TIMETABLE_DAY_NAMES[source]} إلى أيام محددة`}</h2><button className={buttonClass} onClick={close}>إغلاق المسودة</button></div>
         <p className="mb-4 text-sm text-gray-600">مسودة محلية فقط — لا تُحفظ الفترات إلا بعد المعاينة وتأكيد الحفظ. الأوقات بصيغة 24 ساعة.</p>
+        {profileDay !== null && <p className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">هذا التعديل يخص يوم {TIMETABLE_DAY_NAMES[profileDay]} فقط. أدخل عدد الحصص والبداية والمدة ثم ولّد الفترات. عند التقليل ستظهر الفترات الزائدة كغير نشطة في المعاينة مع الاحتفاظ بسجلاتها. لا يمكن إيقاف فترة مشغولة أو مثبتة. الاستراحات الواقعة بعد آخر حصة تُستبعد من اليوم النشط.</p>}
         {error && <p role="alert" className="mb-3 rounded bg-red-50 p-3 text-sm text-red-800">{error}</p>}
         <fieldset disabled={busy === 'apply'} className="min-w-0 space-y-5 disabled:opacity-60">
           <section className="space-y-3 rounded-xl bg-gray-50 p-3">
@@ -193,11 +214,11 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
             catch (e) { setError(e instanceof Error ? e.message : 'صحح الفترات.'); }
           }}>إعادة حساب الأوقات التالية من بداية الدوام (إزالة الفجوات)</button>}
           {summary && <p role="status" className="rounded bg-blue-50 p-3 text-sm text-blue-900">دقائق الحصص: {summary.teaching_minutes} · الاستراحات: {summary.break_minutes} · المدة الكلية: {summary.elapsed_minutes} · النهاية المحسوبة: <bdi dir="ltr">{summary.last_end}</bdi>{difference !== null && ` · الفرق عن النهاية المرغوبة: ${difference} دقيقة (دون تغيير المدد)`}</p>}
-          <label className="block text-sm font-bold">طريقة التطبيق<select aria-label="طريقة التطبيق" className={inputClass} value={mode} onChange={e => { edit(); setMode(e.target.value as WeekMode); }}><option value="fill_empty_days">تعبئة الأيام الفارغة فقط</option><option value="update_matching_keep_extra">تحديث الفترات المتطابقة مع إبقاء الباقي</option></select></label>
-          <section aria-label="الأيام المستهدفة" className="space-y-3"><h3 className="font-bold">اختر الأيام المستهدفة فقط</h3><div className="flex flex-wrap gap-2"><button className={buttonClass} onClick={() => { edit(); setTargets(snapshot.summary.filter(d => d.is_active && d.day_of_week !== source).map(d => ({day_of_week: d.day_of_week, activate_day: false}))); }}>تحديد أيام الدوام</button><button className={buttonClass} onClick={() => { edit(); setTargets([]); }}>إلغاء التحديد</button></div>
+          {profileDay === null && <label className="block text-sm font-bold">طريقة التطبيق<select aria-label="طريقة التطبيق" className={inputClass} value={mode} onChange={e => { edit(); setMode(e.target.value as WeekMode); }}><option value="fill_empty_days">تعبئة الأيام الفارغة فقط</option><option value="update_matching_keep_extra">تحديث الفترات المتطابقة مع إبقاء الباقي</option></select></label>}
+          <section aria-label="الأيام المستهدفة" className="space-y-3"><h3 className="font-bold">{profileDay !== null ? 'اليوم المحدد للتعديل' : 'اختر الأيام المستهدفة فقط'}</h3>{profileDay === null && <div className="flex flex-wrap gap-2"><button className={buttonClass} onClick={() => { edit(); setTargets(snapshot.summary.filter(d => d.is_active && d.day_of_week !== source).map(d => ({day_of_week: d.day_of_week, activate_day: false}))); }}>تحديد أيام الدوام</button><button className={buttonClass} onClick={() => { edit(); setTargets([]); }}>إلغاء التحديد</button></div>}
             <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-4">{snapshot.summary.map(day => {
               const chosen = targets.find(t => t.day_of_week === day.day_of_week), isSource = day.day_of_week === source;
-              return <div key={day.day_of_week} className={`rounded-lg border p-3 ${chosen ? 'border-primary-400 bg-primary-50' : 'border-gray-200'}`}><label className="flex min-h-12 cursor-pointer items-start gap-2"><input aria-label={`استهداف ${TIMETABLE_DAY_NAMES[day.day_of_week]}`} type="checkbox" disabled={isSource} checked={!!chosen} onChange={e => { edit(); setTargets(e.target.checked ? [...targets, {day_of_week: day.day_of_week, activate_day: false}] : targets.filter(t => t.day_of_week !== day.day_of_week)); }}/><span className="text-sm"><strong>{TIMETABLE_DAY_NAMES[day.day_of_week]}{isSource && ' (المصدر)'}</strong><span className="block text-xs">{day.is_active ? 'نشط' : 'غير نشط'} · {day.saved_periods} فترة محفوظة · {day.empty ? 'فارغ' : 'غير فارغ'}</span></span></label>
+              return <div key={day.day_of_week} className={`rounded-lg border p-3 ${chosen ? 'border-primary-400 bg-primary-50' : 'border-gray-200'}`}><label className="flex min-h-12 cursor-pointer items-start gap-2"><input aria-label={`استهداف ${TIMETABLE_DAY_NAMES[day.day_of_week]}`} type="checkbox" disabled={isSource || profileDay !== null} checked={!!chosen} onChange={e => { edit(); setTargets(e.target.checked ? [...targets, {day_of_week: day.day_of_week, activate_day: false}] : targets.filter(t => t.day_of_week !== day.day_of_week)); }}/><span className="text-sm"><strong>{TIMETABLE_DAY_NAMES[day.day_of_week]}{isSource && ' (المصدر)'}</strong><span className="block text-xs">{day.is_active ? 'نشط' : 'غير نشط'} · {day.saved_periods} فترة محفوظة · {day.empty ? 'فارغ' : 'غير فارغ'}</span></span></label>
                 {chosen && !day.is_active && <label className="mt-2 flex items-start gap-2 text-sm text-amber-900"><input aria-label={`تفعيل ${TIMETABLE_DAY_NAMES[day.day_of_week]} ضمن الحفظ`} type="checkbox" checked={chosen.activate_day} onChange={e => { edit(); setTargets(targets.map(t => t.day_of_week === day.day_of_week ? {...t, activate_day: e.target.checked} : t)); }}/>تفعيل هذا اليوم ضمن الحفظ</label>}</div>;
             })}</div>
           </section>
@@ -207,7 +228,8 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
             {[...preview.blockers, ...preview.warnings].map((notice, i) => <p key={i} className={`text-sm ${i < preview.blockers.length ? 'text-red-800' : 'text-amber-800'}`}>{notice.message}</p>)}
             {preview.days.map(day => <section key={day.day_of_week} className="min-w-0 rounded border p-3"><h4 className="font-bold">{TIMETABLE_DAY_NAMES[day.day_of_week]} — {day.action === 'skipped_existing' ? 'متخطى؛ لن يتغير' : day.action === 'blocked' ? 'محجوب' : 'قابل للتطبيق'}</h4>
               <p className="text-sm">تفعيل اليوم: {day.activate_day ? 'نعم، ضمن الحفظ' : 'لا تغيير'}</p>
-              <p className="text-xs">قبل: {day.before.lessons} حصة / {day.before.breaks} استراحة، <bdi dir="ltr">{day.before.first_start || '—'}–{day.before.last_end || '—'}</bdi> · بعد: {day.after.lessons} حصة / {day.after.breaks} استراحة، <bdi dir="ltr">{day.after.first_start || '—'}–{day.after.last_end || '—'}</bdi></p>
+              <p className="text-xs">قبل: {day.before.lessons} حصة / {day.before.breaks} استراحة، <bdi dir="ltr">{day.before.active_first_start || '—'}–{day.before.active_last_end || '—'}</bdi> · بعد: {day.after.lessons} حصة / {day.after.breaks} استراحة، <bdi dir="ltr">{day.after.active_first_start || '—'}–{day.after.active_last_end || '—'}</bdi></p>
+              <p className="text-xs">دقائق الحصص النشطة بعد الحفظ: {day.after.active_teaching_minutes} · الاستراحات النشطة: {day.after.active_break_minutes}</p>
               <p className="my-2 text-xs">مراجع الفترات المتأثرة: {day.impact.scheduled_entries} حصة مجدولة · {day.impact.locked_entries} مقفلة · {day.impact.availability_overrides} توفر · {day.impact.historical_references} تاريخية</p>
               {[...day.blockers, ...day.warnings].map((n, i) => <p key={i} className="mb-1 text-sm text-amber-900">{n.message}</p>)}
               <ul className="grid gap-1 sm:grid-cols-2">{[...day.changes].sort((a, b) => a.after.slot_index - b.after.slot_index).map(change => <li key={change.after.slot_index} className="min-w-0 break-words rounded bg-gray-50 p-2 text-xs">{change.after.slot_index}. {change.after.label} · {change.after.slot_type === 'lesson' ? `حصة ${change.after.lesson_number}` : 'استراحة'} · <bdi dir="ltr">{change.after.start_time}–{change.after.end_time}</bdi> · {change.after.is_active ? 'نشطة' : 'غير نشطة'} · {names[change.action]}</li>)}</ul>

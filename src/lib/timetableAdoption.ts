@@ -11,6 +11,7 @@ import {
   type TimetableTeachingLoad,
 } from './timetable.ts';
 import type { TimetableSolverPreview } from './timetableSolver.ts';
+import { timetableLoadMatchesScope, type TimetableScope } from './timetableScope.ts';
 
 export const STALE_TIMETABLE_PROPOSAL_CODE = 'stale_timetable_proposal';
 export const STALE_TIMETABLE_PROPOSAL_MESSAGE = 'تغيرت بيانات الجدول بعد إنشاء المقترح. أنشئ المعاينة من جديد.';
@@ -68,6 +69,9 @@ export interface TimetableRestoreScheduleValidation {
 }
 
 export interface TimetableSolverProposalWithIntegrity extends TimetableSolverPreview {
+  generation_scope?: TimetableScope;
+  scope_load_ids?: number[];
+  scope_token?: string;
   timetable_revision: number;
   proposal_digest: string;
 }
@@ -154,12 +158,18 @@ export function timetableProposalDigestSource(input: {
   academicYearId: number;
   revision: number;
   entries: TimetableProposalPlacement[];
+  generationScope?: TimetableScope;
+  scopeLoadIds?: number[];
 }): string {
   return JSON.stringify({
     school_id: Number(input.schoolId),
     academic_year_id: Number(input.academicYearId),
     revision: Number(input.revision),
     entries: canonicalTimetableProposalEntries(input.entries),
+    ...(input.generationScope && input.generationScope.kind !== 'school' ? {
+      generation_scope: input.generationScope,
+      scope_load_ids: [...(input.scopeLoadIds || [])].sort((a, b) => a - b),
+    } : {}),
   });
 }
 
@@ -168,6 +178,8 @@ export async function computeTimetableProposalDigest(input: {
   academicYearId: number;
   revision: number;
   entries: TimetableProposalPlacement[];
+  generationScope?: TimetableScope;
+  scopeLoadIds?: number[];
 }): Promise<string> {
   const bytes = new TextEncoder().encode(timetableProposalDigestSource(input));
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
@@ -342,6 +354,7 @@ function validateTimetableScheduleEntries(
       return;
     }
     const evaluation = evaluateTimetableEntryPlacement({
+      validateWholeSchedule: true,
       candidate: internalEntries[index],
       days: context.days,
       slots: context.slots,
@@ -401,4 +414,23 @@ export function validateRestorableTimetableSchedule(
     weekly_demand: weeklyDemand,
     blockers,
   };
+}
+
+/** Validate all conflicts while requiring completion only inside the chosen scope. */
+export function validateScopedTimetableSchedule(context: TimetableValidationContext,
+  proposedEntries: TimetableProposalPlacement[], currentEntries: TimetableEntry[], scope: TimetableScope): TimetableScheduleValidation {
+  if (scope.kind === 'school') return validateCompleteTimetableSchedule(context, proposedEntries);
+  const { entries, blockers, weeklyDemand } = validateTimetableScheduleEntries(context, proposedEntries);
+  const selected = new Set(context.loads.filter(load => timetableLoadMatchesScope(load, scope)).map(load => load.id));
+  const outside = (items: TimetableProposalPlacement[]) => canonicalTimetableProposalEntries(items.filter(entry => !selected.has(entry.teaching_load_id)));
+  if (JSON.stringify(outside(entries)) !== JSON.stringify(outside(currentEntries))) {
+    blockers.push({ code: 'outside_scope_not_preserved', message: 'يجب إبقاء جميع الحصص خارج النطاق المختار في مواقعها وبحالة تثبيتها الحالية.' });
+  }
+  for (const load of context.loads.filter(load => load.status === 'active' && selected.has(load.id))) {
+    if (!loadIsValid(load, context)) blockers.push({ code: 'invalid_teaching_load', message: 'يوجد نصاب غير صالح ضمن النطاق المختار.', teaching_load_id: load.id });
+    else if (entries.filter(entry => entry.teaching_load_id === load.id).length !== load.weekly_periods)
+      blockers.push({ code: 'incomplete_weekly_demand', message: 'لم تكتمل أنصبة النطاق المختار.', teaching_load_id: load.id });
+  }
+  return { complete: blockers.length === 0, required_periods: weeklyDemand.required_periods,
+    scheduled_periods: entries.length, weekly_demand: weeklyDemand, blockers };
 }

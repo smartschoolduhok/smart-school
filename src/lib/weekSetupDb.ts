@@ -8,9 +8,9 @@ export async function loadWeekSetup(db: D1Database, school: number, year: number
     scoped('SELECT id FROM academic_years WHERE school_id = ? AND id = ?'),
     scoped('SELECT * FROM timetable_days WHERE school_id = ? AND academic_year_id = ? ORDER BY order_index, day_of_week'),
     scoped('SELECT * FROM timetable_slots WHERE school_id = ? AND academic_year_id = ? ORDER BY day_of_week, slot_index'),
-    scoped(`SELECT load.*, class.status AS class_status, class.school_id AS class_school_id,
+    scoped(`SELECT load.*, class.name AS class_name, class.status AS class_status, class.school_id AS class_school_id,
       (SELECT COUNT(*) FROM sections s WHERE s.school_id = load.school_id AND s.class_id = load.class_id AND s.status = 'active') AS active_section_count,
-      section.status AS section_status, section.school_id AS section_school_id, section.class_id AS section_class_id,
+      section.name AS section_name, section.status AS section_status, section.school_id AS section_school_id, section.class_id AS section_class_id,
       subject.status AS subject_status, subject.school_id AS subject_school_id, subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
       employee.status AS employee_status, employee.school_id AS employee_school_id, employee.role AS employee_role
       FROM timetable_teaching_loads load
@@ -51,13 +51,13 @@ export function buildWeekApplyStatements(db: D1Database, school: number, year: n
     updateIndexes.push(statements.length);
     statements.push(group(`UPDATE timetable_slots SET
       label = json_extract(change.value, '$.label'), start_time = json_extract(change.value, '$.start_time'),
-      end_time = json_extract(change.value, '$.end_time'), updated_at = unixepoch()
+      end_time = json_extract(change.value, '$.end_time'), is_active = json_extract(change.value, '$.is_active'), updated_at = unixepoch()
       FROM json_each(?1) AS change
       WHERE timetable_slots.id = json_extract(change.value, '$.id')
         AND school_id = ?2 AND academic_year_id = ?3
         AND day_of_week = json_extract(change.value, '$.day_of_week') RETURNING id`, layer.map(id => {
       const change = changes.find(c => c.id === id && c.action === 'update')!;
-      return {id, day_of_week: change.day_of_week, label: change.after.label, start_time: change.after.start_time, end_time: change.after.end_time};
+      return {id, day_of_week: change.day_of_week, label: change.after.label, start_time: change.after.start_time, end_time: change.after.end_time, is_active: change.after.is_active};
     })));
   }
   const creates = changes.filter(c => c.action === 'create');

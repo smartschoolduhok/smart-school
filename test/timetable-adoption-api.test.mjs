@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
 import { createServer } from 'vite';
 import { signJWT } from '../src/lib/jwtSecurity.ts';
+import { computeTimetableProposalDigest } from '../src/lib/timetableAdoption.ts';
 
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), '..');
 const migration = (name) => readFileSync(join(rootDir, 'migrations', name), 'utf8');
@@ -130,6 +131,9 @@ function proposalEntries(proposal) {
 
 function adoptionBody(proposal, overrides = {}) {
   return {
+    generation_scope: proposal.generation_scope,
+    scope_load_ids: proposal.scope_load_ids,
+    scope_token: proposal.scope_token,
     school_id: 1,
     academic_year_id: 1,
     expected_revision: proposal.timetable_revision,
@@ -142,6 +146,9 @@ function adoptionBody(proposal, overrides = {}) {
 
 async function adoptionPreview(context, proposal, overrides = {}) {
   return call(context, context.tokens.owner, 'POST', '/api/timetable/solver/adoption-preview', {
+    generation_scope: proposal.generation_scope,
+    scope_load_ids: proposal.scope_load_ids,
+    scope_token: proposal.scope_token,
     school_id: 1,
     academic_year_id: 1,
     proposal_revision: proposal.timetable_revision,
@@ -211,6 +218,248 @@ test('solver proposal includes authoritative revision and SHA-256 digest', async
   assert.match(proposal.proposal_digest, /^[a-f0-9]{64}$/);
   assert.equal(proposal.status, 'complete');
 });
+
+test('default generation and explicit preview locks always preserve official locked entries', async () => {
+  const context = await fixture(); seedCurrent(context, true);
+  for (const overrides of [{}, { use_current_locked_entries: false }, { fixed_entries: [{ slot_id: 4, teaching_load_id: 2 }] }]) {
+    const proposal = await generate(context, context.tokens.owner, overrides);
+    assert.ok(proposal.entries.some(entry => entry.slot_id === 1 && entry.teaching_load_id === 1 && entry.is_locked === 1 && entry.is_preserved));
+    assert.equal((await (await adoptionPreview(context, proposal)).json()).data.can_apply, true);
+  }
+});
+
+for (const scope of [{ kind: 'section', class_id: 1, section_id: 21 }, { kind: 'class', class_id: 1 }, { kind: 'stage', stage: 'ابتدائي' }]) {
+  test(`targeted ${scope.kind} generation keeps outside rows byte-identical and respects shared teachers`, async () => {
+    const context = await fixture();
+    context.database.exec(`
+      UPDATE classes SET stage = 'متوسط' WHERE id = 2;
+      INSERT INTO sections (id, school_id, class_id, name, status) VALUES (21,1,1,'A','active'), (22,1,1,'B','active');
+      UPDATE timetable_teaching_loads SET section_id = 21 WHERE id = 1;
+      INSERT INTO timetable_teaching_loads (id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status)
+        VALUES (5,1,1,1,22,1,2,2,'active');
+      UPDATE timetable_teaching_loads SET employee_id = 1 WHERE id = 2;
+      INSERT INTO timetable_entries (id,school_id,academic_year_id,slot_id,teaching_load_id,is_locked,created_at,updated_at)
+        VALUES (30,1,1,2,2,0,100,101);
+    `);
+    const outside = context.database.prepare('SELECT * FROM timetable_entries WHERE id = 30').get();
+    const loadBefore = context.database.prepare('SELECT * FROM timetable_teaching_loads ORDER BY id').all();
+    const otherSchoolBefore = officialRows(context.database, 2, 2);
+    const otherYearBefore = officialRows(context.database, 1, 3);
+    const proposal = await generate(context, context.tokens.owner, { generation_scope: scope });
+    assert.equal(proposal.status, 'complete');
+    assert.equal(proposal.entries.filter(entry => entry.teaching_load_id === 1).length, 2);
+    assert.equal(proposal.entries.filter(entry => entry.teaching_load_id === 5).length, scope.kind === 'section' ? 0 : 2);
+    assert.ok(proposal.entries.filter(entry => entry.employee_id === 1 && entry.teaching_load_id !== 2).every(entry => entry.slot_id !== 2));
+    const preserved = proposal.entries.find(entry => entry.teaching_load_id === 2);
+    assert.equal(preserved.is_locked, 0); assert.equal(preserved.is_preserved, true);
+    const preview = (await (await adoptionPreview(context, proposal)).json()).data;
+    assert.equal(preview.can_apply, true);
+    assert.equal(preview.weekly_demand.current_demand_complete, false);
+    const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+    assert.equal(response.status, 200, JSON.stringify(await response.json()));
+    assert.deepEqual(context.database.prepare('SELECT * FROM timetable_entries WHERE id = 30').get(), outside);
+    assert.deepEqual(context.database.prepare('SELECT * FROM timetable_teaching_loads ORDER BY id').all(), loadBefore);
+    assert.deepEqual(officialRows(context.database, 2, 2), otherSchoolBefore);
+    assert.deepEqual(officialRows(context.database, 1, 3), otherYearBefore);
+  });
+}
+
+test('scope and outside occupancy tampering are rejected even with a recomputed proposal digest', async () => {
+  const context = await fixture(); seedCurrent(context);
+  const proposal = await generate(context, context.tokens.owner, { generation_scope: { kind: 'class', class_id: 1 } });
+  const changedScope = await adoptionPreview(context, proposal, { generation_scope: { kind: 'class', class_id: 2 } });
+  assert.equal(changedScope.status,409);
+  assert.equal((await changedScope.json()).code,'stale_timetable_scope');
+  const entries = proposalEntries(proposal).filter(entry => entry.teaching_load_id !== 2);
+  const digest = await computeTimetableProposalDigest({ schoolId: 1, academicYearId: 1, revision: proposal.timetable_revision, entries, generationScope: proposal.generation_scope, scopeLoadIds: proposal.scope_load_ids });
+  const before = officialRows(context.database);
+  const body = adoptionBody(proposal, { entries, proposal_digest: digest });
+  const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', body);
+  assert.equal(response.status, 400);
+  assert.ok((await response.json()).data.blockers.some(issue => issue.code === 'outside_scope_not_preserved'));
+  assert.deepEqual(officialRows(context.database), before);
+});
+
+test('targeted adoption rechecks stale revision after an outside manual edit', async () => {
+  const context = await fixture(); seedCurrent(context);
+  const proposal = await generate(context, context.tokens.owner, { generation_scope: { kind: 'class', class_id: 1 } });
+  context.database.exec('UPDATE timetable_entries SET is_locked = 1 WHERE teaching_load_id = 2');
+  const before = officialRows(context.database);
+  const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+  assert.equal(response.status, 409); assert.deepEqual(officialRows(context.database), before);
+});
+
+test('stage membership is frozen at generation even when a complete outside class later enters it', async () => {
+  const context = await fixture(); seedCurrent(context);
+  context.database.exec("UPDATE classes SET stage='متوسط' WHERE id=2; UPDATE timetable_teaching_loads SET weekly_periods=1 WHERE id=2;");
+  const proposal = await generate(context,context.tokens.owner,{generation_scope:{kind:'stage',stage:'ابتدائي'}});
+  assert.deepEqual(proposal.scope_load_ids,[1]);
+  assert.match(proposal.scope_token,/^[a-f0-9]{64}$/);
+  assert.ok(proposal.entries.find(entry=>entry.teaching_load_id===2).is_preserved);
+  const revision=currentRevision(context),before=context.database.prepare('SELECT * FROM timetable_entries ORDER BY id').all();
+  context.database.exec("UPDATE classes SET stage='ابتدائي' WHERE id=2");
+  assert.equal(currentRevision(context),revision);
+  const preview=await adoptionPreview(context,proposal);
+  assert.equal(preview.status,409); assert.equal((await preview.json()).code,'stale_timetable_scope');
+  const apply=await call(context,context.tokens.owner,'POST','/api/timetable/solver/apply',adoptionBody(proposal));
+  assert.equal(apply.status,409); assert.equal((await apply.json()).code,'stale_timetable_scope');
+  // A client can recompute the public entry digest, but cannot rewrite the server's scope proof.
+  const changedIds=[1,2];
+  const changedDigest=await computeTimetableProposalDigest({schoolId:1,academicYearId:1,revision,entries:proposalEntries(proposal),
+    generationScope:proposal.generation_scope,scopeLoadIds:changedIds});
+  const forged=await call(context,context.tokens.owner,'POST','/api/timetable/solver/apply',adoptionBody(proposal,{
+    scope_load_ids:changedIds,proposal_digest:changedDigest,
+  }));
+  assert.equal(forged.status,409); assert.equal((await forged.json()).code,'stale_timetable_scope');
+  assert.deepEqual(context.database.prepare('SELECT * FROM timetable_entries ORDER BY id').all(),before);
+  assert.equal(context.database.prepare('SELECT COUNT(*) count FROM timetable_schedule_versions').get().count,0);
+});
+
+test('targeted adoption requires original membership and its proof independently of presentation metadata',async()=>{
+  const context=await fixture(); seedCurrent(context);
+  const proposal=await generate(context,context.tokens.owner,{generation_scope:{kind:'class',class_id:1}});
+  const before=officialRows(context.database);
+  for(const overrides of [{scope_load_ids:undefined},{scope_token:undefined},{scope_load_ids:[]},{scope_load_ids:[1,1]}]) {
+    const response=await call(context,context.tokens.owner,'POST','/api/timetable/solver/apply',adoptionBody(proposal,overrides));
+    assert.equal(response.status,400);
+  }
+  const invalidProof=await call(context,context.tokens.owner,'POST','/api/timetable/solver/apply',adoptionBody(proposal,{scope_token:'0'.repeat(64)}));
+  assert.equal(invalidProof.status,409);
+  const presentationInjected=await call(context,context.tokens.owner,'POST','/api/timetable/solver/apply',adoptionBody(proposal,{
+    entries:proposalEntries(proposal).map(entry=>({...entry,is_preserved:false})),
+  }));
+  assert.equal(presentationInjected.status,400);
+  assert.deepEqual(officialRows(context.database),before);
+  // Client-side proposal lock edits remain valid with the unmodified scope proof.
+  const entries=proposalEntries(proposal).map(entry=>entry.teaching_load_id===1?{...entry,is_locked:1}:entry);
+  const digest=await computeTimetableProposalDigest({schoolId:1,academicYearId:1,revision:proposal.timetable_revision,entries,
+    generationScope:proposal.generation_scope,scopeLoadIds:proposal.scope_load_ids});
+  const changed=await adoptionPreview(context,proposal,{entries,proposal_digest:digest});
+  assert.equal(changed.status,200);assert.equal((await changed.json()).data.can_apply,true);
+});
+
+test('targeted generation retains outside occupancy in teacher availability and working-day capacity', async () => {
+  const context = await fixture();
+  context.database.exec(`
+    UPDATE timetable_teaching_loads SET employee_id = 1 WHERE id = 2;
+    INSERT INTO timetable_entries (school_id,academic_year_id,slot_id,teaching_load_id) VALUES (1,1,2,2);
+    INSERT INTO timetable_teacher_constraints (school_id,academic_year_id,employee_id,max_working_days,max_periods_per_day)
+      VALUES (1,1,1,1,2);
+    INSERT INTO timetable_teacher_availability (school_id,academic_year_id,employee_id,slot_id,status) VALUES (1,1,1,3,'unavailable');
+  `);
+  const proposal = await generate(context, context.tokens.owner, { generation_scope: { kind: 'class', class_id: 1 } });
+  assert.notEqual(proposal.status, 'complete');
+  assert.ok(proposal.entries.some(entry => entry.slot_id === 2 && entry.teaching_load_id === 2));
+  assert.ok(proposal.entries.every(entry => entry.day_of_week === 0 && entry.slot_id !== 3));
+  const preview = (await (await adoptionPreview(context, proposal)).json()).data;
+  assert.equal(preview.can_apply, false);
+  assert.ok(preview.blockers.some(issue => issue.code === 'incomplete_weekly_demand'));
+});
+
+test('saved schedule diagnostics reveal excess working days even with multiple lessons per occupied day', async () => {
+  const context = await fixture();
+  context.database.exec(`
+    UPDATE timetable_teaching_loads SET weekly_periods = 4 WHERE id = 1;
+    INSERT INTO timetable_entries (school_id,academic_year_id,slot_id,teaching_load_id) VALUES (1,1,1,1),(1,1,2,1),(1,1,3,1),(1,1,4,1);
+    INSERT INTO timetable_teacher_constraints (school_id,academic_year_id,employee_id,max_working_days) VALUES (1,1,1,1);
+  `);
+  const gridResponse = await call(context,context.tokens.owner,'GET','/api/timetable/grid?school_id=1&academic_year_id=1&class_id=1');
+  const grid = (await gridResponse.json()).data;
+  assert.equal(grid.entries.length,4);
+  assert.ok(grid.entries.every(entry=>entry.hard_conflicts.some(issue=>issue.code==='teacher_max_working_days')));
+  const masterResponse = await call(context,context.tokens.owner,'GET','/api/timetable/master-grid?school_id=1&academic_year_id=1');
+  const master = (await masterResponse.json()).data;
+  assert.equal(master.invalid_entry_count,4);
+});
+
+test('bulk section pinning leaves sibling sections unlocked', async () => {
+  const context = await fixture();
+  context.database.exec(`
+    INSERT INTO sections (id,school_id,class_id,name,status) VALUES (21,1,1,'A','active'),(22,1,1,'B','active');
+    UPDATE timetable_teaching_loads SET section_id=21 WHERE id=1;
+    INSERT INTO timetable_teaching_loads (id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status)
+      VALUES (5,1,1,1,22,1,2,2,'active');
+    INSERT INTO timetable_entries (school_id,academic_year_id,slot_id,teaching_load_id) VALUES (1,1,1,1),(1,1,1,5);
+  `);
+  const response = await call(context, context.tokens.owner, 'PUT', '/api/timetable/entries/lock-scope', {
+    school_id: 1, academic_year_id: 1, expected_revision: currentRevision(context), scope: {kind:'section',class_id:1,section_id:21}, is_locked:1,
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(officialRows(context.database).map(entry => [entry.teaching_load_id,entry.is_locked]), [[1,1],[5,0]]);
+});
+
+function currentRevision(context) {
+  return context.database.prepare('SELECT revision FROM timetable_revisions WHERE school_id = 1 AND academic_year_id = 1').get().revision;
+}
+
+test('bulk locks scope by class and stage, preserves other school/year and removes temporary unlock permissions', async () => {
+  const context = await fixture(); seedCurrent(context);
+  const otherSchool = officialRows(context.database, 2, 2), otherYear = officialRows(context.database, 1, 3);
+  const change = (scope, locked, revision = currentRevision(context)) => call(context, context.tokens.owner, 'PUT', '/api/timetable/entries/lock-scope', {
+    school_id: 1, academic_year_id: 1, expected_revision: revision, scope, is_locked: locked,
+  });
+  assert.equal((await change({ kind: 'class', class_id: 1 }, 1)).status, 200);
+  assert.deepEqual(officialRows(context.database).map(entry => entry.is_locked), [1, 0]);
+  assert.equal((await change({ kind: 'stage', stage: 'ابتدائي' }, 1)).status, 200);
+  assert.deepEqual(officialRows(context.database).map(entry => entry.is_locked), [1, 1]);
+  assert.equal((await change({ kind: 'stage', stage: 'ابتدائي' }, 0)).status, 200);
+  assert.deepEqual(officialRows(context.database).map(entry => entry.is_locked), [0, 0]);
+  assert.equal(context.database.prepare('SELECT COUNT(*) count FROM timetable_locked_entry_overrides').get().count, 0);
+  assert.equal(context.database.prepare('SELECT COUNT(*) count FROM timetable_revision_assertions').get().count, 0);
+  assert.deepEqual(officialRows(context.database, 2, 2), otherSchool); assert.deepEqual(officialRows(context.database, 1, 3), otherYear);
+  const before = officialRows(context.database);
+  assert.equal((await change({ kind: 'stage', stage: 'ابتدائي' }, 1, 0)).status, 409);
+  assert.deepEqual(officialRows(context.database), before);
+});
+
+test('bulk lock failure rolls every row and revision back atomically', async () => {
+  const context = await fixture(); seedCurrent(context);
+  context.database.exec(`CREATE TRIGGER qa_fail_bulk_lock BEFORE UPDATE OF is_locked ON timetable_entries
+    WHEN NEW.teaching_load_id = 2 BEGIN SELECT RAISE(ABORT, 'qa simulated failure'); END;`);
+  const before = officialRows(context.database), revision = currentRevision(context);
+  const response = await call(context, context.tokens.owner, 'PUT', '/api/timetable/entries/lock-scope', {
+    school_id: 1, academic_year_id: 1, expected_revision: revision, scope: { kind: 'school' }, is_locked: 1,
+  });
+  assert.equal(response.status, 500); assert.deepEqual(officialRows(context.database), before);
+  assert.equal(currentRevision(context), revision);
+  assert.equal(context.database.prepare('SELECT COUNT(*) count FROM timetable_revision_assertions').get().count, 0);
+});
+
+test('scope mutations reject other tenants, unprivileged roles and wrong class-section combinations', async () => {
+  const context = await fixture(); seedCurrent(context);
+  const body = { school_id: 1, academic_year_id: 1, expected_revision: currentRevision(context), scope: { kind: 'class', class_id: 1 }, is_locked: 1 };
+  assert.equal((await call(context, context.tokens.teacher, 'PUT', '/api/timetable/entries/lock-scope', body)).status, 403);
+  assert.equal((await call(context, context.tokens.owner, 'PUT', '/api/timetable/entries/lock-scope', { ...body, school_id: 2 })).status, 403);
+  assert.equal((await call(context, context.tokens.owner, 'PUT', '/api/timetable/entries/lock-scope', { ...body, scope: { kind: 'class', class_id: 3 } })).status, 400);
+  assert.equal((await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/preview', { school_id: 1, academic_year_id: 1,
+    generation_scope: { kind: 'section', class_id: 1, section_id: 999 } })).status, 400);
+});
+
+for (const operation of ['apply', 'lock-scope']) {
+  test(`${operation} atomically rejects changed stage membership even when legacy revision did not change`, async () => {
+    const context = await fixture(); seedCurrent(context);
+    context.database.exec("UPDATE classes SET stage = 'متوسط' WHERE id = 2");
+    const scope = {kind:'stage',stage:'ابتدائي'};
+    const proposal = await generate(context, context.tokens.owner, {generation_scope:scope});
+    const before = context.database.prepare('SELECT * FROM timetable_entries ORDER BY id').all();
+    const revision = currentRevision(context), originalBatch = context.d1.batch.bind(context.d1);
+    context.d1.batch = async statements => {
+      context.database.exec("UPDATE classes SET stage = 'متوسط' WHERE id = 1");
+      assert.equal(currentRevision(context), revision, 'this metadata change is outside legacy revision triggers');
+      return originalBatch(statements);
+    };
+    const response = operation === 'apply'
+      ? await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal))
+      : await call(context, context.tokens.owner, 'PUT', '/api/timetable/entries/lock-scope', {
+        school_id:1,academic_year_id:1,expected_revision:revision,scope,is_locked:1,
+      });
+    assert.equal(response.status,409);
+    assert.equal((await response.json()).code,'stale_timetable_proposal');
+    assert.deepEqual(context.database.prepare('SELECT * FROM timetable_entries ORDER BY id').all(),before);
+    assert.equal(context.database.prepare('SELECT COUNT(*) count FROM timetable_revision_assertions').get().count,0);
+    assert.equal(context.database.prepare('SELECT COUNT(*) count FROM timetable_schedule_versions').get().count,0);
+  });
+}
 
 test('adoption preview performs zero writes and returns comparison', async () => {
   const context = await fixture(); seedCurrent(context);
@@ -286,6 +535,9 @@ test('automatic adoption still requires every current persisted lock to be prese
   seedCurrent(context, true);
   const before = officialRows(context.database);
   const proposal = await generate(context, context.tokens.owner, { use_current_locked_entries: false });
+  proposal.entries = proposal.entries.map(entry => ({ ...entry, is_locked: 0 }));
+  proposal.proposal_digest = await computeTimetableProposalDigest({ schoolId: 1, academicYearId: 1,
+    revision: proposal.timetable_revision, entries: proposalEntries(proposal), generationScope: proposal.generation_scope });
   const previewResponse = await adoptionPreview(context, proposal);
   const preview = (await previewResponse.json()).data;
   assert.equal(preview.can_apply, false);

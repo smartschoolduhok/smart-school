@@ -4,7 +4,6 @@ import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { getTimetableMasterGrid } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
-  buildTimetableMasterPlacements,
   timetableEntryForPlacement,
   timetablePlacementKey,
   timetableSubjectColorForSubject,
@@ -15,15 +14,23 @@ import {
   type TimetableSlot,
 } from '../../lib/timetable';
 import './timetablePrint.css';
+import {
+  buildTimetablePrintSheets,
+  buildTimetablePrintWeek,
+  filterTimetablePrintPlacements,
+  timetablePrintSheetEntries,
+  type TimetablePrintGrouping,
+} from '../../lib/timetablePrint';
 
 type ViewMode = 'master' | 'placement' | 'teacher';
-type MasterPageSize = 'A3' | 'A2' | 'A1';
+type MasterPageSize = 'A4' | 'A3' | 'A2' | 'A1';
 
 interface MasterTimetableTabProps {
   schoolId: number;
   academicYearId: number;
   dataVersion: number;
   onOpenRepair: () => void;
+  loadGrid?: typeof getTimetableMasterGrid;
 }
 
 function YearValue({ value }: { value: string }) {
@@ -159,72 +166,45 @@ function MasterGrid({ data, placements }: { data: TimetableMasterGridData; place
   );
 }
 
-function PlacementGrid({ data, placement }: { data: TimetableMasterGridData; placement: TimetablePlacement }) {
-  return (
-    <table className="timetable-focused-table">
-      <caption className="sr-only">جدول {placementLabel(placement)}</caption>
-      <thead><tr><th>الفترة</th><th>المادة والمدرس</th></tr></thead>
-      <tbody>
-        {data.days.flatMap((day) => {
-          const daySlots = data.slots.filter((slot) => Number(slot.day_of_week) === Number(day.day_of_week));
-          return [
-            <tr key={`day:${day.id}`} className="timetable-day-row"><th colSpan={2}>{TIMETABLE_DAY_NAMES[day.day_of_week]}</th></tr>,
-            ...daySlots.map((slot) => slot.slot_type === 'break' ? (
-              <tr key={slot.id} className="timetable-break-row"><td colSpan={2}><strong>{slot.label}</strong> <YearValue value={`${slot.start_time}–${slot.end_time}`} /></td></tr>
-            ) : (
-              <tr key={slot.id}>
-                <th><span>{slotLabel(slot)}</span><YearValue value={`${slot.start_time}–${slot.end_time}`} /></th>
-                <td><SubjectCell entry={timetableEntryForPlacement(data.entries, slot.id, placement)} /></td>
-              </tr>
-            )),
-          ];
-        })}
-        {data.slots.length === 0 && <tr><td colSpan={2} className="timetable-empty">لا توجد فترات فعالة لعرضها.</td></tr>}
-      </tbody>
-    </table>
-  );
-}
-
-function TeacherGrid({ data, teacherId }: { data: TimetableMasterGridData; teacherId: number }) {
-  const entries = data.entries.filter((entry) => Number(entry.employee_id) === teacherId);
+function WeeklyGrid({ data, placement, teacherId }: { data: TimetableMasterGridData; placement?: TimetablePlacement; teacherId?: number }) {
+  const week = buildTimetablePrintWeek(data);
   const entriesBySlot = new Map<number, TimetableGridEntry[]>();
-  for (const entry of entries) {
-    const slotEntries = entriesBySlot.get(Number(entry.slot_id)) || [];
-    slotEntries.push(entry);
-    entriesBySlot.set(Number(entry.slot_id), slotEntries);
+  if (teacherId != null) for (const entry of data.entries.filter((entry) => Number(entry.employee_id) === teacherId)) {
+    const entries = entriesBySlot.get(Number(entry.slot_id)) || [];
+    entries.push(entry);
+    entriesBySlot.set(Number(entry.slot_id), entries);
   }
   return (
-    <table className="timetable-focused-table">
-      <caption className="sr-only">جدول المدرس المختار</caption>
-      <thead><tr><th>الفترة</th><th>المادة والصف</th></tr></thead>
-      <tbody>
-        {data.days.flatMap((day) => {
-          const daySlots = data.slots.filter((slot) => Number(slot.day_of_week) === Number(day.day_of_week));
-          return [
-            <tr key={`day:${day.id}`} className="timetable-day-row"><th colSpan={2}>{TIMETABLE_DAY_NAMES[day.day_of_week]}</th></tr>,
-            ...daySlots.map((slot) => slot.slot_type === 'break' ? (
-              <tr key={slot.id} className="timetable-break-row"><td colSpan={2}><strong>{slot.label}</strong> <YearValue value={`${slot.start_time}–${slot.end_time}`} /></td></tr>
-            ) : (
-              <tr key={slot.id}>
-                <th><span>{slotLabel(slot)}</span><YearValue value={`${slot.start_time}–${slot.end_time}`} /></th>
-                <td>
-                  {(entriesBySlot.get(Number(slot.id)) || []).length === 0
-                    ? <SubjectCell entry={null} />
-                    : <div className="timetable-teacher-entry-stack">{(entriesBySlot.get(Number(slot.id)) || []).map((entry) => (
-                      <SubjectCell key={entry.id} entry={entry} extra={<small>{entry.class_name}{entry.section_name ? ` / ${entry.section_name}` : ''}</small>} />
-                    ))}</div>}
-                </td>
-              </tr>
-            )),
-          ];
-        })}
-        {data.slots.length === 0 && <tr><td colSpan={2} className="timetable-empty">لا توجد فترات فعالة لعرضها.</td></tr>}
-      </tbody>
-    </table>
+    <div className="timetable-week-scroll">
+      <table className="timetable-week-table">
+        <caption className="sr-only">{placement ? 'جدول ' + placementLabel(placement) : 'جدول المدرس المختار'}</caption>
+        <thead><tr><th className="timetable-period-axis">الفترة</th>{week.days.map((day) => <th key={day.day_of_week}>{TIMETABLE_DAY_NAMES[day.day_of_week]}</th>)}</tr></thead>
+        <tbody>
+          {week.rows.map((row) => <tr key={row.index}>
+            <th className="timetable-period-axis"><bdi dir="ltr">{row.index}</bdi></th>
+            {row.slots.map((slot, dayIndex) => {
+              if (!slot) return <td key={week.days[dayIndex].day_of_week} className="timetable-no-period">لا توجد فترة</td>;
+              const entry = placement ? timetableEntryForPlacement(data.entries, slot.id, placement) : null;
+              const entries = teacherId != null ? entriesBySlot.get(Number(slot.id)) || [] : entry ? [entry] : [];
+              return <td key={week.days[dayIndex].day_of_week} data-slot-id={slot.id} className={slot.slot_type === 'break' ? 'timetable-week-break' : ''}>
+                <span className="timetable-week-slot-label">{slotLabel(slot)}</span>
+                <bdi dir="ltr" className="timetable-week-time">{slot.start_time}–{slot.end_time}</bdi>
+                {slot.slot_type === 'break' ? <strong className="timetable-break-label">استراحة</strong>
+                  : entries.length === 0 ? <span className="timetable-unscheduled">{teacherId != null ? 'متاح' : 'غير مجدولة'}</span>
+                    : <div className="timetable-teacher-entry-stack">{entries.map((item) => <SubjectCell key={item.id} entry={item}
+                      extra={teacherId != null ? <small>{item.class_name}{item.section_name ? ' / ' + item.section_name : ''}</small> : undefined} />)}</div>}
+              </td>;
+            })}
+          </tr>)}
+          {week.rows.length === 0 && <tr><td colSpan={week.days.length + 1} className="timetable-empty">لا توجد فترات فعالة لعرضها.</td></tr>}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function masterPageRecommendation(columnCount: number): MasterPageSize {
+  if (columnCount <= 3) return 'A4';
   if (columnCount <= 8) return 'A3';
   if (columnCount <= 15) return 'A2';
   return 'A1';
@@ -237,12 +217,15 @@ const PAGE_DIMENSIONS: Record<MasterPageSize | 'A4', string> = {
   A1: '841mm 594mm',
 };
 
-export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOpenRepair }: MasterTimetableTabProps) {
+export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOpenRepair, loadGrid = getTimetableMasterGrid }: MasterTimetableTabProps) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const requestGenerationRef = useRef(0);
   const [data, setData] = useState<TimetableMasterGridData | null>(null);
   const [mode, setMode] = useState<ViewMode>('master');
   const [placementKey, setPlacementKey] = useState('');
+  const [stage, setStage] = useState('');
+  const [classId, setClassId] = useState<number | null>(null);
+  const [grouping, setGrouping] = useState<TimetablePrintGrouping>('combined');
   const [teacherId, setTeacherId] = useState<number | null>(null);
   const [pageSize, setPageSize] = useState<MasterPageSize>('A3');
   const [fitOnePage, setFitOnePage] = useState(true);
@@ -254,17 +237,19 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
     const isCurrentSchool = captureSchoolRequest();
     setData(null);
     setPlacementKey('');
+    setStage('');
+    setClassId(null);
     setTeacherId(null);
     setLoading(true);
     setError('');
-    void getTimetableMasterGrid(schoolId, academicYearId).then((response) => {
+    void loadGrid(schoolId, academicYearId).then((response) => {
       if (generation !== requestGenerationRef.current || !isCurrentSchool()) return;
       setLoading(false);
       if (response.error) return setError(response.error);
       setData(response.data || null);
     });
     return () => { requestGenerationRef.current += 1; };
-  }, [academicYearId, captureSchoolRequest, dataVersion, schoolId]);
+  }, [academicYearId, captureSchoolRequest, dataVersion, loadGrid, schoolId]);
 
   useEffect(() => {
     const startPrint = () => document.body.classList.add('timetable-print-mode');
@@ -278,25 +263,17 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
     };
   }, []);
 
-  const placements = useMemo(() => data ? buildTimetableMasterPlacements(data.classes, data.sections) : [], [data]);
-  const selectedPlacement = placements.find((placement) => timetablePlacementKey(placement) === placementKey) || null;
-  const selectedTeacher = data?.teachers.find((teacher) => Number(teacher.id) === teacherId) || null;
+  const placements = useMemo(() => data ? filterTimetablePrintPlacements(data, stage, classId) : [], [data, stage, classId]);
+  const stages = useMemo(() => [...new Set(data?.classes.filter((item) => item.status === 'active').map((item) => item.stage) || [])], [data]);
+  const filteredClasses = data?.classes.filter((item) => item.status === 'active' && (!stage || item.stage === stage)) || [];
+  const sheets = useMemo(() => data ? buildTimetablePrintSheets(data, {mode, grouping, stage, classId, placementKey, teacherId}) : [], [data, mode, grouping, stage, classId, placementKey, teacherId]);
   const teacherConflictCount = data?.entries.filter((entry) => (
     entry.hard_conflicts.some((conflict) => conflict.code === 'teacher_collision')
   )).length || 0;
-  const selectedEntries = mode === 'teacher' && teacherId != null
-    ? data?.entries.filter((entry) => Number(entry.employee_id) === teacherId) || []
-    : mode === 'placement' && selectedPlacement
-      ? data?.entries.filter((entry) => Number(entry.class_id) === selectedPlacement.class_id && (entry.section_id == null || Number(entry.section_id) === Number(selectedPlacement.section_id))) || []
-      : data?.entries || [];
-  const recommendedPageSize = masterPageRecommendation(placements.length);
-  const printSize = mode === 'master' ? pageSize : 'A4';
-  const canPrint = data != null && (mode === 'master' || (mode === 'placement' && selectedPlacement != null) || (mode === 'teacher' && selectedTeacher != null));
-  const title = mode === 'placement' && selectedPlacement
-    ? `جدول ${placementLabel(selectedPlacement)}`
-    : mode === 'teacher' && selectedTeacher
-      ? `جدول المدرس: ${selectedTeacher.full_name}`
-      : 'الجدول الدراسي الأسبوعي';
+  const columnCount = Math.max(0, ...sheets.filter((sheet) => sheet.kind === 'master').map((sheet) => sheet.placements.length));
+  const recommendedPageSize = masterPageRecommendation(columnCount);
+  const printSize = pageSize;
+  const canPrint = data != null && sheets.length > 0;
 
   function printTimetable() {
     if (!canPrint) return;
@@ -331,16 +308,34 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
             ['placement', 'جدول صف / شعبة', GraduationCap],
             ['teacher', 'جدول مدرس', UserRound],
           ] as const).map(([key, label, Icon]) => (
-            <button key={key} type="button" role="tab" aria-selected={mode === key} onClick={() => setMode(key)} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold ${mode === key ? 'border-primary-600 bg-primary-50 text-primary-800' : 'border-gray-200 text-gray-600'}`}>
+            <button key={key} type="button" role="tab" aria-selected={mode === key} onClick={() => { setMode(key); setPageSize(key === 'master' ? 'A3' : 'A4'); }} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold ${mode === key ? 'border-primary-600 bg-primary-50 text-primary-800' : 'border-gray-200 text-gray-600'}`}>
               <Icon size={17} />{label}
             </button>
           ))}
         </div>
 
         <div className="grid gap-3 md:grid-cols-3">
+          {mode !== 'teacher' && <>
+            <label className="text-sm font-semibold text-gray-700">المرحلة
+              <select aria-label="مرحلة الطباعة" value={stage} onChange={(event) => { setStage(event.target.value); setClassId(null); setPlacementKey(''); }} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
+                <option value="">جميع المراحل</option>{stages.map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
+            </label>
+            <label className="text-sm font-semibold text-gray-700">الصف
+              <select aria-label="صف الطباعة" value={classId ?? ''} onChange={(event) => { setClassId(event.target.value ? Number(event.target.value) : null); setPlacementKey(''); }} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
+                <option value="">جميع الصفوف</option>{filteredClasses.map((item) => <option key={item.id} value={item.id}>{item.name} — {item.stage}</option>)}
+              </select>
+            </label>
+          </>}
+          {mode === 'master' && <label className="text-sm font-semibold text-gray-700">تقسيم الطباعة
+            <select aria-label="تقسيم الطباعة" value={grouping} onChange={(event) => setGrouping(event.target.value as TimetablePrintGrouping)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
+              <option value="combined">جدول واحد للنطاق المختار</option><option value="stage">كل مرحلة تبدأ بورقة مستقلة</option>
+              <option value="class">كل صف يبدأ بورقة مستقلة</option><option value="placement">كل شعبة تبدأ بورقة مستقلة</option>
+            </select>
+          </label>}
           {mode === 'placement' && (
             <label className="text-sm font-semibold text-gray-700">الصف / الشعبة
-              <select value={placementKey} onChange={(event) => setPlacementKey(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
+              <select aria-label="شعبة الطباعة" value={placementKey} onChange={(event) => setPlacementKey(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
                 <option value="">اختر الصف أو الشعبة</option>
                 {placements.map((placement) => <option key={timetablePlacementKey(placement)} value={timetablePlacementKey(placement)}>{placementLabel(placement)}</option>)}
               </select>
@@ -348,19 +343,17 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
           )}
           {mode === 'teacher' && (
             <label className="text-sm font-semibold text-gray-700">المدرس
-              <select value={teacherId ?? ''} onChange={(event) => setTeacherId(event.target.value ? Number(event.target.value) : null)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
+              <select aria-label="مدرس الطباعة" value={teacherId ?? ''} onChange={(event) => setTeacherId(event.target.value ? Number(event.target.value) : null)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
                 <option value="">اختر مدرسًا</option>
                 {data.teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.full_name}</option>)}
               </select>
             </label>
           )}
-          {mode === 'master' && (
-            <label className="text-sm font-semibold text-gray-700">حجم ورق الجدول الكامل
-              <select value={pageSize} onChange={(event) => setPageSize(event.target.value as MasterPageSize)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
-                <option value="A3">A3 — أفقي</option><option value="A2">A2 — أفقي</option><option value="A1">A1 — أفقي</option>
+            <label className="text-sm font-semibold text-gray-700">حجم الورق
+              <select aria-label="حجم ورق الطباعة" value={pageSize} onChange={(event) => setPageSize(event.target.value as MasterPageSize)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
+                <option value="A4">A4 — أفقي</option><option value="A3">A3 — أفقي</option><option value="A2">A2 — أفقي</option><option value="A1">A1 — أفقي</option>
               </select>
             </label>
-          )}
           <label className="flex items-center gap-2 self-end rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700">
             <input type="checkbox" checked={fitOnePage} onChange={(event) => setFitOnePage(event.target.checked)} />تنسيق مضغوط للطباعة
           </label>
@@ -370,8 +363,9 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
         </div>
         {mode === 'master' && (
           <div className="space-y-1 text-sm">
+            <p>مجموعات الطباعة: <bdi dir="ltr">{sheets.length}</bdi>. تبدأ كل مجموعة بورقة جديدة.</p>
             <p className={pageSize === recommendedPageSize ? 'text-emerald-700' : 'text-amber-700'}>
-              يفضل استخدام <bdi dir="ltr">{recommendedPageSize}</bdi> لهذا الجدول (عدد الأعمدة: <bdi dir="ltr">{placements.length}</bdi>). استخدم المقاس الأكبر إذا أصبحت النصوص ضيقة.
+              يفضل استخدام <bdi dir="ltr">{recommendedPageSize}</bdi> لهذا الجدول (عدد الأعمدة: <bdi dir="ltr">{columnCount}</bdi>). استخدم المقاس الأكبر إذا أصبحت النصوص ضيقة.
             </p>
             {fitOnePage && <p className="text-gray-600">يقلل التنسيق المضغوط حجم الخلايا، وقد يوزّع المتصفح الجدول على أكثر من ورقة حسب المحتوى وإعدادات الطباعة.</p>}
           </div>
@@ -380,17 +374,13 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
 
       <style>{`@media print { @page { size: ${PAGE_DIMENSIONS[printSize]}; margin: ${mode === 'master' ? '7mm' : '9mm'}; } }`}</style>
       <div className={`timetable-print-root timetable-print-${mode} ${fitOnePage ? 'timetable-fit-one-page' : ''}`}>
-        <PrintHeader data={data} title={title} />
-        {mode === 'master' && (placements.length > 0
-          ? <MasterGrid data={data} placements={placements} />
-          : <div className="timetable-empty"><BookOpen size={24} />لا توجد صفوف فعالة لعرض الجدول.</div>)}
-        {mode === 'placement' && (selectedPlacement
-          ? <PlacementGrid data={data} placement={selectedPlacement} />
-          : <div className="timetable-empty">اختر صفًا أو شعبة لعرض جدولها وطباعته.</div>)}
-        {mode === 'teacher' && (selectedTeacher
-          ? <TeacherGrid data={data} teacherId={selectedTeacher.id} />
-          : <div className="timetable-empty">اختر مدرسًا لعرض جدوله وطباعته.</div>)}
-        <SubjectLegend entries={selectedEntries} />
+        {sheets.map((sheet) => <section className={`timetable-print-sheet timetable-sheet-${sheet.kind}`} data-print-sheet={sheet.key} key={sheet.key}>
+          <PrintHeader data={data} title={sheet.title} />
+          {sheet.kind === 'master' ? <MasterGrid data={data} placements={sheet.placements} />
+            : <WeeklyGrid data={data} placement={sheet.placements[0]} teacherId={sheet.teacherId} />}
+          <SubjectLegend entries={timetablePrintSheetEntries(data.entries, sheet)} />
+        </section>)}
+        {sheets.length === 0 && <div className="timetable-empty"><BookOpen size={24} />{mode === 'teacher' ? 'اختر مدرسًا لعرض جدوله وطباعته.' : mode === 'placement' ? 'اختر صفًا أو شعبة لعرض جدولها وطباعته.' : 'لا توجد صفوف فعالة ضمن النطاق المختار.'}</div>}
       </div>
     </section>
   );
