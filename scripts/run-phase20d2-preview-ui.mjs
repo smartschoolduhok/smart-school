@@ -7,13 +7,10 @@ const [previewArgument,directoryArgument]=process.argv.slice(2);
 const preview=new URL(previewArgument),directory=resolve(directoryArgument);
 assert.match(preview.hostname,/^[a-f0-9]{8}\.smart-school-staging\.pages\.dev$/u);
 const ctx=JSON.parse(readFileSync(join(directory,'qa-private-context.json'),'utf8'));
-assert.ok(ctx.ownerToken);
+assert.ok(ctx.ownerEmail && ctx.password,'Disposable QA login credentials are required');
 const {chromium}=await import(pathToFileURL(process.env.PH20D2_PLAYWRIGHT_MODULE).href);
-const me=await fetch(new URL('/api/auth/me',preview),{headers:{Authorization:`Bearer ${ctx.ownerToken}`},redirect:'error'});
-assert.equal(me.status,200);const user=(await me.json()).data;
 const browser=await chromium.launch({headless:true,executablePath:process.env.PH20D2_CHROME});
 const context=await browser.newContext({viewport:{width:390,height:844},locale:'ar-IQ',deviceScaleFactor:1});
-await context.addInitScript(({token,user,origin})=>{if(location.origin===origin){sessionStorage.setItem('smart_school_token',token);sessionStorage.setItem('smart_school_user',JSON.stringify(user));}},{token:ctx.ownerToken,user,origin:preview.origin});
 const page=await context.newPage();
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
 const report={preview:preview.href,marker:ctx.marker,viewport:{width:390,height:844},checks:[],screenshots:[]};
@@ -21,6 +18,18 @@ function check(name,data={}){report.checks.push({name,pass:true,...data});}
 async function shot(name){const path=join(directory,name+'.png');await page.screenshot({path,fullPage:true});report.screenshots.push(path);}
 async function selectByLabel(label,value){const el=page.locator('label').filter({hasText:label}).first().locator('..').locator('select');await el.selectOption(String(value));}
 try{
+  await page.goto(new URL('/login',preview).href);
+  await page.getByLabel('البريد الإلكتروني',{exact:true}).fill(ctx.ownerEmail);
+  await page.getByLabel('كلمة المرور',{exact:true}).fill(ctx.password);
+  const loginResponse=page.waitForResponse(r=>r.url()===new URL('/api/auth/login',preview).href&&r.request().method()==='POST');
+  await page.getByRole('button',{name:'دخول',exact:true}).click();
+  const response=await loginResponse;assert.equal(response.status(),200);
+  const body=await response.json();assert.equal('token' in body.data,false);assert.match(body.data.csrf_token,/^[a-f0-9]{64}$/);
+  await page.waitForURL(url=>url.pathname!=='/login');
+  const session=(await context.cookies()).find(c=>c.name==='__Host-smart_school_session');
+  assert.ok(session?.httpOnly&&session.secure&&session.sameSite==='Strict');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('smart_school_token')||sessionStorage.getItem('smart_school_token')),null);
+  check('real form login uses HttpOnly cookie without Web Storage JWT');
   await page.goto(new URL(`/student-promotion?student_id=${ctx.rows.ui_ready.studentId}`,preview).href);
   await page.getByText('القرار المستخرج من النتيجة الرسمية',{exact:false}).waitFor();
   await page.getByText(ctx.marker+'-ui_ready',{exact:true}).first().waitFor();
@@ -70,5 +79,15 @@ try{
   assert.deepEqual(errors,[]);check('no uncaught browser errors');
   report.pass=true;
 }catch(error){report.pass=false;report.failure=error.message;await shot('ui-failure');throw error;}
-finally{writeFileSync(join(directory,'phase20d2-ui-qa.json'),JSON.stringify(report,null,2));await browser.close();}
+finally{
+  try{
+    const me=await context.request.get(new URL('/api/auth/me',preview).href);
+    if(me.ok()){
+      const {csrf_token}=await me.json();
+      const logout=await context.request.post(new URL('/api/auth/logout',preview).href,{headers:{'X-CSRF-Token':csrf_token}});
+      assert.equal(logout.status(),200);
+    }else assert.equal(me.status(),401);
+  }catch(error){report.pass=false;report.logout_failure=error.message;process.exitCode=1;}
+  writeFileSync(join(directory,'phase20d2-ui-qa.json'),JSON.stringify(report,null,2));await browser.close();
+}
 console.log(JSON.stringify(report));

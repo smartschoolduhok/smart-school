@@ -3,7 +3,7 @@ import { signJWT } from '../../src/lib/jwtSecurity.ts';
 import { LocalD1, fixtureSQL, migrationFiles, migrationSQL, root, snapshot } from './teaching-load-matrix-fixture.mjs';
 export { root, snapshot };
 export const secret='local-school-workflows-test-secret';
-export const tokens=Object.fromEntries(await Promise.all(Object.entries({owner:'owner',admin:'admin',teacher:'teacher',registrar:'registrar',accountant:'accountant',parent:'parent',otherParent:'other-parent',foreignParent:'foreign-parent'}).map(async([key,name])=>[key,await signJWT({email:`${name}@matrix.test`,auth_version:1},secret)])));
+export const tokens=Object.fromEntries(await Promise.all(Object.entries({owner:'owner',admin:'admin',teacher:'teacher',registrar:'registrar',accountant:'accountant',parent:'parent',otherParent:'other-parent',foreignParent:'foreign-parent'}).map(async([key,name])=>[key,await signJWT({id: ({owner:1,admin:2,teacher:3,registrar:7,accountant:4,parent:8,otherParent:9,foreignParent:10})[key], email:`${name}@matrix.test`,auth_version:1},secret)])));
 export {fixtureSQL as baseFixtureSQL,migrationFiles};
 export const schoolWorkflowFixtureSQL=`
  INSERT INTO users(id,school_id,full_name,email,role_id,status,auth_version) VALUES

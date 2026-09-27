@@ -14,9 +14,9 @@ after(() => vite.close());
 
 const secret = 'official-promotion-test-secret-2026-long';
 const tokens = {
-  owner: await signJWT({ email: 'owner@matrix.test', auth_version: 1 }, secret),
-  teacher: await signJWT({ email: 'teacher@matrix.test', auth_version: 1 }, secret),
-  admin: await signJWT({ email: 'admin@matrix.test', auth_version: 1 }, secret),
+  owner: await signJWT({ id: 1, email: 'owner@matrix.test', auth_version: 1 }, secret),
+  teacher: await signJWT({ id: 3, email: 'teacher@matrix.test', auth_version: 1 }, secret),
+  admin: await signJWT({ id: 2, email: 'admin@matrix.test', auth_version: 1 }, secret),
 };
 
 async function api(f, role, method, path, body) {

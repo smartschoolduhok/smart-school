@@ -1,13 +1,13 @@
 // Exercise the upgrade and production API on disposable workerd D1. No remote mode.
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {getPlatformProxy,unstable_splitSqlQuery} from 'wrangler';
 import {createServer} from 'vite';
 import {root,migrationFiles,baseFixtureSQL,schoolWorkflowFixtureSQL,request} from '../test/helpers/school-workflow-fixture.mjs';
-import {contentSnapshot,digest} from './lib/local-d1-restore.mjs';
+import {contentSnapshot,digest,sqlTokens} from './lib/local-d1-restore.mjs';
 const directory=mkdtempSync(join(tmpdir(),'smart-school-workflows-local-')),configPath=join(directory,'wrangler.json'),state=join(directory,'state');
 mkdirSync(join(directory,'migrations'));
 const name='school-workflows-local-only';
@@ -15,17 +15,25 @@ writeFileSync(configPath,JSON.stringify({name,compatibility_date:'2026-04-13',d1
 function migrate(){const args=[join(root,'node_modules/wrangler/bin/wrangler.js'),'d1','migrations','apply',name,'--local','--config',configPath,'--persist-to',state];assert.equal(args.includes('--remote'),false);const env={...process.env,CI:'true',WRANGLER_SEND_METRICS:'false'};for(const key of ['HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'])delete env[key];const r=spawnSync(process.execPath,args,{cwd:directory,env,encoding:'utf8',timeout:180000,maxBuffer:20000000});assert.equal(r.status,0,r.stdout+r.stderr);}
 const open=()=>getPlatformProxy({configPath,persist:{path:join(state,'v3')},remoteBindings:false,envFiles:[]});
 console.log('LOCAL workflow artifacts: '+directory);
-for(const file of migrationFiles.slice(0,-4))copyFileSync(join(root,'migrations',file),join(directory,'migrations',file));migrate();
+for(const file of migrationFiles.filter(name=>name.slice(0,4)<='0041'))copyFileSync(join(root,'migrations',file),join(directory,'migrations',file));migrate();
 let proxy=await open(),before;
 try{await proxy.env.DB.batch(unstable_splitSqlQuery(baseFixtureSQL+schoolWorkflowFixtureSQL).map(sql=>proxy.env.DB.prepare(sql)));before=await contentSnapshot(async sql=>(await proxy.env.DB.prepare(sql).all()).results);}finally{await proxy.dispose();}
-for(const file of migrationFiles.slice(-4))copyFileSync(join(root,'migrations',file),join(directory,'migrations',file));migrate();
+for(const file of migrationFiles.filter(name=>name.slice(0,4)>='0042'))copyFileSync(join(root,'migrations',file),join(directory,'migrations',file));migrate();
 proxy=await open();const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
 const cases=[];
 try{
  const db=proxy.env.DB,after=await contentSnapshot(async sql=>(await db.prepare(sql).all()).results);
- for(const old of before.schema)assert.deepEqual(after.schema.find(item=>item.type===old.type&&item.name===old.name),old,old.name);
+ for(const old of before.schema){
+  const actual=after.schema.find(item=>item.type===old.type&&item.name===old.name);
+  if(old.type==='view'&&old.name==='result_card_publication_readiness'){
+   const migration=readFileSync(join(root,'migrations/0046_cancelled_draft_readiness.sql'),'utf8');
+   const expected=sqlTokens(migration.slice(migration.indexOf('CREATE VIEW')).trim().replace(/;$/,'')).map(t=>[t.kind,t.text]);
+   assert.deepEqual(actual.sql,expected);
+   assert.deepEqual({...actual,sql:old.sql},old);
+  }else assert.deepEqual(actual,old,old.name);
+ }
  for(const [name,value] of Object.entries(before.tables))if(!['d1_migrations','sqlite_sequence'].includes(name))assert.deepEqual(after.tables[name],value,name);
- assert.equal(Object.keys(after.tables).length,95);assert.equal(after.tables.d1_migrations.count,46);assert.deepEqual(after.foreignKeys,[]);cases.push('upgrade 42→46 preserves every historical application value and type');
+ assert.equal(Object.keys(after.tables).length,95);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
  const {default:app}=await vite.ssrLoadModule('/src/worker.ts'),f={d1:db};
  const call=async(role,method,path,body,status)=>{const r=await request(app,f,role,method,path,body);assert.equal(r.status,status,JSON.stringify({path,...r}));return r.data;};
  const count=async table=>(await db.prepare(`SELECT count(*) n FROM ${table}`).first()).n;
@@ -62,5 +70,5 @@ try{
  await call('owner','POST','/api/communication',{conversation_key:crypto.randomUUID(),student_id:102,academic_year_id:1,parent_user_id:9,staff_user_id:1,title:'rollback',body:'must not persist'},503);
  assert.deepEqual(await contentSnapshot(async sql=>(await db.prepare(sql).all()).results),rollbackBefore);cases.push('late batch failure rolls back thread/message/audit/notifications');
  assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
- const evidence={local_only:true,migration_count:46,table_count:95,application_table_count:93,historical_application_tables_unchanged:81,baseline_hash:digest(before),cases,foreign_key_check:[]};writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence,null,2));
+ const evidence={local_only:true,migration_count:migrationFiles.length,table_count:95,application_table_count:93,historical_application_tables_unchanged:81,baseline_hash:digest(before),cases,foreign_key_check:[]};writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence,null,2));
 }finally{await vite.close();await proxy.dispose();}

@@ -106,8 +106,8 @@ try {
   studentId = Number(setup.student_id);
   assert.ok(accountantId > 0 && parentId > 0 && studentId > 0);
 
-  const accountantLogin = await api('/api/auth/login', { method: 'POST', body: { email: accountantEmail, password } });
-  const parentLogin = await api('/api/auth/login', { method: 'POST', body: { email: parentEmail, password } });
+  const accountantLogin = await api('/api/auth/login', { method: 'POST', body: { email: accountantEmail, password, session_mode: 'bearer' } });
+  const parentLogin = await api('/api/auth/login', { method: 'POST', body: { email: parentEmail, password, session_mode: 'bearer' } });
   accountantToken = accountantLogin.data.token;
   parentToken = parentLogin.data.token;
   assert.equal(accountantLogin.data.user.role_key, 'accountant');

@@ -3,6 +3,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { fetchApi } from '../../lib/api';
 import {PROGRESS_PERIODS,type ProgressPeriod,type GradeProgressReport,type GradeProgressSnapshot} from '../../lib/gradeProgress';
+import './gradeProgressPrint.css';
 const input='min-w-0 w-full rounded-lg border bg-white p-2.5';
 const button='rounded-lg bg-primary-600 px-4 py-2 text-white disabled:opacity-50';
 export default function GradeProgressPage(){
@@ -22,7 +23,7 @@ export default function GradeProgressPage(){
  async function withdraw(r:GradeProgressReport){if(!reason.trim()||busy)return;const token=epoch.current;setBusy(true);setError('');const result=await fetchApi(`/api/grade-progress/${r.report_key}/withdraw`,{method:'POST',body:JSON.stringify({school_id:schoolId,revision:r.revision,reason})});if(token!==epoch.current)return;setBusy(false);if(result.error)setError(result.error);else{setReason('');await load();}}
  const report=reports.find(r=>r.report_key===selected);
  const render=(s:GradeProgressSnapshot)=><div className="space-y-3"><h2 className="text-lg font-bold">متابعة {s.period_label}</h2><p>{s.student_name} — {s.student_number}</p><p className="text-sm text-gray-500">{s.year_name} · {s.class_name} {s.section_name&&`/ ${s.section_name}`}</p><p className="text-sm text-gray-600">متابعة للفترة الدراسية؛ النتيجة السنوية الرسمية متاحة في كارت النتائج.</p><table className="w-full border-collapse text-sm"><thead><tr><th className="border p-2 text-right">المادة</th><th className="border p-2">الدرجة / {s.max_grade}</th></tr></thead><tbody>{s.subjects.map((v,i)=><tr key={i}><td className="break-words border p-2">{v.subject_name}</td><td className="border p-2 text-center">{v.score==null?'لم تُدخل':v.score}</td></tr>)}</tbody></table>{s.missing_count>0&&<p className="text-sm text-amber-700">درجات غير مدخلة: {s.missing_count}</p>}</div>;
- return <div className="space-y-5 p-4 sm:p-6" dir="rtl"><style>{`@media print{@page{size:A4;margin:12mm}body:has(.grade-progress-print) *{visibility:hidden}body .grade-progress-print,body .grade-progress-print *{visibility:visible}.grade-progress-print{position:absolute;inset:0;width:100%;border:0!important;box-shadow:none!important}.grade-progress-print tr{break-inside:avoid}}`}</style>
+ return <div className="space-y-5 p-4 sm:p-6" dir="rtl">
  <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-bold">متابعة الدرجات</h1><button className="text-primary-700" onClick={()=>void load()}>تحديث</button></div>
  {isSystemAdmin&&<label className="block">المدرسة<select className={input} value={schoolId||''} onChange={e=>selectSchool(e.target.value?Number(e.target.value):null)}><option value="">اختر المدرسة</option>{schools.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
  {error&&<p role="alert" className="rounded-lg bg-red-50 p-3 text-red-700">{error}</p>}

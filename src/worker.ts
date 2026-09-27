@@ -1,10 +1,12 @@
 // ===========================================
 // Hono Backend - Phase 2.6 (Auth Hardening)
 // Cloudflare Pages Worker with D1 Database
-// JWT Bearer Token Authentication via Web Crypto
+// HttpOnly browser sessions; explicit Bearer authentication for non-browser clients
 // ===========================================
 
 import { Hono } from 'hono'
+import { getCookie, setCookie } from 'hono/cookie'
+import { CSRF_HEADER, createSessionCsrfToken, hasBrowserMetadata, isSameOriginBrowserRequest, isUnsafeMethod, sessionCookieOptions, verifySessionCsrfToken } from './lib/sessionSecurity'
 import { registerFinanceRoutes } from './lib/financeFeesDb'
 import { registerAttendanceRoutes } from './lib/attendanceDb'
 import { registerGateAttendanceRoutes } from './lib/gateAttendanceDb'
@@ -67,6 +69,7 @@ import {
   getValidatedJwtSecret,
   signJWT,
   verifyJWT,
+  generateJwtId,
   type JwtPayload,
 } from './lib/jwtSecurity'
 import {
@@ -334,6 +337,7 @@ interface AuthenticatedUserContext {
 export type Variables = {
   user: UserContext;
   session: JwtPayload;
+  sessionTransport: 'cookie' | 'bearer';
   resolvedSchoolId: number | null;
   scope: 'all' | 'single';
 };
@@ -344,7 +348,7 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 // Helper Functions
 // ===========================================
 
-async function getCurrentUserContext(db: D1Database, email: string): Promise<AuthenticatedUserContext | null> {
+async function getCurrentUserContext(db: D1Database, userId: number, email: string): Promise<AuthenticatedUserContext | null> {
   const row = await db.prepare(`
     SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status, u.auth_version,
            r.key AS role_key, r.name AS role_name,
@@ -352,8 +356,8 @@ async function getCurrentUserContext(db: D1Database, email: string): Promise<Aut
     FROM users u
     LEFT JOIN roles r ON u.role_id = r.id
     LEFT JOIN schools s ON u.school_id = s.id
-    WHERE u.email = ? AND u.status = 'active'
-  `).bind(email).first<{
+    WHERE u.id = ? AND u.email = ? AND u.status = 'active'
+  `).bind(userId, email).first<{
     id: number;
     email: string;
     full_name: string;
@@ -392,6 +396,11 @@ function extractBearerToken(c: any): string | null {
   if (!auth) return null;
   const match = auth.match(/^Bearer\s+(.+)$/i);
   return match ? match[1] : null;
+}
+
+function clearSessionCookie(c: any): void {
+  const { name, ...options } = sessionCookieOptions(c.req.url, c.env.APP_ENV);
+  setCookie(c, name, '', { ...options, maxAge: 0, expires: new Date(0) });
 }
 
 async function cleanupExpiredAuthState(db: D1Database, nowSeconds: number): Promise<void> {
@@ -1325,11 +1334,13 @@ function applyCorsResponseHeaders(c: any, origin: string): void {
   c.header('Access-Control-Allow-Origin', origin);
   c.header('Vary', 'Origin');
   c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
   c.header('Access-Control-Max-Age', '86400');
 }
 
 app.use('/api/*', async (c, next) => {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'same-origin');
   const requestOrigin = c.req.header('Origin');
   const allowedOrigins = getAllowedCorsOrigins(c.env.ALLOWED_ORIGINS, c.env.APP_ENV);
   const originAllowed = isCorsOriginAllowed(requestOrigin, c.req.url, allowedOrigins);
@@ -1349,7 +1360,17 @@ app.use('/api/*', async (c, next) => {
     return;
   }
 
-  const token = extractBearerToken(c);
+  const cookieName = new URL(c.req.url).protocol === 'https:' ? '__Host-smart_school_session' : 'smart_school_session';
+  const cookieOccurrences = (c.req.header('Cookie') || '').split(';').filter(part => part.trim().startsWith(cookieName + '='));
+  const cookie = getCookie(c, cookieName);
+  const bearer = extractBearerToken(c);
+  if (cookieOccurrences.length > 1 || (cookie && c.req.header('Authorization'))) {
+    return c.json({ error: 'طلب جلسة ملتبس', code: 'ambiguous_session' }, 400);
+  }
+  if (cookie && !isSameOriginBrowserRequest(c.req.raw.headers, c.req.url)) {
+    return c.json({ error: 'مصدر الجلسة غير مسموح', code: 'session_origin_denied' }, 403);
+  }
+  const token = cookie || bearer;
   if (!token) {
     return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401);
   }
@@ -1358,7 +1379,17 @@ app.use('/api/*', async (c, next) => {
     const secret = getValidatedJwtSecret(c.env.JWT_SECRET);
     const payload = await verifyJWT(token, secret);
     if (!payload) {
+      if (cookie) clearSessionCookie(c);
       return c.json({ error: 'غير مصرح: رمز غير صالح أو منتهي الصلاحية' }, 401);
+    }
+    if ((cookie && payload.session_transport !== 'cookie') || (!cookie && payload.session_transport === 'cookie')) {
+      return c.json({ error: 'طريقة استخدام الجلسة غير صالحة', code: 'session_transport_mismatch' }, 401);
+    }
+    if (cookie) {
+      sessionCookieOptions(c.req.url, c.env.APP_ENV);
+      if (isUnsafeMethod(c.req.method) && !await verifySessionCsrfToken(c.req.header(CSRF_HEADER), payload, secret)) {
+        return c.json({ error: 'تغيرت الجلسة أو انتهت صلاحية الطلب؛ حدّث الصفحة ثم حاول مجددًا', code: 'csrf_invalid' }, 403);
+      }
     }
 
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -1366,19 +1397,23 @@ app.use('/api/*', async (c, next) => {
       'SELECT jti FROM revoked_sessions WHERE jti = ? AND expires_at > ?',
     ).bind(payload.jti, nowSeconds).first<{ jti: string }>();
     if (revoked) {
+      if (cookie) clearSessionCookie(c);
       return c.json({ error: 'غير مصرح: انتهت الجلسة' }, 401);
     }
 
-    const authenticated = await getCurrentUserContext(c.env.DB, payload.email);
+    const authenticated = await getCurrentUserContext(c.env.DB, payload.id, payload.email);
     if (!authenticated) {
+      if (cookie) clearSessionCookie(c);
       return c.json({ error: 'غير مصرح: المستخدم غير موجود أو غير نشط' }, 401);
     }
     if (payload.auth_version !== authenticated.authVersion) {
+      if (cookie) clearSessionCookie(c);
       return c.json({ error: 'غير مصرح: انتهت الجلسة' }, 401);
     }
 
     c.set('user', authenticated.user);
     c.set('session', payload);
+    c.set('sessionTransport', cookie ? 'cookie' : 'bearer');
     await next();
   } catch {
     return c.json({ error: 'خدمة المصادقة غير متاحة' }, 503);
@@ -1390,12 +1425,25 @@ app.use('/api/*', async (c, next) => {
 // ===========================================
 
 app.post('/api/auth/login', async (c) => {
+  if (!/^application\/json(?:\s*;|$)/i.test(c.req.header('Content-Type') || '')) {
+    return c.json({ error: 'صيغة طلب تسجيل الدخول غير صالحة' }, 415);
+  }
+  if (!isSameOriginBrowserRequest(c.req.raw.headers, c.req.url)) {
+    return c.json({ error: 'مصدر تسجيل الدخول غير مسموح' }, 403);
+  }
   const db = c.env.DB;
   let body: any;
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: 'طلب تسجيل الدخول غير صالح' }, 400);
+  }
+  const sessionMode = body?.session_mode ?? 'cookie';
+  if (!['cookie', 'bearer'].includes(sessionMode) || (body?.remember_me !== undefined && typeof body.remember_me !== 'boolean')) {
+    return c.json({ error: 'خيارات الجلسة غير صالحة' }, 400);
+  }
+  if (sessionMode === 'bearer' && (hasBrowserMetadata(c.req.raw.headers) || c.req.header('Cookie'))) {
+    return c.json({ error: 'جلسات المتصفح تستخدم تسجيل الدخول المحمي' }, 403);
   }
 
   const email = typeof body?.email === 'string' ? normalizeLoginEmail(body.email) : '';
@@ -1407,6 +1455,7 @@ app.post('/api/auth/login', async (c) => {
   let secret: string;
   try {
     secret = getValidatedJwtSecret(c.env.JWT_SECRET);
+    if (sessionMode === 'cookie') sessionCookieOptions(c.req.url, c.env.APP_ENV);
   } catch {
     return c.json({ error: 'خدمة المصادقة غير متاحة' }, 503);
   }
@@ -1492,6 +1541,7 @@ app.post('/api/auth/login', async (c) => {
       ).bind(upgradedHash, row.id, row.password_hash).run();
     }
 
+    const jti = generateJwtId();
     const token = await signJWT(
       {
         id: row.id,
@@ -1499,14 +1549,22 @@ app.post('/api/auth/login', async (c) => {
         role_key: row.role_key,
         school_id: row.school_id,
         auth_version: row.auth_version,
+        session_transport: sessionMode,
       },
       secret,
-      { expiresInSeconds: JWT_SESSION_TTL_SECONDS },
+      { expiresInSeconds: JWT_SESSION_TTL_SECONDS, jti, nowSeconds },
     );
+
+    let csrfToken: string | undefined;
+    if (sessionMode === 'cookie') {
+      const { name, ...options } = sessionCookieOptions(c.req.url, c.env.APP_ENV);
+      setCookie(c, name, token, { ...options, ...(body.remember_me === true ? { maxAge: JWT_SESSION_TTL_SECONDS } : {}) });
+      csrfToken = await createSessionCsrfToken({ id: row.id, email: row.email, auth_version: row.auth_version, jti, iat: nowSeconds, exp: nowSeconds + JWT_SESSION_TTL_SECONDS }, secret);
+    }
 
     return c.json({
       data: {
-        token,
+        ...(sessionMode === 'bearer' ? { token } : { csrf_token: csrfToken }),
         user: {
           id: row.id,
           full_name: row.full_name,
@@ -1533,7 +1591,9 @@ app.get('/api/auth/me', async (c) => {
   if (!user) {
     return c.json({ error: 'غير مصرح' }, 401)
   }
-  return c.json({ data: user })
+  const csrfToken = c.get('sessionTransport') === 'cookie'
+    ? await createSessionCsrfToken(c.get('session'), getValidatedJwtSecret(c.env.JWT_SECRET)) : undefined;
+  return c.json({ data: user, csrf_token: csrfToken })
 })
 
 app.post('/api/auth/logout', async (c) => {
@@ -1549,6 +1609,7 @@ app.post('/api/auth/logout', async (c) => {
     await c.env.DB.prepare(
       'INSERT OR IGNORE INTO revoked_sessions (jti, user_id, expires_at, revoked_at) VALUES (?, ?, ?, ?)',
     ).bind(session.jti, user.id, session.exp, nowSeconds).run();
+    if (c.get('sessionTransport') === 'cookie') clearSessionCookie(c);
     return c.json({ data: { success: true } });
   } catch {
     return c.json({ error: 'فشل في تسجيل الخروج' }, 500);
@@ -1608,7 +1669,12 @@ app.get('/api/schools', requireSameSchoolOrAdmin(), async (c) => {
 
 app.get('/api/schools/:id', async (c) => {
   const db = c.env.DB
-  const id = c.req.param('id')
+  const id = Number(c.req.param('id'))
+  const user = c.get('user')
+  if (!Number.isSafeInteger(id) || id < 1) return c.json({ error: 'معرف المدرسة غير صالح' }, 400)
+  if (user.role_key !== 'system_admin' && user.school_id !== id) {
+    return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى بيانات هذه المدرسة' }, 403)
+  }
   try {
     const school = await db.prepare(`
       SELECT * FROM schools WHERE id = ?
@@ -1784,6 +1850,9 @@ app.post('/api/users', requireAdmin(), async (c) => {
     if (!full_name || !normalizedEmail || !password) {
       return c.json({ error: 'الاسم والبريد الإلكتروني وكلمة المرور مطلوبة' }, 400)
     }
+    if (normalizedEmail.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return c.json({ error: 'البريد الإلكتروني غير صحيح' }, 400)
+    }
     if (!role_id && !role_key) {
       return c.json({ error: 'الدور مطلوب' }, 400)
     }
@@ -1812,7 +1881,7 @@ app.post('/api/users', requireAdmin(), async (c) => {
     }
 
     // Check duplicate email
-    const existing = await db.prepare(`SELECT id FROM users WHERE LOWER(email) = ?`).bind(normalizedEmail).first<{ id: number }>()
+    const existing = await db.prepare(`SELECT id FROM users WHERE LOWER(TRIM(email)) = ?`).bind(normalizedEmail).first<{ id: number }>()
     if (existing) {
       return c.json({ error: 'البريد الإلكتروني مستخدم مسبقاً' }, 409)
     }
@@ -1861,9 +1930,13 @@ app.put('/api/users/:id', requireAdmin(), async (c) => {
       return c.json({ error: 'معرف المدرسة مطلوب لهذا الدور' }, 400)
     }
 
-    // Check duplicate email if changed
-    if (email && email !== existing.email) {
-      const dup = await db.prepare(`SELECT id FROM users WHERE email = ?`).bind(email).first<{ id: number }>()
+    const normalizedEmail = email === undefined ? existing.email : typeof email === 'string' ? normalizeLoginEmail(email) : ''
+    if (!normalizedEmail || normalizedEmail.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return c.json({ error: 'البريد الإلكتروني غير صحيح' }, 400)
+    }
+    // Login and account writes must agree on a single canonical email identity.
+    if (normalizedEmail !== existing.email) {
+      const dup = await db.prepare(`SELECT id FROM users WHERE LOWER(TRIM(email)) = ? AND id <> ?`).bind(normalizedEmail, id).first<{ id: number }>()
       if (dup) {
         return c.json({ error: 'البريد الإلكتروني مستخدم مسبقاً' }, 409)
       }
@@ -1871,18 +1944,20 @@ app.put('/api/users/:id', requireAdmin(), async (c) => {
 
     await db.prepare(`
       UPDATE users SET
-        school_id = ?, full_name = ?, email = ?, role_id = ?, phone = ?, updated_at = unixepoch()
+        school_id = ?, full_name = ?, email = ?, role_id = ?, phone = ?,
+        auth_version = auth_version + CASE WHEN email <> ? THEN 1 ELSE 0 END, updated_at = unixepoch()
       WHERE id = ?
     `).bind(
       school_id !== undefined ? (school_id || null) : existing.school_id,
       full_name || existing.full_name,
-      email || existing.email,
+      normalizedEmail,
       finalRoleId,
       phone !== undefined ? (phone || null) : existing.phone,
+      normalizedEmail,
       id
     ).run()
 
-    return c.json({ data: { id, full_name: full_name || existing.full_name, email: email || existing.email, role_id: finalRoleId, school_id: school_id !== undefined ? (school_id || null) : existing.school_id } })
+    return c.json({ data: { id, full_name: full_name || existing.full_name, email: normalizedEmail, role_id: finalRoleId, school_id: school_id !== undefined ? (school_id || null) : existing.school_id } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث المستخدم', detail: err.message }, 500)
   }
@@ -1902,7 +1977,7 @@ app.put('/api/users/:id/status', requireAdmin(), async (c) => {
     const existing = await db.prepare(`SELECT id FROM users WHERE id = ?`).bind(id).first<{ id: number }>()
     if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
 
-    await db.prepare(`UPDATE users SET status = ?, updated_at = unixepoch() WHERE id = ?`).bind(status, id).run()
+    await db.prepare(`UPDATE users SET status = ?, auth_version = auth_version + CASE WHEN status <> ? THEN 1 ELSE 0 END, updated_at = unixepoch() WHERE id = ?`).bind(status, status, id).run()
     return c.json({ data: { id, status } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث حالة المستخدم', detail: err.message }, 500)
@@ -4325,6 +4400,24 @@ app.get('/api/classes', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS
   }
 })
 
+// These predicates remain inside the UPDATE so a concurrent enrollment cannot
+// turn an earlier empty check into a destructive archive or section move.
+function activePlacementReferencesSql(table: 'classes' | 'sections'): string {
+  const column = table === 'classes' ? 'class_id' : 'section_id'
+  return `EXISTS (SELECT 1 FROM students dependent WHERE dependent.school_id = ${table}.school_id AND dependent.${column} = ${table}.id AND dependent.status = 'active')
+    OR EXISTS (SELECT 1 FROM student_enrollments dependent WHERE dependent.school_id = ${table}.school_id AND dependent.${column} = ${table}.id AND dependent.status = 'active')`
+}
+const CLASS_ACTIVE_DEPENDENCIES_SQL = `(${activePlacementReferencesSql('classes')})
+  OR EXISTS (SELECT 1 FROM sections dependent WHERE dependent.school_id = classes.school_id AND dependent.class_id = classes.id AND dependent.status = 'active')`
+const SECTION_REFERENCES_SQL = [
+  ['students', 'section_id'], ['student_enrollments', 'section_id'],
+  ['subjects', 'section_id'], ['student_subjects', 'section_id'],
+  ['timetable_teaching_loads', 'section_id'], ['result_cards', 'section_id'],
+  ['student_promotion_result_decisions', 'target_section_id'],
+  ['lesson_attendance_sessions', 'section_id'], ['student_gate_events', 'section_id'],
+  ['homework_assignments', 'section_id'], ['admission_applications', 'section_id'],
+].map(([table, column]) => `EXISTS (SELECT 1 FROM ${table} dependent WHERE dependent.school_id = sections.school_id AND dependent.${column} = sections.id)`).join(' OR ')
+
 app.post('/api/classes', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const db = c.env.DB
   const user: UserContext | null = c.get('user') || null
@@ -4365,10 +4458,15 @@ app.put('/api/classes/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MA
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل صف في مدرسة أخرى' }, 403)
     }
 
-    await db.prepare(`
+    const nextStatus = status || 'active'
+    if (!['active', 'inactive', 'archived'].includes(nextStatus)) return c.json({ error: 'حالة الصف غير صالحة' }, 400)
+    const changed = await db.prepare(`
       UPDATE classes SET name = ?, stage = ?, order_index = ?, status = ?, updated_at = unixepoch()
       WHERE id = ? AND school_id = ?
-    `).bind(name, stage, order_index || 0, status || 'active', id, targetSchool.schoolId).run()
+        AND (? = 'active' OR NOT (${CLASS_ACTIVE_DEPENDENCIES_SQL}))
+      RETURNING id
+    `).bind(name, stage, order_index || 0, nextStatus, id, targetSchool.schoolId, nextStatus).first()
+    if (!changed) return c.json({ error: 'لا يمكن تعطيل أو أرشفة صف له طلاب أو تسجيلات أو شعب فعالة', code: 'class_has_active_dependents' }, 409)
     return c.json({ data: { id, name, stage, order_index, status } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الصف', detail: err.message }, 500)
@@ -4393,7 +4491,9 @@ app.put('/api/classes/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACA
     if (students && students.count > 0) {
       return c.json({ error: 'لا يمكن أرشفة الصف لأنه يحتوي على طلاب نشطين', detail: `عدد الطلاب: ${students.count}` }, 400)
     }
-    await db.prepare(`UPDATE classes SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run()
+    const changed = await db.prepare(`UPDATE classes SET status = 'archived', updated_at = unixepoch()
+      WHERE id = ? AND school_id = ? AND NOT (${CLASS_ACTIVE_DEPENDENCIES_SQL}) RETURNING id`).bind(id, targetSchool.schoolId).first()
+    if (!changed) return c.json({ error: 'لا يمكن أرشفة صف له طلاب أو تسجيلات أو شعب فعالة', code: 'class_has_active_dependents' }, 409)
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الصف', detail: err.message }, 500)
@@ -4483,10 +4583,22 @@ app.put('/api/sections/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       return c.json({ error: placement.error }, placement.status)
     }
 
-    await db.prepare(`
+    const nextStatus = status || 'active'
+    if (!['active', 'inactive', 'archived'].includes(nextStatus)) return c.json({ error: 'حالة الشعبة غير صالحة' }, 400)
+    const changed = await db.prepare(`
       UPDATE sections SET class_id = ?, name = ?, capacity = ?, status = ?, updated_at = unixepoch()
       WHERE id = ? AND school_id = ?
-    `).bind(nextClassId, name, capacity || 30, status || 'active', id, targetSchool.schoolId).run()
+        AND (class_id = ? OR NOT (${SECTION_REFERENCES_SQL}))
+        AND (? = 'active' OR NOT (${activePlacementReferencesSql('sections')}))
+        AND EXISTS (SELECT 1 FROM classes target WHERE target.id = ? AND target.school_id = sections.school_id AND target.status = 'active')
+      RETURNING id
+    `).bind(nextClassId, name, capacity || 30, nextStatus, id, targetSchool.schoolId, nextClassId, nextStatus, nextClassId).first()
+    if (!changed) {
+      return c.json({ error: existing.class_id !== nextClassId
+        ? 'لا يمكن نقل شعبة مرتبطة بسجلات إلى صف آخر؛ أنشئ شعبة جديدة لحفظ السجل السابق'
+        : 'لا يمكن تعطيل أو أرشفة شعبة لها طلاب أو تسجيلات فعالة، أو تغير الصف المستهدف',
+        code: existing.class_id !== nextClassId ? 'section_has_references' : 'section_has_active_dependents' }, 409)
+    }
     return c.json({ data: { id, class_id, name, capacity, status } })
   } catch (err: any) {
     return c.json({ error: 'فشل في تحديث الشعبة', detail: err.message }, 500)
@@ -4511,7 +4623,9 @@ app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
     if (students && students.count > 0) {
       return c.json({ error: 'لا يمكن أرشفة الشعبة لأنها تحتوي على طلاب نشطين', detail: `عدد الطلاب: ${students.count}` }, 400)
     }
-    await db.prepare(`UPDATE sections SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run()
+    const changed = await db.prepare(`UPDATE sections SET status = 'archived', updated_at = unixepoch()
+      WHERE id = ? AND school_id = ? AND NOT (${activePlacementReferencesSql('sections')}) RETURNING id`).bind(id, targetSchool.schoolId).first()
+    if (!changed) return c.json({ error: 'لا يمكن أرشفة شعبة لها طلاب أو تسجيلات فعالة', code: 'section_has_active_dependents' }, 409)
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
     return c.json({ error: 'فشل في أرشفة الشعبة', detail: err.message }, 500)

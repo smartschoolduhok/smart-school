@@ -1,51 +1,23 @@
-import type { AuthUser } from '../types';
-
-export const AUTH_TOKEN_KEY = 'smart_school_token';
-export const AUTH_USER_KEY = 'smart_school_user';
-export const AUTH_LEGACY_KEY = 'smart_school_auth';
+// Browser credentials live only in the server's HttpOnly cookie.
+// The CSRF value cannot authenticate a request by itself.
 export const AUTH_STORAGE_CLEARED_EVENT = 'smart-school-auth-storage-cleared';
+let csrfToken: string | null = null;
 
-function removeAuthKeys(storage: Storage) {
-  storage.removeItem(AUTH_TOKEN_KEY);
-  storage.removeItem(AUTH_USER_KEY);
-  storage.removeItem(AUTH_LEGACY_KEY);
-}
-
-export function getStoredAuthToken(): string | null {
-  return localStorage.getItem(AUTH_TOKEN_KEY) || sessionStorage.getItem(AUTH_TOKEN_KEY);
-}
-
-export function getStoredAuthUser(): AuthUser | null {
-  try {
-    const raw = localStorage.getItem(AUTH_USER_KEY) || sessionStorage.getItem(AUTH_USER_KEY);
-    return raw ? JSON.parse(raw) as AuthUser : null;
-  } catch {
-    return null;
+export function discardLegacyAuthentication(): void {
+  for (const name of ['localStorage', 'sessionStorage'] as const) {
+    try {
+      const storage = window[name];
+      for (const key of ['smart_school_token', 'smart_school_user', 'smart_school_auth']) storage.removeItem(key);
+    } catch { /* Cookies remain usable when Web Storage is disabled. */ }
   }
 }
 
-export function getCurrentAuthStorage(): Storage | null {
-  if (localStorage.getItem(AUTH_TOKEN_KEY)) return localStorage;
-  if (sessionStorage.getItem(AUTH_TOKEN_KEY)) return sessionStorage;
-  return null;
+export function setSessionCsrfToken(value: unknown): void {
+  csrfToken = typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null;
 }
-
-export function storeAuthentication(token: string, user: AuthUser, rememberMe: boolean) {
-  removeAuthKeys(localStorage);
-  removeAuthKeys(sessionStorage);
-  const storage = rememberMe ? localStorage : sessionStorage;
-  storage.setItem(AUTH_TOKEN_KEY, token);
-  storage.setItem(AUTH_USER_KEY, JSON.stringify(user));
-}
-
-export function updateStoredAuthUser(user: AuthUser) {
-  getCurrentAuthStorage()?.setItem(AUTH_USER_KEY, JSON.stringify(user));
-}
-
-export function clearAuthentication() {
-  removeAuthKeys(localStorage);
-  removeAuthKeys(sessionStorage);
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new Event(AUTH_STORAGE_CLEARED_EVENT));
-  }
+export function getSessionCsrfToken(): string | null { return csrfToken; }
+export function clearAuthentication(): void {
+  csrfToken = null;
+  discardLegacyAuthentication();
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(AUTH_STORAGE_CLEARED_EVENT));
 }
