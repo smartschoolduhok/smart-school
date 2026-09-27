@@ -22,6 +22,22 @@ async function prepare(f,input,role='owner') {
 }
 const apply=(f,input,role)=>call(f,'POST','/apply',input,role);
 
+test('real Worker day profile reduces active count without deleting IDs, only selected day/year',async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(7));const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
+ const p=await prepare(f,{...evidenceRequest(c,reviewLessons(6)),mode:'configure_day'});
+ assert.equal(p.plan.days[0].after.lessons,6);const r=await apply(f,p.input);assert.equal(r.status,200,JSON.stringify(r));
+ const after=snapshot(f.db),changed=after.timetable_slots.filter(s=>s.academic_year_id===40);
+ assert.equal(changed.length,7);assert.equal(changed.filter(s=>s.is_active===1).length,6);
+ assert.deepEqual(after.timetable_slots.filter(s=>s.academic_year_id!==40),before.timetable_slots.filter(s=>s.academic_year_id!==40));assertPreserved(before,after);
+});
+
+test('real Worker day profile preview/apply rejects locked surplus periods with zero writes',async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(7));
+ f.db.exec('INSERT INTO timetable_entries(school_id,academic_year_id,slot_id,teaching_load_id,is_locked,created_by_user_id,updated_by_user_id) VALUES(1,40,4006,40,1,1,1)');
+ const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db),p=await prepare(f,{...evidenceRequest(c,reviewLessons(6)),mode:'configure_day'});
+ assert.equal(p.plan.can_apply,false);const r=await apply(f,p.input);assert.equal(r.status,409);assert.equal(r.body.code,'blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+});
+
 test('review capacity 0 -> 2: real Worker preview/apply persists safe partial setup',async t=>{
  const f=weekFixture(t);f.db.exec(capacityEvidenceSQL());const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
  const p=await prepare(f,evidenceRequest(c,reviewLessons(2))),r=await apply(f,p.input);

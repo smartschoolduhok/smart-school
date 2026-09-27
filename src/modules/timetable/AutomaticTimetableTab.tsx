@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, GitCompareArrows, LoaderCircle, Lock, RefreshCcw, Sparkles, Unlock, WandSparkles } from 'lucide-react';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import type { Class, Section } from '../../types';
+import type { TimetableScope } from '../../lib/timetableScope';
+import { TimetableScopeSelector } from './TimetableScopeSelector';
 import { applyTimetableProposal, previewAutomaticTimetable, previewTimetableAdoption } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
@@ -23,6 +26,8 @@ import {
 } from '../../lib/timetableAdoption';
 
 interface AutomaticTimetableTabProps {
+  classes?: Class[];
+  sections?: Section[];
   schoolId: number;
   academicYearId: number;
   dataVersion: number;
@@ -145,13 +150,13 @@ function ProposalGrid({ result, schoolId, disabled, onToggleLock }: {
                               {entry.soft_warnings.length > 0 && <p className="mt-1 text-[10px] opacity-75">{entry.soft_warnings.map((warning) => warning.message).join('، ')}</p>}
                               <button
                                 type="button"
-                                disabled={disabled}
+                                disabled={disabled || entry.is_preserved}
                                 onClick={() => onToggleLock(entry.proposal_id)}
                                 className="mt-2 flex items-center gap-1 rounded-md border border-current/30 bg-white/70 px-2 py-1 text-[10px] font-bold disabled:opacity-50"
                                 aria-label={entry.is_locked === 1 ? 'إلغاء تثبيت الحصة' : 'تثبيت الحصة'}
                               >
                                 {entry.is_locked === 1 ? <Lock size={12} /> : <Unlock size={12} />}
-                                {entry.is_locked === 1 ? 'إلغاء التثبيت' : 'تثبيت الحصة'}
+                                {entry.is_preserved ? 'محفوظة من الجدول الحالي' : entry.is_locked === 1 ? 'إلغاء التثبيت' : 'تثبيت الحصة'}
                               </button>
                             </div>
                           </td>
@@ -171,6 +176,8 @@ function ProposalGrid({ result, schoolId, disabled, onToggleLock }: {
 }
 
 export function AutomaticTimetableTab({
+  classes = [],
+  sections = [],
   schoolId,
   academicYearId,
   dataVersion,
@@ -187,6 +194,8 @@ export function AutomaticTimetableTab({
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [generationScope, setGenerationScope] = useState<TimetableScope>({ kind: 'school' });
+  useEffect(() => { setGenerationScope({ kind: 'school' }); }, [schoolId, academicYearId]);
 
   useEffect(() => {
     requestGenerationRef.current += 1;
@@ -202,6 +211,7 @@ export function AutomaticTimetableTab({
   async function generateProposal(options?: {
     fixed_entries?: Array<{ slot_id: number; teaching_load_id: number }>;
     use_current_locked_entries?: boolean;
+    generation_scope?: TimetableScope;
   }) {
     const generation = ++requestGenerationRef.current;
     const expectedScope = { schoolId, academicYearId, dataVersion };
@@ -211,7 +221,7 @@ export function AutomaticTimetableTab({
     setAdoptionPreview(null);
     setError('');
     setSuccess('');
-    const response = await previewAutomaticTimetable(schoolId, academicYearId, options);
+    const response = await previewAutomaticTimetable(schoolId, academicYearId, { generation_scope: generationScope, ...options });
     if (
       generation !== requestGenerationRef.current
       || !isCurrentSchool()
@@ -229,6 +239,7 @@ export function AutomaticTimetableTab({
 
   async function toggleProposalLock(proposalId: string) {
     if (!result || loading || applying) return;
+    if (result.entries.find(entry => entry.proposal_id === proposalId)?.is_preserved) return;
     const generation = ++requestGenerationRef.current;
     const nextEntries = result.entries.map((entry) => (
       entry.proposal_id === proposalId ? { ...entry, is_locked: entry.is_locked === 1 ? 0 as const : 1 as const } : entry
@@ -238,6 +249,8 @@ export function AutomaticTimetableTab({
       academicYearId,
       revision: result.timetable_revision,
       entries: nextEntries,
+      generationScope: result.generation_scope,
+      scopeLoadIds: result.scope_load_ids,
     });
     if (generation !== requestGenerationRef.current) return;
     setResult({ ...result, entries: nextEntries, proposal_digest: digest });
@@ -248,6 +261,7 @@ export function AutomaticTimetableTab({
   async function reSolveUnlocked() {
     if (!result) return;
     await generateProposal({
+      generation_scope: result.generation_scope,
       fixed_entries: result.entries.filter((entry) => entry.is_locked === 1).map((entry) => ({
         slot_id: entry.slot_id,
         teaching_load_id: entry.teaching_load_id,
@@ -267,6 +281,9 @@ export function AutomaticTimetableTab({
       proposal_revision: result.timetable_revision,
       proposal_digest: result.proposal_digest,
       entries: result.entries,
+      generation_scope: result.generation_scope,
+      scope_load_ids: result.scope_load_ids,
+      scope_token: result.scope_token,
     });
     if (generation !== requestGenerationRef.current) return;
     setApplying(false);
@@ -290,6 +307,9 @@ export function AutomaticTimetableTab({
       expected_revision: result.timetable_revision,
       proposal_digest: result.proposal_digest,
       entries: result.entries,
+      generation_scope: result.generation_scope,
+      scope_load_ids: result.scope_load_ids,
+      scope_token: result.scope_token,
       confirm_apply: true,
     });
     if (generation !== requestGenerationRef.current) return;
@@ -311,7 +331,8 @@ export function AutomaticTimetableTab({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="flex items-center gap-2 text-lg font-bold text-indigo-950"><WandSparkles size={22} />التوليد التلقائي</h2>
-            <p className="mt-1 max-w-3xl text-sm text-indigo-800">يحلل النظام السعة والأنصبة وتوفر المدرسين وقيودهم، ثم ينشئ اقتراحًا حتميًا للمدرسة كاملة.</p>
+            <p className="mt-1 max-w-3xl text-sm text-indigo-800">اختر مدرسة أو مرحلة أو صفًا أو شعبة. يكمل النظام أنصبة النطاق مع احترام الحصص المثبتة وتعارضات المدرسين وبقية الشعب.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">عند اختيار نطاق محدد تبقى جميع الحصص خارجه كما هي. يمكنك إعداد جزء يدويًا، تثبيته من الجدول الأسبوعي، ثم توليد الباقي.</p>
             <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-amber-800"><AlertTriangle size={17} />هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.</p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -334,6 +355,9 @@ export function AutomaticTimetableTab({
             </button>
           </div>
         </div>
+        <div className="mt-4 max-w-xl"><TimetableScopeSelector classes={classes} sections={sections} value={generationScope} disabled={loading || applying} onChange={scope => {
+          requestGenerationRef.current += 1; setGenerationScope(scope); setResult(null); setAdoptionPreview(null); setError(''); setSuccess('');
+        }} /></div>
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-4">

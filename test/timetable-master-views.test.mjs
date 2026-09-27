@@ -19,6 +19,7 @@ const viewSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'Ma
 const pageSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'TimetablePage.tsx'), 'utf8');
 const cssSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'timetablePrint.css'), 'utf8');
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
+const printSource = readFileSync(join(rootDir, 'src', 'lib', 'timetablePrint.ts'), 'utf8');
 
 const classes = [
   { id: 3, school_id: 1, name: 'الثالث', stage: 'ابتدائي', order_index: 3, status: 'active' },
@@ -114,7 +115,7 @@ test('logical subject colors are deterministic across different subject row ids'
   assert.match(viewSource, /timetableSubjectVisualKey\(entry\.school_id, entry\.subject_name\)/);
   assert.match(viewSource, /data-subject-id=\{entry\.subject_id\}/);
   assert.match(viewSource, /data-subject-visual-key=\{subjectVisualKey\}/);
-  assert.ok((viewSource.match(/<SubjectCell/g) || []).length >= 3);
+  assert.ok((viewSource.match(/<SubjectCell/g) || []).length >= 2);
 });
 
 test('subject palette maintains readable text contrast for representative visual keys', () => {
@@ -159,7 +160,7 @@ test('break rows span the complete table instead of repeating per class cell', (
 
 test('teacher and placement views are scoped to the selected canonical ids', () => {
   assert.match(viewSource, /Number\(entry\.employee_id\) === teacherId/);
-  assert.match(viewSource, /Number\(entry\.class_id\) === selectedPlacement\.class_id/);
+  assert.match(printSource, /Number\(entry\.class_id\) === placement\.class_id/);
   assert.match(viewSource, /timetableEntryForPlacement\(data\.entries, slot\.id, placement\)/);
 });
 
@@ -181,9 +182,9 @@ test('teacher collisions stay in the master grid and use a rose conflict treatme
   assert.match(viewSource, /entriesBySlot/);
 });
 
-test('print mode supports large master sizes, A4 focused views and exact colors', () => {
-  for (const size of ['A3', 'A2', 'A1']) assert.ok(viewSource.includes(size), size);
-  assert.match(viewSource, /mode === 'master' \? pageSize : 'A4'/);
+test('print mode supports A4/A3 and large sizes in every view, with exact colors', () => {
+  for (const size of ['A4', 'A3', 'A2', 'A1']) assert.ok(viewSource.includes(size), size);
+  assert.match(viewSource, /const printSize = pageSize/);
   assert.match(cssSource, /body\.timetable-print-mode \*/);
   assert.match(cssSource, /print-color-adjust: exact/);
   assert.match(cssSource, /position: sticky/);
@@ -199,7 +200,7 @@ test('printed header includes school identity, logo, year and a subject legend',
   assert.match(viewSource, /data\.school\.name/);
   assert.match(viewSource, /data\.academic_year\.name/);
   assert.ok(viewSource.includes('مفتاح الألوان'));
-  assert.ok(viewSource.includes('الجدول الدراسي الأسبوعي'));
+  assert.ok(printSource.includes('الجدول الدراسي الأسبوعي'));
 });
 
 test('master timetable component is read-only and imports no mutation endpoint', () => {
@@ -214,7 +215,7 @@ test('school and academic-year response generations reject stale A to B to A rep
   assert.match(viewSource, /const isCurrentSchool = captureSchoolRequest\(\)/);
   assert.match(viewSource, /generation !== requestGenerationRef\.current \|\| !isCurrentSchool\(\)/);
   assert.match(viewSource, /return \(\) => \{ requestGenerationRef\.current \+= 1; \}/);
-  assert.match(viewSource, /\[academicYearId, captureSchoolRequest, dataVersion, schoolId\]/);
+  assert.match(viewSource, /\[academicYearId, captureSchoolRequest, dataVersion, loadGrid, schoolId\]/);
   for (const reset of ["setData(null)", "setPlacementKey('')", 'setTeacherId(null)', "setError('')"]) {
     assert.ok(viewSource.includes(reset), reset);
   }

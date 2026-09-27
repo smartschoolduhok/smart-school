@@ -581,6 +581,8 @@ export default function TimetablePage() {
 
               {!loading && tab === 'automatic' && schoolId != null && academicYearId != null && (
                 <AutomaticTimetableTab
+                  classes={classes}
+                  sections={sections}
                   schoolId={schoolId}
                   academicYearId={academicYearId}
                   dataVersion={yearDataVersion}

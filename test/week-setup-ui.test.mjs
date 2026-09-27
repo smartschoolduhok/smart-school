@@ -106,6 +106,17 @@ test('behavior: individual customization stays reachable without copying/saving 
  await click([...card.querySelectorAll('button')].find(b=>b.textContent==='إضافة فترة'));assert.equal(u.calls.edit[1][0],0);assert.equal(u.calls.edit[1][1],undefined);
  await click(card.querySelector('input[type=checkbox]'));assert.deepEqual(u.calls.day[0],[0,{is_active:0}]);assert.equal(u.calls.apply.length,0);
 });
+
+test('behavior: per-day count editor targets one day, derives start/duration and exposes deactivation preview',async t=>{
+ const u=await mount(t),card=find(u,'ملخص الأحد');
+ await click([...card.querySelectorAll('button')].find(b=>b.textContent==='عدد حصص هذا اليوم'));
+ assert.equal(find(u,'بداية الدوام').value,'08:00');assert.equal(find(u,'المدة الافتراضية للحصة').value,'40');
+ assert.equal(find(u,'عدد الحصص').value,'4');assert.equal(find(u,'استهداف الأحد').checked,true);assert.equal(find(u,'استهداف الاثنين').disabled,true);
+ assert.match(u.container.textContent,/عند التقليل ستظهر الفترات الزائدة كغير نشطة/);
+ await input(find(u,'عدد الحصص'),'2');await click(button(u,'توليد الفترات'));await click(button(u,'معاينة التغييرات'));
+ assert.equal(u.calls.preview[0].mode,'configure_day');assert.deepEqual(u.calls.preview[0].targets,[{day_of_week:0,activate_day:false}]);assert.equal(u.calls.preview[0].template.filter(p=>p.slot_type==='lesson').length,2);
+ assert.match(find(u,'خطة إعداد الأسبوع').textContent,/غير نشطة/);assert.equal(u.calls.apply.length,0);
+});
 test('keyboard/mobile structural safeguards and existing matrix/school/year/tab guards remain wired',async t=>{
  const u=await mount(t);await openExample(u);const dialog=u.container.querySelector('[role="dialog"]');assert.equal(dialog.getAttribute('aria-modal'),'true');assert.ok(dialog.className.includes('w-full'));assert.ok(dialog.className.includes('overflow-y-auto'));assert.ok(dialog.className.includes('max-h-[94dvh]'));
  assert.ok([...dialog.querySelectorAll('input,select')].every(el=>!!el.getAttribute('aria-label')));

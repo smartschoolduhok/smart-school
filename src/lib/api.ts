@@ -711,6 +711,7 @@ export function previewAutomaticTimetable(
   options?: {
     fixed_entries?: Array<{ slot_id: number; teaching_load_id: number }>;
     use_current_locked_entries?: boolean;
+    generation_scope?: import('./timetableScope').TimetableScope;
   },
 ) {
   return fetchApi<TimetableSolverProposalWithIntegrity>('/api/timetable/solver/preview', {
@@ -724,6 +725,9 @@ function proposalEntries(entries: TimetableProposalPlacement[]) {
 }
 
 export function previewTimetableAdoption(data: {
+  generation_scope?: import('./timetableScope').TimetableScope;
+  scope_load_ids?: number[];
+  scope_token?: string;
   school_id: number;
   academic_year_id: number;
   proposal_revision: number;
@@ -736,6 +740,9 @@ export function previewTimetableAdoption(data: {
 }
 
 export function applyTimetableProposal(data: {
+  generation_scope?: import('./timetableScope').TimetableScope;
+  scope_load_ids?: number[];
+  scope_token?: string;
   school_id: number;
   academic_year_id: number;
   expected_revision: number;
@@ -856,6 +863,15 @@ export function deleteTimetableEntry(
       academic_year_id: academicYearId,
       ...(confirmUnlockLockedEntry ? { confirm_unlock_locked_entry: true } : {}),
     }),
+  });
+}
+
+export function setTimetableScopeLock(data: {
+  school_id: number; academic_year_id: number; expected_revision: number;
+  scope: import('./timetableScope').TimetableScope; is_locked: 0 | 1;
+}) {
+  return fetchApi<{ affected_count: number; is_locked: 0 | 1; revision: number }>('/api/timetable/entries/lock-scope', {
+    method: 'PUT', body: JSON.stringify(data),
   });
 }
 

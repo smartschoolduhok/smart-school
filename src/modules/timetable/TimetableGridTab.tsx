@@ -7,6 +7,7 @@ import {
   getTimetableGrid,
   moveTimetableEntry,
   setTimetableEntryLock,
+  setTimetableScopeLock,
 } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
@@ -16,6 +17,7 @@ import {
   type TimetableSlot,
 } from '../../lib/timetable';
 import type { Class, Section } from '../../types';
+import type { TimetableScope } from '../../lib/timetableScope';
 
 interface TimetableGridTabProps {
   schoolId: number;
@@ -69,6 +71,8 @@ export function TimetableGridTab({
 }: TimetableGridTabProps) {
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
   const [selectedSectionId, setSelectedSectionId] = useState<number | null>(null);
+  const [selectedStage, setSelectedStage] = useState('');
+  const [lockScopeKind, setLockScopeKind] = useState<'section' | 'class' | 'stage'>('section');
   const [grid, setGrid] = useState<TimetableGridData | null>(null);
   const [scheduleDialog, setScheduleDialog] = useState<ScheduleDialog>(null);
   const [moveDialog, setMoveDialog] = useState<MoveDialog>(null);
@@ -116,6 +120,8 @@ export function TimetableGridTab({
     requestGenerationRef.current += 1;
     setSelectedClassId(null);
     setSelectedSectionId(null);
+    setSelectedStage('');
+    setLockScopeKind('section');
     setGrid(null);
     setScheduleDialog(null);
     setMoveDialog(null);
@@ -407,6 +413,26 @@ export function TimetableGridTab({
     await refreshAfterMutation(expectedScope, expectedGeneration);
   }
 
+  async function setScopeLock(isLocked: 0 | 1) {
+    if (!grid || selectedClassId == null || saving) return;
+    const selectedClass = classes.find(item => item.id === selectedClassId);
+    if (!selectedClass) return;
+    const scope: TimetableScope = lockScopeKind === 'stage' ? { kind: 'stage', stage: selectedClass.stage }
+      : lockScopeKind === 'class' || selectedSectionId == null ? { kind: 'class', class_id: selectedClassId }
+      : { kind: 'section', class_id: selectedClassId, section_id: selectedSectionId };
+    const label = scope.kind === 'stage' ? `مرحلة ${selectedClass.stage}` : scope.kind === 'class' ? `الصف ${selectedClass.name} بكل شعبه` : `${selectedClass.name} / ${classSections.find(item => item.id === selectedSectionId)?.name || ''}`;
+    if (!window.confirm(`${isLocked ? 'تثبيت' : 'إلغاء تثبيت'} جميع الحصص المحفوظة ضمن ${label}؟${isLocked ? '\nستبقى مواقعها ثابتة في أي توليد لاحق.' : ''}`)) return;
+    const expectedScope = currentScopeRef.current, expectedGeneration = requestGenerationRef.current;
+    setSaving(true); setError('');
+    const response = await setTimetableScopeLock({ school_id: schoolId, academic_year_id: academicYearId,
+      expected_revision: grid.revision, scope, is_locked: isLocked });
+    if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
+    setSaving(false);
+    if (response.error) { setError(response.error); return; }
+    setDropAnnouncement(`تم ${isLocked ? 'تثبيت' : 'إلغاء تثبيت'} ${response.data?.affected_count || 0} حصة.`);
+    await refreshAfterMutation(expectedScope, expectedGeneration);
+  }
+
   const orderedDays = useMemo(() => (
     [...(grid?.days || [])].sort((left, right) => left.order_index - right.order_index || left.day_of_week - right.day_of_week)
   ), [grid]);
@@ -418,12 +444,17 @@ export function TimetableGridTab({
 
   return (
     <div className="space-y-4" dir="rtl">
-      <div className="grid gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 md:grid-cols-2">
+      <div className="grid gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 md:grid-cols-3">
+        <label className="text-sm font-semibold text-gray-700">المرحلة
+          <select aria-label="مرحلة الجدول اليدوي" value={selectedStage} onChange={event => { setSelectedStage(event.target.value); changeClass(''); }} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2">
+            <option value="">جميع المراحل</option>{[...new Set(classes.filter(item => item.status === 'active').map(item => item.stage))].map(stage => <option key={stage} value={stage}>{stage}</option>)}
+          </select>
+        </label>
         <label className="text-sm font-semibold text-gray-700">
           الصف
-          <select value={selectedClassId ?? ''} onChange={(event) => changeClass(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2">
+          <select aria-label="صف الجدول اليدوي" value={selectedClassId ?? ''} onChange={(event) => changeClass(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2">
             <option value="">اختر الصف</option>
-            {classes.filter((item) => item.status === 'active').map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            {classes.filter((item) => item.status === 'active' && (!selectedStage || item.stage === selectedStage)).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
         </label>
         <label className="text-sm font-semibold text-gray-700">
@@ -439,6 +470,17 @@ export function TimetableGridTab({
           </select>
         </label>
       </div>
+
+      {grid && selectionReady && <section className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+        <p className="text-sm text-indigo-900">رتّب الحصص يدويًا ثم ثبّتها ليبني التوليد التلقائي باقي الجدول حولها مع مراعاة تعارضات المدرسين والشعب.</p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <label className="text-sm font-bold">نطاق التثبيت <select aria-label="نطاق التثبيت" value={lockScopeKind} disabled={saving} onChange={event => setLockScopeKind(event.target.value as typeof lockScopeKind)} className="mr-2 rounded-lg border bg-white p-2">
+            <option value="section">{selectedSectionId == null ? 'الصف المعروض' : 'الشعبة المعروضة'}</option><option value="class">الصف بكل شعبه</option><option value="stage">المرحلة بكل صفوفها</option>
+          </select></label>
+          <button type="button" disabled={saving || loading} onClick={() => void setScopeLock(1)} className="flex items-center gap-1 rounded-lg bg-indigo-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50"><Lock size={15} />تثبيت حصص النطاق</button>
+          <button type="button" disabled={saving || loading} onClick={() => void setScopeLock(0)} className="flex items-center gap-1 rounded-lg border border-indigo-300 bg-white px-3 py-2 text-sm font-bold text-indigo-800 disabled:opacity-50"><Unlock size={15} />إلغاء تثبيت النطاق</button>
+        </div>
+      </section>}
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800">{error}</div>}
       {operationConflicts.map((conflict) => (

@@ -20,6 +20,7 @@ const { createElement, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const vite = await createServer({ root, appType: 'custom', server: { middlewareMode: true, hmr: false } });
 const { TimetableGridTab } = await vite.ssrLoadModule('/src/modules/timetable/TimetableGridTab.tsx');
+const { AutomaticTimetableTab } = await vite.ssrLoadModule('/src/modules/timetable/AutomaticTimetableTab.tsx');
 after(async () => { await vite.close(); await window.happyDOM.close(); });
 
 function response(body, status = 200) {
@@ -153,6 +154,11 @@ async function mount(t, options = {}) {
     const body = init.body ? JSON.parse(String(init.body)) : null;
     calls.push({ path, method, body });
     if (path.startsWith('/api/timetable/grid?')) return response({ data: structuredClone(grid) });
+    if (path === '/api/timetable/entries/lock-scope' && method === 'PUT') {
+      grid.entries.forEach(entry => { entry.is_locked = body.is_locked; });
+      grid.revision += 1;
+      return response({ data: { affected_count: grid.entries.length, is_locked: body.is_locked, revision: grid.revision } });
+    }
     const match = path.match(/^\/api\/timetable\/entries\/(\d+)\/drop$/);
     if (match && method === 'PUT') {
       if (options.dropFailure) return response(options.dropFailure.body, options.dropFailure.status);
@@ -193,11 +199,11 @@ async function mount(t, options = {}) {
   await act(async () => rootElement.render(createElement(TimetableGridTab, {
     schoolId: 1,
     academicYearId: 1,
-    classes: [{ id: 1, school_id: 1, name: 'الأول المتوسط', status: 'active' }],
+    classes: [{ id: 1, school_id: 1, name: 'الأول المتوسط', stage: 'متوسط', status: 'active' }],
     sections: [],
     onChanged: async () => { changed += 1; },
   })));
-  await changeSelect(container.querySelector('select'), '1');
+  await changeSelect(container.querySelector('select[aria-label="صف الجدول اليدوي"]'), '1');
   await waitFor(() => container.textContent.includes('تغيير مكان الحصة بالسحب والإفلات'), 'weekly grid');
   t.after(async () => {
     globalThis.fetch = previousFetch;
@@ -236,6 +242,44 @@ test('mouse drag to an empty cell sends revision-fenced move and refreshes the g
   await waitFor(() => ui.changed === 1, 'parent refresh');
   assert.match(target.textContent, /الرياضيات/);
   assert.match(ui.container.querySelector('[role="status"]').textContent, /تم نقل حصة الرياضيات/);
+});
+
+test('manual stage pin action sends its exact scope with current revision and reloads locks', async t => {
+  const ui = await mount(t);
+  const previousConfirm = window.confirm;
+  window.confirm = () => true; t.after(() => { window.confirm = previousConfirm; });
+  await changeSelect(ui.container.querySelector('select[aria-label="نطاق التثبيت"]'), 'stage');
+  const button = [...ui.container.querySelectorAll('button')].find(item => item.textContent === 'تثبيت حصص النطاق');
+  await act(async () => button.click());
+  await waitFor(() => ui.changed === 1, 'bulk lock refresh');
+  assert.deepEqual(ui.calls.find(call => call.path.endsWith('/lock-scope')).body, {
+    school_id: 1, academic_year_id: 1, expected_revision: 17, scope: { kind: 'stage', stage: 'متوسط' }, is_locked: 1,
+  });
+  assert.equal(ui.container.querySelector('[data-timetable-drag-entry="501"]')?.getAttribute('draggable'), 'false');
+  assert.match(ui.container.textContent, /مثبتة/);
+});
+
+test('automatic scope controls request the selected stage, class and section rather than only filtering display', async t => {
+  const calls = [], previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ path: String(url), body: JSON.parse(init.body) });
+    return response({ error: 'معاينة الاختبار' }, 400);
+  };
+  const container = document.createElement('div'); document.body.append(container);
+  const element = createRoot(container);
+  t.after(async () => { globalThis.fetch = previousFetch; await act(async () => element.unmount()); container.remove(); });
+  await act(async () => element.render(createElement(AutomaticTimetableTab, {
+    schoolId: 1, academicYearId: 1, dataVersion: 1, readiness: null, onAdopted: async () => {},
+    classes: [{ id: 1, school_id: 1, name: 'الأول', stage: 'ابتدائي', status: 'active' }],
+    sections: [{ id: 21, school_id: 1, class_id: 1, name: 'أ', status: 'active' }],
+  })));
+  for (const [value, expected] of [['stage:ابتدائي', { kind: 'stage', stage: 'ابتدائي' }], ['class:1', { kind: 'class', class_id: 1 }],
+    ['section:21', { kind: 'section', class_id: 1, section_id: 21 }]]) {
+    await changeSelect(container.querySelector('select[aria-label="نطاق التوليد"]'), value);
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === 'إنشاء جدول تلقائي').click());
+    assert.deepEqual(calls.at(-1).body.generation_scope, expected);
+    assert.equal(calls.at(-1).path, '/api/timetable/solver/preview');
+  }
 });
 
 test('mouse drop on another subject requests an atomic swap and renders both new positions', async (t) => {

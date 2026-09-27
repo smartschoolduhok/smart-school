@@ -101,6 +101,7 @@ export interface TimetableSolverProposalEntry {
   soft_warnings: TimetableEntryNotice[];
   score_contribution: number;
   is_locked: 0 | 1;
+  is_preserved?: boolean;
 }
 
 export type TimetableFixedEntryConflictCode =
@@ -188,7 +189,7 @@ export interface TimetableSolverInput {
   currentEntries?: TimetableEntry[];
   teacherAvailability?: TimetableTeacherAvailabilityOverride[];
   teacherConstraints?: TimetableTeacherConstraints[];
-  fixedEntries?: Array<{ slot_id: number; teaching_load_id: number }>;
+  fixedEntries?: Array<{ slot_id: number; teaching_load_id: number; is_locked?: 0 | 1 }>;
   limits?: Partial<TimetableSolverLimits>;
 }
 
@@ -264,7 +265,7 @@ function validateFixedEntries(input: TimetableSolverInput): {
     academic_year_id: input.academicYearId,
     slot_id: Number(entry.slot_id),
     teaching_load_id: Number(entry.teaching_load_id),
-    is_locked: 1,
+    is_locked: entry.is_locked ?? 1,
     created_by_user_id: null,
     updated_by_user_id: null,
     created_at: 0,
@@ -283,6 +284,7 @@ function validateFixedEntries(input: TimetableSolverInput): {
     }
     seen.add(pair);
     const evaluation = evaluateTimetableEntryPlacement({
+      validateWholeSchedule: true,
       candidate: entry,
       days: input.days,
       slots: input.slots,
@@ -747,6 +749,7 @@ export function validateTimetableSolverProposal(
   for (const entry of entries) {
     safetyCheck?.();
     const evaluation = evaluateTimetableEntryPlacement({
+      validateWholeSchedule: true,
       candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
       days: input.days,
       slots: input.slots,
@@ -1142,6 +1145,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   for (const entry of currentEntries) {
     ensureWithinWallClockSafetyLimit();
     const evaluation = evaluateTimetableEntryPlacement({
+      validateWholeSchedule: true,
       candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
       days: input.days,
       slots: input.slots,
@@ -1197,7 +1201,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       end_time: slot.end_time,
       soft_warnings: evaluation.warnings,
       score_contribution: Math.max(0, 10 - warningPenalty(evaluation.warnings)),
-      is_locked: fixedEntryKeys.has(`${entry.slot_id}:${entry.teaching_load_id}`) ? 1 : 0,
+      is_locked: fixedEntries.find(fixed => fixed.slot_id === entry.slot_id && fixed.teaching_load_id === entry.teaching_load_id)?.is_locked ?? 0,
     };
   });
   const scheduledPeriods = proposal.length;
