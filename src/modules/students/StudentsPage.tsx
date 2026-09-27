@@ -288,7 +288,7 @@ export default function StudentsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">
             {isParent ? 'أبنائي' : isFinanceDirectory ? 'دليل الطلاب المالي' : 'الطلاب'}
@@ -302,6 +302,8 @@ export default function StudentsPage() {
           </p>
         </div>
         {canManageSelectedSchool && (
+          <div className="flex flex-wrap items-center gap-2">
+          <Link to="/student-age-review" className="rounded-lg border px-4 py-2.5 text-sm text-blue-700">مراجعة أعمار الطلاب</Link>
           <button
             onClick={openCreate}
             className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
@@ -309,6 +311,7 @@ export default function StudentsPage() {
             <Plus size={18} />
             <span>إضافة طالب</span>
           </button>
+          </div>
         )}
       </div>
 

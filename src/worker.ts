@@ -16,6 +16,7 @@ import { registerStaffAttendanceRoutes } from './lib/staffAttendanceDb'
 import { registerHomeworkRoutes } from './lib/homeworkDb'
 import { registerAdmissionsRoutes } from './lib/admissionsDb'
 import { registerAdmissionRegulationRoutes } from './lib/admissionRegulationsDb'
+import { registerStudentAgeRoutes } from './lib/studentAgeDb'
 import { registerGradeProgressRoutes } from './lib/gradeProgressDb'
 import { registerParentCommunicationRoutes } from './lib/parentCommunicationDb'
 import type { HomeworkObjectStore } from './lib/homework'
@@ -10111,6 +10112,7 @@ registerHomeworkRoutes(app);
 registerParentCommunicationRoutes(app);
 registerGradeProgressRoutes(app);
 registerAdmissionRegulationRoutes(app);
+registerStudentAgeRoutes(app);
 registerAdmissionsRoutes(app);
 
 // GET /api/verify/receipt/:token

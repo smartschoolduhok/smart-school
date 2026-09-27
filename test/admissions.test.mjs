@@ -106,3 +106,11 @@ test('retiring an approved source is management-only and invalidates pending exe
  assert.equal((await req(f,'owner','POST',path,{revision:r.revision,reason:'TEST source revoked'})).status,200);
  const before=snapshot(f.db);assert.equal((await req(f,'registrar','POST',c.path+'/execute',{revision:c.a.revision,confirm_execute:true})).status,409);assert.deepEqual(snapshot(f.db),before);
 });
+
+test('gender changes invalidate an already approved admission preview before execution',async t=>{
+ const f=fixture(t);await regulation(f,'transfer_out');
+ const c=await create(f,{student_id:101,applicant:null,process:'transfer_out',external_school:'TEST destination',document_reference:'TEST document'});await approve(f,c);
+ f.db.exec("UPDATE students SET gender='female' WHERE id=101");const before=snapshot(f.db);
+ assert.equal((await req(f,'registrar','POST',c.path+'/execute',{revision:c.a.revision,confirm_execute:true})).status,409);
+ assert.deepEqual(snapshot(f.db),before);
+});

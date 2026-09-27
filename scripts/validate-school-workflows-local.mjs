@@ -60,6 +60,19 @@ try{
  const a=await approve(await call('registrar','POST','/api/admissions',candidate,201));
  const executed=await call('registrar','POST',`/api/admissions/${a.application_key}/execute`,{revision:a.revision,confirm_execute:true},200);assert.equal(executed.status,'executed');
  const studentCount=await count('students');await call('registrar','POST',`/api/admissions/${a.application_key}/execute`,{revision:a.revision,confirm_execute:true},200);await call('registrar','POST','/api/admissions',candidate,200);assert.equal(await count('students'),studentCount);cases.push('sourced policy, atomic admission, retry after execution');
+ // Read-only age review on real D1, with a synthetic school-specific rule.
+ const agePolicy=ruleBody('admission');agePolicy.rules={...agePolicy.rules,age_rule:'birth_date',age_scope:'continuing',birth_date_bounds:{male:{earliest:'2011-01-01',latest:null},female:{earliest:'2009-01-01',latest:null}}};
+ const ageDraft=await call('registrar','POST','/api/regulations',agePolicy,201);
+ await call('owner','POST',`/api/regulations/${ageDraft.regulation_key}/approve`,{revision:1,confirm_source_verified:true,reason:'LOCAL synthetic bounds'},200);
+ await db.prepare("UPDATE students SET birth_date='2010-12-31' WHERE id IN (101,102)").run();
+ const agesBefore=await contentSnapshot(async sql=>(await db.prepare(sql).all()).results);
+ const ages=await call('registrar','GET','/api/student-age-review?academic_year_id=1',undefined,200);
+ assert.equal(ages.rows.find(r=>r.student_id===101).age_check.status,'outside_limits');
+ assert.equal(ages.rows.find(r=>r.student_id===102).age_check.status,'within_limits');
+ assert.equal(ages.rows.find(r=>r.student_id===executed.student_id).age_check.status,'missing_birth_date');
+ await call('parent','GET','/api/student-age-review?academic_year_id=1',undefined,403);
+ assert.deepEqual(await contentSnapshot(async sql=>(await db.prepare(sql).all()).results),agesBefore);
+ cases.push('read-only age review, gender-specific bounds and tenant roles on real D1');
  await policy('transfer_out');const gradesBefore=(await db.prepare('SELECT * FROM grades ORDER BY id').all()).results;
  const outbound=await approve(await call('registrar','POST','/api/admissions',{application_key:crypto.randomUUID(),student_id:101,academic_year_id:1,class_id:1,section_id:2,process:'transfer_out',external_school:'LOCAL external',document_reference:'LOCAL doc',facts:{previous_repeats:0,accelerated:false,documents:[]}},201));
  await call('registrar','POST',`/api/admissions/${outbound.application_key}/execute`,{revision:outbound.revision,confirm_execute:true},200);
