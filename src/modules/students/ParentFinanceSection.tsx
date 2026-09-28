@@ -1,12 +1,12 @@
 import {useEffect,useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {AlertTriangle,CheckCircle2,Download,FileText,Receipt,Users,Wallet} from 'lucide-react';
-import {getParentStudentFinance} from '../../lib/api';
+import {getParentStudentFinance,getStudentFinance} from '../../lib/api';
 import {formatFinanceDate,formatIqd,formatPercentageBasisPoints,installmentStatusClasses,installmentStatusLabel,paymentMethodLabel} from '../../lib/financePresentation';
 
-export default function ParentFinanceSection({studentId}:{studentId:number}){
+export default function ParentFinanceSection({studentId,schoolId}:{studentId:number;schoolId?:number}){
   const navigate=useNavigate(),[data,setData]=useState<any>(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
-  useEffect(()=>{let active=true;setLoading(true);setError('');setData(null);void getParentStudentFinance(studentId).then(response=>{if(!active)return;if(response.error)setError(response.error);else setData(response.data);setLoading(false);});return()=>{active=false;};},[studentId]);
+  useEffect(()=>{let active=true;setLoading(true);setError('');setData(null);void (schoolId == null ? getParentStudentFinance(studentId) : getStudentFinance(studentId,schoolId)).then(response=>{if(!active)return;if(response.error)setError(response.error);else setData(response.data);setLoading(false);});return()=>{active=false;};},[studentId,schoolId]);
   if(loading)return <section className="rounded-xl border border-gray-200 bg-white p-6" aria-label="الأقساط"><p className="text-center text-sm text-gray-500">جاري تحميل الأقساط...</p></section>;
   if(error)return <section className="rounded-xl border border-red-200 bg-red-50 p-5" aria-label="الأقساط"><div className="flex items-center gap-2 text-red-700"><AlertTriangle size={19}/><span>{error}</span></div></section>;
   const totals=data?.totals??{},ratio=Math.min(100,Math.max(0,Number(totals.payment_ratio_basis_points||0)/100));

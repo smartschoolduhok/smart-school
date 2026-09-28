@@ -476,7 +476,11 @@ export default function StudentsPage() {
                       <bdi dir="ltr">{s.student_number}</bdi>
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                      {isFinanceDirectory ? s.full_name : (
+                      {isFinanceDirectory ? (
+                        <Link to={`/students/${s.id}/finance`} className="text-blue-700 hover:text-blue-900 hover:underline">
+                          {s.full_name}
+                        </Link>
+                      ) : (
                         <Link to={`/students/${s.id}`} className="text-blue-700 hover:text-blue-900 hover:underline">
                           {s.full_name}
                         </Link>

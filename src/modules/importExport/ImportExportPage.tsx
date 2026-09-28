@@ -349,6 +349,7 @@ export default function ImportExportPage() {
   const [importTypeConfirmed, setImportTypeConfirmed] = useState(true);
   const [mode, setMode] = useState<ImportMode>('skip_existing');
   const [file, setFile] = useState<File | null>(null);
+  const [draggingFile, setDraggingFile] = useState(false);
   const [sheets, setSheets] = useState<SheetInfo[]>([]);
   const [selectedSheet, setSelectedSheet] = useState<string>('');
   const [mapping, setMapping] = useState<ColumnMap>({});
@@ -441,9 +442,11 @@ export default function ImportExportPage() {
     setLoading(false);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
+  const processFile = async (f: File) => {
+    if (!/\.xlsx?$/i.test(f.name)) {
+      alert('يرجى اختيار ملف Excel بصيغة XLSX أو XLS');
+      return;
+    }
     if (f.size > 5 * 1024 * 1024) {
       alert('حجم الملف كبير جداً');
       return;
@@ -498,6 +501,19 @@ export default function ImportExportPage() {
       alert('فشل في قراءة الملف: ' + (err.message || 'خطأ غير معروف'));
     }
     setLoading(false);
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    if (selected) void processFile(selected);
+    event.target.value = '';
+  };
+
+  const handleFileDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDraggingFile(false);
+    const dropped = event.dataTransfer.files?.[0];
+    if (dropped) void processFile(dropped);
   };
 
   const selectSheet = (sheetName: string) => {
@@ -1035,7 +1051,12 @@ export default function ImportExportPage() {
       {activeTab === 'import' && (
         <div className="space-y-4">
           {step === 'upload' && (
-            <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
+            <div
+              className={`rounded-xl border-2 border-dashed p-8 text-center transition-colors ${draggingFile ? 'border-primary-500 bg-primary-50' : 'border-gray-300 bg-white'}`}
+              onDragOver={event => { event.preventDefault(); setDraggingFile(true); }}
+              onDragLeave={() => setDraggingFile(false)}
+              onDrop={handleFileDrop}
+            >
               <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
                 <Upload className="text-blue-600" size={28} />
               </div>
@@ -1061,13 +1082,12 @@ export default function ImportExportPage() {
               <h2 className="text-lg font-bold text-gray-900 mb-4">تحليل المصنف — أوراق العمل</h2>
               <div className="grid gap-3">
                 {sheets.map(s => (
-                  <div key={s.name} className={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-colors ${s.name === selectedSheet ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'}`} onClick={() => selectSheet(s.name)}>
+                  <div key={s.name} className={`flex items-center gap-4 rounded-lg border p-4 transition-colors ${s.name === selectedSheet ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'}`}>
                     {s.type === 'grade_sheet' && (
                       <input
                         type="checkbox"
                         aria-label={`اختيار ورقة الدرجات ${s.name}`}
                         checked={gradeSheetConfigs.find(config => config.sheetName === s.name)?.selected || false}
-                        onClick={event => event.stopPropagation()}
                         onChange={event => {
                           const source = gradeSheetConfigs.find(config => config.sheetName === s.name);
                           if (source) updateGradeSheetConfig(source.sourceId, { selected: event.target.checked });
@@ -1075,18 +1095,20 @@ export default function ImportExportPage() {
                         className="h-5 w-5 rounded border-gray-300 text-primary-600"
                       />
                     )}
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white ${s.type === 'students' ? 'bg-green-500' : s.type === 'grade_sheet' ? 'bg-blue-500' : s.type === 'summary' ? 'bg-amber-500' : 'bg-gray-400'}`}>
+                    <button type="button" onClick={() => selectSheet(s.name)} aria-pressed={s.name === selectedSheet} className="flex min-w-0 flex-1 items-center gap-4 rounded-lg text-right focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-600">
+                    <span className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center text-white ${s.type === 'students' ? 'bg-green-500' : s.type === 'grade_sheet' ? 'bg-blue-500' : s.type === 'summary' ? 'bg-amber-500' : 'bg-gray-400'}`}>
                       {s.type === 'students' ? <Users size={18} /> : s.type === 'grade_sheet' ? <BookOpen size={18} /> : s.type === 'summary' ? <FileText size={18} /> : <Table size={18} />}
-                    </div>
-                    <div className="flex-1">
-                      <p className="font-bold text-gray-900">{s.name}</p>
-                      <p className="text-xs text-gray-500">
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-bold text-gray-900">{s.name}</span>
+                      <span className="block text-xs text-gray-500">
                         {s.type === 'students' ? 'قائمة طلاب' : s.type === 'grade_sheet' ? 'ورقة مادة/درجات' : s.type === 'summary' ? 'ملخص/تقرير' : 'غير معروف'}
                         {' — '}صف العناوين {s.headerRowIndex == null ? 'غير موثوق' : s.headerRowIndex + 1} — {s.columnNames.length} أعمدة — {s.rowCount} صفوف بيانات
                         {' — '}ثقة النوع {Math.round(s.analysis.categoryConfidence * 100)}%
-                      </p>
-                    </div>
+                      </span>
+                    </span>
                     <ChevronRight size={18} className="text-gray-400" />
+                    </button>
                   </div>
                 ))}
               </div>

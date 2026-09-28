@@ -28,7 +28,9 @@ async function mount(t,overrides={},component=FeesPage,userOverrides={}){
   return response({data:data??{id:1}});
  };
  const container=document.createElement('div');document.body.append(container);const app=createRoot(container);
- await act(async()=>app.render(createElement(AuthProvider,null,createElement(component))));
+ const {MemoryRouter}=await vite.ssrLoadModule('react-router-dom');
+ const page=component===FeesPage?createElement(MemoryRouter,null,createElement(component)):createElement(component);
+ await act(async()=>app.render(createElement(AuthProvider,null,page)));
  t.after(async()=>{await act(async()=>app.unmount());container.remove();});
  return {container,calls};
 }
@@ -47,6 +49,7 @@ test('fee list exposes one row action and opens the authoritative account with a
  const finance={student:{id:1,full_name:'Generated Student',student_number:'FIN-1'},totals:{original_fee:100000,discount_amount:0,net_due:100000,paid_amount:0,remaining_amount:100000},fees:[{...fees[1],finance_revision:7,remaining_amount:100000,due_date:Date.UTC(2027,0,31)/1000,installment_plan:null}],payments:[],receipts:[]};
  const u=await mount(t,{'/api/student-finance/1':()=>response({data:finance}),'/api/student-fees/2/installment-plan':()=>response({data:{id:9}})}),row=[...u.container.querySelectorAll('tbody tr')].find(r=>r.textContent.includes('Payable'));
  assert.deepEqual([...row.querySelectorAll('button')].map(element=>element.textContent.trim()),['فتح الحساب']);
+ assert.equal(row.querySelector('a')?.getAttribute('href'),'/students/1');
  await click(row.querySelector('button'));assert.match(u.container.querySelector('[aria-label="حساب الطالب المالي"]').textContent,/إجمالي حساب الطالب/);
  await click(button(u,'إنشاء خطة'));assert.ok(u.container.querySelector('[role="dialog"]'));assert.equal(u.container.querySelectorAll('input[type="number"]').length,3);
  assert.deepEqual([...u.container.querySelectorAll('input[type="date"]')].map(element=>element.value),['2027-01-31','2027-02-28','2027-03-31']);
@@ -104,6 +107,17 @@ test('parent finance view is read-only and uses only parent-scoped endpoints',as
  assert.match(u.container.textContent,/الأقساط/);assert.match(u.container.textContent,/المتبقي٧٥٬٠٠٠ د.ع/);assert.match(u.container.textContent,/FIN-5/);
  assert.ok(!/(تحصيل دفعة|تعديل القسط|حذف القسط)/.test(u.container.textContent));
  assert.ok(u.container.querySelector('a[href="/print/receipt/5"]'));assert.equal(u.calls.filter(call=>call.path==='/api/student-finance/1').length,0);
+});
+test('staff student dossier uses school-scoped finance balances without write controls',async t=>{
+ const {MemoryRouter}=await vite.ssrLoadModule('react-router-dom'),{default:ParentFinanceSection}=await vite.ssrLoadModule('/src/modules/students/ParentFinanceSection.tsx');
+ const finance={totals:{original_fee:100000,discount_amount:10000,net_due:90000,paid_amount:25000,remaining_amount:65000,payment_ratio_basis_points:2777},fees:[{id:2,fee_type:'رسوم دراسية',amount:100000,net_fee:90000,paid_amount:25000,remaining_amount:65000}],payments:[],receipts:[]};
+ function Page(){return createElement(MemoryRouter,null,createElement(ParentFinanceSection,{studentId:1,schoolId:41}));}
+ const u=await mount(t,{'/api/student-finance/1':()=>response({data:finance})},Page,{role_key:'school_owner',school_id:41});
+ assert.match(u.container.textContent,/المدفوع٢٥٬٠٠٠ د.ع/);
+ assert.match(u.container.textContent,/المتبقي٦٥٬٠٠٠ د.ع/);
+ assert.equal(u.calls.filter(call=>call.url==='/api/student-finance/1?school_id=41').length,1);
+ assert.equal(u.calls.filter(call=>call.path==='/api/parent/students/1/finance').length,0);
+ assert.ok(!/(تحصيل دفعة|تعديل القسط|حذف القسط)/.test(u.container.textContent));
 });
 test('parent receipt print fetches the parent-safe document and never marks it printed',async t=>{
  const {MemoryRouter,Routes,Route}=await vite.ssrLoadModule('react-router-dom'),{default:PrintReceiptPage}=await vite.ssrLoadModule('/src/modules/print/PrintReceiptPage.tsx');

@@ -166,6 +166,15 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }: SidebarP
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
+  const [isDesktop, setIsDesktop] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches);
+
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 1024px)');
+    const sync = () => setIsDesktop(query.matches);
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
 
   const visibleGroups = useMemo(() => NAVIGATION_GROUPS
     .map(group => ({ ...group, items: group.items.filter(item => isItemVisible(item, user?.role_key)) }))
@@ -190,6 +199,8 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }: SidebarP
         isOpen ? 'translate-x-0' : 'translate-x-full'
       }`}
       aria-label="التنقل الرئيسي"
+      aria-hidden={!isDesktop && !isOpen}
+      inert={!isDesktop && !isOpen}
     >
       <div className="flex-1 min-h-0 overflow-y-auto p-4 lg:p-5">
         <div className="mb-6 flex items-center gap-3 px-1">
@@ -200,7 +211,7 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }: SidebarP
             <h1 className="truncate text-lg font-bold leading-tight">نظام المدرسة الذكي</h1>
             <p className="truncate text-xs text-gray-400">{user?.school_name || 'الإدارة المركزية'}</p>
           </div>
-          <button type="button" onClick={onClose} className="rounded-lg p-2 text-gray-300 hover:bg-sidebar-hover hover:text-white lg:hidden" aria-label="إغلاق القائمة">
+          <button type="button" id="sidebar-close-button" onClick={onClose} className="rounded-lg p-2 text-gray-300 hover:bg-sidebar-hover hover:text-white lg:hidden" aria-label="إغلاق القائمة">
             <X size={20} />
           </button>
         </div>

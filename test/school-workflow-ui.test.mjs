@@ -116,6 +116,11 @@ test('progress refresh clears a failed request after the next successful respons
 });
 test('regulation selection discards an obsolete audit response and approval requires source verification',async t=>{
  const first=defer(),second=defer();const v=await mount(t,'regulations','school_owner',{'/api/regulations':()=>response([regulation('one','الأولى'),regulation('two','الثانية')]),'/api/regulations/one/audit':()=>first.promise,'/api/regulations/two/audit':()=>second.promise});
+ const list=v.container.querySelector('section'),form=v.container.querySelector('#regulation-form');
+ assert.ok(list.compareDocumentPosition(form)&4,'saved regulations precede the form in keyboard order');
+ const statusFilter=[...list.querySelectorAll('label')].find(label=>label.textContent.startsWith('الحالة')).querySelector('select');
+ await input(statusFilter,'approved');assert.match(list.textContent,/لا توجد لوائح تطابق المرشحات/);
+ await input(statusFilter,'');
  await click(buttons(v).find(b=>b.textContent.includes('الأولى')));await click(buttons(v).find(b=>b.textContent.includes('الثانية')));
  await act(async()=>second.resolve(response([{action:'draft',reason:'CURRENT-AUDIT',created_at:1789000000}])));await act(async()=>first.resolve(response([{action:'draft',reason:'OBSOLETE-AUDIT',created_at:1789000000}])));
  assert.match(v.container.textContent,/CURRENT-AUDIT/);assert.doesNotMatch(v.container.textContent,/OBSOLETE-AUDIT/);assert.equal(button(v,'اعتماد هذا الإصدار').disabled,true);
@@ -140,17 +145,18 @@ const agePage=(rows,next_cursor=null)=>({rows,next_cursor,review_date:'2026-09-2
 
 test('template fills an editable school draft without saving or approval; mismatched year cannot apply',async t=>{
  const v=await mount(t,'regulations','school_owner',{'/api/academic-years':()=>response([{id:1,name:'2026-2027'},{id:2,name:'2025-2026'}])});
- await input(labeled(v,'السنة'),'1');await input(labeled(v,'الصف'),'1');
- await input(labeled(v,'البدء من قالب موثق'),'iq-morning-2026-27-intermediate-1');
+ const formLabeled=(label,tag='select')=>[...v.container.querySelectorAll('#regulation-form label')].find(el=>el.textContent.startsWith(label))?.querySelector(tag);
+ await input(formLabeled('السنة'),'1');await input(formLabeled('الصف'),'1');
+ await input(formLabeled('البدء من قالب موثق'),'iq-morning-2026-27-intermediate-1');
  assert.equal(button(v,'تعبئة مسودة قابلة للتخصيص').disabled,false);
  await click(button(v,'تعبئة مسودة قابلة للتخصيص'));
- assert.equal(labeled(v,'أقدم ميلاد مسموح للذكور','input').value,'2011-01-01');
- assert.equal(labeled(v,'أقدم ميلاد مسموح للإناث','input').value,'2009-01-01');
- assert.equal(labeled(v,'رابط المصدر الرسمي','input').value,'https://t.me/Educationiq/32202');
- await input(labeled(v,'أقدم ميلاد مسموح للذكور','input'),'2010-01-01');
- assert.equal(labeled(v,'أقدم ميلاد مسموح للذكور','input').value,'2010-01-01');
+ assert.equal(formLabeled('أقدم ميلاد مسموح للذكور','input').value,'2011-01-01');
+ assert.equal(formLabeled('أقدم ميلاد مسموح للإناث','input').value,'2009-01-01');
+ assert.equal(formLabeled('رابط المصدر الرسمي','input').value,'https://t.me/Educationiq/32202');
+ await input(formLabeled('أقدم ميلاد مسموح للذكور','input'),'2010-01-01');
+ assert.equal(formLabeled('أقدم ميلاد مسموح للذكور','input').value,'2010-01-01');
  assert.equal(v.calls.some(c=>c.method==='POST'),false);
- await input(labeled(v,'السنة'),'2');assert.equal(button(v,'تعبئة مسودة قابلة للتخصيص').disabled,true);assert.equal(button(v,'حفظ مسودة الإصدار').disabled,true);
+ await input(formLabeled('السنة'),'2');assert.equal(button(v,'تعبئة مسودة قابلة للتخصيص').disabled,true);assert.equal(button(v,'حفظ مسودة الإصدار').disabled,true);
 });
 
 test('age report shows partial counts, follows pagination, filters loaded rows and makes no writes',async t=>{

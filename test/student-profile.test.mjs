@@ -142,6 +142,16 @@ test('Student Profile introduces no grades or student-subject history assumption
   assert.doesNotMatch(profileSource, /getGrades|getStudentSubjects|student_subjects|grade_history|subjects_history/);
 });
 
+test('student name opens a role-scoped dossier with grades and authoritative finance totals', () => {
+  assert.match(profileSource, /<StudentGradesSection studentId=\{student\.id\} \/>/);
+  assert.match(profileSource, /hasRole\(user\?\.role_key, FINANCE_ACCESS_ROLES\)/);
+  assert.match(profileSource, /<ParentFinanceSection studentId=\{student\.id\} schoolId=\{schoolId\} \/>/);
+  assert.match(source('src/modules/students/StudentGradesSection.tsx'), /getStudentGrades\(studentId\)/);
+  assert.match(source('src/modules/students/ParentFinanceSection.tsx'), /getStudentFinance\(studentId,schoolId\)/);
+  assert.match(studentsSource, /to=\{`\/students\/\$\{s\.id\}\/finance`\}/);
+  assert.match(appSource, /path="\/students\/:id\/finance"[\s\S]*?<FinanceRoute><StudentFinancePage \/><\/FinanceRoute>/);
+});
+
 test('existing Student edit and archive actions remain available', () => {
   assert.match(studentsSource, /onClick=\{\(\) => openEdit\(s\)\}/);
   assert.match(studentsSource, /onClick=\{\(\) => handleArchive\(s\.id\)\}/);
