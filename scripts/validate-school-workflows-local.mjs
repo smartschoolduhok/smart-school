@@ -30,6 +30,11 @@ try{
    const expected=sqlTokens(migration.slice(migration.indexOf('CREATE VIEW')).trim().replace(/;$/,'')).map(t=>[t.kind,t.text]);
    assert.deepEqual(actual.sql,expected);
    assert.deepEqual({...actual,sql:old.sql},old);
+  }else if(old.type==='trigger'&&old.name==='trg_timetable_slots_preserve_entries'){
+   const migration=readFileSync(join(root,'migrations/0047_timetable_edit_saved_lesson_times.sql'),'utf8');
+   const expected=sqlTokens(migration.slice(migration.indexOf('CREATE TRIGGER')).trim().replace(/;$/,'')).map(t=>[t.kind,t.text]);
+   assert.deepEqual(actual.sql,expected);
+   assert.deepEqual({...actual,sql:old.sql},old);
   }else assert.deepEqual(actual,old,old.name);
  }
  for(const [name,value] of Object.entries(before.tables))if(!['d1_migrations','sqlite_sequence'].includes(name))assert.deepEqual(after.tables[name],value,name);
