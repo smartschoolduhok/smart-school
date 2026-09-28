@@ -56,7 +56,7 @@ export const matrixKey = (subjectId: number, sectionId: number | null) => `${sub
 const isId = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const onlyKeys = (v: Record<string, unknown>, keys: string[]) => Object.keys(v).every(k => keys.includes(k));
-const invalid = (code = 'invalid_matrix_payload') => ({ ok: false as const, code, error: 'بيانات مصفوفة النصاب غير صالحة؛ تحقق من الحقول والمعرّفات وعدد الحصص.' });
+const invalid = (code = 'invalid_matrix_payload') => ({ ok: false as const, code, error: 'بيانات مصفوفة النصاب غير صالحة؛ تحقق من الحقول والمعرّفات وعدد الدروس.' });
 
 export function parseMatrixRequest(input: unknown, apply = false) {
   if (!object(input) || !onlyKeys(input, ['school_id', 'academic_year_id', 'class_id', 'expected_revision', 'changes', ...(apply ? ['confirm_apply'] : [])])) return invalid();
@@ -149,7 +149,7 @@ export function teacherScheduleNotices(context: Pick<MatrixContext, 'days' | 'sl
     const blockers: MatrixNotice[] = []; const warnings: MatrixNotice[] = [];
     const seen = new Set<number>();
     for (const entry of entries) {
-      if (seen.has(entry.slot_id)) blockers.push({ code: 'teacher_collision', message: 'المدرس مرتبط بحصة أخرى في الفترة نفسها' });
+      if (seen.has(entry.slot_id)) blockers.push({ code: 'teacher_collision', message: 'المدرس مرتبط بدرس آخر في الفترة نفسها' });
       seen.add(entry.slot_id);
       if (context.availability.some(a => a.employee_id === teacherId && a.slot_id === entry.slot_id && a.status === 'unavailable'))
         blockers.push({ code: 'teacher_unavailable', message: 'المدرس غير متاح في هذه الفترة' });
@@ -194,8 +194,8 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
     if (!applicable.has(matrixKey(change.subject_id, change.section_id))) block('missing_or_not_in_scope', 'المادة أو الشعبة غير متاحة ضمن الصف المحدد.');
     if (change.action === 'upsert' && change.employee_id != null && !teacher) block('invalid_teacher', 'المدرس غير متاح ضمن المدرسة المحددة.');
     const scheduled = context.entries.filter(e => e.teaching_load_id === existing?.id).length;
-    if (change.action === 'deactivate' && scheduled) block('load_has_scheduled_entries', 'لا يمكن تعطيل النصاب لأنه يحتوي على حصص مجدولة.');
-    if (change.action === 'upsert' && change.weekly_periods < scheduled) block('weekly_periods_below_scheduled', 'عدد الحصص أقل من عدد الحصص المجدولة حاليًا.');
+    if (change.action === 'deactivate' && scheduled) block('load_has_scheduled_entries', 'لا يمكن تعطيل النصاب لأنه يحتوي على دروس مجدولة.');
+    if (change.action === 'upsert' && change.weekly_periods < scheduled) block('weekly_periods_below_scheduled', 'عدد الدروس أقل من عدد الدروس المجدولة حاليًا.');
     if (item.blockers.length) { item.action = 'blocked'; return item; }
     if (change.action === 'deactivate') {
       item.action = existing ? 'deactivate' : 'unchanged';
@@ -218,7 +218,7 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
     if (item.action !== 'update' || item.new_employee_id === item.old_employee_id) continue;
     const notices = item.new_employee_id == null ? undefined : safety.get(item.new_employee_id);
     item.blockers.push(...(notices?.blockers ?? [])); item.warnings.push(...(notices?.warnings ?? []));
-    if (item.locked_entry_count) item.warnings.push({ code: 'locked_lessons_teacher_change', message: 'يتغير مدرس حصص مقفلة مع الحفاظ على مواقعها وأقفالها.' });
+    if (item.locked_entry_count) item.warnings.push({ code: 'locked_lessons_teacher_change', message: 'يتغير مدرس دروس مقفلة مع الحفاظ على مواقعها وأقفالها.' });
     if (item.blockers.length) item.action = 'blocked';
   }
   const counts: MatrixPlan['counts'] = { create: 0, update: 0, deactivate: 0, unchanged: 0, blocked: 0 };

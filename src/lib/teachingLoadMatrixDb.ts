@@ -133,13 +133,13 @@ export function matrixDatabaseError(error: unknown): MatrixError | null {
   const message = error instanceof Error ? error.message : String(error);
   if (/stale_timetable_proposal/.test(message)) return staleMatrixError();
   const failures: Array<[RegExp, string, string]> = [
-    [/teacher collision/, 'teacher_collision', 'المدرس مرتبط بحصة أخرى في الفترة نفسها.'],
-    [/teacher unavailable/, 'teacher_unavailable', 'المدرس غير متاح في إحدى الحصص المجدولة.'],
-    [/max periods per day/, 'teacher_max_periods_per_day', 'تجاوز المدرس الحد الأقصى للحصص اليومية.'],
+    [/teacher collision/, 'teacher_collision', 'المدرس مرتبط بدرس آخر في الفترة نفسها.'],
+    [/teacher unavailable/, 'teacher_unavailable', 'المدرس غير متاح في إحدى الدروس المجدولة.'],
+    [/max periods per day/, 'teacher_max_periods_per_day', 'تجاوز المدرس الحد الأقصى للدروس اليومية.'],
     [/max working days/, 'teacher_max_working_days', 'تجاوز المدرس الحد الأقصى لأيام العمل.'],
-    [/max consecutive periods/, 'teacher_max_consecutive_periods', 'تجاوز المدرس الحد الأقصى للحصص المتتالية.'],
-    [/weekly periods below scheduled/, 'weekly_periods_below_scheduled', 'عدد الحصص أقل من عدد الحصص المجدولة.'],
-    [/timetable load has scheduled entries/, 'load_has_scheduled_entries', 'توجد حصص مجدولة تمنع تغيير مراجع هذا النصاب.'],
+    [/max consecutive periods/, 'teacher_max_consecutive_periods', 'تجاوز المدرس الحد الأقصى للدروس المتتالية.'],
+    [/weekly periods below scheduled/, 'weekly_periods_below_scheduled', 'عدد الدروس أقل من عدد الدروس المجدولة.'],
+    [/timetable load has scheduled entries/, 'load_has_scheduled_entries', 'توجد دروس مجدولة تمنع تغيير مراجع هذا النصاب.'],
     [/timetable|constraint failed/i, 'invalid_matrix_reference', 'تغيرت بيانات النصاب أو مراجعه؛ أعد تحميل المصفوفة.'],
   ];
   const failure = failures.find(([pattern]) => pattern.test(message));

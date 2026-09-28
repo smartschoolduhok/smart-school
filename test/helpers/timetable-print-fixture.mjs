@@ -13,7 +13,7 @@ export function printFixture() {
       const start = 8 * 60 + j * 40;
       const time = n => `${Math.floor(n / 60).toString().padStart(2, '0')}:${(n % 60).toString().padStart(2, '0')}`;
       return {id: ++id, school_id: 1, academic_year_id: 1, day_of_week: day.day_of_week, slot_index: j + 1, slot_type: j === 3 ? 'break' : 'lesson', lesson_number: j === 3 ? null : j < 3 ? j + 1 : j,
-        label: j === 3 ? 'استراحة' : `حصة ${j < 3 ? j + 1 : j}`, start_time: time(start), end_time: time(start + 40), is_active: 1};
+        label: j === 3 ? 'استراحة' : `درس ${j < 3 ? j + 1 : j}`, start_time: time(start), end_time: time(start + 40), is_active: 1};
     });
   });
   const entry = (id, classId, sectionId, subject) => ({id, school_id: 1, academic_year_id: 1, slot_id: slots[0].id, teaching_load_id: id, subject_id: id,

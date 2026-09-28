@@ -11,8 +11,8 @@ export function WeekPeriodEditor({rows, onChange}: {rows: DraftPeriod[]; onChang
         <legend className="px-1 text-sm font-bold">الفترة {i + 1}{p.is_active === 0 ? ' — غير نشطة' : ''}</legend>
         <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
           <label className="text-xs">الترتيب<input aria-label={`ترتيب الفترة ${i + 1}`} className={inputClass} type="number" min="1" value={p.slot_index} onChange={e => edit(i, {slot_index: e.target.value})}/></label>
-          <label className="text-xs">النوع<select aria-label={`نوع الفترة ${i + 1}`} className={inputClass} value={p.slot_type} onChange={e => edit(i, {slot_type: e.target.value as DraftPeriod['slot_type'], lesson_number: e.target.value === 'break' ? '' : p.lesson_number})}><option value="lesson">حصة</option><option value="break">استراحة</option></select></label>
-          <label className="text-xs">رقم الحصة<input aria-label={`رقم حصة الفترة ${i + 1}`} className={inputClass} type="number" min="1" disabled={p.slot_type === 'break'} value={p.lesson_number} onChange={e => edit(i, {lesson_number: e.target.value})}/></label>
+          <label className="text-xs">النوع<select aria-label={`نوع الفترة ${i + 1}`} className={inputClass} value={p.slot_type} onChange={e => edit(i, {slot_type: e.target.value as DraftPeriod['slot_type'], lesson_number: e.target.value === 'break' ? '' : p.lesson_number})}><option value="lesson">درس</option><option value="break">استراحة</option></select></label>
+          <label className="text-xs">رقم الدرس<input aria-label={`رقم درس الفترة ${i + 1}`} className={inputClass} type="number" min="1" disabled={p.slot_type === 'break'} value={p.lesson_number} onChange={e => edit(i, {lesson_number: e.target.value})}/></label>
           <label className="text-xs">الاسم<input aria-label={`اسم الفترة ${i + 1}`} className={inputClass} value={p.label} maxLength={120} onChange={e => edit(i, {label: e.target.value})}/></label>
           <label className="text-xs">البداية<input aria-label={`بداية الفترة ${i + 1}`} className={inputClass} dir="ltr" type="time" value={p.start_time} onChange={e => edit(i, {start_time: e.target.value})}/></label>
           <label className="text-xs">النهاية<input aria-label={`نهاية الفترة ${i + 1}`} className={inputClass} dir="ltr" type="time" value={p.end_time} onChange={e => edit(i, {end_time: e.target.value})}/></label>
@@ -25,7 +25,7 @@ export function WeekPeriodEditor({rows, onChange}: {rows: DraftPeriod[]; onChang
     })}
     <button type="button" disabled={rows.length >= 30} className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50" onClick={() => onChange([...rows, {
       slot_index: String(Math.max(0, ...rows.map(p => Number(p.slot_index) || 0)) + 1), slot_type: 'lesson',
-      lesson_number: String(Math.max(0, ...rows.map(p => Number(p.lesson_number) || 0)) + 1), label: 'حصة جديدة',
+      lesson_number: String(Math.max(0, ...rows.map(p => Number(p.lesson_number) || 0)) + 1), label: 'درس جديد',
       start_time: rows[rows.length - 1]?.end_time || '08:00', end_time: '', is_active: 1,
     }])}>إضافة فترة إلى المسودة</button>
   </div>;

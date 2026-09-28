@@ -234,12 +234,17 @@ test('cyclic identity-preserving time swap blocked during preview, no parking/de
  const a=p[0],b=p[1];p[0]={...a,start_time:b.start_time,end_time:b.end_time};p[1]={...b,start_time:a.start_time,end_time:a.end_time};
  const plan=await planWeekSetup(c,request(f,p,[0],'update_matching_keep_extra'));assert.equal(plan.can_apply,false);assert.ok(plan.blockers.some(b=>b.code==='unsupported_update_order'));assert.deepEqual(snapshot(f.db),before);
 });
-test('scheduled/locked links reject time edits; metadata allowed, immutable history/overrides preserved',async t=>{
+test('scheduled and locked lessons keep their links when bell times change',async t=>{
  const f=weekFixture(t);entry(f.db,2,1,1);addAvailability(f.db,2,1,'preferred');f.db.exec(historySQL);
  const c=await loadWeekSetup(f.d1,1,1),p=c.slots.filter(s=>s.day_of_week===0).map(periodValues),before=snapshot(f.db);
- const bad=await planWeekSetup(c,request(f,[{...p[0],start_time:'07:50'}],[0],'update_matching_keep_extra'));assert.equal(bad.can_apply,false);assert.ok(bad.days[0].blockers.some(n=>n.code==='slot_has_scheduled_entries'));
- assert.deepEqual(bad.days[0].impact,{scheduled_entries:1,locked_entries:1,availability_overrides:1,historical_references:1});
- const good=await planWeekSetup(c,request(f,[{...p[0],label:'New label'}],[0],'update_matching_keep_extra'));assert.equal(good.can_apply,true);await f.d1.batch(buildWeekApplyStatements(f.d1,1,1,good).statements);assertPreserved(before,snapshot(f.db));
+ const plan=await planWeekSetup(c,request(f,[{...p[0],start_time:'07:50',label:'New label'}],[0],'update_matching_keep_extra'));
+ assert.equal(plan.can_apply,true,JSON.stringify(plan));
+ assert.ok(plan.days[0].warnings.some(n=>n.code==='scheduled_lesson_time_change'));
+ assert.equal(plan.requires_availability_acknowledgement,true);
+ assert.deepEqual(plan.days[0].impact,{scheduled_entries:1,locked_entries:1,availability_overrides:1,historical_references:1});
+ await f.d1.batch(buildWeekApplyStatements(f.d1,1,1,plan).statements);
+ assert.equal(f.db.prepare('SELECT start_time FROM timetable_slots WHERE id=1').get().start_time,'07:50');
+ assertPreserved(before,snapshot(f.db));
 });
 test('availability-linked time edits retain same ID and expose acknowledgement/history without changing links',async t=>{
  const f=weekFixture(t);addAvailability(f.db,2,1,'avoid');f.db.exec(historySQL);const c=await loadWeekSetup(f.d1,1,1),before=snapshot(f.db);

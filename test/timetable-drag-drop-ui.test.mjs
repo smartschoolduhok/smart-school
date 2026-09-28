@@ -79,12 +79,12 @@ function gridFixture({ occupiedTarget = false, lockedSource = false, lockedTarge
     slots: [
       {
         id: 11, school_id: 1, academic_year_id: 1, day_of_week: 0,
-        slot_index: 1, slot_type: 'lesson', lesson_number: 1, label: 'الحصة الأولى',
+        slot_index: 1, slot_type: 'lesson', lesson_number: 1, label: 'الدرس الأول',
         start_time: '08:00', end_time: '08:40', is_active: 1, created_at: 1, updated_at: 1,
       },
       {
         id: 12, school_id: 1, academic_year_id: 1, day_of_week: 0,
-        slot_index: 2, slot_type: 'lesson', lesson_number: 2, label: 'الحصة الثانية',
+        slot_index: 2, slot_type: 'lesson', lesson_number: 2, label: 'الدرس الثاني',
         start_time: '08:40', end_time: '09:20', is_active: 1, created_at: 1, updated_at: 1,
       },
     ],
@@ -172,7 +172,7 @@ async function mount(t, options = {}) {
       if (options.teacherConflictAfterDrop) {
         source.hard_conflicts = [{
           code: 'teacher_collision',
-          message: 'المدرس مرتبط بحصة أخرى في الفترة نفسها',
+          message: 'المدرس مرتبط بدرس آخر في الفترة نفسها',
         }];
       }
       grid.revision += target ? 3 : 1;
@@ -186,10 +186,22 @@ async function mount(t, options = {}) {
           warnings: [],
           conflicts: options.teacherConflictAfterDrop ? [{
             code: 'teacher_collision',
-            message: 'المدرس مرتبط بحصة أخرى في الفترة نفسها',
+            message: 'المدرس مرتبط بدرس آخر في الفترة نفسها',
           }] : [],
         },
       });
+    }
+    const editMatch = path.match(/^\/api\/timetable\/entries\/(\d+)$/);
+    if (editMatch && method === 'PUT') {
+      const entry = grid.entries.find((candidate) => candidate.id === Number(editMatch[1]));
+      const load = grid.loads.find((candidate) => candidate.id === body.teaching_load_id);
+      entry.teaching_load_id = load.id;
+      entry.subject_id = load.subject_id;
+      entry.subject_name = load.subject_name;
+      entry.employee_id = load.employee_id;
+      entry.employee_name = load.employee_name;
+      grid.revision += 1;
+      return response({ data: structuredClone(entry), meta: { warnings: [] } });
     }
     throw new Error(`Unexpected request ${method} ${path}`);
   };
@@ -204,7 +216,7 @@ async function mount(t, options = {}) {
     onChanged: async () => { changed += 1; },
   })));
   await changeSelect(container.querySelector('select[aria-label="صف الجدول اليدوي"]'), '1');
-  await waitFor(() => container.textContent.includes('تغيير مكان الحصة بالسحب والإفلات'), 'weekly grid');
+  await waitFor(() => container.textContent.includes('تغيير مكان الدرس بالسحب والإفلات'), 'weekly grid');
   t.after(async () => {
     globalThis.fetch = previousFetch;
     localStorage.clear();
@@ -241,7 +253,26 @@ test('mouse drag to an empty cell sends revision-fenced move and refreshes the g
   });
   await waitFor(() => ui.changed === 1, 'parent refresh');
   assert.match(target.textContent, /الرياضيات/);
-  assert.match(ui.container.querySelector('[role="status"]').textContent, /تم نقل حصة الرياضيات/);
+  assert.match(ui.container.querySelector('[role="status"]').textContent, /تم نقل درس الرياضيات/);
+});
+
+test('an existing lesson offers a direct subject change and refreshes the same cell', async (t) => {
+  const ui = await mount(t, { occupiedTarget: true });
+  const originalCell = ui.container.querySelector('[data-timetable-drop-slot="11"]');
+  const editButton = [...originalCell.querySelectorAll('button')].find((button) => button.textContent === 'تغيير المادة');
+  await act(async () => editButton.click());
+  const dialog = ui.container.querySelector('[role="dialog"][aria-label="تغيير مادة الدرس"]');
+  assert.ok(dialog);
+  const alternative = [...dialog.querySelectorAll('button')].find((button) => button.textContent.includes('اللغة العربية'));
+  await act(async () => alternative.click());
+  await waitFor(() => ui.changed === 1, 'lesson replacement refresh');
+  const request = ui.calls.find((call) => call.path === '/api/timetable/entries/501' && call.method === 'PUT');
+  assert.deepEqual(request.body, {
+    school_id: 1, academic_year_id: 1, slot_id: 11,
+    teaching_load_id: 102, expected_revision: 17,
+  });
+  assert.match(originalCell.textContent, /اللغة العربية/);
+  assert.doesNotMatch(originalCell.textContent, /الرياضيات/);
 });
 
 test('manual stage pin action sends its exact scope with current revision and reloads locks', async t => {
@@ -249,14 +280,14 @@ test('manual stage pin action sends its exact scope with current revision and re
   const previousConfirm = window.confirm;
   window.confirm = () => true; t.after(() => { window.confirm = previousConfirm; });
   await changeSelect(ui.container.querySelector('select[aria-label="نطاق التثبيت"]'), 'stage');
-  const button = [...ui.container.querySelectorAll('button')].find(item => item.textContent === 'تثبيت حصص النطاق');
+  const button = [...ui.container.querySelectorAll('button')].find(item => item.textContent === 'تثبيت دروس النطاق');
   await act(async () => button.click());
   await waitFor(() => ui.changed === 1, 'bulk lock refresh');
   assert.deepEqual(ui.calls.find(call => call.path.endsWith('/lock-scope')).body, {
     school_id: 1, academic_year_id: 1, expected_revision: 17, scope: { kind: 'stage', stage: 'متوسط' }, is_locked: 1,
   });
   assert.equal(ui.container.querySelector('[data-timetable-drag-entry="501"]')?.getAttribute('draggable'), 'false');
-  assert.match(ui.container.textContent, /مثبتة/);
+  assert.match(ui.container.textContent, /الدرس المثبت/);
 });
 
 test('automatic scope controls request the selected stage, class and section rather than only filtering display', async t => {
@@ -293,7 +324,7 @@ test('mouse drop on another subject requests an atomic swap and renders both new
   assert.equal(request.body.expected_revision, 17);
   assert.match(ui.container.querySelector('[data-timetable-drop-slot="11"]').textContent, /اللغة العربية/);
   assert.match(ui.container.querySelector('[data-timetable-drop-slot="12"]').textContent, /الرياضيات/);
-  assert.match(ui.container.querySelector('[role="status"]').textContent, /تم تبديل حصة الرياضيات مع حصة اللغة العربية/);
+  assert.match(ui.container.querySelector('[role="status"]').textContent, /تم تبديل درس الرياضيات مع درس اللغة العربية/);
 });
 
 test('accepted teacher collision is colored rose and announced as a visible conflict', async (t) => {
@@ -336,7 +367,7 @@ test('locked lesson cannot be dragged while its click opens the keyboard-accessi
   assert.equal(handle.getAttribute('draggable'), 'false');
   assert.equal(handle.getAttribute('aria-describedby'), 'timetable-drag-help');
   await act(async () => handle.click());
-  const dialog = ui.container.querySelector('[role="dialog"][aria-label="نقل الحصة"]');
+  const dialog = ui.container.querySelector('[role="dialog"][aria-label="نقل الدرس"]');
   assert.ok(dialog);
   assert.match(dialog.textContent, /اختر فترة فعالة أخرى/);
   assert.match(dialog.textContent, /خانة فارغة — نقل/);

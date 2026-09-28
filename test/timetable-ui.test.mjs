@@ -24,7 +24,7 @@ test('timetable module is Arabic RTL and exposes the weekly grid with all founda
 
 test('weekly grid exposes explicit class/section flow, breaks and missing-teacher demand', () => {
   assert.match(gridSource, /dir="rtl"/);
-  for (const label of ['اختر الصف', 'اختر الشعبة', 'جدولة حصة', 'استراحة', 'بدون مدرس', 'المطلوب', 'المجدول', 'المتبقي', 'تنبيه تفضيل', 'تعارض صلب', 'تعارض المدرّس']) {
+  for (const label of ['اختر الصف', 'اختر الشعبة', 'جدولة درس', 'استراحة', 'بدون مدرس', 'المطلوب', 'المجدول', 'المتبقي', 'تنبيه تفضيل', 'تعارض صلب', 'تعارض المدرّس']) {
     assert.ok(gridSource.includes(label), label);
   }
   assert.match(gridSource, /slot\.slot_type === 'break'/);
@@ -58,7 +58,7 @@ test('hard conflicts and preference warnings remain visually and semantically se
 });
 
 test('historical invalid placements render in a dedicated repair section without becoming schedule targets', () => {
-  for (const label of ['حصص تحتاج إصلاح', 'لا تُحتسب ضمن الحصص المجدولة الصحيحة', 'نقل إلى فترة فعالة']) {
+  for (const label of ['دروس تحتاج إصلاح', 'لا تُحتسب ضمن الدروس المجدولة الصحيحة', 'نقل إلى فترة فعالة']) {
     assert.ok(gridSource.includes(label), label);
   }
   assert.match(timetableSource, /historical_entries: TimetableHistoricalGridEntry\[\]/);
@@ -126,10 +126,10 @@ test('teacher availability UI exposes hard, soft, bulk-day, reset and constraint
     'جعل اليوم متاحاً',
     'جعل اليوم غير متاح',
     'إعادة ضبط التوفر',
-    'الحد الأقصى للحصص يومياً',
-    'الحد الأقصى للحصص المتتالية',
+    'الحد الأقصى للدروس يومياً',
+    'الحد الأقصى للدروس المتتالية',
     'الحد الأقصى لأيام العمل أسبوعياً',
-    'يفضل تجميع الحصص',
+    'يفضل تجميع الدروس',
   ]) assert.ok(availabilitySource.includes(label), label);
   assert.match(availabilitySource, /slot\.slot_type === 'break'/);
   assert.match(availabilitySource, /استراحة — غير قابلة للتعديل/);

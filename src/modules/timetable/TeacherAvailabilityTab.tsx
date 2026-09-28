@@ -181,7 +181,7 @@ export function TeacherAvailabilityTab({
     if (!scopeIsCurrent(requestSchoolId, requestYearId, requestTeacherId)) return;
     setSaving(false);
     if (response.error) return setError(response.error);
-    setSuccess(status === null ? 'أعيد اليوم إلى التوفر الافتراضي' : 'تم جعل حصص اليوم غير متاحة');
+    setSuccess(status === null ? 'أعيد اليوم إلى التوفر الافتراضي' : 'تم جعل دروس اليوم غير متاحة');
     await loadTeacherData(requestTeacherId);
   }
 
@@ -253,7 +253,7 @@ export function TeacherAvailabilityTab({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="flex items-center gap-2 font-bold text-gray-900"><UserRoundCheck size={18} />مصفوفة التوفر الأسبوعية</h2>
-                <p className="mt-1 text-xs text-gray-500">عدم وجود استثناء يعني أن الحصة متاحة. الاستراحات غير قابلة للتعديل.</p>
+                <p className="mt-1 text-xs text-gray-500">عدم وجود استثناء يعني أن الدرس متاح. الاستراحات غير قابلة للتعديل.</p>
               </div>
               <button type="button" disabled={saving} onClick={() => void resetAvailability()} className="flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 disabled:opacity-50"><RotateCcw size={16} />إعادة ضبط التوفر</button>
             </div>
@@ -306,16 +306,16 @@ export function TeacherAvailabilityTab({
           </section>
 
           <form onSubmit={submitConstraints} className="space-y-4 rounded-xl border border-gray-200 bg-white p-4">
-            <div><h2 className="font-bold text-gray-900">قيود المدرس</h2><p className="mt-1 text-xs text-gray-500">ترك الحد فارغًا يعني عدم وجود حد خاص بالمدرس. حد الحصص المتتالية محفوظ للمحرك المستقبلي ولا يثبت قابلية الحل الكاملة في هذه المرحلة.</p></div>
+            <div><h2 className="font-bold text-gray-900">قيود المدرس</h2><p className="mt-1 text-xs text-gray-500">ترك الحد فارغًا يعني عدم وجود حد خاص بالمدرس. حد الدروس المتتالية محفوظ للمحرك المستقبلي ولا يثبت قابلية الحل الكاملة في هذه المرحلة.</p></div>
             <div className="grid gap-3 md:grid-cols-3">
-              <label className="text-sm font-medium text-gray-700">الحد الأقصى للحصص يومياً<input type="number" min="1" value={constraintForm.max_periods_per_day} onChange={(event) => setConstraintForm({ ...constraintForm, max_periods_per_day: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label>
-              <label className="text-sm font-medium text-gray-700">الحد الأقصى للحصص المتتالية<input type="number" min="1" value={constraintForm.max_consecutive_periods} onChange={(event) => setConstraintForm({ ...constraintForm, max_consecutive_periods: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label>
+              <label className="text-sm font-medium text-gray-700">الحد الأقصى للدروس يومياً<input type="number" min="1" value={constraintForm.max_periods_per_day} onChange={(event) => setConstraintForm({ ...constraintForm, max_periods_per_day: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label>
+              <label className="text-sm font-medium text-gray-700">الحد الأقصى للدروس المتتالية<input type="number" min="1" value={constraintForm.max_consecutive_periods} onChange={(event) => setConstraintForm({ ...constraintForm, max_consecutive_periods: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label>
               <label className="text-sm font-medium text-gray-700">الحد الأقصى لأيام العمل أسبوعياً<input type="number" min="1" max="7" value={constraintForm.max_working_days} onChange={(event) => setConstraintForm({ ...constraintForm, max_working_days: event.target.value })} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" /></label>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
-              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={constraintForm.prefer_compact_schedule} onChange={(event) => setConstraintForm({ ...constraintForm, prefer_compact_schedule: event.target.checked })} />يفضل تجميع الحصص</label>
-              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={constraintForm.avoid_first_period} onChange={(event) => setConstraintForm({ ...constraintForm, avoid_first_period: event.target.checked })} />يفضل تجنب الحصة الأولى</label>
-              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={constraintForm.avoid_last_period} onChange={(event) => setConstraintForm({ ...constraintForm, avoid_last_period: event.target.checked })} />يفضل تجنب الحصة الأخيرة</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={constraintForm.prefer_compact_schedule} onChange={(event) => setConstraintForm({ ...constraintForm, prefer_compact_schedule: event.target.checked })} />يفضل تجميع الدروس</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={constraintForm.avoid_first_period} onChange={(event) => setConstraintForm({ ...constraintForm, avoid_first_period: event.target.checked })} />يفضل تجنب الدرس الأول</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={constraintForm.avoid_last_period} onChange={(event) => setConstraintForm({ ...constraintForm, avoid_last_period: event.target.checked })} />يفضل تجنب الدرس الأخير</label>
             </div>
             <button disabled={saving} className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2.5 font-semibold text-white disabled:opacity-50"><Save size={18} />حفظ قيود المدرس</button>
           </form>

@@ -344,7 +344,7 @@ function validateTimetableScheduleEntries(
   entries.forEach((entry, index) => {
     const pair = `${entry.slot_id}:${entry.teaching_load_id}`;
     if (uniquePairs.has(pair)) {
-      blockers.push({ code: 'duplicate_proposal_entry', message: 'يحتوي المقترح على حصة مكررة', ...entry });
+      blockers.push({ code: 'duplicate_proposal_entry', message: 'يحتوي المقترح على درس مكررة', ...entry });
       return;
     }
     uniquePairs.add(pair);
@@ -424,7 +424,7 @@ export function validateScopedTimetableSchedule(context: TimetableValidationCont
   const selected = new Set(context.loads.filter(load => timetableLoadMatchesScope(load, scope)).map(load => load.id));
   const outside = (items: TimetableProposalPlacement[]) => canonicalTimetableProposalEntries(items.filter(entry => !selected.has(entry.teaching_load_id)));
   if (JSON.stringify(outside(entries)) !== JSON.stringify(outside(currentEntries))) {
-    blockers.push({ code: 'outside_scope_not_preserved', message: 'يجب إبقاء جميع الحصص خارج النطاق المختار في مواقعها وبحالة تثبيتها الحالية.' });
+    blockers.push({ code: 'outside_scope_not_preserved', message: 'يجب إبقاء جميع الدروس خارج النطاق المختار في مواقعها وبحالة تثبيتها الحالية.' });
   }
   for (const load of context.loads.filter(load => load.status === 'active' && selected.has(load.id))) {
     if (!loadIsValid(load, context)) blockers.push({ code: 'invalid_teaching_load', message: 'يوجد نصاب غير صالح ضمن النطاق المختار.', teaching_load_id: load.id });

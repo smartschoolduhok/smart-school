@@ -73,15 +73,15 @@ export function validateWeekTemplate(raw: unknown): WeekPeriod[] {
       || (p.slot_type !== 'lesson' && p.slot_type !== 'break') || (p.is_active !== 0 && p.is_active !== 1)
       || typeof p.label !== 'string' || !p.label.trim() || p.label.length > 120
       || /[\u0000-\u001f]/.test(p.label)) return fail('تحقق من نوع الفترة وترتيبها واسمها وحالتها.');
-    if (p.slot_type === 'lesson' ? !integer(p.lesson_number) : p.lesson_number !== null) return fail('رقم الحصة موجب؛ الاستراحة بلا رقم حصة.');
+    if (p.slot_type === 'lesson' ? !integer(p.lesson_number) : p.lesson_number !== null) return fail('رقم الدرس موجب؛ الاستراحة بلا رقم درس.');
     if (minuteOfDay(p.start_time) >= minuteOfDay(p.end_time)) return fail('يجب أن تسبق بداية الفترة نهايتها.', 'invalid_period_time');
     return { slot_index: p.slot_index, slot_type: p.slot_type as WeekPeriod['slot_type'], lesson_number: p.lesson_number as number | null,
       label: p.label, start_time: p.start_time as string, end_time: p.end_time as string, is_active: p.is_active };
   }).sort((a, b) => a.slot_index - b.slot_index);
-  if (!slots.some(p => p.slot_type === 'lesson')) return fail('يجب أن يحتوي اليوم على حصة واحدة على الأقل.');
+  if (!slots.some(p => p.slot_type === 'lesson')) return fail('يجب أن يحتوي اليوم على درس واحد على الأقل.');
   if (new Set(slots.map(p => p.slot_index)).size !== slots.length
     || new Set(slots.filter(p => p.slot_type === 'lesson').map(p => p.lesson_number)).size !== slots.filter(p => p.slot_type === 'lesson').length)
-    return fail('ترتيب الفترة ورقم الحصة لا يتكرران في اليوم.', 'duplicate_period_identity');
+    return fail('ترتيب الفترة ورقم الدرس لا يتكرران في اليوم.', 'duplicate_period_identity');
   for (let i = 0; i < slots.length; i++) for (let j = i + 1; j < slots.length; j++)
     if (overlap(slots[i], slots[j])) return fail('تتداخل فترات اليوم، بما فيها الفترات المحفوظة غير النشطة.', 'period_overlap');
   return slots;
@@ -100,7 +100,7 @@ export function parseWeekRequest(raw: unknown, apply = false): WeekRequest {
   }).sort((a, b) => a.day_of_week - b.day_of_week);
   if (new Set(targets.map(t => t.day_of_week)).size !== targets.length) return fail('لا تكرر الأيام المستهدفة.', 'duplicate_target_day');
   if (raw.mode === 'configure_day' && (targets.length !== 1 || raw.source_day_of_week !== null))
-    return fail('تعديل عدد حصص اليوم يتطلب يومًا واحدًا دون مصدر للنسخ.', 'invalid_day_profile_scope');
+    return fail('تعديل عدد دروس اليوم يتطلب يومًا واحدًا دون مصدر للنسخ.', 'invalid_day_profile_scope');
   if (apply && (raw.confirm_apply !== true || typeof raw.preview_digest !== 'string' || !/^[a-f0-9]{64}$/.test(raw.preview_digest)
     || (raw.acknowledge_availability_impact !== undefined && typeof raw.acknowledge_availability_impact !== 'boolean'))) return fail('يلزم تأكيد معاينة صحيحة.', 'confirmation_required');
   return { ...(raw.school_id === undefined ? {} : {school_id: raw.school_id as number}), academic_year_id: raw.academic_year_id,
@@ -112,7 +112,7 @@ export interface DayGenerator { start_time: string; lesson_count: number; lesson
   breaks: Array<{ after_lesson: number; minutes: number; label?: string }> }
 export function generateWeekTemplate(input: DayGenerator): WeekPeriod[] {
   if (!integer(input.lesson_count, 1, 30) || !integer(input.lesson_minutes) || !Array.isArray(input.breaks)
-    || input.lesson_count + input.breaks.length > MAX_WEEK_PERIODS) return fail('عدد الحصص ومددها أعداد صحيحة موجبة ضمن حد 30 فترة.');
+    || input.lesson_count + input.breaks.length > MAX_WEEK_PERIODS) return fail('عدد الدروس ومددها أعداد صحيحة موجبة ضمن حد 30 فترة.');
   if (input.desired_end_time) minuteOfDay(input.desired_end_time);
   const positions = new Set<number>();
   for (const rule of input.breaks) {
@@ -127,7 +127,7 @@ export function generateWeekTemplate(input: DayGenerator): WeekPeriod[] {
       start_time: bellTime(cursor), end_time: bellTime(end), is_active: 1}); cursor = end;
   };
   for (let lesson = 1; lesson <= input.lesson_count; lesson++) {
-    add('lesson', lesson, input.lesson_minutes, `الحصة ${lesson}`);
+    add('lesson', lesson, input.lesson_minutes, `الدرس ${lesson}`);
     const rule = input.breaks.find(b => b.after_lesson === lesson);
     if (rule) { breaks++; add('break', null, rule.minutes, rule.label?.trim() || `استراحة ${breaks}`); }
   }
@@ -206,7 +206,7 @@ function scheduleEvidence(c: WeekContext) {
       const shortage = Math.max(0, demand - activeSlots.length);
       if (shortage > 0) evidence.set(`placement:${classId}:${sectionId ?? 'none'}:capacity_deficit`, {severity: shortage, notice: {
         code: 'placement_weekly_capacity_exceeded', class_id: classId, section_id: sectionId,
-        message: `أنصبة الصف ${className}${sectionId == null ? '' : ` / الشعبة ${sectionName}`} تحتاج ${demand} حصة؛ السعة الأسبوعية ${activeSlots.length}.`,
+        message: `عدد الدروس المطلوبة للصف ${className}${sectionId == null ? '' : ` / الشعبة ${sectionName}`}: ${demand}؛ السعة الأسبوعية: ${activeSlots.length}.`,
         evidence: {dimension: 'placement_capacity_deficit', actual: demand, limit: activeSlots.length, excess: shortage},
       }});
     }
@@ -224,7 +224,7 @@ function scheduleEvidence(c: WeekContext) {
       // and numerical severity must not. Demand is never reduced to fit capacity.
       evidence.set(`teacher:${employeeId}:capacity_deficit`, {severity: shortage, notice: {
         ...summary.blockers[0], employee_id: employeeId,
-        message: `${summary.blockers[0].message} العجز المتبقي: ${shortage} حصة.`,
+        message: `${summary.blockers[0].message} عدد الدروس في العجز المتبقي: ${shortage}.`,
         evidence: {dimension: 'capacity_deficit', actual: summary.assigned_weekly_periods, limit: summary.hard_weekly_capacity, excess: shortage},
       }});
     }
@@ -274,8 +274,10 @@ export async function planWeekSetup(context: WeekContext, input: WeekRequest): P
         const ref = refs.find(r => r.slot_id === old.id)!;
         if (change.action === 'update') {
           const timing = old.start_time !== template.start_time || old.end_time !== template.end_time;
-          if (ref.scheduled_entries && (timing || old.slot_type !== template.slot_type || old.lesson_number !== template.lesson_number || template.is_active === 0))
-            p.blockers.push({code: 'slot_has_scheduled_entries', message: 'توجد حصص مجدولة مرتبطة بالفترة؛ لا يمكن تغيير أوقاتها أو هويتها. تبقى الحصص والأقفال دون تعديل.'});
+          if (ref.scheduled_entries && (old.slot_type !== template.slot_type || old.lesson_number !== template.lesson_number || template.is_active === 0))
+            p.blockers.push({code: 'slot_has_scheduled_entries', message: 'توجد دروس مجدولة مرتبطة بالفترة؛ لا يمكن تغيير هويتها أو إيقافها. تبقى الدروس والأقفال دون تعديل.'});
+          if (ref.scheduled_entries && timing)
+            p.warnings.push({code: 'scheduled_lesson_time_change', message: `سيتغير وقت الدروس المجدولة في هذا اليوم (عددها ${ref.scheduled_entries})، وستبقى المادة والمدرس والتثبيت كما هي.`});
           if (ref.availability_overrides && timing) {
             needsAck = true; p.warnings.push({code: 'availability_time_change', message: `ستبقى إعدادات التوفر (${ref.availability_overrides}) مرتبطة بمعرف الفترة نفسه بعد تعديل الوقت؛ يلزم الإقرار.`});
           }
@@ -290,7 +292,7 @@ export async function planWeekSetup(context: WeekContext, input: WeekRequest): P
       p.changes.push({day_of_week: target.day_of_week, id: old.id, before: periodValues(old), after, action: deactivate ? 'update' : 'retained'});
       if (deactivate) {
         const ref = refs.find(r => r.slot_id === old.id)!;
-        if (ref.scheduled_entries) p.blockers.push({code: 'slot_has_scheduled_entries', message: 'لا يمكن تقليل الحصص بإيقاف فترة تحتوي حصصًا مجدولة أو مثبتة. انقل الحصص أولًا من شبكة التحرير.'});
+        if (ref.scheduled_entries) p.blockers.push({code: 'slot_has_scheduled_entries', message: 'لا يمكن تقليل الدروس بإيقاف فترة تحتوي دروسًا مجدولة أو مثبتة. انقل الدروس أولًا من شبكة التحرير.'});
         Object.assign(projected.slots.find(s => s.id === old.id)!, after);
       }
     }

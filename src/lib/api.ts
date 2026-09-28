@@ -824,6 +824,24 @@ export function moveTimetableEntry(id: number, data: {
   }>;
 }
 
+export function replaceTimetableEntry(id: number, data: {
+  school_id: number;
+  academic_year_id: number;
+  slot_id: number;
+  teaching_load_id: number;
+  expected_revision: number;
+}) {
+  return fetchApi<TimetableEntry>(`/api/timetable/entries/${id}`, {
+    method: 'PUT', body: JSON.stringify(data),
+  }) as Promise<{
+    data?: TimetableEntry;
+    meta?: { warnings?: TimetableEntryNotice[] };
+    error?: string;
+    code?: string;
+    status?: number;
+  }>;
+}
+
 export function dropTimetableEntry(id: number, data: {
   school_id: number;
   academic_year_id: number;

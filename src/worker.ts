@@ -892,12 +892,12 @@ function parseTimetableProposalEntries(value: unknown):
   | { ok: true; entries: TimetableProposalPlacement[] }
   | { ok: false; error: string } {
   if (!Array.isArray(value) || value.length > 2_000) {
-    return { ok: false, error: 'قائمة حصص المقترح غير صالحة' };
+    return { ok: false, error: 'قائمة دروس المقترح غير صالحة' };
   }
   const entries: TimetableProposalPlacement[] = [];
   for (const raw of value) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return { ok: false, error: 'إحدى حصص المقترح غير صالحة' };
+      return { ok: false, error: 'إحدى دروس المقترح غير صالحة' };
     }
     const record = raw as Record<string, unknown>;
     if (!hasOnlyObjectKeys(record, ['slot_id', 'teaching_load_id', 'is_locked'])) {
@@ -909,7 +909,7 @@ function parseTimetableProposalEntries(value: unknown):
     if (!Number.isInteger(slotId) || slotId <= 0
       || !Number.isInteger(teachingLoadId) || teachingLoadId <= 0
       || ![0, 1].includes(isLocked)) {
-      return { ok: false, error: 'إحدى حصص المقترح تحتوي على قيم غير صالحة' };
+      return { ok: false, error: 'إحدى دروس المقترح تحتوي على قيم غير صالحة' };
     }
     entries.push({ slot_id: slotId, teaching_load_id: teachingLoadId, is_locked: isLocked as 0 | 1 });
   }
@@ -920,18 +920,18 @@ function parseTimetableFixedEntries(value: unknown):
   | { ok: true; entries: Array<{ slot_id: number; teaching_load_id: number }> }
   | { ok: false; error: string } {
   if (value == null) return { ok: true, entries: [] };
-  if (!Array.isArray(value) || value.length > 2_000) return { ok: false, error: 'قائمة الحصص المثبتة غير صالحة' };
+  if (!Array.isArray(value) || value.length > 2_000) return { ok: false, error: 'قائمة الدروس المثبتة غير صالحة' };
   const entries: Array<{ slot_id: number; teaching_load_id: number }> = [];
   for (const raw of value) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'إحدى الحصص المثبتة غير صالحة' };
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'إحدى الدروس المثبتة غير صالحة' };
     const record = raw as Record<string, unknown>;
     if (!hasOnlyObjectKeys(record, ['slot_id', 'teaching_load_id'])) {
-      return { ok: false, error: 'تحتوي الحصص المثبتة على حقول غير معروفة' };
+      return { ok: false, error: 'تحتوي الدروس المثبتة على حقول غير معروفة' };
     }
     const slotId = Number(record.slot_id);
     const teachingLoadId = Number(record.teaching_load_id);
     if (!Number.isInteger(slotId) || slotId <= 0 || !Number.isInteger(teachingLoadId) || teachingLoadId <= 0) {
-      return { ok: false, error: 'إحدى الحصص المثبتة تحتوي على قيم غير صالحة' };
+      return { ok: false, error: 'إحدى الدروس المثبتة تحتوي على قيم غير صالحة' };
     }
     entries.push({ slot_id: slotId, teaching_load_id: teachingLoadId });
   }
@@ -1030,7 +1030,7 @@ function currentLockedEntriesArePreserved(
     .filter((entry) => !proposed.has(`${Number(entry.slot_id)}:${Number(entry.teaching_load_id)}`))
     .map((entry) => ({
       code: 'locked_entry_not_preserved',
-      message: 'يجب أن تبقى الحصة الرسمية المثبتة في موضعها عند إعادة التوليد.',
+      message: 'يجب أن تبقى الدرس الرسمي المثبت في موضعها عند إعادة التوليد.',
       slot_id: Number(entry.slot_id),
       teaching_load_id: Number(entry.teaching_load_id),
     }));
@@ -1084,7 +1084,7 @@ async function buildTimetableAdoptionPreview(input: {
       ? ['هذا الإصدار لا يغطي جميع الأنصبة الأسبوعية الحالية.']
       : []),
     ...(input.generationScope && input.generationScope.kind !== 'school'
-      ? ['يعتمد هذا الإجراء النطاق المختار فقط. تبقى حصص باقي الصفوف والشعب وأنصبتها دون تعديل.'] : []),
+      ? ['يعتمد هذا الإجراء النطاق المختار فقط. تبقى دروس باقي الصفوف والشعب وأنصبتها دون تعديل.'] : []),
   ];
   const blockers = [
     ...(recomputedDigest === input.digest ? [] : [{ code: 'proposal_digest_mismatch', message: 'بصمة المقترح لا تطابق محتواه الحالي.' }]),
@@ -1321,19 +1321,19 @@ const TIMETABLE_ENTRY_CONSTRAINT_ERRORS: Array<{
   code: TimetableEntryHardConflictCode;
   error: string;
 }> = [
-  { pattern: /academic year school mismatch|academic year mismatch/, status: 400, code: 'invalid_academic_year', error: 'السنة الدراسية لا تطابق نطاق الحصة' },
-  { pattern: /tenant scope mismatch/, status: 403, code: 'invalid_tenant_scope', error: 'غير مسموح: مراجع الحصة من مدرسة أخرى' },
-  { pattern: /day inactive/, status: 400, code: 'inactive_day', error: 'اليوم المحدد غير فعال ولا يقبل حصصًا جديدة' },
-  { pattern: /slot inactive/, status: 400, code: 'inactive_slot', error: 'الفترة المحددة غير فعالة ولا تقبل حصصًا جديدة' },
-  { pattern: /slot not schedulable/, status: 400, code: 'slot_not_schedulable', error: 'الفترة المحددة ليست حصة فعالة قابلة للجدولة' },
+  { pattern: /academic year school mismatch|academic year mismatch/, status: 400, code: 'invalid_academic_year', error: 'السنة الدراسية لا تطابق نطاق الدرس' },
+  { pattern: /tenant scope mismatch/, status: 403, code: 'invalid_tenant_scope', error: 'غير مسموح: مراجع الدرس من مدرسة أخرى' },
+  { pattern: /day inactive/, status: 400, code: 'inactive_day', error: 'اليوم المحدد غير فعال ولا يقبل دروسًا جديدة' },
+  { pattern: /slot inactive/, status: 400, code: 'inactive_slot', error: 'الفترة المحددة غير فعالة ولا تقبل دروسًا جديدة' },
+  { pattern: /slot not schedulable/, status: 400, code: 'slot_not_schedulable', error: 'الفترة المحددة ليست درس فعال قابلة للجدولة' },
   { pattern: /teaching load not schedulable/, status: 400, code: 'invalid_teaching_load', error: 'نصاب المادة غير فعال أو يحتوي على مرجع غير صالح' },
-  { pattern: /weekly periods exceeded/, status: 409, code: 'weekly_periods_exceeded', error: 'اكتمل عدد الحصص الأسبوعية المطلوبة لهذا النصاب' },
-  { pattern: /group collision/, status: 409, code: 'class_section_collision', error: 'توجد حصة أخرى للصف أو الشعبة في هذه الفترة' },
-  { pattern: /teacher collision/, status: 409, code: 'teacher_collision', error: 'المدرس مرتبط بحصة أخرى في الفترة نفسها' },
+  { pattern: /weekly periods exceeded/, status: 409, code: 'weekly_periods_exceeded', error: 'اكتمل عدد الدروس الأسبوعية المطلوبة لهذا النصاب' },
+  { pattern: /group collision/, status: 409, code: 'class_section_collision', error: 'يوجد درس آخر للصف أو الشعبة في هذه الفترة' },
+  { pattern: /teacher collision/, status: 409, code: 'teacher_collision', error: 'المدرس مرتبط بدرس آخر في الفترة نفسها' },
   { pattern: /teacher unavailable/, status: 409, code: 'teacher_unavailable', error: 'المدرس غير متاح في هذه الفترة' },
-  { pattern: /max periods per day/, status: 409, code: 'teacher_max_periods_per_day', error: 'تجاوز المدرس الحد الأقصى للحصص اليومية' },
+  { pattern: /max periods per day/, status: 409, code: 'teacher_max_periods_per_day', error: 'تجاوز المدرس الحد الأقصى للدروس اليومية' },
   { pattern: /max working days/, status: 409, code: 'teacher_max_working_days', error: 'تجاوز المدرس الحد الأقصى لأيام العمل الأسبوعية' },
-  { pattern: /max consecutive periods/, status: 409, code: 'teacher_max_consecutive_periods', error: 'تجاوز المدرس الحد الأقصى للحصص المتتالية' },
+  { pattern: /max consecutive periods/, status: 409, code: 'teacher_max_consecutive_periods', error: 'تجاوز المدرس الحد الأقصى للدروس المتتالية' },
 ];
 
 function timetableEntryConstraintError(error: unknown) {
@@ -2655,7 +2655,7 @@ app.post('/api/timetable/slots', requireSameSchoolOrAdmin(), requireRoles(ACADEM
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/overlap/i.test(message)) return c.json({ error: 'تتداخل الفترة مع فترة أخرى في اليوم نفسه' }, 409)
-    if (isTimetableConstraintError(error)) return c.json({ error: 'ترتيب الفترة أو رقم الحصة مستخدم في هذا اليوم' }, 409)
+    if (isTimetableConstraintError(error)) return c.json({ error: 'ترتيب الفترة أو رقم الدرس مستخدم في هذا اليوم' }, 409)
     return c.json({ error: 'فشل في إنشاء فترة الجدول' }, 500)
   }
 })
@@ -2720,7 +2720,7 @@ app.put('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(ACA
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/timetable slot has scheduled entries/i.test(message)) {
-      return c.json({ error: 'توجد حصص مجدولة مرتبطة بهذه الفترة. احذف الحصص المجدولة أولًا قبل تغيير بنية الفترة.' }, 400)
+      return c.json({ error: 'توجد دروس مجدولة مرتبطة بهذه الفترة. احذف الدروس المجدولة أولًا قبل تغيير بنية الفترة.' }, 400)
     }
     if (/timetable slot has teacher availability settings/i.test(message)) {
       return c.json({
@@ -2728,7 +2728,7 @@ app.put('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(ACA
       }, 400)
     }
     if (/overlap/i.test(message)) return c.json({ error: 'تتداخل الفترة مع فترة أخرى في اليوم نفسه' }, 409)
-    if (isTimetableConstraintError(error)) return c.json({ error: 'ترتيب الفترة أو رقم الحصة مستخدم في هذا اليوم' }, 409)
+    if (isTimetableConstraintError(error)) return c.json({ error: 'ترتيب الفترة أو رقم الدرس مستخدم في هذا اليوم' }, 409)
     return c.json({ error: 'فشل في تعديل فترة الجدول' }, 500)
   }
 })
@@ -2753,7 +2753,7 @@ app.delete('/api/timetable/slots/:id', requireSameSchoolOrAdmin(), requireRoles(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/FOREIGN KEY constraint failed/i.test(message)) {
-      return c.json({ error: 'لا يمكن حذف الفترة لأنها تحتوي على حصص مجدولة. احذف الحصص المجدولة أولًا.' }, 409)
+      return c.json({ error: 'لا يمكن حذف الفترة لأنها تحتوي على دروس مجدولة. احذف الدروس المجدولة أولًا.' }, 409)
     }
     return c.json({ error: 'فشل في حذف فترة الجدول' }, 500)
   }
@@ -2929,10 +2929,10 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (/timetable load has scheduled entries/i.test(message)) {
-      return c.json({ error: 'توجد حصص مجدولة مرتبطة بهذا النصاب تمنع تغيير صفه أو شعبته أو مادته.' }, 400)
+      return c.json({ error: 'توجد دروس مجدولة مرتبطة بهذا النصاب تمنع تغيير صفه أو شعبته أو مادته.' }, 400)
     }
     if (/weekly periods below scheduled entries/i.test(message)) {
-      return c.json({ error: 'لا يمكن تقليل عدد الحصص الأسبوعية عن عدد الحصص المجدولة حاليًا.' }, 400)
+      return c.json({ error: 'لا يمكن تقليل عدد الدروس الأسبوعية عن عدد الدروس المجدولة حاليًا.' }, 400)
     }
     const reassignmentError = /timetable reassignment/.test(message) ? matrixDatabaseError(error) : null
     if (reassignmentError) return c.json({ error: reassignmentError.message, code: reassignmentError.code }, reassignmentError.status)
@@ -3382,7 +3382,7 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
     const data: TimetableSolverProposalWithIntegrity = {
       ...solverData,
       warnings: [...solverData.warnings, ...(generationScope.kind !== 'school'
-        ? ['اكتمال المقترح يعني اكتمال النطاق المختار. تشمل المعاينة الحصص المحفوظة خارجه لحساب التعارضات، دون إكمال أنصبة باقي النطاقات.'] : [])],
+        ? ['اكتمال المقترح يعني اكتمال النطاق المختار. تشمل المعاينة الدروس المحفوظة خارجه لحساب التعارضات، دون إكمال أنصبة باقي النطاقات.'] : [])],
       generation_scope: generationScope,
       ...(scopeLoadIds ? { scope_load_ids: scopeLoadIds, scope_token: await signTimetableScope({
         schoolId: targetSchool.schoolId, academicYearId, revision: timetableRevision, scope: generationScope, loadIds: scopeLoadIds,
@@ -3936,7 +3936,7 @@ app.post('/api/timetable/entries', requireSameSchoolOrAdmin(), requireRoles(ACAD
   const user = c.get('user') as UserContext
   try {
     const body = await readJsonObject(c)
-    if (!body) return c.json({ error: 'بيانات الحصة غير صالحة' }, 400)
+    if (!body) return c.json({ error: 'بيانات الدرس غير صالحة' }, 400)
     const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
     const validation = validateTimetableEntryInput(body)
@@ -3987,7 +3987,7 @@ app.post('/api/timetable/entries', requireSameSchoolOrAdmin(), requireRoles(ACAD
   } catch (error) {
     const conflict = timetableEntryConstraintError(error)
     if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
-    return c.json({ error: 'فشل في جدولة الحصة' }, 500)
+    return c.json({ error: 'فشل في جدولة الدرس' }, 500)
   }
 })
 
@@ -4009,7 +4009,7 @@ app.put('/api/timetable/entries/lock-scope', requireSameSchoolOrAdmin(), require
     const context = await loadTimetableSchedulingContext(c.env.DB, schoolId, academicYearId)
     const loadIds = new Set(context.loads.filter(load => timetableLoadMatchesScope(load, scope)).map(load => load.id))
     const selected = context.entries.filter(entry => loadIds.has(entry.teaching_load_id))
-    if (!selected.length) return c.json({ error: 'لا توجد حصص محفوظة ضمن النطاق المختار لتثبيتها.', code: 'empty_timetable_scope' }, 400)
+    if (!selected.length) return c.json({ error: 'لا توجد دروس محفوظة ضمن النطاق المختار لتثبيتها.', code: 'empty_timetable_scope' }, 400)
     const ids = JSON.stringify(selected.filter(entry => entry.is_locked !== body.is_locked).map(entry => entry.id))
     const token = crypto.randomUUID()
     const predicate = 'school_id = ? AND academic_year_id = ? AND id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))'
@@ -4037,7 +4037,7 @@ app.put('/api/timetable/entries/:id/lock', requireSameSchoolOrAdmin(), requireRo
   const id = Number(c.req.param('id'))
   const body = await readJsonObject(c)
   if (!body || !hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'is_locked'])
-    || !Number.isInteger(id) || id <= 0) return c.json({ error: 'بيانات تثبيت الحصة غير صالحة' }, 400)
+    || !Number.isInteger(id) || id <= 0) return c.json({ error: 'بيانات تثبيت الدرس غير صالحة' }, 400)
   const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
   if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
   const academicYearId = Number(body.academic_year_id)
@@ -4048,12 +4048,12 @@ app.put('/api/timetable/entries/:id/lock', requireSameSchoolOrAdmin(), requireRo
   try {
     const existing = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ?')
       .bind(id).first<TimetableEntry>()
-    if (!existing) return c.json({ error: 'الحصة المجدولة غير موجودة' }, 404)
+    if (!existing) return c.json({ error: 'الدرس المجدول غير موجود' }, 404)
     if (Number(existing.school_id) !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح: الحصة المجدولة من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
+      return c.json({ error: 'غير مسموح: الدرس المجدول من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
     }
     if (Number(existing.academic_year_id) !== academicYearId) {
-      return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
+      return c.json({ error: 'الدرس المجدول لا ينتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
     }
     if (Number(existing.is_locked) !== isLocked) {
       if (Number(existing.is_locked) === 1) {
@@ -4086,54 +4086,68 @@ app.put('/api/timetable/entries/:id/lock', requireSameSchoolOrAdmin(), requireRo
     ])
     return c.json({ data: { entry, revision } })
   } catch {
-    return c.json({ error: 'فشل في تغيير حالة تثبيت الحصة' }, 500)
+    return c.json({ error: 'فشل في تغيير حالة تثبيت الدرس' }, 500)
   }
 })
 
 app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const user = c.get('user') as UserContext
   const id = Number(c.req.param('id'))
-  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الحصة غير صالح' }, 400)
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الدرس غير صالح' }, 400)
   try {
     const body = await readJsonObject(c)
-    if (!body) return c.json({ error: 'بيانات نقل الحصة غير صالحة' }, 400)
+    if (!body) return c.json({ error: 'بيانات نقل الدرس غير صالحة' }, 400)
     const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
     const validation = validateTimetableEntryInput(body, false)
     if (!validation.ok) return c.json({ error: validation.error }, 400)
     const existing = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ?')
       .bind(id).first<TimetableEntry>()
-    if (!existing) return c.json({ error: 'الحصة المجدولة غير موجودة' }, 404)
+    if (!existing) return c.json({ error: 'الدرس المجدول غير موجود' }, 404)
     if (Number(existing.school_id) !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح: الحصة المجدولة من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
+      return c.json({ error: 'غير مسموح: الدرس المجدول من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
     }
     if (Number(existing.academic_year_id) !== validation.value.academicYearId) {
-      return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
+      return c.json({ error: 'الدرس المجدول لا ينتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
     }
     if (Number(existing.is_locked) === 1 && body.confirm_unlock_locked_entry !== true) {
       return c.json({
-        error: 'هذه الحصة مثبتة. يلزم تأكيد إلغاء التثبيت قبل نقلها.',
+        error: 'هذا الدرس مثبت. يلزم تأكيد إلغاء التثبيت قبل نقله.',
         code: 'locked_entry_requires_confirmation',
       }, 409)
     }
-    if (validation.value.teachingLoadId != null
-      && validation.value.teachingLoadId !== Number(existing.teaching_load_id)) {
-      return c.json({ error: 'لا يمكن تغيير نصاب الحصة أثناء النقل' }, 400)
+    const nextLoadId = validation.value.teachingLoadId ?? Number(existing.teaching_load_id)
+    const replacingLoad = nextLoadId !== Number(existing.teaching_load_id)
+    if (replacingLoad && validation.value.slotId !== Number(existing.slot_id)) {
+      return c.json({ error: 'غيّر مادة الدرس أو موقعه في خطوة مستقلة' }, 400)
+    }
+    if (replacingLoad && Number(existing.is_locked) === 1) {
+      return c.json({ error: 'الدرس مثبت. ألغِ تثبيته قبل تغيير المادة', code: 'locked_entry_requires_confirmation' }, 409)
+    }
+    if (replacingLoad && (!Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0)) {
+      return c.json({ error: 'نسخة بيانات الجدول غير صالحة' }, 400)
     }
     const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
     if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
     const context = await loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
+    const previousLoad = context.loads.find((item) => Number(item.id) === Number(existing.teaching_load_id))
+    const nextLoad = context.loads.find((item) => Number(item.id) === nextLoadId)
+    if (replacingLoad && (!previousLoad || !nextLoad
+      || Number(previousLoad.class_id) !== Number(nextLoad.class_id)
+      || previousLoad.section_id !== nextLoad.section_id)) {
+      return c.json({ error: 'اختر مادة من الصف والشعبة نفسيهما' }, 400)
+    }
     const references = await validateTimetableEntryReferences(
       c.env.DB,
       context,
       targetSchool.schoolId,
       validation.value.academicYearId,
       validation.value.slotId,
-      Number(existing.teaching_load_id),
+      nextLoadId,
     )
     if (!references.ok) return c.json({ error: references.error, code: references.code }, references.status)
     const evaluation = evaluateTimetableEntryPlacement({
-      candidate: { id, slot_id: validation.value.slotId, teaching_load_id: Number(existing.teaching_load_id) },
+      candidate: { id, slot_id: validation.value.slotId, teaching_load_id: nextLoadId },
       days: context.days,
       slots: context.slots,
       loads: context.loads,
@@ -4146,7 +4160,19 @@ app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(A
       { error: hardConflict.message, code: hardConflict.code },
       timetableEntryNoticeStatus(hardConflict),
     )
-    if (Number(existing.is_locked) === 1) {
+    if (replacingLoad) {
+      const token = crypto.randomUUID()
+      await c.env.DB.batch([
+        timetableRevisionAssertion(c.env.DB, token, targetSchool.schoolId, validation.value.academicYearId, Number(body.expected_revision)),
+        c.env.DB.prepare(`
+          UPDATE timetable_entries
+          SET teaching_load_id = ?, updated_by_user_id = ?, updated_at = unixepoch()
+          WHERE id = ? AND school_id = ? AND academic_year_id = ? AND slot_id = ? AND teaching_load_id = ?
+        `).bind(nextLoadId, user.id, id, targetSchool.schoolId, validation.value.academicYearId,
+          existing.slot_id, existing.teaching_load_id),
+        c.env.DB.prepare('DELETE FROM timetable_revision_assertions WHERE token = ?').bind(token),
+      ])
+    } else if (Number(existing.is_locked) === 1) {
       const overrideToken = crypto.randomUUID()
       await c.env.DB.batch([
         c.env.DB.prepare(`
@@ -4176,37 +4202,40 @@ app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(A
     }
     const entry = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ? AND school_id = ?')
       .bind(id, targetSchool.schoolId).first<TimetableEntry>()
-    const load = context.loads.find((item) => Number(item.id) === Number(existing.teaching_load_id))!
+    const load = context.loads.find((item) => Number(item.id) === nextLoadId)!
     return c.json({ data: entry ? timetableGridEntry(entry, load, evaluation.warnings) : entry, meta: { warnings: evaluation.warnings } })
   } catch (error) {
+    if (/stale_timetable_proposal/.test(error instanceof Error ? error.message : String(error))) {
+      return c.json({ error: 'تغير الجدول أثناء التعديل. أعد تحميله ثم حاول مجددًا.', code: 'stale_timetable_proposal' }, 409)
+    }
     const conflict = timetableEntryConstraintError(error)
     if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
-    return c.json({ error: 'فشل في نقل الحصة' }, 500)
+    return c.json({ error: 'فشل في نقل الدرس' }, 500)
   }
 })
 
 app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const user = c.get('user') as UserContext
   const id = Number(c.req.param('id'))
-  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الحصة غير صالح' }, 400)
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الدرس غير صالح' }, 400)
   try {
     const body = await readJsonObject(c)
     if (!body || !hasOnlyObjectKeys(body, [
       'school_id', 'academic_year_id', 'source_slot_id', 'target_slot_id',
       'target_entry_id', 'expected_revision',
-    ])) return c.json({ error: 'بيانات إسقاط الحصة غير صالحة' }, 400)
+    ])) return c.json({ error: 'بيانات إسقاط الدرس غير صالحة' }, 400)
     const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
     const validation = validateTimetableEntryDropInput(body)
     if (!validation.ok) return c.json({ error: validation.error }, 400)
     const existing = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ?')
       .bind(id).first<TimetableEntry>()
-    if (!existing) return c.json({ error: 'الحصة المجدولة غير موجودة' }, 404)
+    if (!existing) return c.json({ error: 'الدرس المجدول غير موجود' }, 404)
     if (Number(existing.school_id) !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح: الحصة المجدولة من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
+      return c.json({ error: 'غير مسموح: الدرس المجدول من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
     }
     if (Number(existing.academic_year_id) !== validation.value.academicYearId) {
-      return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
+      return c.json({ error: 'الدرس المجدول لا ينتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
     }
     const year = await validateTimetableAcademicYear(c.env.DB, targetSchool.schoolId, validation.value.academicYearId)
     if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
@@ -4222,7 +4251,7 @@ app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRo
       }, 409)
     }
     if (Number(existing.is_locked) === 1) return c.json({
-      error: 'الحصة مثبتة. فك تثبيتها أولًا ثم أعد السحب.',
+      error: 'الدرس مثبت. ألغِ تثبيته أولًا ثم أعد السحب.',
       code: 'locked_entry_requires_confirmation',
     }, 409)
     const references = await validateTimetableEntryReferences(
@@ -4242,7 +4271,7 @@ app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRo
       return load != null && timetableLoadsShareGroup(sourceLoad, load)
     })
     if (targetGroupEntries.length > 1) return c.json({
-      error: 'توجد عدة حصص متعارضة في الموقع الهدف. أصلح التعارض قبل التبديل.',
+      error: 'توجد عدة دروس متعارضة في الموقع الهدف. أصلح التعارض قبل التبديل.',
       code: 'ambiguous_timetable_drop_target',
     }, 409)
     const targetEntry = targetGroupEntries[0] || null
@@ -4253,14 +4282,14 @@ app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRo
       }, 409)
     }
     if (targetEntry != null && Number(targetEntry.is_locked) === 1) return c.json({
-      error: 'الحصة الموجودة في الموقع الهدف مثبتة. فك تثبيتها أولًا ثم أعد السحب.',
+      error: 'الدرس الموجود في الموقع الهدف مثبت. ألغِ تثبيته أولًا ثم أعد السحب.',
       code: 'locked_drop_target',
     }, 409)
     const targetLoad = targetEntry == null
       ? null
       : context.loads.find((item) => Number(item.id) === Number(targetEntry.teaching_load_id)) || null
     if (targetEntry != null && targetLoad == null) {
-      return c.json({ error: 'نصاب الحصة الهدف غير صالح', code: 'invalid_teaching_load' }, 400)
+      return c.json({ error: 'نصاب الدرس الهدف غير صالح', code: 'invalid_teaching_load' }, 400)
     }
     const projectedEntries = projectTimetableEntryDrop(
       context.entries,
@@ -4381,32 +4410,32 @@ app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRo
     }
     const conflict = timetableEntryConstraintError(error)
     if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
-    return c.json({ error: 'فشل في نقل الحصة؛ بقي الجدول دون تغيير' }, 500)
+    return c.json({ error: 'فشل في نقل الدرس؛ بقي الجدول دون تغيير' }, 500)
   }
 })
 
 app.delete('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const user = c.get('user') as UserContext
   const id = Number(c.req.param('id'))
-  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الحصة غير صالح' }, 400)
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'معرف الدرس غير صالح' }, 400)
   const body = await readJsonObject(c)
-  if (!body) return c.json({ error: 'بيانات حذف الحصة غير صالحة' }, 400)
+  if (!body) return c.json({ error: 'بيانات حذف الدرس غير صالحة' }, 400)
   const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
   if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
   const academicYearId = Number(body.academic_year_id)
   if (!Number.isInteger(academicYearId) || academicYearId <= 0) return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
   const existing = await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id = ?')
     .bind(id).first<TimetableEntry>()
-  if (!existing) return c.json({ error: 'الحصة المجدولة غير موجودة' }, 404)
+  if (!existing) return c.json({ error: 'الدرس المجدول غير موجود' }, 404)
   if (Number(existing.school_id) !== targetSchool.schoolId) {
-    return c.json({ error: 'غير مسموح: الحصة المجدولة من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
+    return c.json({ error: 'غير مسموح: الدرس المجدول من مدرسة أخرى', code: 'invalid_tenant_scope' }, 403)
   }
   if (Number(existing.academic_year_id) !== academicYearId) {
-    return c.json({ error: 'الحصة المجدولة لا تنتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
+    return c.json({ error: 'الدرس المجدول لا ينتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
   }
   if (Number(existing.is_locked) === 1 && body.confirm_unlock_locked_entry !== true) {
     return c.json({
-      error: 'هذه الحصة مثبتة. يلزم تأكيد إلغاء التثبيت قبل حذفها.',
+      error: 'هذا الدرس مثبت. يلزم تأكيد إلغاء التثبيت قبل حذفه.',
       code: 'locked_entry_requires_confirmation',
     }, 409)
   }
@@ -4438,7 +4467,7 @@ app.delete('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRole
     }
     return c.json({ data: { id } })
   } catch {
-    return c.json({ error: 'فشل في حذف الحصة المجدولة' }, 500)
+    return c.json({ error: 'فشل في حذف الدرس المجدول' }, 500)
   }
 })
 

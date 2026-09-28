@@ -74,8 +74,13 @@ try{
  }
  const afterShifts=await snap();assertPreserved(beforeShifts,afterShifts);assert.deepEqual(afterShifts.timetable_slots.map(s=>s.id),beforeShifts.timetable_slots.map(s=>s.id));
  const current=await loadWeekSetup(db,1,1),old=periodValues(current.slots[0]);
- const blocked=await make(1,[{...old,start_time:'07:50'}],[0],'update_matching_keep_extra');assert.equal(blocked.plan.can_apply,false);assert.ok(blocked.plan.days[0].blockers.some(b=>b.code==='slot_has_scheduled_entries'));evidence.push({case:'linked-slot-time-rejection',no_write:true});
- const mixed=await make(1,[{...old,label:'Local metadata edit'}],[0,1,3],'update_matching_keep_extra'),beforeMixed=await snap();
+ const beforeLinked=await snap(),linked=await make(1,[{...old,start_time:'07:50'}],[0],'update_matching_keep_extra');
+ assert.equal(linked.plan.can_apply,true,JSON.stringify(linked.plan));
+ assert.ok(linked.plan.days[0].warnings.some(w=>w.code==='scheduled_lesson_time_change'));
+ await commit('linked-slot-time-update',1,linked);
+ assertPreserved(beforeLinked,await snap());
+ const updated=periodValues((await loadWeekSetup(db,1,1)).slots.find(s=>s.id===current.slots[0].id));
+ const mixed=await make(1,[{...updated,label:'Local metadata edit'}],[0,1,3],'update_matching_keep_extra'),beforeMixed=await snap();
  assert.equal(mixed.plan.can_apply,true);const batch=buildWeekApplyStatements(db,1,1,mixed.plan);
  await assert.rejects(db.batch([...batch.statements,db.prepare('SELECT * FROM phase19c_intentional_late_failure')]),/no such table/);
  assert.deepEqual(await snap(),beforeMixed);evidence.push({case:'late-failure-after-cleanup-and-response-query',every_application_table_equal:true,assertions_clean:true});

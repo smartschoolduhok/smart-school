@@ -44,7 +44,7 @@ function placementLabel(placement: TimetablePlacement) {
 }
 
 function slotLabel(slot: TimetableSlot) {
-  return slot.lesson_number == null ? slot.label : `${slot.label} — الحصة ${slot.lesson_number}`;
+  return slot.lesson_number == null ? slot.label : `${slot.label} — الدرس ${slot.lesson_number}`;
 }
 
 function SubjectCell({ entry, extra }: { entry: TimetableGridEntry | null; extra?: ReactNode }) {
@@ -69,7 +69,7 @@ function SubjectCell({ entry, extra }: { entry: TimetableGridEntry | null; extra
       <strong>{entry.subject_name}</strong>
       <span>{entry.employee_name || 'بدون مدرس'}</span>
       {hasTeacherCollision && <span className="timetable-teacher-conflict-label"><AlertTriangle size={11} />تعارض المدرّس</span>}
-      {entry.is_locked === 1 && <span className="no-print inline-flex items-center gap-1 text-[10px] font-bold" title="حصة مثبتة"><Lock size={11} />مثبتة</span>}
+      {entry.is_locked === 1 && <span className="no-print inline-flex items-center gap-1 text-[10px] font-bold" title="درس مثبت"><Lock size={11} />مثبت</span>}
       {extra}
     </div>
   );
@@ -290,14 +290,14 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
       {data.invalid_entry_count > 0 && (
         <div className="no-print flex flex-wrap items-center gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-900" role="alert">
           <AlertTriangle size={20} />
-          <p className="font-semibold">توجد <bdi dir="ltr">{data.invalid_entry_count}</bdi> حصة تحتاج إصلاح؛ ولن تظهر كخلايا صحيحة في الجدول.</p>
+          <p className="font-semibold">توجد <bdi dir="ltr">{data.invalid_entry_count}</bdi> درس تحتاج إصلاح؛ ولن تظهر كخلايا صحيحة في الجدول.</p>
           <button type="button" onClick={onOpenRepair} className="mr-auto rounded-lg bg-red-700 px-3 py-2 text-sm font-bold text-white">العودة إلى شبكة التحرير للإصلاح</button>
         </div>
       )}
       {teacherConflictCount > 0 && (
         <div className="no-print flex items-center gap-3 rounded-xl border border-rose-300 bg-rose-100 p-4 text-rose-950" role="alert">
           <AlertTriangle size={20} />
-          <p className="font-bold">تعارض المدرّس ظاهر في <bdi dir="ltr">{teacherConflictCount}</bdi> حصة ملوّنة بالوردي المحمر.</p>
+          <p className="font-bold">تعارض المدرّس ظاهر في <bdi dir="ltr">{teacherConflictCount}</bdi> درس ملوّنة بالوردي المحمر.</p>
         </div>
       )}
 
