@@ -33,3 +33,6 @@ lerna-debug.log*
 .DS_Store
 __pycache__/
 *.py[cod]
+
+# Local task reports, source downloads and validation artifacts
+.tmp/

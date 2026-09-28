@@ -41,6 +41,7 @@ const StaffAttendancePage = lazy(() => import('./modules/attendance/StaffAttenda
 const HomeworkPage = lazy(() => import('./modules/homework/HomeworkPage'));
 const RegulationsPage = lazy(() => import('./modules/admissions/RegulationsPage'));
 const AdmissionsPage = lazy(() => import('./modules/admissions/AdmissionsPage'));
+const StudentAgeReviewPage = lazy(() => import('./modules/admissions/StudentAgeReviewPage'));
 const GradeProgressPage = lazy(() => import('./modules/gradeProgress/GradeProgressPage'));
 const CommunicationPage = lazy(() => import('./modules/communication/CommunicationPage'));
 const ClassesPage = lazy(() => import('./modules/classes/ClassesPage'));
@@ -181,6 +182,7 @@ export default function App() {
           <Route path="/homework" element={<Layout><RoleGuard allowedRoles={HOMEWORK_VIEW_ROLES}><HomeworkPage /></RoleGuard></Layout>} />
           <Route path="/regulations" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><RegulationsPage /></RoleGuard></Layout>} />
           <Route path="/admissions" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><AdmissionsPage /></RoleGuard></Layout>} />
+          <Route path="/student-age-review" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><StudentAgeReviewPage /></RoleGuard></Layout>} />
           <Route path="/grade-progress" element={<Layout><RoleGuard allowedRoles={GRADE_VIEW_ROLES}><GradeProgressPage /></RoleGuard></Layout>} />
           <Route path="/communication" element={<Layout><RoleGuard allowedRoles={COMMUNICATION_ROLES}><CommunicationPage /></RoleGuard></Layout>} />
           <Route path="/classes" element={<Layout><AcademicRoute><ClassesPage /></AcademicRoute></Layout>} />

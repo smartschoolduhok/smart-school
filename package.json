@@ -60,7 +60,7 @@
     "test:excel-import": "node --experimental-strip-types --test test/excel-import.test.mjs test/grade-excel-import.test.mjs",
     "test:communication": "node --experimental-strip-types --test --test-concurrency=1 test/parent-communication.test.mjs",
     "test:grade-progress": "node --experimental-strip-types --test --test-concurrency=1 test/grade-progress.test.mjs",
-    "test:admissions": "node --experimental-strip-types --test --test-concurrency=1 test/admissions.test.mjs",
+    "test:admissions": "node --experimental-strip-types --test --test-concurrency=1 test/admissions.test.mjs test/student-age.test.mjs",
     "test:school-workflow-ui": "node --experimental-strip-types --test --test-concurrency=1 test/school-workflow-ui.test.mjs",
     "test:school-workflows:local": "node --experimental-strip-types scripts/validate-school-workflows-local.mjs",
     "readiness:staging": "node scripts/run-operational-readiness.mjs",

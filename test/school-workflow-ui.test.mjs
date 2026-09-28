@@ -14,7 +14,7 @@ const vite=await createServer({root,appType:'custom',ssr:{noExternal:['react-rou
 const {AuthProvider}=await vite.ssrLoadModule('/src/hooks/useAuth.tsx');
 const {MemoryRouter}=await vite.ssrLoadModule('react-router-dom');
 const pages={};
-for(const [name,path] of Object.entries({communication:'communication/CommunicationPage',progress:'gradeProgress/GradeProgressPage',regulations:'admissions/RegulationsPage',admissions:'admissions/AdmissionsPage'}))pages[name]=(await vite.ssrLoadModule(`/src/modules/${path}.tsx`)).default;
+for(const [name,path] of Object.entries({communication:'communication/CommunicationPage',progress:'gradeProgress/GradeProgressPage',regulations:'admissions/RegulationsPage',admissions:'admissions/AdmissionsPage',ages:'admissions/StudentAgeReviewPage'}))pages[name]=(await vite.ssrLoadModule(`/src/modules/${path}.tsx`)).default;
 after(async()=>{await vite.close();await window.happyDOM.close();});
 const response=(data,status=200)=>new Response(JSON.stringify({data}),{status,headers:{'Content-Type':'application/json'}});
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};};
@@ -26,7 +26,7 @@ const application={application_key:'00000000-0000-4000-8000-000000000002',studen
 async function mount(t,page,role='school_owner',handlers={}){
  localStorage.clear();sessionStorage.clear();const user={id:1,role_key:role,school_id:1,full_name:'مستخدم تجريبي'};
  localStorage.setItem('smart_school_user',JSON.stringify(user));localStorage.setItem('smart_school_token','generated-token');
- const calls=[];globalThis.fetch=async(url,init={})=>{const path=String(url).split('?')[0],method=init.method||'GET',body=init.body?JSON.parse(init.body):null;calls.push({path,method,body});if(handlers[path])return handlers[path](body,method);
+ const calls=[];globalThis.fetch=async(url,init={})=>{const path=String(url).split('?')[0],method=init.method||'GET',body=init.body?JSON.parse(init.body):null;calls.push({path,method,body,url:String(url)});if(handlers[path])return handlers[path](body,method,String(url));
  if(path==='/api/auth/me')return response(user);
  if(path==='/api/academic-years')return response([{id:1,name:'2026',is_active:1}]);
  if(path==='/api/classes')return response([{id:1,name:'الأول',status:'active'}]);
@@ -132,4 +132,45 @@ test('registrar can execute an approved admission only after explicit confirmati
 test('closed conversations render message text safely and offer parents no reply or management action',async t=>{
  const conversation={conversation_key:'closed',title:'متابعة مغلقة',student_name:'طالب',parent_name:'ولي الأمر',staff_name:'مدرس',status:'closed',revision:2,updated_at:1789000000,unread_count:1};const v=await mount(t,'communication','parent',{'/api/communication':()=>response({conversations:[conversation],next_cursor:null}),'/api/communication/closed':()=>response({conversation,can_manage:false,audit:[],messages:[{id:1,message_key:'message',sender_name:'مدرس',body:'<script>private text</script>',created_at:1789000000,mine:false}],has_more:false}),'/api/communication/closed/read':()=>response({read:true})});
  await click(buttons(v).find(b=>b.textContent.includes('متابعة مغلقة')));assert.match(v.container.textContent,/<script>private text<\/script>/);assert.equal(v.container.querySelector('script'),null);assert.equal(v.container.querySelector('textarea'),null);assert.doesNotMatch(v.container.textContent,/إدارة المحادثة وسجل الإجراءات/);
+});
+
+const labeled=(v,label,tag='select')=>[...v.container.querySelectorAll('label')].find(el=>el.textContent.startsWith(label))?.querySelector(tag);
+const ageRow=(id,name,status='outside_limits')=>({enrollment_id:id,student_id:id,student_number:'AGE-'+id,full_name:name,birth_date:'2010-12-31',gender:'male',class_name:'الأول المتوسط',section_name:'أ',class_id:1,section_id:1,regulation_version:1,regulation_title:'مصدر تجريبي',source_reference:'TEST',source_url:'https://example.test/age',age_rules:rules,context_notes:['راجع الاستثناءات'],age_check:{status,age_months:188,reference_date:'2026-09-01',issues:status==='outside_limits'?['أكبر من الحد الموثق']:[]}});
+const agePage=(rows,next_cursor=null)=>({rows,next_cursor,review_date:'2026-09-27',academic_year_id:1,page_size:100});
+
+test('template fills an editable school draft without saving or approval; mismatched year cannot apply',async t=>{
+ const v=await mount(t,'regulations','school_owner',{'/api/academic-years':()=>response([{id:1,name:'2026-2027'},{id:2,name:'2025-2026'}])});
+ await input(labeled(v,'السنة'),'1');await input(labeled(v,'الصف'),'1');
+ await input(labeled(v,'البدء من قالب موثق'),'iq-morning-2026-27-intermediate-1');
+ assert.equal(button(v,'تعبئة مسودة قابلة للتخصيص').disabled,false);
+ await click(button(v,'تعبئة مسودة قابلة للتخصيص'));
+ assert.equal(labeled(v,'أقدم ميلاد مسموح للذكور','input').value,'2011-01-01');
+ assert.equal(labeled(v,'أقدم ميلاد مسموح للإناث','input').value,'2009-01-01');
+ assert.equal(labeled(v,'رابط المصدر الرسمي','input').value,'https://t.me/Educationiq/32202');
+ await input(labeled(v,'أقدم ميلاد مسموح للذكور','input'),'2010-01-01');
+ assert.equal(labeled(v,'أقدم ميلاد مسموح للذكور','input').value,'2010-01-01');
+ assert.equal(v.calls.some(c=>c.method==='POST'),false);
+ await input(labeled(v,'السنة'),'2');assert.equal(button(v,'تعبئة مسودة قابلة للتخصيص').disabled,true);assert.equal(button(v,'حفظ مسودة الإصدار').disabled,true);
+});
+
+test('age report shows partial counts, follows pagination, filters loaded rows and makes no writes',async t=>{
+ const v=await mount(t,'ages','school_owner',{'/api/student-age-review':(_b,_m,url)=>response(new URL(url,'http://localhost').searchParams.has('after')?agePage([ageRow(2,'طالب ثان','within_limits')]):agePage([ageRow(1,'طالب أول')],1))});
+ assert.match(v.container.textContent,/توجد نتائج إضافية/);assert.match(v.container.textContent,/طالب أول/);
+ await click(button(v,'تحميل 100 طالب إضافي'));
+ assert.match(v.container.textContent,/اكتمل تحميل النطاق/);assert.match(v.container.textContent,/طالب ثان/);
+ await input(labeled(v,'الحالة ضمن النتائج'),'attention');
+ assert.match(v.container.textContent,/طالب أول/);assert.doesNotMatch(v.container.textContent,/طالب ثان/);
+ assert.equal(v.container.querySelector('a[href="/students/1"]').textContent,'طالب أول');
+ assert.equal(v.calls.some(c=>c.method!=='GET'),false);
+ assert.equal(v.calls.some(c=>c.path==='/api/students'),false);
+});
+
+test('changing the age report scope discards late rows and clears an earlier error on refresh',async t=>{
+ const old=defer();let counter=0,fail=false;
+ const v=await mount(t,'ages','school_owner',{'/api/student-age-review':()=>++counter===1?old.promise:fail?new Response(JSON.stringify({error:'TEST unavailable'}),{status:503}):response(agePage([ageRow(2,'CURRENT AGE ROW')]))});
+ await input(labeled(v,'الصف'),'1');
+ await act(async()=>old.resolve(response(agePage([ageRow(1,'OBSOLETE AGE ROW')]))));
+ assert.match(v.container.textContent,/CURRENT AGE ROW/);assert.doesNotMatch(v.container.textContent,/OBSOLETE AGE ROW/);
+ fail=true;await click(button(v,'تحديث التقرير'));assert.match(v.container.querySelector('[role="alert"]').textContent,/TEST unavailable/);assert.doesNotMatch(v.container.textContent,/CURRENT AGE ROW/);
+ fail=false;await click(button(v,'تحديث التقرير'));assert.equal(v.container.querySelector('[role="alert"]'),null);assert.match(v.container.textContent,/CURRENT AGE ROW/);
 });
