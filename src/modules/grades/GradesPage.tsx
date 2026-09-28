@@ -1,4 +1,5 @@
 import GradeProgressPage from '../gradeProgress/GradeProgressPage';
+import { Link } from 'react-router-dom';
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
@@ -58,6 +59,7 @@ function statusBadge(status: string | null) {
 /* ─── Types ─── */
 interface GradeRecord {
   id: number;
+  student_id?: number;
   school_id: number;
   student_subject_id: number;
   first_term_grade: number | null;
@@ -580,6 +582,9 @@ function SectionGradesTab({ schoolId, canInitialize, userRole }: { schoolId: num
   const [showConfirm, setShowConfirm] = useState(false);
 
   const editableFields = useMemo(() => settings ? gradeInputColumns(settings).filter(column => column.editable) : [], [settings]);
+  function mayDiscardEdits(): boolean {
+    return Object.keys(edits).length === 0 || window.confirm('توجد درجات معدلة لم تُحفظ. هل تريد تجاهلها؟');
+  }
   const availableClasses = useMemo(
     () => isTeacher ? teacherGradeClassOptions(teacherScopeAssignments) : classes,
     [classes, isTeacher, teacherScopeAssignments],
@@ -677,8 +682,9 @@ function SectionGradesTab({ schoolId, canInitialize, userRole }: { schoolId: num
     setSettings(data ? data as GradeSettings : null);
   }
 
-  async function loadGrades() {
+  async function loadGrades(force = false) {
     if (schoolId == null || !selectedSectionId || !selectedSubjectId) return;
+    if (!force && !mayDiscardEdits()) return;
     const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getGrades({
@@ -694,6 +700,7 @@ function SectionGradesTab({ schoolId, canInitialize, userRole }: { schoolId: num
   }
 
   async function handleInit() {
+    if (!mayDiscardEdits()) return;
     if (!selectedSectionId || !selectedSubjectId) {
       setMessage({ text: 'يرجى اختيار الشعبة والمادة', type: 'error' });
       setTimeout(() => setMessage(null), 3000);
@@ -713,7 +720,7 @@ function SectionGradesTab({ schoolId, canInitialize, userRole }: { schoolId: num
       setMessage({ text: res.error, type: 'error' });
     } else {
       setMessage({ text: `تمت تهيئة درجات الشعبة بنجاح (إنشاء ${toArabicDigits(String(res.data?.created || 0))})`, type: 'success' });
-      await loadGrades();
+      await loadGrades(true);
     }
     setTimeout(() => setMessage(null), 4000);
   }
@@ -758,7 +765,7 @@ function SectionGradesTab({ schoolId, canInitialize, userRole }: { schoolId: num
     } else {
       setMessage({ text: `تم حفظ ${toArabicDigits(String(res.data?.updated || 0))} درجة بنجاح`, type: 'success' });
       setEdits({});
-      await loadGrades();
+      await loadGrades(true);
     }
     setTimeout(() => setMessage(null), 4000);
   }
@@ -790,33 +797,33 @@ function SectionGradesTab({ schoolId, canInitialize, userRole }: { schoolId: num
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-40">
           <label className="block text-xs font-medium text-gray-700 mb-1">الصف</label>
-          <select value={selectedClassId} onChange={(e) => setSelectedClassId(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
+          <select value={selectedClassId} onChange={(e) => { if (mayDiscardEdits()) { setSelectedClassId(e.target.value); setEdits({}); } }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white">
             <option value="">— اختر —</option>
             {availableClasses.map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
           </select>
         </div>
         <div className="w-40">
           <label className="block text-xs font-medium text-gray-700 mb-1">الشعبة</label>
-          <select value={selectedSectionId} onChange={(e) => { setSelectedSectionId(e.target.value); setSelectedSubjectId(''); setGrades([]); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!selectedClassId}>
+          <select value={selectedSectionId} onChange={(e) => { if (mayDiscardEdits()) { setSelectedSectionId(e.target.value); setSelectedSubjectId(''); setGrades([]); setEdits({}); } }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!selectedClassId}>
             <option value="">— اختر —</option>
             {availableSections.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
           </select>
         </div>
         <div className="w-56">
           <label className="block text-xs font-medium text-gray-700 mb-1">المادة</label>
-          <select value={selectedSubjectId} onChange={(e) => { setSelectedSubjectId(e.target.value); setGrades([]); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!selectedSectionId}>
+          <select value={selectedSubjectId} onChange={(e) => { if (mayDiscardEdits()) { setSelectedSubjectId(e.target.value); setGrades([]); setEdits({}); } }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!selectedSectionId}>
             <option value="">— اختر —</option>
             {availableSubjects.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
           </select>
         </div>
         <div className="w-40">
           <label className="block text-xs font-medium text-gray-700 mb-1">الحقل</label>
-          <select value={fieldToEdit} onChange={(e) => { setFieldToEdit(e.target.value); setEdits({}); }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!editableFields.length}>
+          <select value={fieldToEdit} onChange={(e) => { if (mayDiscardEdits()) { setFieldToEdit(e.target.value); setEdits({}); } }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white" disabled={!editableFields.length}>
             {!editableFields.length && <option value="">لا توجد حقول مفعّلة</option>}
             {editableFields.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
           </select>
         </div>
-        <button onClick={loadGrades} disabled={!selectedSectionId || !selectedSubjectId} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-50">
+        <button onClick={() => void loadGrades()} disabled={!selectedSectionId || !selectedSubjectId} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 disabled:opacity-50">
           عرض الدرجات
         </button>
         {canInitialize && (
@@ -850,13 +857,18 @@ function SectionGradesTab({ schoolId, canInitialize, userRole }: { schoolId: num
                 <tbody>
                   {grades.map((g) => (
                     <tr key={g.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-3 py-2 border-b border-gray-100 font-medium text-gray-900">{g.student_name}</td>
+                      <td className="px-3 py-2 border-b border-gray-100 font-medium text-gray-900">{g.student_id ? <Link to={`/students/${g.student_id}`} className="text-blue-700 hover:underline">{g.student_name}</Link> : g.student_name}</td>
                       <td className="px-1 py-1 border-b border-gray-100">
                         <input
                           type="text"
                           inputMode="numeric"
-                          defaultValue={displayNum((g as any)[fieldToEdit])}
-                          onChange={(e) => setEdits((prev) => ({ ...prev, [g.id]: e.target.value }))}
+                          value={edits[g.id] ?? displayNum((g as any)[fieldToEdit])}
+                          onChange={(e) => setEdits((prev) => {
+                            const next = { ...prev };
+                            if (e.target.value === '' || e.target.value === displayNum((g as any)[fieldToEdit])) delete next[g.id];
+                            else next[g.id] = e.target.value;
+                            return next;
+                          })}
                           className="w-full px-1.5 py-1 text-center text-sm border border-gray-200 rounded focus:ring-1 focus:ring-primary-500 focus:border-primary-500"
                           placeholder="—"
                         />

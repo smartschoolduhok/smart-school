@@ -33,6 +33,7 @@ const UsersPage = lazy(() => import('./modules/users/UsersPage'));
 const RolesPage = lazy(() => import('./modules/roles/RolesPage'));
 const StudentsPage = lazy(() => import('./modules/students/StudentsPage'));
 const StudentProfilePage = lazy(() => import('./modules/students/StudentProfilePage'));
+const StudentFinancePage = lazy(() => import('./modules/students/StudentFinancePage'));
 const StudentPromotionPage = lazy(() => import('./modules/studentPromotion/StudentPromotionPage'));
 const TimetablePage = lazy(() => import('./modules/timetable/TimetablePage'));
 const AttendancePage = lazy(() => import('./modules/attendance/AttendancePage'));
@@ -174,6 +175,7 @@ export default function App() {
           {/* Academic routes */}
           <Route path="/students" element={<Layout><RoleGuard allowedRoles={STUDENT_DIRECTORY_ROLES}><StudentsPage /></RoleGuard></Layout>} />
           <Route path="/students/:id" element={<Layout><RoleGuard allowedRoles={STUDENT_RESOURCE_VIEW_ROLES}><StudentProfilePage /></RoleGuard></Layout>} />
+          <Route path="/students/:id/finance" element={<Layout><FinanceRoute><StudentFinancePage /></FinanceRoute></Layout>} />
           <Route path="/student-promotion" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><StudentPromotionPage /></RoleGuard></Layout>} />
           <Route path="/timetable" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><TimetablePage /></RoleGuard></Layout>} />
           <Route path="/attendance" element={<Layout><RoleGuard allowedRoles={ATTENDANCE_VIEW_ROLES}><AttendancePage /></RoleGuard></Layout>} />

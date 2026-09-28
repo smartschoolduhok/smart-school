@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
+import { useAuth } from '../../hooks/useAuth';
 import { calculateFee, feeRemaining } from '../../lib/financeFees';
 import FeeAccountPanel from './FeeAccountPanel';
 import { businessDate } from '../../lib/businessTime';
@@ -83,6 +85,8 @@ interface StudentOption {
 }
 
 export default function FeesPage() {
+  const { user } = useAuth();
+  const studentPath = (id: number) => user?.role_key === 'accountant' ? `/students/${id}/finance` : `/students/${id}`;
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
@@ -543,7 +547,7 @@ export default function FeesPage() {
                     ) : filteredFees.map(fee => (
                       <tr key={fee.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3">
-                          <div className="font-medium text-gray-900">{fee.student_name}</div>
+                          <Link to={studentPath(fee.student_id)} className="font-medium text-blue-700 hover:underline">{fee.student_name}</Link>
                           <div className="text-xs text-gray-500">{fee.student_number} — {fee.class_name} {fee.section_name}</div>
                         </td>
                         <td className="px-4 py-3">{fee.fee_type}</td>
@@ -832,7 +836,7 @@ export default function FeesPage() {
                     ) : studentPayments.map(p => (
                       <tr key={p.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3">
-                          <div className="font-medium text-gray-900">{p.student_name}</div>
+                          <Link to={studentPath(p.student_id)} className="font-medium text-blue-700 hover:underline">{p.student_name}</Link>
                         </td>
                         <td className="px-4 py-3 font-mono font-medium text-emerald-600">{formatCurrency(p.amount,p.currency)}</td>
                         <td className="px-4 py-3">

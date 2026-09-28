@@ -8,12 +8,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
+  function closeSidebar() {
+    setIsSidebarOpen(false);
+    if (window.matchMedia('(max-width: 1023px)').matches) {
+      window.requestAnimationFrame(() => document.getElementById('mobile-menu-button')?.focus());
+    }
+  }
+
+  function openSidebar() {
+    setIsSidebarOpen(true);
+    window.requestAnimationFrame(() => document.getElementById('sidebar-close-button')?.focus());
+  }
+
   useEffect(() => {
     if (!isSidebarOpen) return;
     const previous = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setIsSidebarOpen(false);
+      if (event.key === 'Escape') closeSidebar();
     };
     document.addEventListener('keydown', closeOnEscape);
     return () => {
@@ -40,13 +52,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <button
           type="button"
           aria-label="إغلاق القائمة"
-          onClick={() => setIsSidebarOpen(false)}
+          onClick={closeSidebar}
           className="fixed inset-0 z-40 bg-black/45 lg:hidden"
         />
       )}
-      <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
+      <Sidebar isOpen={isSidebarOpen} onClose={closeSidebar} />
       <div className="min-h-screen lg:mr-64">
-        <Header onMenuClick={() => setIsSidebarOpen(true)} />
+        <Header onMenuClick={openSidebar} isMenuOpen={isSidebarOpen} />
         <main className="p-3 sm:p-6">
           {children}
         </main>

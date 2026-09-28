@@ -24,6 +24,7 @@ const { default: DocumentTab } = await vite.ssrLoadModule('/src/modules/settings
 const { default: LoginPage } = await vite.ssrLoadModule('/src/modules/auth/LoginPage.tsx');
 const { default: StudentsPage } = await vite.ssrLoadModule('/src/modules/students/StudentsPage.tsx');
 const { default: GradesPage } = await vite.ssrLoadModule('/src/modules/grades/GradesPage.tsx');
+const { default: Layout } = await vite.ssrLoadModule('/src/components/Layout.tsx');
 const { AuthProvider, useAuth } = await vite.ssrLoadModule('/src/hooks/useAuth.tsx');
 const { setSessionCsrfToken, clearAuthentication } = await vite.ssrLoadModule('/src/lib/authStorage.ts');
 const { fetchApi, getDashboardStats, downloadHomeworkAttachment } = await vite.ssrLoadModule('/src/lib/api.ts');
@@ -33,6 +34,35 @@ const { MemoryRouter } = await vite.ssrLoadModule('react-router-dom');
 after(async () => {
   await vite.close();
   await window.happyDOM.close();
+});
+
+test('mobile sidebar is inert while closed and returns keyboard focus to the menu button', async t => {
+  const previousFetch = globalThis.fetch;
+  const user = { id: 99, role_key: 'school_owner', school_id: 41, full_name: 'Owner', school_name: 'School' };
+  localStorage.clear();
+  sessionStorage.clear();
+  localStorage.setItem('smart_school_user', JSON.stringify(user));
+  globalThis.fetch = async url => {
+    const path = String(url);
+    if (path === '/api/auth/me') return new Response(JSON.stringify({ data: user }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (path.startsWith('/api/notifications')) return new Response(JSON.stringify({ data: { unread_count: 0, notifications: [] } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    throw Error(`Unexpected request ${path}`);
+  };
+  t.after(() => { globalThis.fetch = previousFetch; localStorage.clear(); sessionStorage.clear(); });
+  const container = await render(t, createElement(MemoryRouter, null, createElement(AuthProvider, null, createElement(Layout, null, createElement('p', null, 'Dashboard')))));
+  await waitForContent(container, 'Dashboard');
+  const sidebar = container.querySelector('#application-sidebar');
+  const menuButton = container.querySelector('#mobile-menu-button');
+  assert.equal(sidebar.inert, true);
+  assert.equal(sidebar.getAttribute('aria-hidden'), 'true');
+  await act(async () => menuButton.click());
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
+  assert.equal(sidebar.inert, false);
+  assert.equal(document.activeElement?.id, 'sidebar-close-button');
+  await act(async () => container.querySelector('#sidebar-close-button').click());
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
+  assert.equal(sidebar.inert, true);
+  assert.equal(document.activeElement?.id, 'mobile-menu-button');
 });
 
 async function render(t, element) {
@@ -446,7 +476,10 @@ test('accountant student directory exposes only finance fields and builds filter
   );
   assert.equal(container.textContent.includes('أنثى'), false, 'missing gender must not render as female');
   assert.equal(container.textContent.includes('ولي الأمر'), false);
-  assert.equal(container.querySelectorAll('a[href^="/students/"]').length, 0);
+  assert.deepEqual(
+    [...container.querySelectorAll('a[href^="/students/"]')].map(link => link.getAttribute('href')),
+    ['/students/1/finance', '/students/2/finance', '/students/3/finance'],
+  );
   assert.equal(container.querySelectorAll('[title="عرض الملف"]').length, 0);
   assert.deepEqual(requests.sort(), ['/api/auth/me', '/api/students?school_id=41']);
 

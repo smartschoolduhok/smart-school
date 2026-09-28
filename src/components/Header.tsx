@@ -8,9 +8,10 @@ import { getVisibleNavigationItems } from './Sidebar';
 
 interface HeaderProps {
   onMenuClick: () => void;
+  isMenuOpen: boolean;
 }
 
-export default function Header({ onMenuClick }: HeaderProps) {
+export default function Header({ onMenuClick, isMenuOpen }: HeaderProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -110,10 +111,12 @@ export default function Header({ onMenuClick }: HeaderProps) {
         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
           <button
             type="button"
+            id="mobile-menu-button"
             onClick={onMenuClick}
             className="rounded-lg p-2 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500 lg:hidden"
             aria-label="فتح القائمة الرئيسية"
             aria-controls="application-sidebar"
+            aria-expanded={isMenuOpen}
           >
             <Menu size={21} className="text-gray-600" />
           </button>

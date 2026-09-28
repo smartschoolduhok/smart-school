@@ -1,11 +1,18 @@
 // Execute the package's actual test commands and retain auditable local logs.
-import {readFileSync,mkdtempSync,writeFileSync} from 'node:fs';
+import {readFileSync,mkdtempSync,writeFileSync,readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 const root=fileURLToPath(new URL('..',import.meta.url)),pkg=JSON.parse(readFileSync(join(root,'package.json'),'utf8'));
-const names=['finance-fees','treasury-payroll','security','rbac','resource-access','ui-foundations','settings','academic-years','student-enrollments','student-promotion','student-profile','subject-management','subject-order','religious-subjects','subject-applicability','flexible-grades','grade-policies','academic-analytics','grade-presentation','result-cards','result-card-ui','result-publication','official-promotion','excel-import','timetable','attendance','homework','communication','grade-progress','admissions','school-workflow-ui','operational-readiness','teaching-load-matrix','week-setup'];
+const names=['finance-fees','treasury-payroll','security','rbac','resource-access','ui-foundations','settings','academic-years','student-enrollments','student-promotion','student-profile','subject-management','subject-order','religious-subjects','subject-applicability','flexible-grades','grade-policies','academic-analytics','grade-presentation','result-cards','result-card-ui','result-publication','official-promotion','official-books','excel-import','timetable','attendance','homework','communication','grade-progress','admissions','school-workflow-ui','operational-readiness','teaching-load-matrix','week-setup'];
+const listedFiles=new Set(names.flatMap(name=>{
+ const command=pkg.scripts['test:'+name];
+ if(!command)throw new Error('Missing regression suite: '+name);
+ return command.match(/test\/[\w.-]+\.test\.mjs/g)??[];
+}));
+const missingFiles=readdirSync(join(root,'test')).filter(file=>file.endsWith('.test.mjs')).map(file=>'test/'+file).filter(file=>!listedFiles.has(file));
+if(missingFiles.length)throw new Error('Regression manifest omits: '+missingFiles.join(', '));
 const directory=mkdtempSync(join(tmpdir(),'smart-school-finance-regressions-')),results=[];
 console.log('Regression artifacts: '+directory);
 async function run(name){const command=pkg.scripts['test:'+name],args=command.split(/\s+/).slice(1);assertNode(command);

@@ -20,7 +20,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { getStudent, getStudentEnrollments, getStudentReligiousSubject, setStudentReligiousSubject } from '../../lib/api';
-import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import { ACADEMIC_MANAGEMENT_ROLES, FINANCE_ACCESS_ROLES, hasRole } from '../../lib/rbac';
 import {
   RELIGIOUS_SUBJECT_HAS_GRADES_CODE,
   religiousTrackLabel,
@@ -43,6 +43,7 @@ import {
 } from '../../lib/studentProfilePresentation';
 import ParentFinanceSection from './ParentFinanceSection';
 import ParentResultsSection from './ParentResultsSection';
+import StudentGradesSection from './StudentGradesSection';
 
 function InformationItem({ label, value, icon }: { label: string; value: ReactNode; icon?: ReactNode }) {
   return (
@@ -246,7 +247,7 @@ export default function StudentProfilePage() {
             إعادة المحاولة
           </button>
         </div>
-      ) : student ? (
+      ) : student && Number(student.school_id) === schoolId ? (
         <>
           <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
             <div className="grid gap-5 p-6 md:grid-cols-[auto_1fr] md:items-center">
@@ -334,6 +335,11 @@ export default function StudentProfilePage() {
             </>
           )}
 
+          {user?.role_key !== 'parent' && <StudentGradesSection studentId={student.id} />}
+          {hasRole(user?.role_key, FINANCE_ACCESS_ROLES) && schoolId != null && (
+            <ParentFinanceSection studentId={student.id} schoolId={schoolId} />
+          )}
+
           <section className="rounded-xl border border-amber-200 bg-white p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex items-start gap-3">
@@ -377,9 +383,12 @@ export default function StudentProfilePage() {
                 <InformationItem label="تاريخ الميلاد" value={formatStudentProfileDate(student.birth_date)} />
                 <InformationItem label="رقم الهاتف" value={safeStudentProfileValue(student.phone)} icon={<Phone size={15} />} />
                 <InformationItem label="حالة الطالب" value={studentStatusLabel(student.status)} />
+                <InformationItem label="تاريخ إنشاء الملف" value={formatStudentProfileUnixSeconds(student.created_at)} />
+                <InformationItem label="آخر تحديث" value={formatStudentProfileUnixSeconds(student.updated_at)} />
                 <div className="sm:col-span-2">
                   <InformationItem label="العنوان" value={safeStudentProfileValue(student.address)} icon={<MapPin size={15} />} />
                 </div>
+                {user?.role_key !== 'parent' && student.notes && <div className="sm:col-span-2"><InformationItem label="ملاحظات المدرسة" value={student.notes} /></div>}
               </div>
             </section>
 
