@@ -5,6 +5,7 @@ import { fixture, request, root, snapshot } from './helpers/school-workflow-fixt
 import { parseAdmissionRules, evaluateAdmission } from '../src/lib/admissionRegulations.ts';
 import { checkStudentAge, formatAge } from '../src/lib/studentAge.ts';
 import { REGULATION_TEMPLATES, copyRegulationTemplate, matchesTemplateYear } from '../src/lib/policyTemplates.ts';
+import { baghdadDate, validateStudentBirthDate } from '../src/lib/admissionDates.ts';
 
 const vite = await createServer({ root, appType: 'custom', server: { middlewareMode: true, hmr: false } });
 const { default: app } = await vite.ssrLoadModule('/src/worker.ts');
@@ -127,4 +128,91 @@ test('cursor pagination covers every active annual enrollment once and excludes 
   const first=(await call(f)).data, second=(await call(f,'owner','&after='+first.next_cursor)).data;
   assert.equal(first.rows.length,100); assert.equal(second.rows.length,5); assert.equal(second.next_cursor,null);
   assert.equal(new Set([...first.rows,...second.rows].map(r=>r.student_id)).size,105);
+});
+
+test('birth-date bounds are independent of their display reference, while bounded ages require it', () => {
+  const rule = {...rules(), age_reference_date:'2000-01-01'};
+  assert.equal(check('2011-01-01','male',rule).status,'within_limits');
+  assert.equal(check('2010-12-31','male',rule).status,'outside_limits');
+  assert.equal(check('2011-01-01','male',rule).age_months,null);
+  assert.equal(check('2011-01-01','male',{...rule,age_rule:'bounded',min_age_months:72}).status,'review');
+});
+
+test('student birthday validation uses real calendar dates and the Baghdad business date without an age floor', t => {
+  t.mock.method(Date,'now',()=>Date.parse('2026-09-27T21:15:00Z'));
+  assert.equal(baghdadDate(),'2026-09-28');
+  assert.deepEqual(validateStudentBirthDate('2026-09-28'),{ok:true,value:'2026-09-28'});
+  assert.equal(validateStudentBirthDate('2026-09-29').ok,false);
+  assert.deepEqual(validateStudentBirthDate('2024-02-29'),{ok:true,value:'2024-02-29'});
+  for(const value of ['2026-02-30','2023-02-29','not-a-date',0,false,[],{}]) assert.equal(validateStudentBirthDate(value).ok,false,JSON.stringify(value));
+  for(const value of [null,undefined,'','  ']) assert.deepEqual(validateStudentBirthDate(value),{ok:true,value:null});
+});
+
+test('student create and update reject impossible or future birthdays before any identity or enrollment write', async t => {
+  const f=fixture(t);
+  const create={school_id:1,student_number:'DOB-TEST',full_name:'DOB test student',gender:'female',class_id:1,section_id:2};
+  for(const value of ['2026-02-30','2099-01-01','2023-02-29',0,{}]) {
+    for(const [method,path,body] of [['POST','/api/students',{...create,birth_date:value}],['PUT','/api/students/101',{school_id:1,birth_date:value,full_name:'Must not change',class_id:2,section_id:null}]]) {
+      const before=snapshot(f.db),response=await request(app,f,'owner',method,path,body);
+      assert.equal(response.status,400,JSON.stringify(response));
+      assert.match(response.error,/تاريخ الميلاد/);
+      assert.deepEqual(snapshot(f.db),before);
+    }
+  }
+  for(const birth_date of ['2024-02-29',baghdadDate(),null,'']) {
+    const response=await request(app,f,'owner','POST','/api/students',{...create,student_number:crypto.randomUUID(),birth_date});
+    assert.equal(response.status,201,JSON.stringify(response));
+    assert.equal(f.db.prepare('SELECT birth_date FROM students WHERE id=?').get(response.data.id).birth_date,birth_date||null);
+    assert.equal((await request(app,f,'owner','PUT','/api/students/101',{school_id:1,birth_date})).status,200);
+    assert.equal(f.db.prepare('SELECT birth_date FROM students WHERE id=101').get().birth_date,birth_date||null);
+  }
+  const omitted=await request(app,f,'owner','POST','/api/students',{...create,student_number:crypto.randomUUID()});
+  assert.equal(omitted.status,201,JSON.stringify(omitted));
+  assert.equal(f.db.prepare('SELECT birth_date FROM students WHERE id=?').get(omitted.data.id).birth_date,null);
+  f.db.exec("UPDATE students SET birth_date='2026-02-30' WHERE id=101");
+  assert.equal((await request(app,f,'owner','PUT','/api/students/101',{school_id:1,phone:'TEST'})).status,200);
+  assert.equal(f.db.prepare('SELECT birth_date FROM students WHERE id=101').get().birth_date,'2026-02-30');
+});
+
+const importOptions={school_id:1,mode:'update_existing',file_name:'birthday-test.xlsx',class_assignment_mode:'override',selected_class_id:1,section_assignment_mode:'override',selected_section_id:2};
+const importRow=(extra={})=>({student_number:'S101',full_name:'Student A',gender:'male',...extra});
+const studentTables=f=>({students:f.db.prepare('SELECT * FROM students ORDER BY id').all(),enrollments:f.db.prepare('SELECT * FROM student_enrollments ORDER BY id').all()});
+
+test('Excel preview rejects invalid birthday cells instead of silently dropping them and confirms no invalid student writes',async t=>{
+  const f=fixture(t);
+  for(const birth_date of ['2026-02-30','2099-01-01','invalid',0]) {
+    const before=snapshot(f.db);
+    const preview=await request(app,f,'owner','POST','/api/import-export/students/preview',{...importOptions,rows:[importRow({birth_date})]});
+    assert.equal(preview.status,200,JSON.stringify(preview));
+    assert.equal(preview.data.valid_rows,0);
+    assert.ok(preview.data.errors.some(e=>e.field==='birth_date'),JSON.stringify(preview));
+    assert.deepEqual(snapshot(f.db),before);
+    const identities=studentTables(f);
+    const confirm=await request(app,f,'owner','POST','/api/import-export/students/confirm',{...importOptions,rows:[importRow({birth_date}),importRow({student_number:'NEW-INVALID',full_name:'Invalid new DOB',birth_date})]});
+    assert.equal(confirm.status,200,JSON.stringify(confirm));
+    assert.equal(confirm.data.error_count,2);
+    assert.equal(confirm.data.imported_count+confirm.data.updated_count,0);
+    assert.ok(confirm.data.row_errors.every(e=>e.field==='birth_date'),JSON.stringify(confirm));
+    assert.deepEqual(studentTables(f),identities);
+  }
+});
+
+test('Excel birthday preview and confirm preserve mapped aliases, real dates and omitted-versus-empty semantics',async t=>{
+  const f=fixture(t);
+  const preview=await request(app,f,'owner','POST','/api/import-export/students/preview',{...importOptions,rows:[importRow({'تاريخ الميلاد':'2024-02-29'})]});
+  assert.equal(preview.status,200,JSON.stringify(preview));
+  assert.equal(preview.data.valid_rows,1,JSON.stringify(preview));
+  assert.equal(preview.data.valid[0].data.birth_date,'2024-02-29');
+  assert.ok(preview.data.valid[0].data.imported_fields.includes('birth_date'));
+  let confirm=await request(app,f,'owner','POST','/api/import-export/students/confirm',{...importOptions,rows:preview.data.valid});
+  assert.equal(confirm.data.updated_count,1,JSON.stringify(confirm));
+  assert.equal(f.db.prepare('SELECT birth_date FROM students WHERE id=101').get().birth_date,'2024-02-29');
+  for(const [extra,expected] of [[{},'2024-02-29'],[{birth_date:baghdadDate()},baghdadDate()],[{birth_date:''},null],[{birth_date:null},null]]) {
+    confirm=await request(app,f,'owner','POST','/api/import-export/students/confirm',{...importOptions,rows:[importRow(extra)]});
+    assert.equal(confirm.data.updated_count,1,JSON.stringify(confirm));
+    assert.equal(f.db.prepare('SELECT birth_date FROM students WHERE id=101').get().birth_date,expected);
+  }
+  confirm=await request(app,f,'owner','POST','/api/import-export/students/confirm',{...importOptions,rows:[importRow({student_number:'NEW-MISSING',full_name:'New missing DOB',imported_fields:['full_name','student_number']})]});
+  assert.equal(confirm.data.imported_count,1,JSON.stringify(confirm));
+  assert.equal(f.db.prepare("SELECT birth_date FROM students WHERE student_number='NEW-MISSING'").get().birth_date,null);
 });

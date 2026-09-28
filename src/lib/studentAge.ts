@@ -22,8 +22,10 @@ export function checkStudentAge(rules: AdmissionRules | null, input: AgeInput): 
   try { birth = validDate(input.birth_date); } catch { return result('invalid_birth_date', ['راجع تاريخ الميلاد؛ التاريخ المسجل غير صالح']); }
   if (birth > input.today) return result('future_birth_date', ['تاريخ الميلاد يتجاوز تاريخ المراجعة']);
   if (!rules) return result('review', ['لا توجد لائحة عمر معتمدة وسارية لهذا الصف والسنة'], ageInMonths(birth, input.today));
-  const age = ageInMonths(birth, rules.age_reference_date);
-  if (age < 0) return result('review', ['تاريخ الميلاد بعد تاريخ احتساب العمر في اللائحة'], age);
+  const calculatedAge = ageInMonths(birth, rules.age_reference_date);
+  // Birth-date rules compare the documented bounds directly; their reference date is display-only.
+  const age = calculatedAge < 0 ? null : calculatedAge;
+  if (calculatedAge < 0 && rules.age_rule === 'bounded') return result('review', ['تاريخ الميلاد بعد تاريخ احتساب العمر في اللائحة']);
   if (rules.age_rule === 'review') return result('review', ['حدود العمر لم تُحسم في اللائحة'], age);
   if (rules.age_rule === 'not_applicable') return result('not_applicable', [], age);
   if (rules.age_rule === 'birth_date') {
@@ -33,8 +35,8 @@ export function checkStudentAge(rules: AdmissionRules | null, input: AgeInput): 
     if (bounds.earliest && birth < bounds.earliest) return result('outside_limits', ['أكبر من الحد: أقدم تاريخ ميلاد مسموح هو ' + bounds.earliest], age);
     if (bounds.latest && birth > bounds.latest) return result('outside_limits', ['أصغر من الحد: أحدث تاريخ ميلاد مسموح هو ' + bounds.latest], age);
   } else {
-    if (rules.min_age_months != null && age < rules.min_age_months) return result('outside_limits', ['أصغر من الحد الأدنى عند تاريخ الاحتساب'], age);
-    if (rules.max_age_months != null && age > rules.max_age_months) return result('outside_limits', ['أكبر من الحد الأعلى عند تاريخ الاحتساب'], age);
+    if (rules.min_age_months != null && calculatedAge < rules.min_age_months) return result('outside_limits', ['أصغر من الحد الأدنى عند تاريخ الاحتساب'], age);
+    if (rules.max_age_months != null && calculatedAge > rules.max_age_months) return result('outside_limits', ['أكبر من الحد الأعلى عند تاريخ الاحتساب'], age);
   }
   return result('within_limits', [], age);
 }
