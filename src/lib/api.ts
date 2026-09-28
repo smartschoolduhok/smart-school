@@ -6,7 +6,7 @@
 
 import type { AcademicYearRecord } from './academicYears';
 import { clearAuthentication, getSessionCsrfToken } from './authStorage';
-import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan } from './weekSetup';
+import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan, WeekArchiveSummary, WeekArchiveDetail } from './weekSetup';
 import type {
   AttendanceLessonDetail,
   AttendanceLessonSummary,
@@ -46,8 +46,16 @@ export function getWeekSetup(scope: Required<WeekScope>) {
 export function previewWeekSetup(input: WeekRequest) {
   return fetchApi<WeekPlan>('/api/timetable/week-setup/preview', {method: 'POST', body: JSON.stringify(input)});
 }
-export function applyWeekSetup(input: WeekRequest & {confirm_apply: true; preview_digest: string}) {
+export function applyWeekSetup(input: WeekRequest & {confirm_apply: true; preview_digest: string; confirm_replace?: boolean}) {
   return fetchApi<WeekPlan & {applied: boolean}>('/api/timetable/week-setup/apply', {method: 'POST', body: JSON.stringify(input)});
+}
+export function getWeekArchives(scope: Required<WeekScope>) {
+  const params = new URLSearchParams({ school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id) });
+  return fetchApi<WeekArchiveSummary[]>(`/api/timetable/week-archives?${params}`);
+}
+export function getWeekArchive(id: number, scope: Required<WeekScope>) {
+  const params = new URLSearchParams({ school_id: String(scope.school_id), academic_year_id: String(scope.academic_year_id) });
+  return fetchApi<WeekArchiveDetail>(`/api/timetable/week-archives/${id}?${params}`);
 }
 import type { TeachingLoadMatrixData, MatrixScope, MatrixRequest, MatrixPlan, MatrixCopyRequest, MatrixCopyPlan } from './teachingLoadMatrix';
 

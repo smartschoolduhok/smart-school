@@ -16,7 +16,7 @@
     "test:regressions": "node --experimental-strip-types scripts/run-finance-regressions.mjs",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "test:week-setup": "node --experimental-strip-types --test --test-concurrency=1 test/week-setup.test.mjs test/week-setup-api.test.mjs test/week-setup-ui.test.mjs",
+    "test:week-setup": "node --experimental-strip-types --test --test-concurrency=1 test/week-setup.test.mjs test/week-setup-api.test.mjs test/week-setup-ui.test.mjs test/week-archives-ui.test.mjs",
     "test:week-setup:local": "node scripts/validate-week-setup-local.mjs",
     "test:teaching-load-matrix": "node --experimental-strip-types --test --test-concurrency=1 test/teaching-load-matrix.test.mjs test/teaching-load-matrix-api.test.mjs test/teaching-load-matrix-ui.test.mjs",
     "test:teaching-load-matrix:local": "node scripts/validate-teaching-load-matrix-local.mjs",

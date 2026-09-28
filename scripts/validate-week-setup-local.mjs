@@ -9,8 +9,8 @@ import {getPlatformProxy} from 'wrangler';
 import {createServer} from 'vite';
 import {signJWT} from '../src/lib/jwtSecurity.ts';
 import {loadWeekSetup,buildWeekApplyStatements} from '../src/lib/weekSetupDb.ts';
-import {planWeekSetup,periodValues,minuteOfDay,bellTime} from '../src/lib/weekSetup.ts';
-import {root,migrationFiles,fixtureSQL,historySQL,example,maximum,assertPreserved} from '../test/helpers/week-setup-fixture.mjs';
+import {planWeekSetup,periodValues,minuteOfDay,bellTime,generateWeekTemplate} from '../src/lib/weekSetup.ts';
+import {root,migrationFiles,fixtureSQL,historySQL,example,maximum,assertPreserved,savedAfternoonWeekSQL} from '../test/helpers/week-setup-fixture.mjs';
 import {capacityEvidenceSQL,workingDaysEvidenceSQL,reviewLessons,evidenceRequest,reviewCapacity} from '../test/helpers/week-setup-fixture.mjs';
 
 const directory=mkdtempSync(join(tmpdir(),'smart-school-phase19c-local-'));
@@ -28,7 +28,7 @@ function run(args){
 }
 run(['d1','migrations','apply','phase19c-local-only']);console.log('Fresh real migration chain applied locally:',migrationFiles.length);
 const generated=join(directory,'generated-local-fixtures.sql');
-writeFileSync(generated,fixtureSQL+historySQL+capacityEvidenceSQL()+workingDaysEvidenceSQL()+`
+writeFileSync(generated,fixtureSQL+historySQL+capacityEvidenceSQL()+workingDaysEvidenceSQL()+savedAfternoonWeekSQL()+`
 INSERT INTO timetable_entries(school_id,academic_year_id,slot_id,teaching_load_id,is_locked,created_by_user_id,updated_by_user_id) VALUES(1,1,1,2,1,1,1);
 INSERT INTO timetable_teacher_availability(school_id,academic_year_id,employee_id,slot_id,status) VALUES(1,1,2,1,'preferred');
 INSERT INTO timetable_teacher_constraints(school_id,academic_year_id,employee_id,max_periods_per_day,max_working_days,max_consecutive_periods) VALUES(1,1,2,4,3,3);
@@ -95,18 +95,52 @@ try{
   const {default:app}=await vite.ssrLoadModule('/src/worker.ts');
   const secret='generated-local-week-review-secret-never-used-remotely';
   const token=await signJWT({id: 1, email: 'owner@matrix.test',auth_version:1},secret);
-  let queryCount=0,maxParameters=0;
-  const wrap=real=>({real,bind(...args){maxParameters=Math.max(maxParameters,args.length);return wrap(real.bind(...args));},
+  let queryCount=0,maxParameters=0,failNextBatch=false;
+  const wrap=(real,sql)=>({real,sql,bind(...args){maxParameters=Math.max(maxParameters,args.length);return wrap(real.bind(...args),sql);},
     async first(...args){queryCount++;return real.first(...args);},async all(...args){queryCount++;return real.all(...args);},async run(...args){queryCount++;return real.run(...args);}});
-  const counted={prepare:sql=>wrap(db.prepare(sql)),async batch(statements){queryCount+=statements.length;return db.batch(statements.map(s=>s.real));}};
+  const counted={prepare:sql=>wrap(db.prepare(sql),sql),async batch(statements){
+    queryCount+=statements.length;
+    const real=statements.map(s=>s.real);
+    if(failNextBatch&&statements.some(s=>/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql))){failNextBatch=false;real.push(db.prepare('SELECT * FROM intentional_replacement_late_failure'));}
+    return db.batch(real);
+  }};
   const api=async(operation,input)=>{
     queryCount=0;maxParameters=0;
     const response=await app.request('http://localhost/api/timetable/week-setup/'+operation,
       {method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(input)},
       {DB:counted,JWT_SECRET:secret,APP_ENV:'test'});
     const result={status:response.status,body:await response.json(),query_count:queryCount,max_parameters:maxParameters};
-    assert.ok(queryCount<50);assert.ok(maxParameters<=4);return result;
+    assert.ok(queryCount<50);assert.ok(maxParameters<=(input.mode==='replace_selected_days'?6:4));return result;
   };
+  // Reproduce changing the saved 13:00-17:30 week to 17:25 while moving
+  // its breaks: replacement archives the original and keeps lesson identities.
+  for(const lessons of [7,5]) {
+    const c=await loadWeekSetup(db,1,42),before=await snap();
+    const template=generateWeekTemplate({start_time:'13:00',lesson_count:lessons,lesson_minutes:35,breaks:[{after_lesson:2,minutes:10},{after_lesson:4,minutes:10}]});
+    const input={...evidenceRequest(c,template),mode:'replace_selected_days',targets:[{day_of_week:0,activate_day:false},{day_of_week:1,activate_day:false}]};
+    const preview=await api('preview',input);assert.equal(preview.status,200);assert.equal(preview.body.data.can_apply,true,JSON.stringify(preview));assert.deepEqual(await snap(),before);
+    const confirmed={...input,confirm_apply:true,confirm_replace:true,acknowledge_availability_impact:true,preview_digest:preview.body.data.preview_digest};
+    const unconfirmed=await api('apply',{...confirmed,confirm_replace:false});assert.equal(unconfirmed.status,409);assert.deepEqual(await snap(),before);
+    if(lessons===5){
+      failNextBatch=true;const failed=await api('apply',confirmed);assert.equal(failed.status,500,JSON.stringify(failed));assert.equal(failNextBatch,false);assert.deepEqual(await snap(),before);
+    }
+    const saved=await api('apply',confirmed);assert.equal(saved.status,200,JSON.stringify(saved));const after=await snap();
+    assertPreserved(before,after,['timetable_slots','timetable_entries','timetable_teacher_availability','timetable_revisions','timetable_week_archives']);
+    const selected=s=>s.school_id===1&&s.academic_year_id===42&&[0,1].includes(s.day_of_week);
+    assert.deepEqual(after.timetable_slots.filter(s=>!selected(s)),before.timetable_slots.filter(s=>!selected(s)));
+    for(const day of [0,1])assert.deepEqual(after.timetable_slots.filter(s=>selected(s)&&s.day_of_week===day).sort((a,b)=>a.slot_index-b.slot_index).map(periodValues),template);
+    const archive=after.timetable_week_archives.find(a=>!before.timetable_week_archives.some(b=>a.id===b.id));assert.ok(archive);
+    const raw=JSON.parse(archive.snapshot_json),byId=rows=>[...rows].sort((a,b)=>a.id-b.id),oldSlots=before.timetable_slots.filter(selected),oldSlotIds=new Set(oldSlots.map(s=>s.id));
+    assert.deepEqual(byId(raw.slots),byId(oldSlots));
+    assert.deepEqual(byId(raw.entries),byId(before.timetable_entries.filter(e=>oldSlotIds.has(e.slot_id))));
+    assert.deepEqual(byId(raw.availability),byId(before.timetable_teacher_availability.filter(a=>oldSlotIds.has(a.slot_id))));
+    const entries=after.timetable_entries.filter(e=>e.academic_year_id===42);assert.equal(entries.length,lessons===7?2:1);assert.equal(entries.find(e=>e.id===4200).is_locked,1);
+    for(const e of entries){const old=before.timetable_entries.find(o=>o.id===e.id);assert.deepEqual({...e,slot_id:old.slot_id,updated_at:old.updated_at,updated_by_user_id:old.updated_by_user_id},old);assert.equal(e.updated_by_user_id,1);assert.ok(e.updated_at>=old.updated_at);
+      assert.equal(after.timetable_slots.find(s=>s.id===e.slot_id).lesson_number,oldSlots.find(s=>s.id===old.slot_id).lesson_number);}
+    evidence.push({case:lessons===7?'replace-saved-afternoon-break-positions':'replace-reduced-day-with-late-rollback',lessons,preview_status:200,apply_status:200,
+      apply_http_statements:saved.query_count,max_parameters:saved.max_parameters,old_slots_archived:raw.slots.length,archived_entries:raw.entries.length,
+      carried_entries:entries.length,locked_entry_preserved:true,unrelated_rows_equal:true,new_end:template.at(-1).end_time,late_failure_rolled_back:lessons===5});
+  }
   for(const count of [2,3,4]) {
     const c=await loadWeekSetup(db,1,40),before=await snap(),beforeCapacity=reviewCapacity(c).hard_weekly_capacity;
     const input=evidenceRequest(c,reviewLessons(count)),preview=await api('preview',input);

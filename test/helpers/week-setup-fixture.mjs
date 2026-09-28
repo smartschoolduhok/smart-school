@@ -21,6 +21,23 @@ VALUES(1,'week-fixture',1,1,'automatic_adoption',0,1,1,1,1,'local-fixture');
 INSERT INTO timetable_schedule_version_entries(version_id,original_entry_id,school_id,academic_year_id,slot_id,teaching_load_id,is_locked) VALUES(1,1,1,1,1,2,1);
 `;
 
+// Two selected saved days plus an untouched day; references are deliberately
+// after the breaks so moving/shortening breaks must preserve lesson identity.
+export function savedAfternoonWeekSQL() {
+  const periods=generateWeekTemplate({start_time:'13:00',lesson_count:7,lesson_minutes:35,breaks:[{after_lesson:3,minutes:15},{after_lesson:5,minutes:10}]});
+  let sql=`INSERT INTO academic_years(id,school_id,name,starts_at,ends_at,is_active) VALUES(42,1,'Saved afternoon week','2042-09-01','2043-06-01',0);
+    INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status) VALUES(420,1,42,1,1,1,1,4,'active');`;
+  for(const day of [0,1,2]) {
+    sql+=`INSERT INTO timetable_days(school_id,academic_year_id,day_of_week,is_active,order_index) VALUES(1,42,${day},1,${day});`;
+    for(const [i,p] of periods.entries())sql+=`INSERT INTO timetable_slots(id,school_id,academic_year_id,day_of_week,slot_index,slot_type,lesson_number,label,start_time,end_time,is_active)
+      VALUES(${4200+day*10+i},1,42,${day},${p.slot_index},'${p.slot_type}',${p.lesson_number??'NULL'},'${p.label}','${p.start_time}','${p.end_time}',1);`;
+  }
+  return sql+`INSERT INTO timetable_entries(id,school_id,academic_year_id,slot_id,teaching_load_id,is_locked,created_by_user_id,updated_by_user_id) VALUES(4200,1,42,4204,420,1,1,1),(4210,1,42,4217,420,0,1,1);
+    INSERT INTO timetable_teacher_availability(school_id,academic_year_id,employee_id,slot_id,status) VALUES(1,42,1,4207,'preferred'),(1,42,1,4217,'preferred');
+    INSERT INTO timetable_schedule_versions(id,version_key,school_id,academic_year_id,source,previous_revision,created_by_user_id,old_entry_count,new_entry_count,locked_entry_count,proposal_digest) VALUES(42,'saved-afternoon',1,42,'automatic_adoption',0,1,2,2,1,'local-generated');
+    INSERT INTO timetable_schedule_version_entries(version_id,original_entry_id,school_id,academic_year_id,slot_id,teaching_load_id,is_locked) VALUES(42,4200,1,42,4204,420,1);`;
+}
+
 // Isolated generated review cases: genuine schema, no changes to base fixtures.
 export const reviewLessons = (count=4) => generateWeekTemplate({start_time:'08:00',lesson_count:count,lesson_minutes:40,breaks:[]});
 const reviewSlotsSQL = (year,day,count=4) => reviewLessons(count).map((p,i)=>
