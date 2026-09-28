@@ -114,3 +114,29 @@ test('gender changes invalidate an already approved admission preview before exe
  assert.equal((await req(f,'registrar','POST',c.path+'/execute',{revision:c.a.revision,confirm_execute:true})).status,409);
  assert.deepEqual(snapshot(f.db),before);
 });
+
+test('admission candidates reject impossible and future DOBs but allow missing, leap-day and today birthdays',async t=>{
+ const f=fixture(t);
+ for(const birth_date of ['2026-02-30','2099-01-01',false]){
+  const body=applicationInput();body.applicant.birth_date=birth_date;const before=snapshot(f.db);
+  const result=await req(f,'registrar','POST','/api/admissions',body);
+  assert.equal(result.status,400,JSON.stringify(result));assert.match(result.error,/تاريخ الميلاد/);assert.deepEqual(snapshot(f.db),before);
+ }
+ for(const birth_date of ['2024-02-29',new Date(Date.now()+3*3600_000).toISOString().slice(0,10),null,'',undefined]){
+  const body=applicationInput();body.applicant.birth_date=birth_date;
+  const result=await req(f,'registrar','POST','/api/admissions',body);assert.equal(result.status,201,JSON.stringify(result));
+  assert.equal(result.data.applicant.birth_date,birth_date||null);
+ }
+});
+
+test('legacy candidate DOB errors block approval even when the policy has no age condition',async t=>{
+ const f=fixture(t);await regulation(f);
+ const body=applicationInput();body.applicant.birth_date='2099-01-01';
+ f.db.prepare(`INSERT INTO admission_applications(application_key,school_id,applicant_json,academic_year_id,class_id,section_id,process,facts_json,created_by_user_id,updated_by_user_id) VALUES(?,1,?,1,1,2,'admission',?,7,7)`).run(body.application_key,JSON.stringify(body.applicant),JSON.stringify(body.facts));
+ const path=`/api/admissions/${body.application_key}`,before=snapshot(f.db);
+ const preview=await req(f,'registrar','GET',path+'/preview');
+ assert.equal(preview.data.eligibility.decision,'eligible');assert.equal(preview.data.can_approve,false);
+ assert.ok(preview.data.operational_issues.some(issue=>issue.includes('تاريخ الميلاد')));
+ assert.equal((await req(f,'owner','POST',path+'/decision',{revision:1,decision:'approve',reason:'TEST',preview_digest:preview.data.preview_digest,confirm_evidence_verified:true})).status,409);
+ assert.deepEqual(snapshot(f.db),before);
+});

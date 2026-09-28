@@ -17,6 +17,7 @@ import { registerHomeworkRoutes } from './lib/homeworkDb'
 import { registerAdmissionsRoutes } from './lib/admissionsDb'
 import { registerAdmissionRegulationRoutes } from './lib/admissionRegulationsDb'
 import { registerStudentAgeRoutes } from './lib/studentAgeDb'
+import { validateStudentBirthDate } from './lib/admissionDates'
 import { registerGradeProgressRoutes } from './lib/gradeProgressDb'
 import { registerParentCommunicationRoutes } from './lib/parentCommunicationDb'
 import type { HomeworkObjectStore } from './lib/homework'
@@ -4961,6 +4962,8 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
     if (!religionValidation.ok) {
       return c.json({ error: 'قيمة الديانة غير صالحة' }, 400)
     }
+    const birthDateValidation = validateStudentBirthDate(birth_date)
+    if (!birthDateValidation.ok) return c.json({ error: birthDateValidation.error }, 400)
 
     class_id = class_id == null || class_id === '' ? null : Number(class_id)
     section_id = section_id == null || section_id === '' ? null : Number(section_id)
@@ -4978,7 +4981,7 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
       mother_name: mother_name || null,
       gender,
       religion: religionValidation.value,
-      birth_date: birth_date || null,
+      birth_date: birthDateValidation.value,
       phone: phone || null,
       guardian_name: guardian_name || null,
       guardian_phone: guardian_phone || null,
@@ -5029,7 +5032,12 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
       if (!religionValidation.ok) return c.json({ error: 'قيمة الديانة غير صالحة' }, 400)
       religion = religionValidation.value
     }
-    const birth_date = body.birth_date !== undefined ? body.birth_date : existing.birth_date
+    let birth_date = existing.birth_date
+    if (Object.prototype.hasOwnProperty.call(body, 'birth_date')) {
+      const birthDateValidation = validateStudentBirthDate(body.birth_date)
+      if (!birthDateValidation.ok) return c.json({ error: birthDateValidation.error }, 400)
+      birth_date = birthDateValidation.value
+    }
     const phone = body.phone !== undefined ? body.phone : existing.phone
     const guardian_name = body.guardian_name !== undefined ? body.guardian_name : existing.guardian_name
     const guardian_phone = body.guardian_phone !== undefined ? body.guardian_phone : existing.guardian_phone
@@ -13182,7 +13190,9 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         const religionValidation = importedFields.has('religion')
           ? normalizeExcelStudentReligion(mapped.religion ?? mapped['الديانة'] ?? mapped['الدين'] ?? mapped['faith'])
           : { ok: true as const, value: null };
-        const birthDate = normalizeDate(mapped.birth_date || mapped['تاريخ الميلاد'] || mapped['birthdate']);
+        if (!mapping && ['تاريخ الميلاد', 'birthdate'].some(alias => Object.prototype.hasOwnProperty.call(mapped, alias))) importedFields.add('birth_date');
+        const birthDateValidation = validateStudentBirthDate(mapped.birth_date ?? mapped['تاريخ الميلاد'] ?? mapped['birthdate']);
+        const birthDate = birthDateValidation.ok ? birthDateValidation.value : null;
         const phone = normalizeText(mapped.phone || mapped['الهاتف'] || mapped['رقم الهاتف'] || mapped['mobile']);
         const guardianName = normalizeText(mapped.guardian_name || mapped['ولي الأمر'] || mapped['guardian']);
         const guardianPhone = normalizeText(mapped.guardian_phone || mapped['هاتف ولي الأمر']);
@@ -13204,6 +13214,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         if (!fullName) { rowError(i, 'full_name', 'اسم الطالب مطلوب'); hasFatal = true; }
         if (rawGender && !gender) { rowError(i, 'gender', 'قيمة الجنس غير صالحة'); hasFatal = true; }
         if (!religionValidation.ok) { rowError(i, 'religion', 'قيمة الديانة غير صالحة'); hasFatal = true; }
+        if (!birthDateValidation.ok) { rowError(i, 'birth_date', birthDateValidation.error); hasFatal = true; }
         if (!rawGender) rowWarn(i, 'gender', 'لم يُحدد الجنس؛ سيُحفظ بالقيمة الداخلية unknown');
 
         const className = classAssignmentMode === 'override'
@@ -13725,6 +13736,10 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           }
 
           const keepOrImport = (field: string, fallback: any) => importedFields.has(field) ? (d[field] || null) : fallback;
+          const birthDateValidation = existing && !importedFields.has('birth_date')
+            ? { ok: true as const, value: existing.birth_date }
+            : validateStudentBirthDate(d.birth_date);
+          if (!birthDateValidation.ok) { rowError(i, 'birth_date', birthDateValidation.error); continue; }
           const studentValues: StudentWriteValues = {
             school_id,
             student_number: existing?.student_number || studentNumber,
@@ -13733,7 +13748,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             mother_name: existing ? keepOrImport('mother_name', existing.mother_name) : (d.mother_name || null),
             gender: existing && !importedFields.has('gender') ? existing.gender : gender,
             religion: existing && !importedFields.has('religion') ? existing.religion : religionValidation.value,
-            birth_date: existing ? keepOrImport('birth_date', existing.birth_date) : (d.birth_date || null),
+            birth_date: birthDateValidation.value,
             phone: existing ? keepOrImport('phone', existing.phone) : (d.phone || null),
             guardian_name: existing ? keepOrImport('guardian_name', existing.guardian_name) : (d.guardian_name || null),
             guardian_phone: existing ? keepOrImport('guardian_phone', existing.guardian_phone) : (d.guardian_phone || null),

@@ -1,7 +1,8 @@
 import type {Hono} from 'hono';
 import type {Bindings,Variables} from '../worker';
 import {ACADEMIC_MANAGEMENT_ROLES,SCHOOL_MANAGEMENT_ROLES} from './rbac';
-import {ADMISSION_PROCESSES,baghdadDate,evaluateAdmission,parseAdmissionRules,validDate} from './admissionRegulations';
+import {ADMISSION_PROCESSES,baghdadDate,evaluateAdmission,parseAdmissionRules} from './admissionRegulations';
+import {validateStudentBirthDate} from './admissionDates';
 import {parseAdmissionFacts} from './admissions';
 import {sha256Hex} from './homework';
 import {boundedText,ensure,positiveId,uuid,workflowBody,workflowResponse,workflowSchool,type WorkflowContext as C} from './schoolWorkflow';
@@ -29,6 +30,7 @@ async function inspect(c:C,school:number,key:string){
  const q=contextQuery(school,key),row=await c.env.DB.prepare(q.sql).bind(...q.args).first<{source:string}>();ensure(row,'application_not_found','الطلب غير موجود',404);
  const source=JSON.parse(row.source),rules=source.regulation?parseAdmissionRules(source.regulation.rules):null;
  const facts=parseAdmissionFacts(source.facts),eligibility=evaluateAdmission(rules,{birth_date:source.student?.birth_date??source.applicant?.birth_date??null,gender:source.student?.gender??source.applicant?.gender??null,today:source.business_date,...facts}),issues:string[]=[];
+ if(source.student_id==null){const birthDate=validateStudentBirthDate(source.applicant?.birth_date,source.business_date);if(!birthDate.ok)issues.push(birthDate.error);}
  if(source.year_active!==1)issues.push('السنة الدراسية غير فعالة');
  if(source.class_active!==1)issues.push('الصف غير فعال');
  if(source.section_id!=null&&(!source.section||source.section.status!=='active'||source.section.class_id!==source.class_id))issues.push('الشعبة غير متاحة');
@@ -59,7 +61,7 @@ export function registerAdmissionsRoutes(app:Hono<{Bindings:Bindings;Variables:V
   const b=await workflowBody(c,['school_id','application_key','student_id','applicant','academic_year_id','class_id','section_id','process','external_school','document_reference','facts']);
   const school=await workflowSchool(c,b.school_id,ACADEMIC_MANAGEMENT_ROLES),u=c.get('user'),key=uuid(b.application_key),student=b.student_id==null?null:positiveId(b.student_id),year=positiveId(b.academic_year_id),classId=positiveId(b.class_id),section=b.section_id==null?null:positiveId(b.section_id);
   ensure(Object.prototype.hasOwnProperty.call(ADMISSION_PROCESSES,b.process),'invalid_process','نوع الطلب غير صالح');const facts=JSON.stringify(parseAdmissionFacts(b.facts));let applicant:string|null=null;
-  if(student==null){ensure(b.process!=='transfer_out','student_required','النقل الصادر يحتاج طالبًا مسجلًا');const p=b.applicant;ensure(p&&typeof p==='object'&&!Array.isArray(p)&&Object.keys(p).every(k=>['full_name','student_number','gender','birth_date'].includes(k)),'applicant_required','أدخل بيانات الطالب');ensure(p.gender==='male'||p.gender==='female','invalid_gender','الجنس غير صالح');applicant=JSON.stringify({full_name:boundedText(p.full_name,200),student_number:boundedText(p.student_number,50),gender:p.gender,birth_date:p.birth_date==null?null:validDate(p.birth_date)});}
+  if(student==null){ensure(b.process!=='transfer_out','student_required','النقل الصادر يحتاج طالبًا مسجلًا');const p=b.applicant;ensure(p&&typeof p==='object'&&!Array.isArray(p)&&Object.keys(p).every(k=>['full_name','student_number','gender','birth_date'].includes(k)),'applicant_required','أدخل بيانات الطالب');ensure(p.gender==='male'||p.gender==='female','invalid_gender','الجنس غير صالح');const birthDate=validateStudentBirthDate(p.birth_date);ensure(birthDate.ok,'invalid_birth_date',birthDate.ok?'':birthDate.error);applicant=JSON.stringify({full_name:boundedText(p.full_name,200),student_number:boundedText(p.student_number,50),gender:p.gender,birth_date:birthDate.value});}
   else ensure(b.applicant==null,'invalid_applicant','استخدم ملف الطالب الموجود أو متقدمًا جديدًا');
   const external=b.process==='admission'?null:boundedText(b.external_school,200),reference=b.process==='admission'?null:boundedText(b.document_reference,250);
   const existing=await c.env.DB.prepare('SELECT * FROM admission_applications WHERE application_key=? AND school_id=?').bind(key,school).first<Row>();

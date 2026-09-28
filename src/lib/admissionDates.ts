@@ -8,6 +8,15 @@ export function validDate(value: unknown): string {
   return value;
 }
 export function baghdadDate() { return new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10); }
+export function validateStudentBirthDate(value: unknown, today = baghdadDate()):
+  { ok: true; value: string | null } | { ok: false; error: string } {
+  if (value == null || (typeof value === 'string' && value.trim() === '')) return { ok: true, value: null };
+  let date: string;
+  try { date = validDate(value); }
+  catch { return { ok: false, error: 'تاريخ الميلاد غير صالح؛ أدخل تاريخًا حقيقيًا بصيغة سنة-شهر-يوم' }; }
+  if (date > today) return { ok: false, error: 'تاريخ الميلاد لا يمكن أن يكون في المستقبل' };
+  return { ok: true, value: date };
+}
 export function ageInMonths(birth: string, reference: string): number {
   const b = validDate(birth).split('-').map(Number), r = validDate(reference).split('-').map(Number);
   return (r[0] - b[0]) * 12 + r[1] - b[1] - (r[2] < b[2] ? 1 : 0);
