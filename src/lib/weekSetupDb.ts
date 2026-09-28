@@ -1,4 +1,4 @@
-import { WeekSetupError, staleWeek, MAX_WEEK_BODY_BYTES, type WeekContext, type WeekPlan } from './weekSetup.ts';
+import { WeekSetupError, staleWeek, MAX_WEEK_BODY_BYTES, weekArchiveSnapshot, type WeekContext, type WeekPlan } from './weekSetup.ts';
 
 // One atomic read-only batch, no lazy initialization. No foreign names leave
 // the server. All relation joins and history are scoped to school AND year.
@@ -11,16 +11,22 @@ export async function loadWeekSetup(db: D1Database, school: number, year: number
     scoped(`SELECT load.*, class.name AS class_name, class.status AS class_status, class.school_id AS class_school_id,
       (SELECT COUNT(*) FROM sections s WHERE s.school_id = load.school_id AND s.class_id = load.class_id AND s.status = 'active') AS active_section_count,
       section.name AS section_name, section.status AS section_status, section.school_id AS section_school_id, section.class_id AS section_class_id,
-      subject.status AS subject_status, subject.school_id AS subject_school_id, subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
-      employee.status AS employee_status, employee.school_id AS employee_school_id, employee.role AS employee_role
+      subject.name AS subject_name, subject.status AS subject_status, subject.school_id AS subject_school_id, subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
+      employee.full_name AS employee_name, employee.status AS employee_status, employee.school_id AS employee_school_id, employee.role AS employee_role
       FROM timetable_teaching_loads load
       LEFT JOIN classes class ON class.id = load.class_id AND class.school_id = load.school_id
       LEFT JOIN sections section ON section.id = load.section_id AND section.school_id = load.school_id
       LEFT JOIN subjects subject ON subject.id = load.subject_id AND subject.school_id = load.school_id
       LEFT JOIN employees employee ON employee.id = load.employee_id AND employee.school_id = load.school_id
       WHERE load.school_id = ? AND load.academic_year_id = ? ORDER BY load.id`),
-    scoped('SELECT * FROM timetable_entries WHERE school_id = ? AND academic_year_id = ? ORDER BY id'),
-    scoped('SELECT * FROM timetable_teacher_availability WHERE school_id = ? AND academic_year_id = ? ORDER BY id'),
+    scoped(`SELECT entry.*, EXISTS (SELECT 1 FROM lesson_attendance_sessions session
+      WHERE session.school_id = entry.school_id AND session.academic_year_id = entry.academic_year_id
+        AND session.timetable_entry_id = entry.id AND session.status = 'draft') AS has_draft_attendance
+      FROM timetable_entries entry WHERE entry.school_id = ? AND entry.academic_year_id = ? ORDER BY entry.id`),
+    scoped(`SELECT availability.*, employee.school_id AS employee_school_id, employee.status AS employee_status, employee.role AS employee_role
+      FROM timetable_teacher_availability availability
+      LEFT JOIN employees employee ON employee.id = availability.employee_id AND employee.school_id = availability.school_id
+      WHERE availability.school_id = ? AND availability.academic_year_id = ? ORDER BY availability.id`),
     scoped('SELECT * FROM timetable_teacher_constraints WHERE school_id = ? AND academic_year_id = ? ORDER BY id'),
     scoped(`SELECT entry.slot_id, COUNT(*) AS count FROM timetable_schedule_version_entries entry
       JOIN timetable_schedule_versions version ON version.id = entry.version_id AND version.school_id = entry.school_id AND version.academic_year_id = entry.academic_year_id
@@ -29,11 +35,22 @@ export async function loadWeekSetup(db: D1Database, school: number, year: number
   ]);
   const rows = <T>(index: number) => (results[index].results ?? []) as T[];
   if (!rows(0).length) throw new WeekSetupError('missing_or_not_in_scope', 'السنة غير متاحة ضمن المدرسة المحددة.', 404);
-  return {school_id: school, academic_year_id: year, days: rows(1), slots: rows(2), loads: rows(3), entries: rows(4), availability: rows(5), constraints: rows(6), history: rows(7), revision: rows<{revision: number}>(8)[0]?.revision ?? 0};
+  const availabilityRows = rows<WeekContext['availability'][number] & {employee_school_id: number | null; employee_status: string | null; employee_role: string | null}>(5);
+  const availability = availabilityRows.map(({employee_school_id: _school, employee_status: _status, employee_role: _role, ...row}) => row);
+  const availabilityTeachers = availabilityRows.map(row => ({id: row.employee_id, school_id: row.employee_school_id, status: row.employee_status, role: row.employee_role}));
+  const entryRows = rows<WeekContext['entries'][number] & {has_draft_attendance: number}>(4);
+  const entries = entryRows.map(({has_draft_attendance: _draft, ...row}) => row);
+  const draftAttendanceEntryIds = entryRows.filter(row => row.has_draft_attendance === 1).map(row => row.id);
+  return {school_id: school, academic_year_id: year, days: rows(1), slots: rows(2), loads: rows(3), entries, draftAttendanceEntryIds, availability, availabilityTeachers, constraints: rows(6), history: rows(7), revision: rows<{revision: number}>(8)[0]?.revision ?? 0};
 }
 
-export function buildWeekApplyStatements(db: D1Database, school: number, year: number, plan: WeekPlan) {
+export function buildWeekApplyStatements(db: D1Database, school: number, year: number, plan: WeekPlan, replacementSource?: {context: WeekContext; userId: number}) {
   if (!plan.can_apply || plan.no_change) throw new WeekSetupError('blocked_week_setup', 'لا توجد عملية تغيير قابلة للحفظ.', 409);
+  if (plan.replacement) {
+    if (!replacementSource || replacementSource.context.school_id !== school || replacementSource.context.academic_year_id !== year
+      || replacementSource.context.revision !== plan.revision) throw staleWeek();
+    return buildWeekReplacementStatements(db, school, year, plan, replacementSource);
+  }
   const token = crypto.randomUUID();
   const statements = [db.prepare('INSERT INTO timetable_revision_assertions (token, school_id, academic_year_id, expected_revision) VALUES (?, ?, ?, ?)').bind(token, school, year, plan.revision)];
   const group = (sql: string, data: unknown[]) => db.prepare(sql).bind(JSON.stringify(data), school, year);
@@ -75,6 +92,74 @@ export function buildWeekApplyStatements(db: D1Database, school: number, year: n
   if (statements.length !== plan.write_statement_count || statements.length > 35) throw new WeekSetupError('week_query_budget', 'يتجاوز هذا التغيير ميزانية الحفظ الآمن؛ خصص أيامًا أقل.', 409);
   return {statements, dayIndex, createsIndex, updateIndexes};
 }
+function buildWeekReplacementStatements(db: D1Database, school: number, year: number, plan: WeekPlan,
+  source: {context: WeekContext; userId: number}) {
+  const replacement = plan.replacement!;
+  const dayNumbers = plan.days.map(d => d.day_of_week);
+  const snapshot = weekArchiveSnapshot(source.context, dayNumbers);
+  const snapshotJSON = JSON.stringify(snapshot);
+  if (new TextEncoder().encode(snapshotJSON).byteLength > 1_800_000)
+    throw new WeekSetupError('week_archive_too_large', 'حجم أرشيف الأيام كبير؛ استبدل عددًا أقل من الأيام في كل مرة.', 413);
+  const token = crypto.randomUUID();
+  const statements = [db.prepare('INSERT INTO timetable_revision_assertions (token, school_id, academic_year_id, expected_revision) VALUES (?, ?, ?, ?)')
+    .bind(token, school, year, plan.revision)];
+  if (replacement.old_periods > 0) statements.push(db.prepare(`INSERT INTO timetable_week_archives
+    (archive_key, school_id, academic_year_id, source_revision, created_by_user_id, snapshot_json) VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(crypto.randomUUID(), school, year, plan.revision, source.userId, snapshotJSON));
+  const group = (sql: string, data: unknown[]) => db.prepare(sql).bind(JSON.stringify(data), school, year);
+  let dayIndex: number | null = null;
+  const activations = plan.days.filter(d => d.activate_day).map(d => d.day_of_week);
+  if (activations.length) {
+    dayIndex = statements.length;
+    statements.push(group(`INSERT INTO timetable_days (school_id, academic_year_id, day_of_week, is_active, order_index)
+      SELECT ?2, ?3, value, 1, value FROM json_each(?1) WHERE 1
+      ON CONFLICT(school_id, academic_year_id, day_of_week) DO UPDATE SET is_active = 1, updated_at = unixepoch()
+      WHERE timetable_days.is_active != 1 RETURNING id`, activations));
+  }
+  const scopedSlots = `SELECT id FROM timetable_slots WHERE school_id = ?2 AND academic_year_id = ?3
+    AND day_of_week IN (SELECT value FROM json_each(?1))`;
+  if (replacement.locked_entries > 0) statements.push(group(`INSERT INTO timetable_locked_entry_overrides
+    (token, entry_id, school_id, academic_year_id, action)
+    SELECT '${token}:' || id, id, school_id, academic_year_id, 'delete' FROM timetable_entries
+    WHERE school_id = ?2 AND academic_year_id = ?3 AND is_locked = 1 AND slot_id IN (${scopedSlots})`, dayNumbers));
+  if (replacement.archived_entries > 0) statements.push(group(`DELETE FROM timetable_entries
+    WHERE school_id = ?2 AND academic_year_id = ?3 AND slot_id IN (${scopedSlots})`, dayNumbers));
+  if (replacement.old_periods > 0) statements.push(group(`DELETE FROM timetable_slots
+    WHERE school_id = ?2 AND academic_year_id = ?3 AND day_of_week IN (SELECT value FROM json_each(?1))`, dayNumbers));
+  const createsIndex = statements.length;
+  const creates = plan.days.flatMap(d => d.changes.map(c => ({day_of_week: d.day_of_week, ...c.after})));
+  statements.push(group(`INSERT INTO timetable_slots
+    (school_id, academic_year_id, day_of_week, slot_index, slot_type, lesson_number, label, start_time, end_time, is_active)
+    SELECT ?2, ?3, json_extract(value, '$.day_of_week'), json_extract(value, '$.slot_index'), json_extract(value, '$.slot_type'),
+      json_extract(value, '$.lesson_number'), json_extract(value, '$.label'), json_extract(value, '$.start_time'),
+      json_extract(value, '$.end_time'), json_extract(value, '$.is_active') FROM json_each(?1) ORDER BY CAST(key AS INTEGER) RETURNING id`, creates));
+  const carry = <T extends {slot_id: number}>(rows: T[]) => rows.flatMap(row => {
+    const old = snapshot.slots.find(s => s.id === row.slot_id)!;
+    const target = creates.find(s => s.day_of_week === old.day_of_week && s.slot_type === 'lesson'
+      && s.lesson_number === old.lesson_number && s.is_active === 1);
+    return old.slot_type === 'lesson' && target ? [{...row, day_of_week: old.day_of_week, lesson_number: old.lesson_number,
+      updated_by_user_id: source.userId}] : [];
+  });
+  const matchSlot = `JOIN timetable_slots slot ON slot.school_id = ?2 AND slot.academic_year_id = ?3
+    AND slot.day_of_week = json_extract(value, '$.day_of_week') AND slot.slot_type = 'lesson'
+    AND slot.lesson_number = json_extract(value, '$.lesson_number') AND slot.is_active = 1`;
+  if (replacement.carried_availability > 0) statements.push(group(`INSERT INTO timetable_teacher_availability
+    (id, school_id, academic_year_id, employee_id, slot_id, status, created_by_user_id, updated_by_user_id, created_at, updated_at)
+    SELECT json_extract(value, '$.id'), ?2, ?3, json_extract(value, '$.employee_id'), slot.id,
+      json_extract(value, '$.status'), json_extract(value, '$.created_by_user_id'), json_extract(value, '$.updated_by_user_id'),
+      json_extract(value, '$.created_at'), unixepoch() FROM json_each(?1) ${matchSlot}`, carry(snapshot.availability)));
+  if (replacement.carried_entries > 0) statements.push(group(`INSERT INTO timetable_entries
+    (id, school_id, academic_year_id, slot_id, teaching_load_id, is_locked, created_by_user_id, updated_by_user_id, created_at, updated_at)
+    SELECT json_extract(value, '$.id'), ?2, ?3, slot.id, json_extract(value, '$.teaching_load_id'), json_extract(value, '$.is_locked'),
+      json_extract(value, '$.created_by_user_id'), json_extract(value, '$.updated_by_user_id'), json_extract(value, '$.created_at'), unixepoch()
+      FROM json_each(?1) ${matchSlot}`, carry(snapshot.entries)));
+  statements.push(db.prepare('DELETE FROM timetable_revision_assertions WHERE token = ?').bind(token));
+  statements.push(db.prepare('SELECT revision FROM timetable_revisions WHERE school_id = ? AND academic_year_id = ?').bind(school, year));
+  if (statements.length !== plan.write_statement_count || statements.length > 35)
+    throw new WeekSetupError('week_query_budget', 'يتجاوز هذا التغيير ميزانية الحفظ الآمن؛ خصص أيامًا أقل.', 409);
+  return {statements, dayIndex, createsIndex, updateIndexes: [] as number[]};
+}
+
 export async function readWeekJson(request: Request): Promise<unknown> {
   const reader = request.body?.getReader();
   if (!reader) throw new WeekSetupError('invalid_week_setup', 'بيانات إعداد الأسبوع مطلوبة.');
@@ -94,6 +179,7 @@ export function weekDatabaseError(error: unknown): WeekSetupError | null {
   if (error instanceof WeekSetupError) return error;
   const message = error instanceof Error ? error.message : String(error);
   if (/stale_timetable_proposal/.test(message)) return staleWeek();
+  if (/timetable week draft attendance pending/.test(message)) return new WeekSetupError('pending_attendance_drafts', 'توجد مسودات حضور غير مكتملة لدروس الأيام المحددة. أكمل اعتمادها ثم أعد المعاينة.', 409);
   if (/timetable slot has scheduled entries/.test(message)) return new WeekSetupError('slot_has_scheduled_entries', 'توجد دروس مجدولة تمنع تعديل الفترة.', 409);
   if (/timetable|constraint failed/i.test(message)) return new WeekSetupError('week_constraint_conflict', 'تعارض في إعدادات الأسبوع؛ أعد التحميل وراجع تخصيص اليوم.', 409);
   return null;

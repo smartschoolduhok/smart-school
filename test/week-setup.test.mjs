@@ -223,6 +223,22 @@ test('retained extras overlap, incompatible identity and active differences bloc
  const retainedConflict=await planWeekSetup(c,request(f,[{...periodValues(c.slots[1]),end_time:'09:40'}],[0],'update_matching_keep_extra'));
  assert.ok(retainedConflict.days[0].blockers.some(n=>n.code==='period_overlap'));
 });
+test('same lesson and break counts explain which saved period differs on each selected day',async t=>{
+ const f=weekFixture(t),base=await loadWeekSetup(f.d1,1,1),before=snapshot(f.db);
+ const saved=generateWeekTemplate({start_time:'13:00',lesson_count:7,lesson_minutes:35,breaks:[{after_lesson:3,minutes:15},{after_lesson:5,minutes:10}]});
+ const proposed=generateWeekTemplate({start_time:'13:00',lesson_count:7,lesson_minutes:35,breaks:[{after_lesson:2,minutes:10},{after_lesson:4,minutes:10}]});
+ const c={...base,loads:[],entries:[],availability:[],constraints:[],history:[],slots:[saved,example()].flatMap((periods,day)=>periods.map((p,i)=>({...p,id:100+day*100+i,school_id:1,academic_year_id:1,day_of_week:day,created_at:0,updated_at:0})))};
+ const plan=await planWeekSetup(c,request(f,proposed,[0,1],'update_matching_keep_extra'));
+ assert.equal(plan.can_apply,false);assert.equal(plan.counts.blocked,1);
+ assert.equal(plan.days[0].before.lessons,7);assert.equal(plan.days[0].after.lessons,7);
+ assert.equal(plan.days[0].before.breaks,2);assert.equal(plan.days[0].after.breaks,2);
+ assert.equal(plan.days[0].after.last_end,'17:25');
+ const mismatch=plan.days[0].blockers.find(n=>n.code==='incompatible_period_identity');
+ assert.match(mismatch.message,/الفترة 3: المحفوظ «الدرس 3» والمقترح «استراحة»/);
+ assert.match(mismatch.message,/حمّل إعدادات اليوم المحفوظ/);
+ assert.equal(plan.days[1].action,'configure');assert.equal(plan.days[1].blockers.length,0);
+ assert.deepEqual(snapshot(f.db),before);
+});
 for(const shift of [-20,20])test(`safe ${shift<0?'earlier':'later'} chain updates deterministic layers and preserves IDs`,async t=>{
  const f=weekFixture(t),c=await loadWeekSetup(f.d1,1,1),old=c.slots.filter(s=>s.day_of_week===0);
  const p=await planWeekSetup(c,request(f,old.map(s=>({...periodValues(s),start_time:bellTime(minuteOfDay(s.start_time)+shift),end_time:bellTime(minuteOfDay(s.end_time)+shift)})),[0],'update_matching_keep_extra'));

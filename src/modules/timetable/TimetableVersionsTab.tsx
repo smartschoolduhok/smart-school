@@ -12,6 +12,7 @@ import type {
   TimetableScheduleVersion,
   TimetableScheduleVersionDetails,
 } from '../../lib/timetableAdoption';
+import { WeekArchivesPanel } from './WeekArchivesPanel';
 
 interface TimetableVersionsTabProps {
   schoolId: number;
@@ -148,6 +149,7 @@ export function TimetableVersionsTab({
           {restorePreview.can_apply && <button type="button" onClick={() => void restoreVersion()} className="mt-3 flex items-center gap-2 rounded-lg bg-amber-700 px-4 py-2 font-bold text-white"><RotateCcw size={17} />استعادة هذا الإصدار للتحرير</button>}
         </div>
       )}
+      <WeekArchivesPanel schoolId={schoolId} academicYearId={academicYearId} dataVersion={dataVersion} />
     </section>
   );
 }

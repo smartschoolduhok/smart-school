@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test,{after} from 'node:test';
 import {createServer} from 'vite';
 import {signJWT} from '../src/lib/jwtSecurity.ts';
-import {periodValues,bellTime,minuteOfDay} from '../src/lib/weekSetup.ts';
-import {root,weekFixture,request,example,maximum,snapshot,revision,assertPreserved,addAvailability,entry,historySQL} from './helpers/week-setup-fixture.mjs';
+import {periodValues,bellTime,minuteOfDay,generateWeekTemplate} from '../src/lib/weekSetup.ts';
+import {root,weekFixture,request,example,maximum,snapshot,revision,assertPreserved,addAvailability,entry,historySQL,savedAfternoonWeekSQL} from './helpers/week-setup-fixture.mjs';
 import {capacityEvidenceSQL,workingDaysEvidenceSQL,reviewLessons,evidenceRequest,reviewCapacity,unrelatedEvidenceSQL,addConstraints} from './helpers/week-setup-fixture.mjs';
 import {loadWeekSetup} from '../src/lib/weekSetupDb.ts';
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
@@ -21,6 +21,41 @@ async function prepare(f,input,role='owner') {
  return {plan:p.body.data,input:{...input,confirm_apply:true,preview_digest:p.body.data.preview_digest}};
 }
 const apply=(f,input,role)=>call(f,'POST','/apply',input,role);
+const replacementTemplate=(lessons=7)=>generateWeekTemplate({start_time:'13:00',lesson_count:lessons,lesson_minutes:35,breaks:[{after_lesson:2,minutes:10},{after_lesson:4,minutes:10}]});
+const selectedAfternoon=row=>row.school_id===1&&row.academic_year_id===42&&[0,1].includes(row.day_of_week);
+async function prepareAfternoonReplacement(f,template=replacementTemplate(),role='owner') {
+ const c=await loadWeekSetup(f.d1,1,42);
+ return prepare(f,{...evidenceRequest(c,template),mode:'replace_selected_days',targets:[{day_of_week:0,activate_day:false},{day_of_week:1,activate_day:false}]},role);
+}
+async function readArchive(f,suffix,role='owner') {
+ f.d1.resetQueryBudget(49);
+ const r=await app.request('http://localhost/api/timetable/week-archives'+suffix,{headers:{Authorization:'Bearer '+tokens[role]}},{DB:f.d1,JWT_SECRET:secret,APP_ENV:'test'});
+ return {status:r.status,body:await r.json()};
+}
+const confirmedReplacement=p=>({...p.input,confirm_replace:true,acknowledge_availability_impact:true});
+function insertAfternoonAttendance(db,status='draft') {
+ return Number(db.prepare(`INSERT INTO lesson_attendance_sessions
+  (school_id,academic_year_id,timetable_entry_id,session_date,day_of_week,slot_id,teaching_load_id,teacher_employee_id,class_id,section_id,subject_id,lesson_number,
+   start_time_snapshot,end_time_snapshot,teacher_name_snapshot,class_name_snapshot,section_name_snapshot,subject_name_snapshot,status,confirmed_at,confirmed_by_user_id,created_by_user_id,updated_by_user_id)
+  SELECT entry.school_id,entry.academic_year_id,entry.id,date(year.starts_at,'weekday '||slot.day_of_week),slot.day_of_week,slot.id,load.id,load.employee_id,load.class_id,load.section_id,load.subject_id,slot.lesson_number,
+   slot.start_time,slot.end_time,employee.full_name,class.name,section.name,subject.name,?1,CASE WHEN ?1='confirmed' THEN unixepoch() END,CASE WHEN ?1='confirmed' THEN 1 END,1,1
+  FROM timetable_entries entry JOIN timetable_slots slot ON slot.id=entry.slot_id JOIN timetable_teaching_loads load ON load.id=entry.teaching_load_id
+  JOIN academic_years year ON year.id=entry.academic_year_id JOIN classes class ON class.id=load.class_id LEFT JOIN sections section ON section.id=load.section_id
+  JOIN subjects subject ON subject.id=load.subject_id LEFT JOIN employees employee ON employee.id=load.employee_id WHERE entry.id=4200`).run(status).lastInsertRowid);
+}
+function assertAfternoonArchive(before,after) {
+ const archives=after.timetable_week_archives.filter(a=>a.school_id===1&&a.academic_year_id===42);
+ assert.equal(archives.length,1);assert.equal(archives[0].created_by_user_id,1);
+ const archived=JSON.parse(archives[0].snapshot_json),oldSlots=before.timetable_slots.filter(selectedAfternoon),oldSlotIds=new Set(oldSlots.map(s=>s.id));
+ const byId=rows=>rows.map(row=>({...row})).sort((a,b)=>a.id-b.id);
+ assert.deepEqual(byId(archived.slots),byId(oldSlots));
+ assert.deepEqual(byId(archived.entries),byId(before.timetable_entries.filter(e=>oldSlotIds.has(e.slot_id))));
+ assert.deepEqual(byId(archived.availability),byId(before.timetable_teacher_availability.filter(a=>oldSlotIds.has(a.slot_id))));
+ assert.deepEqual(archived.days.map(d=>d.day_of_week).sort(),[0,1]);
+ assert.ok(archived.slots.some(s=>s.end_time==='17:30'));
+ assert.equal(archives[0].source_revision,before.timetable_revisions.find(r=>r.school_id===1&&r.academic_year_id===42).revision);
+ return archived;
+}
 
 test('real Worker day profile reduces active count without deleting IDs, only selected day/year',async t=>{
  const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(7));const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
@@ -184,6 +219,176 @@ test('linked-time acknowledgement allows saved lessons to keep their positions a
  assert.equal((await apply(f,{...updated.input,acknowledge_availability_impact:true})).status,200);
  assertPreserved(linkedBefore,snapshot(f.db));
  assert.equal(f.db.prepare('SELECT start_time FROM timetable_slots WHERE id=1').get().start_time,'07:40');
+});
+test('saved afternoon week shortens first break on two days without moving lessons or losing references',async t=>{
+ const f=weekFixture(t),savedTemplate=generateWeekTemplate({start_time:'13:00',lesson_count:7,lesson_minutes:35,breaks:[{after_lesson:3,minutes:15},{after_lesson:5,minutes:10}]});
+ f.db.exec(savedAfternoonWeekSQL());
+ const before=snapshot(f.db),c=await loadWeekSetup(f.d1,1,42);
+ const template=generateWeekTemplate({start_time:'13:00',lesson_count:7,lesson_minutes:35,breaks:[{after_lesson:3,minutes:10},{after_lesson:5,minutes:10}]});
+ const p=await prepare(f,{...evidenceRequest(c,template),targets:[{day_of_week:0,activate_day:false},{day_of_week:1,activate_day:false}]});
+ assert.equal(p.plan.can_apply,true,JSON.stringify(p.plan.blockers));assert.equal(p.plan.requires_availability_acknowledgement,true);
+ assert.equal(p.plan.counts.create,0);assert.equal(p.plan.counts.update,12);assert.equal(p.plan.counts.unchanged,6);
+ for(const day of p.plan.days){assert.equal(day.before.last_end,'17:30');assert.equal(day.after.last_end,'17:25');assert.equal(day.after.lessons,7);assert.equal(day.after.breaks,2);assert.ok(day.warnings.some(w=>w.code==='scheduled_lesson_time_change'));}
+ assert.deepEqual(snapshot(f.db),before);
+ const unacknowledged=await apply(f,p.input);assert.equal(unacknowledged.status,409);assert.equal(unacknowledged.body.code,'availability_acknowledgement_required');assert.deepEqual(snapshot(f.db),before);
+ const result=await apply(f,{...p.input,acknowledge_availability_impact:true});assert.equal(result.status,200,JSON.stringify(result));
+ const after=snapshot(f.db);assertPreserved(before,after,['timetable_slots','timetable_revisions']);
+ for(const day of [0,1]){
+  const slots=after.timetable_slots.filter(s=>s.academic_year_id===42&&s.day_of_week===day).sort((a,b)=>a.slot_index-b.slot_index);
+  assert.deepEqual(slots.map(periodValues),template);assert.deepEqual(slots.map(s=>s.id),savedTemplate.map((_,i)=>4200+day*10+i));
+ }
+ const outside=s=>s.school_id!==1||s.academic_year_id!==42||s.day_of_week===2;
+ assert.deepEqual(after.timetable_slots.filter(outside),before.timetable_slots.filter(outside));
+ assert.deepEqual(after.timetable_revisions.filter(r=>r.school_id!==1||r.academic_year_id!==42),before.timetable_revisions.filter(r=>r.school_id!==1||r.academic_year_id!==42));
+ assert.equal(after.timetable_entries.find(e=>e.id===4200).is_locked,1);
+});
+test('replace saved days archives old positions and carries locked assignments and availability by lesson number',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());const before=snapshot(f.db),p=await prepareAfternoonReplacement(f);
+ assert.equal(p.plan.can_apply,true,JSON.stringify(p.plan.blockers));assert.deepEqual(snapshot(f.db),before);
+ assert.deepEqual(p.plan.replacement,{old_periods:18,archived_entries:2,carried_entries:2,removed_entries:0,archived_availability:2,carried_availability:2,removed_availability:0,locked_entries:1});
+ for(const day of p.plan.days){assert.equal(day.before.last_end,'17:30');assert.equal(day.after.last_end,'17:25');assert.equal(day.after.lessons,7);assert.equal(day.after.breaks,2);}
+ const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,200,JSON.stringify(r));const after=snapshot(f.db);assertAfternoonArchive(before,after);
+ assertPreserved(before,after,['timetable_slots','timetable_entries','timetable_teacher_availability','timetable_revisions','timetable_week_archives']);
+ const oldSlots=new Map(before.timetable_slots.map(s=>[s.id,s])),newSlots=new Map(after.timetable_slots.map(s=>[s.id,s]));
+ for(const day of [0,1]){
+  const slots=after.timetable_slots.filter(s=>selectedAfternoon(s)&&s.day_of_week===day).sort((a,b)=>a.slot_index-b.slot_index);
+  assert.deepEqual(slots.map(periodValues),replacementTemplate());assert.ok(slots.every(s=>!oldSlots.has(s.id)));
+ }
+ for(const table of ['timetable_entries','timetable_teacher_availability'])for(const old of before[table].filter(row=>row.academic_year_id===42)){
+  const current=after[table].find(row=>row.id===old.id);assert.ok(current);
+  assert.deepEqual({...current,slot_id:old.slot_id,updated_at:old.updated_at,updated_by_user_id:old.updated_by_user_id},{...old});assert.notEqual(current.slot_id,old.slot_id);
+  assert.equal(current.updated_by_user_id,1);assert.ok(current.updated_at>=old.updated_at);
+  assert.equal(newSlots.get(current.slot_id).lesson_number,oldSlots.get(old.slot_id).lesson_number);
+  assert.equal(newSlots.get(current.slot_id).day_of_week,oldSlots.get(old.slot_id).day_of_week);
+ }
+ assert.deepEqual(after.timetable_slots.filter(s=>!selectedAfternoon(s)),before.timetable_slots.filter(s=>!selectedAfternoon(s)));
+ assert.deepEqual(after.timetable_revisions.filter(r=>r.school_id!==1||r.academic_year_id!==42),before.timetable_revisions.filter(r=>r.school_id!==1||r.academic_year_id!==42));
+ assert.equal(after.timetable_entries.find(e=>e.id===4200).is_locked,1);assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
+ assert.throws(()=>f.db.exec("UPDATE timetable_week_archives SET snapshot_json='{}'"));assert.throws(()=>f.db.exec('DELETE FROM timetable_week_archives'));
+});
+test('replacement reduction archives removed lesson references and retains only assignments that still have lessons',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());f.db.exec('UPDATE timetable_entries SET is_locked=1 WHERE id=4210');const before=snapshot(f.db),p=await prepareAfternoonReplacement(f,replacementTemplate(5));
+ assert.equal(p.plan.can_apply,true,JSON.stringify(p.plan.blockers));assert.equal(p.plan.replacement.carried_entries,1);assert.equal(p.plan.replacement.removed_entries,1);
+ assert.equal(p.plan.replacement.locked_entries,2);
+ assert.equal(p.plan.replacement.carried_availability,0);assert.equal(p.plan.replacement.removed_availability,2);
+ const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,200,JSON.stringify(r));const after=snapshot(f.db),archive=assertAfternoonArchive(before,after);
+ assert.equal(after.timetable_entries.find(e=>e.id===4200).is_locked,1);assert.equal(after.timetable_entries.some(e=>e.id===4210),false);assert.ok(archive.entries.some(e=>e.id===4210&&e.is_locked===1));
+ assert.equal(after.timetable_teacher_availability.filter(a=>a.academic_year_id===42).length,0);
+ for(const day of [0,1])assert.deepEqual(after.timetable_slots.filter(s=>selectedAfternoon(s)&&s.day_of_week===day).sort((a,b)=>a.slot_index-b.slot_index).map(periodValues),replacementTemplate(5));
+ assert.deepEqual(after.timetable_slots.filter(s=>!selectedAfternoon(s)),before.timetable_slots.filter(s=>!selectedAfternoon(s)));
+ assertPreserved(before,after,['timetable_slots','timetable_entries','timetable_teacher_availability','timetable_revisions','timetable_week_archives']);
+});
+test('replacement rejects a preexisting unavailable teacher on a carried lesson before creating any archive',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());
+ f.db.exec("UPDATE timetable_teacher_availability SET status='unavailable' WHERE academic_year_id=42 AND slot_id=4217");
+ const before=snapshot(f.db),p=await prepareAfternoonReplacement(f);
+ assert.equal(p.plan.can_apply,false);assert.ok(p.plan.blockers.some(n=>n.code==='teacher_unavailable'&&n.entry_id===4210));assert.deepEqual(snapshot(f.db),before);
+ const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,409);assert.equal(r.body.code,'blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+ assert.ok(f.d1.executions.every(s=>!/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql)));
+});
+test('replacement rejects existing aggregate working-day excess when each carried day has multiple lessons',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());
+ f.db.exec(`INSERT INTO timetable_entries(id,school_id,academic_year_id,slot_id,teaching_load_id,is_locked,created_by_user_id,updated_by_user_id) VALUES(4201,1,42,4200,420,0,1,1),(4211,1,42,4210,420,0,1,1);
+ INSERT INTO timetable_teacher_constraints(school_id,academic_year_id,employee_id,max_working_days) VALUES(1,42,1,1);`);
+ const before=snapshot(f.db),p=await prepareAfternoonReplacement(f);
+ assert.equal(p.plan.replacement.carried_entries,4);assert.equal(p.plan.can_apply,false);
+ const blocker=p.plan.blockers.find(n=>n.code==='teacher_max_working_days'&&n.employee_id===1);assert.ok(blocker);
+ assert.deepEqual(blocker.evidence,{dimension:'working_days',actual:2,limit:1,excess:1});assert.deepEqual(snapshot(f.db),before);
+ const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,409);assert.equal(r.body.code,'blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+ assert.ok(f.d1.executions.every(s=>!/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql)));
+});
+for(const teacherChange of ["status='archived'","role='accountant'"])test(`replacement rejects preferred availability for ${teacherChange} employee with no carried teaching load`,async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());
+ f.db.exec("INSERT INTO timetable_teacher_availability(school_id,academic_year_id,employee_id,slot_id,status) VALUES(1,42,2,4200,'preferred')");
+ f.db.exec(`UPDATE employees SET ${teacherChange} WHERE id=2`);
+ const before=snapshot(f.db),p=await prepareAfternoonReplacement(f);
+ assert.equal(before.timetable_teaching_loads.some(l=>l.academic_year_id===42&&l.employee_id===2),false);
+ assert.equal(p.plan.can_apply,false);assert.ok(p.plan.blockers.some(n=>n.code==='invalid_availability_teacher'&&n.employee_id===2));assert.deepEqual(snapshot(f.db),before);
+ const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,409);assert.equal(r.body.code,'blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+ assert.ok(f.d1.executions.every(s=>!/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql)));
+});
+test('replacement blocks selected lessons with draft attendance before archiving or changing slots',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());insertAfternoonAttendance(f.db);
+ const before=snapshot(f.db),p=await prepareAfternoonReplacement(f);assert.equal(p.plan.can_apply,false);
+ assert.ok(p.plan.blockers.some(n=>n.code==='pending_attendance_drafts'));assert.deepEqual(snapshot(f.db),before);
+ const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,409);assert.equal(r.body.code,'blocked_week_setup');assert.deepEqual(snapshot(f.db),before);
+ assert.ok(f.d1.executions.every(s=>!/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql)));
+});
+test('draft attendance inserted after replacement preflight rejects the atomic batch and preserves that draft',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());const p=await prepareAfternoonReplacement(f);assert.equal(p.plan.can_apply,true);let before;
+ f.d1.beforeWrite=()=>{
+  insertAfternoonAttendance(f.db);before=snapshot(f.db);
+  assert.equal(before.timetable_revisions.find(r=>r.school_id===1&&r.academic_year_id===42).revision,p.input.expected_revision);
+ };
+ const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,409,JSON.stringify(r));assert.equal(r.body.code,'pending_attendance_drafts');
+ assert.deepEqual(snapshot(f.db),before);assert.equal(before.lesson_attendance_sessions.length,1);assert.equal(before.timetable_week_archives.length,0);
+});
+test('replacement preserves confirmed attendance with its original lesson time snapshots',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());const sessionId=insertAfternoonAttendance(f.db,'confirmed'),before=snapshot(f.db),p=await prepareAfternoonReplacement(f);
+ assert.equal(p.plan.can_apply,true,JSON.stringify(p.plan.blockers));const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,200,JSON.stringify(r));
+ const after=snapshot(f.db);assert.deepEqual(after.lesson_attendance_sessions,before.lesson_attendance_sessions);assertAfternoonArchive(before,after);
+ const session=after.lesson_attendance_sessions.find(s=>s.id===sessionId),entry=after.timetable_entries.find(e=>e.id===session.timetable_entry_id);
+ assert.equal(session.status,'confirmed');assert.equal(session.start_time_snapshot,'15:00');assert.equal(session.end_time_snapshot,'15:35');assert.notEqual(session.slot_id,entry.slot_id);
+ assert.equal(after.timetable_slots.find(s=>s.id===entry.slot_id).start_time,'14:55');
+ assertPreserved(before,after,['timetable_slots','timetable_entries','timetable_teacher_availability','timetable_revisions','timetable_week_archives']);
+});
+test('replacement requires explicit confirmation and stale previews cannot archive or overwrite newer changes',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());const before=snapshot(f.db),p=await prepareAfternoonReplacement(f);
+ for(const confirm_replace of [undefined,false]){
+  const r=await apply(f,{...p.input,confirm_replace,acknowledge_availability_impact:true});assert.equal(r.status,409,JSON.stringify(r));assert.deepEqual(snapshot(f.db),before);
+ }
+ f.db.exec("UPDATE timetable_slots SET label='newer saved edit' WHERE id=4200");const newer=snapshot(f.db),r=await apply(f,confirmedReplacement(p));
+ assert.equal(r.status,409);assert.equal(r.body.code,'stale_week_setup');assert.deepEqual(snapshot(f.db),newer);
+});
+test('replacement race and late batch failure roll back archive, old references, new slots and revision together',async t=>{
+ for(const scenario of ['race','late-failure']){
+  const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());const p=await prepareAfternoonReplacement(f);let before=snapshot(f.db);
+  f.d1.beforeWrite=()=>{
+   if(scenario==='race'){f.db.exec("UPDATE timetable_slots SET label='concurrent replacement' WHERE id=4200");before=snapshot(f.db);}
+   else f.d1.failAt=f.d1.batchSizes.at(-1)-1;
+  };
+  const r=await apply(f,confirmedReplacement(p));assert.equal(r.status,scenario==='race'?409:500,JSON.stringify(r));
+  if(scenario==='race')assert.equal(r.body.code,'stale_week_setup');assert.deepEqual(snapshot(f.db),before);assert.equal(snapshot(f.db).timetable_week_archives.length,0);
+ }
+});
+for(const role of ['teacher','accountant'])test(`${role} cannot preview or apply saved-day replacement`,async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());const p=await prepareAfternoonReplacement(f),before=snapshot(f.db);
+ assert.equal((await call(f,'POST','/preview',p.input,role)).status,403);assert.equal((await apply(f,confirmedReplacement(p),role)).status,403);assert.deepEqual(snapshot(f.db),before);
+});
+test('archive list and detail are read-only, management-only and isolated by both school and year',async t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());const p=await prepareAfternoonReplacement(f);
+ assert.equal((await apply(f,confirmedReplacement(p))).status,200);
+ const own=f.db.prepare('SELECT id FROM timetable_week_archives WHERE academic_year_id=42').get().id;
+ const raw=snapshot(f.db),foreign={days:raw.timetable_days.filter(s=>s.school_id===2),slots:raw.timetable_slots.filter(s=>s.school_id===2),entries:[],availability:[],loads:raw.timetable_teaching_loads.filter(s=>s.school_id===2)};
+ f.db.prepare('INSERT INTO timetable_week_archives(id,archive_key,school_id,academic_year_id,source_revision,created_by_user_id,snapshot_json) VALUES(500,?,2,3,0,2,?)').run('foreign-school',JSON.stringify(foreign));
+ const before=snapshot(f.db),scope='?school_id=1&academic_year_id=42';
+ for(const role of ['owner','admin','principal','vice','registrar']){
+  const list=await readArchive(f,scope,role),detail=await readArchive(f,`/${own}${scope}`,role);assert.equal(list.status,200);assert.equal(detail.status,200);
+  assert.equal(list.body.data.length,1);assert.equal(list.body.data[0].id,own);assert.equal(list.body.data[0].period_count,18);assert.equal(list.body.data[0].entry_count,2);
+  assert.deepEqual(list.body.data[0].day_numbers,[0,1]);assert.equal('snapshot' in list.body.data[0],false);assert.equal(detail.body.data.snapshot.slots.length,18);
+ }
+ for(const role of ['teacher','accountant'])for(const suffix of [scope,`/${own}${scope}`])assert.equal((await readArchive(f,suffix,role)).status,403);
+ assert.equal((await readArchive(f,'?school_id=2&academic_year_id=3')).status,403);
+ assert.equal((await readArchive(f,'/500?school_id=2&academic_year_id=3')).status,403);
+ const foreignId=await readArchive(f,`/500${scope}`),missingId=await readArchive(f,`/999999${scope}`);assert.equal(foreignId.status,404);assert.deepEqual(foreignId,missingId);
+ assert.equal((await readArchive(f,`/${own}?school_id=1&academic_year_id=2`)).status,404);
+ assert.deepEqual((await readArchive(f,'?school_id=1&academic_year_id=2')).body.data,[]);
+ assert.equal((await readArchive(f,'?academic_year_id=42','admin')).status,400);
+ for(const suffix of ['?school_id=1&academic_year_id=42&extra=1','?school_id=1&academic_year_id=42&academic_year_id=42','/1.0'+scope])assert.equal((await readArchive(f,suffix)).status,400);
+ const adminForeign=await readArchive(f,'/500?school_id=2&academic_year_id=3','admin');assert.equal(adminForeign.status,200);assert.equal(adminForeign.body.data.snapshot.slots[0].label,'Secret');
+ assert.deepEqual(snapshot(f.db),before);
+});
+test('archive database rejects foreign-scope snapshots and every missing or malformed required collection',t=>{
+ const f=weekFixture(t);f.db.exec(savedAfternoonWeekSQL());const before=snapshot(f.db);
+ const payload={days:before.timetable_days.filter(selectedAfternoon),slots:before.timetable_slots.filter(selectedAfternoon),entries:before.timetable_entries.filter(e=>e.academic_year_id===42),availability:before.timetable_teacher_availability.filter(a=>a.academic_year_id===42),loads:before.timetable_teaching_loads.filter(l=>l.academic_year_id===42)};
+ const insert=f.db.prepare('INSERT INTO timetable_week_archives(archive_key,school_id,academic_year_id,source_revision,created_by_user_id,snapshot_json) VALUES(?,1,?,0,1,?)');
+ for(const key of Object.keys(payload)){
+  const missing={...payload};delete missing[key];assert.throws(()=>insert.run('missing-'+key,42,JSON.stringify(missing)));
+  assert.throws(()=>insert.run('malformed-'+key,42,JSON.stringify({...payload,[key]:{}})));
+  for(const scope of [{school_id:2},{academic_year_id:1}])assert.throws(()=>insert.run('foreign-'+key,42,JSON.stringify({...payload,[key]:payload[key].map((row,i)=>i?row:{...row,...scope})})));
+ }
+ assert.throws(()=>insert.run('wrong-year-owner',3,JSON.stringify(payload)));
+ assert.deepEqual(snapshot(f.db),before);
 });
 test('stale source/target revision is rejected; refreshed same-revision competing writes cannot both succeed',async t=>{
  const f=weekFixture(t),p=await prepare(f,request(f));const other=await prepare(f,request(f,example(),[4]));

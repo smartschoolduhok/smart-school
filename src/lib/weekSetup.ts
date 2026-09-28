@@ -15,18 +15,20 @@ export class WeekSetupError extends Error {
 }
 export const staleWeek = () => new WeekSetupError('stale_week_setup', STALE_WEEK_MESSAGE, 409);
 export type WeekPeriod = Pick<TimetableSlot, 'slot_index' | 'slot_type' | 'lesson_number' | 'label' | 'start_time' | 'end_time' | 'is_active'>;
-export type WeekMode = 'fill_empty_days' | 'update_matching_keep_extra' | 'configure_day';
+export type WeekMode = 'fill_empty_days' | 'update_matching_keep_extra' | 'configure_day' | 'replace_selected_days';
 export interface WeekScope { school_id?: number; academic_year_id: number }
 export interface WeekRequest extends WeekScope {
   expected_revision: number; mode: WeekMode; source_day_of_week: number | null;
   targets: Array<{ day_of_week: number; activate_day: boolean }>; template: WeekPeriod[];
-  confirm_apply?: true; preview_digest?: string; acknowledge_availability_impact?: boolean;
+  confirm_apply?: true; preview_digest?: string; acknowledge_availability_impact?: boolean; confirm_replace?: boolean;
 }
 export interface WeekReferences { slot_id: number; scheduled_entries: number; locked_entries: number; availability_overrides: number; historical_references: number }
 export interface WeekContext {
   school_id: number; academic_year_id: number; revision: number;
   days: TimetableDay[]; slots: TimetableSlot[]; loads: TimetableTeachingLoad[]; entries: TimetableEntry[];
   availability: TimetableTeacherAvailabilityOverride[]; constraints: TimetableTeacherConstraints[];
+  availabilityTeachers?: Array<{id: number; school_id: number | null; status: string | null; role: string | null}>;
+  draftAttendanceEntryIds?: number[];
   history: Array<{ slot_id: number; count: number }>;
 }
 export interface WeekSnapshot extends WeekScope {
@@ -48,7 +50,18 @@ export interface WeekPlan {
   counts: { create: number; update: number; unchanged: number; retained: number; skipped: number; blocked: number; activated: number };
   warnings: WeekNotice[]; blockers: WeekNotice[]; requires_availability_acknowledgement: boolean;
   update_layers: number[][]; write_statement_count: number; no_change: boolean;
+  replacement?: { old_periods: number; archived_entries: number; carried_entries: number; removed_entries: number;
+    archived_availability: number; carried_availability: number; removed_availability: number; locked_entries: number };
 }
+export interface WeekArchiveSnapshot {
+  days: TimetableDay[]; slots: TimetableSlot[]; entries: TimetableEntry[];
+  availability: TimetableTeacherAvailabilityOverride[]; loads: TimetableTeachingLoad[];
+}
+export interface WeekArchiveSummary {
+  id: number; school_id: number; academic_year_id: number; source_revision: number;
+  created_by_user_id: number | null; created_at: number; day_numbers: number[]; period_count: number; entry_count: number;
+}
+export interface WeekArchiveDetail extends WeekArchiveSummary { snapshot: WeekArchiveSnapshot }
 const fail = (message = 'بيانات إعداد الأسبوع غير صالحة.', code = 'invalid_week_setup'): never => { throw new WeekSetupError(code, message); };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const keys = (v: Record<string, unknown>, allowed: string[]) => Object.keys(v).every(k => allowed.includes(k));
@@ -88,9 +101,9 @@ export function validateWeekTemplate(raw: unknown): WeekPeriod[] {
 }
 export function parseWeekRequest(raw: unknown, apply = false): WeekRequest {
   if (!object(raw) || !keys(raw, ['school_id', 'academic_year_id', 'expected_revision', 'mode', 'source_day_of_week', 'targets', 'template',
-    ...(apply ? ['confirm_apply', 'preview_digest', 'acknowledge_availability_impact'] : [])])) return fail();
+    ...(apply ? ['confirm_apply', 'preview_digest', 'acknowledge_availability_impact', 'confirm_replace'] : [])])) return fail();
   if ((raw.school_id !== undefined && !integer(raw.school_id)) || !integer(raw.academic_year_id)
-    || !integer(raw.expected_revision, 0) || (raw.mode !== 'fill_empty_days' && raw.mode !== 'update_matching_keep_extra' && raw.mode !== 'configure_day')
+    || !integer(raw.expected_revision, 0) || !['fill_empty_days', 'update_matching_keep_extra', 'configure_day', 'replace_selected_days'].includes(String(raw.mode)) || typeof raw.mode !== 'string'
     || (raw.source_day_of_week !== null && !integer(raw.source_day_of_week, 0, 6))) return fail();
   if (!Array.isArray(raw.targets) || !raw.targets.length || raw.targets.length > 7) return fail('اختر يومًا واحدًا على الأقل.', 'invalid_target_days');
   const targets = raw.targets.map(t => {
@@ -102,11 +115,12 @@ export function parseWeekRequest(raw: unknown, apply = false): WeekRequest {
   if (raw.mode === 'configure_day' && (targets.length !== 1 || raw.source_day_of_week !== null))
     return fail('تعديل عدد دروس اليوم يتطلب يومًا واحدًا دون مصدر للنسخ.', 'invalid_day_profile_scope');
   if (apply && (raw.confirm_apply !== true || typeof raw.preview_digest !== 'string' || !/^[a-f0-9]{64}$/.test(raw.preview_digest)
-    || (raw.acknowledge_availability_impact !== undefined && typeof raw.acknowledge_availability_impact !== 'boolean'))) return fail('يلزم تأكيد معاينة صحيحة.', 'confirmation_required');
+    || (raw.acknowledge_availability_impact !== undefined && typeof raw.acknowledge_availability_impact !== 'boolean')
+    || (raw.confirm_replace !== undefined && typeof raw.confirm_replace !== 'boolean'))) return fail('يلزم تأكيد معاينة صحيحة.', 'confirmation_required');
   return { ...(raw.school_id === undefined ? {} : {school_id: raw.school_id as number}), academic_year_id: raw.academic_year_id,
     expected_revision: raw.expected_revision, mode: raw.mode as WeekMode, source_day_of_week: raw.source_day_of_week as number | null,
     targets, template: validateWeekTemplate(raw.template), ...(apply ? {confirm_apply: true, preview_digest: raw.preview_digest as string,
-      acknowledge_availability_impact: raw.acknowledge_availability_impact === true} : {}) };
+      acknowledge_availability_impact: raw.acknowledge_availability_impact === true, confirm_replace: raw.confirm_replace === true} : {}) };
 }
 export interface DayGenerator { start_time: string; lesson_count: number; lesson_minutes: number; desired_end_time?: string;
   breaks: Array<{ after_lesson: number; minutes: number; label?: string }> }
@@ -117,7 +131,7 @@ export function generateWeekTemplate(input: DayGenerator): WeekPeriod[] {
   const positions = new Set<number>();
   for (const rule of input.breaks) {
     if (!integer(rule.after_lesson, 1, input.lesson_count - 1) || !integer(rule.minutes) || positions.has(rule.after_lesson))
-      return fail('ضع الاستراحة بين حصتين دون تكرار موضعها.', 'invalid_break_rule');
+      return fail('ضع الاستراحة بين درسين دون تكرار موضعها.', 'invalid_break_rule');
     positions.add(rule.after_lesson);
   }
   const periods: WeekPeriod[] = []; let cursor = minuteOfDay(input.start_time); let breaks = 0;
@@ -170,6 +184,7 @@ export function publicWeekSnapshot(c: WeekContext): WeekSnapshot {
 }
 const overlap = (a: WeekPeriod, b: WeekPeriod) => a.start_time < b.end_time && b.start_time < a.end_time;
 const equal = (a: WeekPeriod, b: WeekPeriod) => periodKeys.every(k => a[k as keyof WeekPeriod] === b[k as keyof WeekPeriod]);
+const periodIdentity = (period: WeekPeriod) => period.slot_type === 'lesson' ? `الدرس ${period.lesson_number}` : 'استراحة';
 
 // Only rows with no old-interval dependencies share a layer. Their final
 // intervals are already disjoint. SQL row visitation order is never relied on.
@@ -241,10 +256,105 @@ function scheduleEvidence(c: WeekContext) {
   }
   return evidence;
 }
+export function weekArchiveSnapshot(context: WeekContext, dayNumbers: number[]): WeekArchiveSnapshot {
+  const selected = new Set(dayNumbers);
+  const slots = context.slots.filter(s => selected.has(s.day_of_week));
+  const slotIds = new Set(slots.map(s => s.id));
+  const entries = context.entries.filter(e => slotIds.has(e.slot_id));
+  const loadIds = new Set(entries.map(e => e.teaching_load_id));
+  return {days: context.days.filter(d => selected.has(d.day_of_week)), slots, entries,
+    availability: context.availability.filter(a => slotIds.has(a.slot_id)), loads: context.loads.filter(l => loadIds.has(l.id))};
+}
+
+async function finishWeekPlan(context: WeekContext, input: WeekRequest, plan: WeekPlan) {
+  const {confirm_apply: _confirm, preview_digest: _digest, acknowledge_availability_impact: _ack, confirm_replace: _replace, ...request} = input;
+  const bytes = new TextEncoder().encode(canonicalWeekJSON({school_id: context.school_id, request, plan}));
+  plan.preview_digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
+  return plan;
+}
+
+async function planWeekReplacement(context: WeekContext, input: WeekRequest): Promise<WeekPlan> {
+  const selected = new Set(input.targets.map(t => t.day_of_week));
+  const archived = weekArchiveSnapshot(context, [...selected]);
+  const oldSlots = new Map(archived.slots.map(s => [s.id, s]));
+  let projectedId = -1;
+  const newSlots = input.targets.flatMap(t => input.template.map(p => ({...p, id: projectedId--,
+    school_id: context.school_id, academic_year_id: context.academic_year_id, day_of_week: t.day_of_week, created_at: 0, updated_at: 0})));
+  const destination = (slotId: number) => {
+    const old = oldSlots.get(slotId);
+    return old?.slot_type === 'lesson' ? newSlots.find(s => s.day_of_week === old.day_of_week
+      && s.slot_type === 'lesson' && s.lesson_number === old.lesson_number && s.is_active === 1) : undefined;
+  };
+  const carriedEntries = archived.entries.flatMap(e => {const slot = destination(e.slot_id); return slot ? [{...e, slot_id: slot.id}] : [];});
+  const carriedAvailability = archived.availability.flatMap(a => {const slot = destination(a.slot_id); return slot ? [{...a, slot_id: slot.id}] : [];});
+  const projected: WeekContext = {...context,
+    slots: [...context.slots.filter(s => !selected.has(s.day_of_week)), ...newSlots],
+    entries: [...context.entries.filter(e => !oldSlots.has(e.slot_id)), ...carriedEntries],
+    availability: [...context.availability.filter(a => !oldSlots.has(a.slot_id)), ...carriedAvailability],
+    days: context.days.map(d => ({...d})),
+  };
+  const plans: WeekDayPlan[] = input.targets.map(target => {
+    const day = context.days.find(d => d.day_of_week === target.day_of_week);
+    const activate = day?.is_active !== 1 && target.activate_day;
+    const blockers: WeekNotice[] = day?.is_active !== 1 && !target.activate_day
+      ? [{code: 'activation_required', message: 'اختر تفعيل هذا اليوم ضمن الحفظ بشكل صريح.'}] : [];
+    if (activate) {
+      if (day) projected.days.find(d => d.id === day.id)!.is_active = 1;
+      else projected.days.push({id: projectedId--, school_id: context.school_id, academic_year_id: context.academic_year_id,
+        day_of_week: target.day_of_week, is_active: 1, order_index: target.day_of_week, created_at: 0, updated_at: 0});
+    }
+    const ids = new Set(archived.slots.filter(s => s.day_of_week === target.day_of_week).map(s => s.id));
+    return {day_of_week: target.day_of_week, action: blockers.length ? 'blocked' : 'configure', activate_day: activate,
+      changes: input.template.map(p => ({day_of_week: target.day_of_week, id: null, before: null, after: {...p}, action: 'create'})),
+      before: summarizeWeekDay(target.day_of_week, archived.slots.filter(s => ids.has(s.id)), day?.is_active === 1, day?.order_index),
+      after: summarizeWeekDay(target.day_of_week, input.template, day?.is_active === 1 || activate, day?.order_index),
+      impact: {scheduled_entries: archived.entries.filter(e => ids.has(e.slot_id)).length,
+        locked_entries: archived.entries.filter(e => ids.has(e.slot_id) && e.is_locked === 1).length,
+        availability_overrides: archived.availability.filter(a => ids.has(a.slot_id)).length,
+        historical_references: context.history.filter(h => ids.has(h.slot_id)).reduce((n, h) => n + h.count, 0)},
+      warnings: [], blockers};
+  });
+  const blockers: WeekNotice[] = [], warnings: WeekNotice[] = [];
+  if (archived.entries.some(entry => context.draftAttendanceEntryIds?.includes(entry.id)))
+    blockers.push({code: 'pending_attendance_drafts', message: 'توجد مسودات حضور غير مكتملة لدروس الأيام المحددة. أكمل اعتمادها قبل استبدال الجدول.'});
+  const beforeEvidence = scheduleEvidence(context), afterEvidence = scheduleEvidence(projected);
+  const carriedIds = new Set(carriedEntries.map(e => e.id));
+  const carriedTeacherIds = new Set(carriedEntries.map(e => context.loads.find(l => l.id === e.teaching_load_id)?.employee_id));
+  for (const [key, issue] of afterEvidence) {
+    // Carried rows are inserted again, so existing hard conflicts must also be
+    // resolved before apply. Working-day evidence is aggregated by teacher.
+    const carriedConflict = (issue.notice.entry_id != null && carriedIds.has(issue.notice.entry_id))
+      || (issue.notice.code === 'teacher_max_working_days' && carriedTeacherIds.has(issue.notice.employee_id));
+    if (carriedConflict || !beforeEvidence.has(key) || issue.severity > beforeEvidence.get(key)!.severity)
+      blockers.push({...issue.notice, message: `${carriedConflict ? 'يلزم حل مخالفة الدرس المنقول قبل الاستبدال' : 'الجدول الجديد ينشئ أو يزيد مخالفة'}: ${issue.notice.message}`});
+    else warnings.push({...issue.notice, code: `existing_${issue.notice.code}`, message: `ملاحظة إصلاح متبقية: ${issue.notice.message}`});
+  }
+  if (context.availabilityTeachers) for (const employeeId of new Set(carriedAvailability.map(a => a.employee_id))) {
+    const teacher = context.availabilityTeachers.find(t => t.id === employeeId);
+    if (!teacher || teacher.school_id !== context.school_id || teacher.status !== 'active' || teacher.role !== 'teacher')
+      blockers.push({code: 'invalid_availability_teacher', employee_id: employeeId,
+        message: 'توجد إعدادات أوقات مرتبطة بمدرس غير فعال أو غير صالح. صحح بيانات المدرس أو أزل إعدادات أوقاته قبل الاستبدال.'});
+  }
+  const replacement = {old_periods: archived.slots.length, archived_entries: archived.entries.length,
+    carried_entries: carriedEntries.length, removed_entries: archived.entries.length - carriedEntries.length,
+    archived_availability: archived.availability.length, carried_availability: carriedAvailability.length,
+    removed_availability: archived.availability.length - carriedAvailability.length,
+    locked_entries: archived.entries.filter(e => e.is_locked === 1).length};
+  const counts = {create: plans.filter(p => p.action === 'configure').length * input.template.length, update: 0,
+    unchanged: 0, retained: 0, skipped: 0, blocked: plans.filter(p => p.action === 'blocked').length, activated: plans.filter(p => p.activate_day).length};
+  const statementCount = 4 + Number(replacement.old_periods > 0) * 2 + Number(counts.activated > 0)
+    + Number(replacement.locked_entries > 0) + Number(replacement.archived_entries > 0)
+    + Number(replacement.carried_entries > 0) + Number(replacement.carried_availability > 0);
+  return finishWeekPlan(context, input, {can_apply: !blockers.length && !counts.blocked, revision: context.revision,
+    preview_digest: '', days: plans, counts, blockers, warnings, requires_availability_acknowledgement: false,
+    update_layers: [], write_statement_count: statementCount, no_change: false, replacement});
+}
+
 export async function planWeekSetup(context: WeekContext, input: WeekRequest): Promise<WeekPlan> {
   if (context.revision !== input.expected_revision) throw staleWeek();
   if (input.source_day_of_week !== null && !context.slots.some(s => s.day_of_week === input.source_day_of_week))
     throw new WeekSetupError('missing_or_not_in_scope', 'يوم المصدر غير متاح ضمن المدرسة والسنة المحددتين.', 404);
+  if (input.mode === 'replace_selected_days') return planWeekReplacement(context, input);
   const refs = weekReferences(context); let projectedId = -1;
   const projected: WeekContext = {...context, days: context.days.map(d => ({...d})), slots: context.slots.map(s => ({...s}))};
   let needsAck = false;
@@ -269,7 +379,7 @@ export async function planWeekSetup(context: WeekContext, input: WeekRequest): P
       if (old) {
         matched.add(old.id);
         if (old.slot_type !== template.slot_type || old.lesson_number !== template.lesson_number)
-          p.blockers.push({code: 'incompatible_period_identity', message: 'نوع أو رقم الفترة المتطابقة مختلف. استخدم تخصيص اليوم دون نقل هوية الفترة.'});
+          p.blockers.push({code: 'incompatible_period_identity', message: `الفترة ${template.slot_index}: المحفوظ «${periodIdentity(old)}» والمقترح «${periodIdentity(template)}». مواضع الدروس والاستراحات مختلفة؛ حمّل إعدادات اليوم المحفوظ ثم عدّل المدد.`});
         if (old.is_active !== template.is_active && input.mode !== 'configure_day') p.blockers.push({code: 'explicit_period_activation_required', message: 'تغيير حالة فترة محفوظة يتم من التحكم الفردي الصريح في تخصيص اليوم.'});
         const ref = refs.find(r => r.slot_id === old.id)!;
         if (change.action === 'update') {
@@ -336,10 +446,7 @@ export async function planWeekSetup(context: WeekContext, input: WeekRequest): P
   const plan: WeekPlan = {can_apply: !blockers.length && !counts.blocked, revision: context.revision, preview_digest: '', days: plans, counts,
     warnings, blockers, requires_availability_acknowledgement: needsAck, update_layers: layers,
     write_statement_count: noChange ? 0 : 3 + layers.length + Number(counts.create > 0) + Number(counts.activated > 0), no_change: noChange};
-  const {confirm_apply: _confirm, preview_digest: _digest, acknowledge_availability_impact: _ack, ...request} = input;
-  const bytes = new TextEncoder().encode(canonicalWeekJSON({school_id: context.school_id, request, plan}));
-  plan.preview_digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
-  return plan;
+  return finishWeekPlan(context, input, plan);
 }
 export function canonicalWeekJSON(value: unknown): string {
   const normalize = (v: unknown): unknown => Array.isArray(v) ? v.map(normalize) : object(v)

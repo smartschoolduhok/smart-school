@@ -2531,7 +2531,10 @@ for (const operation of ['preview', 'apply'] as const) {
       if (plan.requires_availability_acknowledgement && !input.acknowledge_availability_impact)
         throw new WeekSetupError('availability_acknowledgement_required', 'يلزم الإقرار ببقاء إعدادات التوفر على الفترات المعدلة.', 409)
       if (plan.no_change) return c.json({data: {...plan, applied: false, no_change: true}})
-      const batch = buildWeekApplyStatements(c.env.DB, target.schoolId, input.academic_year_id, plan)
+      if (plan.replacement && plan.replacement.old_periods > 0 && input.confirm_replace !== true)
+        throw new WeekSetupError('replacement_confirmation_required', 'أكد استبدال جدول الأيام المحددة وأرشفة النسخة القديمة.', 409)
+      const batch = buildWeekApplyStatements(c.env.DB, target.schoolId, input.academic_year_id, plan,
+        {context, userId: (c.get('user') as UserContext).id})
       const results = await c.env.DB.batch(batch.statements)
       const count = (index: number | null) => index === null ? 0 : results[index].results?.length ?? 0
       const counts = {...plan.counts, create: count(batch.createsIndex), update: batch.updateIndexes.reduce((sum, index) => sum + count(index), 0), activated: count(batch.dayIndex)}
@@ -2541,6 +2544,45 @@ for (const operation of ['preview', 'apply'] as const) {
       const known = weekDatabaseError(error)
       if (!known) console.error('[timetable/week-setup] operation failed', error)
       return c.json({error: known?.message ?? 'تعذرت معالجة إعداد الأسبوع.', code: known?.code ?? 'week_save_failed'}, known?.status ?? 500)
+    }
+  })
+}
+
+for (const path of ['/api/timetable/week-archives', '/api/timetable/week-archives/:id']) {
+  app.get(path, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+    try {
+      const query = c.req.queries()
+      if (Object.entries(query).some(([key, values]) => !['school_id', 'academic_year_id'].includes(key) || values.length !== 1
+        || !/^[1-9]\d*$/.test(values[0]) || !Number.isSafeInteger(Number(values[0]))))
+        throw new WeekSetupError('invalid_week_scope', 'حدد المدرسة والسنة بمعرّفات صحيحة.')
+      const yearId = Number(c.req.query('academic_year_id'))
+      if (!Number.isSafeInteger(yearId) || yearId <= 0) throw new WeekSetupError('invalid_week_scope', 'السنة الدراسية مطلوبة.')
+      const target = await resolveActiveWriteSchool(c.env.DB, c.get('user') as UserContext, c.req.query('school_id'))
+      if (!target.ok) return c.json({error: target.error}, target.status)
+      const year = await validateTimetableAcademicYear(c.env.DB, target.schoolId, yearId)
+      if (!year.ok) return c.json({error: year.error, code: year.code}, year.status)
+      const archiveId = c.req.param('id')
+      if (archiveId !== undefined && (!/^[1-9]\d*$/.test(archiveId) || !Number.isSafeInteger(Number(archiveId))))
+        throw new WeekSetupError('invalid_archive_id', 'معرّف الأرشيف غير صالح.')
+      const fields = `id, school_id, academic_year_id, source_revision, created_by_user_id, created_at,
+        (SELECT json_group_array(json_extract(value, '$.day_of_week')) FROM json_each(snapshot_json, '$.days')) AS day_numbers_json,
+        json_array_length(snapshot_json, '$.slots') AS period_count, json_array_length(snapshot_json, '$.entries') AS entry_count`
+      const rows = archiveId === undefined
+        ? await c.env.DB.prepare(`SELECT ${fields} FROM timetable_week_archives WHERE school_id = ? AND academic_year_id = ? ORDER BY id DESC`)
+          .bind(target.schoolId, yearId).all()
+        : await c.env.DB.prepare(`SELECT ${fields}, snapshot_json FROM timetable_week_archives WHERE school_id = ? AND academic_year_id = ? AND id = ?`)
+          .bind(target.schoolId, yearId, Number(archiveId)).all()
+      const archives = (rows.results ?? []).map(row => {
+        const {day_numbers_json, snapshot_json, ...summary} = row
+        return {...summary, day_numbers: JSON.parse(String(day_numbers_json)),
+          ...(snapshot_json === undefined ? {} : {snapshot: JSON.parse(String(snapshot_json))})}
+      })
+      if (archiveId !== undefined && !archives.length) throw new WeekSetupError('missing_or_not_in_scope', 'الأرشيف غير متاح ضمن المدرسة والسنة المحددتين.', 404)
+      return c.json({data: archiveId === undefined ? archives : archives[0]})
+    } catch (error) {
+      const known = weekDatabaseError(error)
+      if (!known) console.error('[timetable/week-archives] read failed', error)
+      return c.json({error: known?.message ?? 'تعذر تحميل أرشيف الجداول.', code: known?.code ?? 'week_archive_load_failed'}, known?.status ?? 500)
     }
   })
 }
