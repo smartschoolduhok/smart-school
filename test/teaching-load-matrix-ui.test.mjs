@@ -29,7 +29,7 @@ test('real preview component displays exact old/new teachers and counts with loc
  const f=fixture();const c=await loadTeachingLoadMatrix(f.d1,1,1,1);
  const plan=planTeachingLoadMatrix(c,[{subject_id:1,section_id:1,employee_id:1,weekly_periods:3,action:'upsert'}]);
  const html=renderToStaticMarkup(React.createElement(MatrixPlanSummary,{plan}));
- assert.match(html,/بدون مدرس/);assert.match(html,/Teacher A/);assert.match(html,/الحصص: 4 ← 3/);assert.match(html,/تحديث: 1/);
+ assert.match(html,/بدون مدرس/);assert.match(html,/Teacher A/);assert.match(html,/الدروس: 4 ← 3/);assert.match(html,/تحديث: 1/);
  assert.match(source,/preview\.can_apply && <button/);assert.match(source,/confirm_apply: true/);
 });
 test('all-section controls and per-section overrides exercise the exact UI draft reducer',async()=>{
@@ -67,7 +67,7 @@ test('copy dialog only populates draft and then requires normal preview/apply',(
 test('matrix layout keeps accessible applicable cells, sticky RTL subject and bounded horizontal scrolling',()=>{
  for(const label of ['الصف بالكامل','غير منطبق','خاص بالشعبة','إظهار الأنصبة الناقصة فقط','إظهار بدون مدرس فقط','إظهار التغييرات فقط','مختلف حسب الشعبة','تعطيل هذا النصاب','إعادة الصف إلى القيم المحفوظة'])assert.ok(source.includes(label),label);
  assert.match(source,/max-w-full overflow-x-auto/);assert.match(source,/sticky right-0/);assert.match(source,/aria-disabled="true"/);
- assert.match(source,/aria-label=\{\`مدرس/);assert.match(source,/aria-label=\{\`حصص/);
+ assert.match(source,/aria-label=\{\`مدرس/);assert.match(source,/aria-label=\{\`دروس/);
  assert.doesNotMatch(source,/\bfetch\(/);
 });
 
@@ -77,7 +77,7 @@ for(const kind of ['archived','nonteacher','other-school','missing'])test(`rende
  const card=renderToStaticMarkup(React.createElement(TeachingLoadMatrixTab,props));
  const header=renderToStaticMarkup(React.createElement(MatrixSummaryDetails,{summary:data.summary}));
  assert.ok(card.includes(header));assert.match(card,/يحتاج إصلاح تعيين المدرسين/);
- for(const html of [card,header]){assert.match(html,/1 مدرس غير متاح/);assert.match(html,/1 بدون مدرس/);assert.match(html,/الاكتمال: 0%/);assert.match(html,/إجمالي الحصص: 8/);assert.doesNotMatch(html,/Secret/);}
+ for(const html of [card,header]){assert.match(html,/1 مدرس غير متاح/);assert.match(html,/1 بدون مدرس/);assert.match(html,/الاكتمال: 0%/);assert.match(html,/إجمالي الدروس: 8/);assert.doesNotMatch(html,/Secret/);}
  const plan=planTeachingLoadMatrix(c,[{subject_id:1,section_id:2,action:'upsert',employee_id:1,weekly_periods:4}]);
  const preview=renderToStaticMarkup(React.createElement(MatrixPlanSummary,{plan}));assert.match(preview,/مدرس غير متاح بعد الحفظ: 0/);assert.match(preview,/الاكتمال: 20%/);
  const load=c.loads.find(l=>l.id===2);const cell=matrixCellPresentation(load,load.employee_id,c.teachers,1);assert.equal(cell.tone,'bg-red-50');assert.notEqual(cell.label,'مكتمل');

@@ -203,12 +203,12 @@ const DEFAULT_LIMITS: TimetableSolverLimits = {
 const REASON_MESSAGES: Record<TimetableSolverReasonCode, string> = {
   no_class_capacity: 'لا توجد سعة متبقية للصف أو الشعبة ضمن الفترات الصالحة.',
   teacher_unavailable: 'لا توجد فترات متاحة للمدرس ضمن القيود الحالية.',
-  teacher_daily_limit: 'الحد الأقصى اليومي لحصص المدرس يمنع توزيع الحصص المتبقية.',
-  teacher_working_days_limit: 'الحد الأقصى لأيام عمل المدرس يمنع توزيع الحصص المتبقية.',
-  teacher_consecutive_limit: 'حد الحصص المتتالية للمدرس يمنع توزيع الحصص المتبقية.',
-  teacher_collision: 'المدرس مرتبط بحصص أخرى في الفترات المتبقية.',
+  teacher_daily_limit: 'الحد الأقصى اليومي لدروس المدرس يمنع توزيع الدروس المتبقية.',
+  teacher_working_days_limit: 'الحد الأقصى لأيام عمل المدرس يمنع توزيع الدروس المتبقية.',
+  teacher_consecutive_limit: 'حد الدروس المتتالية للمدرس يمنع توزيع الدروس المتبقية.',
+  teacher_collision: 'المدرس مرتبط بدروس أخرى في الفترات المتبقية.',
   insufficient_slot_domain: 'لا توجد مجموعة فترات كافية تحقق جميع القيود الصلبة.',
-  search_budget_exhausted: 'توقّف البحث عند ميزانيته الخوارزمية قبل إثبات سبب رياضي نهائي لهذه الحصص.',
+  search_budget_exhausted: 'توقّف البحث عند ميزانيته الخوارزمية قبل إثبات سبب رياضي نهائي لهذه الدروس.',
   invalid_teaching_load: 'نصاب المادة غير فعال أو يحتوي على مرجع أكاديمي أو مدرّس غير صالح.',
 };
 
@@ -276,7 +276,7 @@ function validateFixedEntries(input: TimetableSolverInput): {
     if (seen.has(pair)) {
       conflicts.push({
         code: 'fixed_duplicate',
-        message: 'الحصة المثبتة مكررة في الطلب.',
+        message: 'الدرس المثبت مكرر في الطلب.',
         slot_id: entry.slot_id,
         teaching_load_id: entry.teaching_load_id,
       });
@@ -446,7 +446,7 @@ function buildSolverReadiness(
     blockers.push({ code: 'no_active_days', message: 'لا توجد أيام دوام فعالة يمكن بناء الجدول عليها.' });
   }
   if (scheduleSlots.length === 0) {
-    blockers.push({ code: 'no_active_lesson_slots', message: 'لا توجد حصص فعالة قابلة للجدولة.' });
+    blockers.push({ code: 'no_active_lesson_slots', message: 'لا توجد دروس فعالة قابلة للجدولة.' });
   }
   for (const load of invalidLoads) {
     safetyCheck?.();
@@ -475,7 +475,7 @@ function buildSolverReadiness(
       code: 'class_capacity_exceeded',
       class_id: item.class_id,
       section_id: item.section_id,
-      message: `${item.class_name}${item.section_name ? ` / ${item.section_name}` : ''} يحتاج ${requiredPeriods} حصة بينما السعة المتاحة ${scheduleSlots.length}.`,
+      message: `عدد الدروس المطلوبة لـ${item.class_name}${item.section_name ? ` / ${item.section_name}` : ''}: ${requiredPeriods}، بينما السعة المتاحة: ${scheduleSlots.length}.`,
     });
     return [item];
   });
@@ -523,7 +523,7 @@ function buildSolverReadiness(
     blockers.push({
       code: 'teacher_capacity_exceeded',
       employee_id: employeeId,
-      message: `المدرس ${item.employee_name} لديه ${requiredPeriods} حصة مطلوبة ولكن قيوده تسمح بـ${item.available_capacity} فقط.`,
+      message: `عدد الدروس المطلوبة للمدرس ${item.employee_name}: ${requiredPeriods}، لكن قيوده تسمح بـ${item.available_capacity} فقط.`,
     });
     return [item];
   });
@@ -770,7 +770,7 @@ export function validateTimetableSolverProposal(
       violations.push({ code: 'invalid_teaching_load', message: 'الاقتراح يحتوي على نصاب غير صالح' });
     }
     if (count > Number(load.weekly_periods)) {
-      violations.push({ code: 'weekly_periods_exceeded', message: 'الاقتراح تجاوز عدد الحصص الأسبوعية المطلوبة' });
+      violations.push({ code: 'weekly_periods_exceeded', message: 'الاقتراح تجاوز عدد الدروس الأسبوعية المطلوبة' });
     }
   }
   return violations;
@@ -961,7 +961,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       employee_name: load.employee_name || null,
       remaining_count: Number(load.weekly_periods),
       reason_codes: ['insufficient_slot_domain'] as TimetableSolverReasonCode[],
-      reasons: ['الحصص المثبتة تمنع إنشاء جدول صالح.'],
+      reasons: ['الدروس المثبتة تمنع إنشاء جدول صالح.'],
     }));
     return {
       status: 'fixed_conflict',
@@ -971,14 +971,14 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       unscheduled_periods: readiness.total_required_periods,
       entries: [],
       unscheduled,
-      warnings: ['الحصص المثبتة تمنع إنشاء جدول صالح.'],
+      warnings: ['الدروس المثبتة تمنع إنشاء جدول صالح.'],
       scoring: {
         model: 'comparative-v1',
         total_penalty: 0,
         maximum_reference_penalty: 1,
         penalties,
         preferred_slots_used: 0,
-        note: 'تعذر تقييم الجودة قبل إصلاح تعارضات الحصص المثبتة.',
+        note: 'تعذر تقييم الجودة قبل إصلاح تعارضات الدروس المثبتة.',
       },
       statistics: {
         attempts: 0,
@@ -1216,7 +1216,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   const warnings = [
     'هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.',
     ...(readiness.missing_teacher_count > 0 ? [`توجد ${readiness.missing_teacher_count} أنصبة بلا مدرس، وقد جرى تمثيلها بوضوح في الاقتراح.`] : []),
-    ...(stoppedByLimit ? ['توقف البحث عند حد الأمان المحدد؛ راجع الحصص غير المجدولة أو أعد ضبط القيود.'] : []),
+    ...(stoppedByLimit ? ['توقف البحث عند حد الأمان المحدد؛ راجع الدروس غير المجدولة أو أعد ضبط القيود.'] : []),
     ...readiness.hard_feasibility_blockers.map((blocker) => blocker.message),
   ];
 

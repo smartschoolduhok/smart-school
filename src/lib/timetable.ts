@@ -566,10 +566,10 @@ export function validateTimetableSlotInput(input: Record<string, unknown>) {
     return { ok: false as const, error: 'وقت بداية ونهاية الفترة غير صالح' };
   }
   if (slotType === 'lesson' && lessonNumber == null) {
-    return { ok: false as const, error: 'رقم الحصة مطلوب لفترة الدرس' };
+    return { ok: false as const, error: 'رقم الدرس مطلوب لفترة الدرس' };
   }
   if (slotType === 'break' && lessonNumber != null) {
-    return { ok: false as const, error: 'فترة الاستراحة لا تقبل رقم حصة' };
+    return { ok: false as const, error: 'فترة الاستراحة لا تقبل رقم درس' };
   }
   if (isActive !== 0 && isActive !== 1) return { ok: false as const, error: 'حالة الفترة غير صالحة' };
   return {
@@ -600,7 +600,7 @@ export function validateTimetableLoadInput(input: Record<string, unknown>) {
   if (input.section_id != null && input.section_id !== '' && sectionId == null) return { ok: false as const, error: 'الشعبة غير صالحة' };
   if (subjectId == null) return { ok: false as const, error: 'المادة مطلوبة' };
   if (input.employee_id != null && input.employee_id !== '' && employeeId == null) return { ok: false as const, error: 'الموظف غير صالح' };
-  if (weeklyPeriods == null) return { ok: false as const, error: 'عدد الحصص الأسبوعية يجب أن يكون عددًا صحيحًا موجبًا' };
+  if (weeklyPeriods == null) return { ok: false as const, error: 'عدد الدروس الأسبوعية يجب أن يكون عددًا صحيحًا موجبًا' };
   return { ok: true as const, value: { academicYearId, classId, sectionId, subjectId, employeeId, weeklyPeriods } };
 }
 
@@ -639,8 +639,8 @@ export function validateTimetableEntryDropInput(input: Record<string, unknown>) 
   const hasTargetEntry = Object.prototype.hasOwnProperty.call(input, 'target_entry_id');
   const targetEntryId = input.target_entry_id == null ? null : asPositiveInteger(input.target_entry_id);
   if (academicYearId == null) return { ok: false as const, error: 'السنة الدراسية مطلوبة' };
-  if (sourceSlotId == null || targetSlotId == null) return { ok: false as const, error: 'موقعا الحصة قبل النقل وبعده مطلوبان' };
-  if (sourceSlotId === targetSlotId) return { ok: false as const, error: 'اختر فترة أخرى لنقل الحصة' };
+  if (sourceSlotId == null || targetSlotId == null) return { ok: false as const, error: 'موقعا الدرس قبل النقل وبعده مطلوبان' };
+  if (sourceSlotId === targetSlotId) return { ok: false as const, error: 'اختر فترة أخرى لنقل الدرس' };
   if (expectedRevision == null) return { ok: false as const, error: 'نسخة بيانات الجدول غير صالحة' };
   if (!hasTargetEntry || (input.target_entry_id != null && targetEntryId == null)) {
     return { ok: false as const, error: 'حالة الفترة الهدف غير صالحة' };
@@ -723,8 +723,8 @@ export function validateTeacherConstraintsInput(input: Record<string, unknown>) 
   const preferCompactSchedule = asBooleanInteger(input.prefer_compact_schedule ?? 0);
   const avoidFirstPeriod = asBooleanInteger(input.avoid_first_period ?? 0);
   const avoidLastPeriod = asBooleanInteger(input.avoid_last_period ?? 0);
-  if (maxPeriodsPerDay === undefined) return { ok: false as const, error: 'الحد الأقصى للحصص يوميًا يجب أن يكون عددًا موجبًا' };
-  if (maxConsecutivePeriods === undefined) return { ok: false as const, error: 'الحد الأقصى للحصص المتتالية يجب أن يكون عددًا موجبًا' };
+  if (maxPeriodsPerDay === undefined) return { ok: false as const, error: 'الحد الأقصى للدروس يوميًا يجب أن يكون عددًا موجبًا' };
+  if (maxConsecutivePeriods === undefined) return { ok: false as const, error: 'الحد الأقصى للدروس المتتالية يجب أن يكون عددًا موجبًا' };
   if (maxWorkingDays === undefined || (maxWorkingDays != null && maxWorkingDays > 7)) {
     return { ok: false as const, error: 'الحد الأقصى لأيام العمل يجب أن يكون بين 1 و7' };
   }
@@ -826,12 +826,12 @@ export function calculateTeacherAvailabilitySummary(input: {
   if (input.assignedWeeklyPeriods > 0 && effectiveAvailableSlots === 0) {
     blockers.push({
       code: 'teacher_no_available_slots',
-      message: `لا يملك المدرس ${input.employeeName} أي حصة متاحة ضمن الأسبوع النشط.`,
+      message: `لا يملك المدرس ${input.employeeName} أي درس متاح ضمن الأسبوع النشط.`,
     });
   } else if (input.assignedWeeklyPeriods > hardWeeklyCapacity) {
     blockers.push({
       code: 'teacher_load_exceeds_availability',
-      message: `نصاب المدرس ${input.employeeName} هو ${input.assignedWeeklyPeriods} حصة، بينما سعته المتاحة وفق القيود هي ${hardWeeklyCapacity} حصة فقط.`,
+      message: `عدد الدروس المسندة إلى المدرس ${input.employeeName}: ${input.assignedWeeklyPeriods}، بينما سعته المتاحة وفق القيود: ${hardWeeklyCapacity} فقط.`,
     });
   }
   return {
@@ -984,13 +984,13 @@ export function evaluateTimetableEntryPlacement(input: {
     && Number(item.day_of_week) === Number(slot.day_of_week)
   ));
   if (!slot || !day || slot.slot_type !== 'lesson') {
-    hardConflicts.push(entryNotice('slot_not_schedulable', 'الفترة المحددة ليست حصة فعالة قابلة للجدولة'));
+    hardConflicts.push(entryNotice('slot_not_schedulable', 'الفترة المحددة ليست فترة درس فعالة قابلة للجدولة'));
   } else {
     if (Number(day.is_active) !== 1) {
-      hardConflicts.push(entryNotice('inactive_day', 'اليوم المحدد غير فعال ولا يقبل حصصًا جديدة'));
+      hardConflicts.push(entryNotice('inactive_day', 'اليوم المحدد غير فعال ولا يقبل دروسًا جديدة'));
     }
     if (Number(slot.is_active) !== 1) {
-      hardConflicts.push(entryNotice('inactive_slot', 'الفترة المحددة غير فعالة ولا تقبل حصصًا جديدة'));
+      hardConflicts.push(entryNotice('inactive_slot', 'الفترة المحددة غير فعالة ولا تقبل دروسًا جديدة'));
     }
   }
   if (!load || load.status !== 'active' || loadHasInvalidAcademicReference(load) || loadHasInvalidTeacherReference(load)) {
@@ -1012,7 +1012,7 @@ export function evaluateTimetableEntryPlacement(input: {
   )).length;
   input.onConstraintMetric?.('weekly_periods_exceeded', scheduledForLoad + 1);
   if (scheduledForLoad >= Number(load.weekly_periods)) {
-    hardConflicts.push(entryNotice('weekly_periods_exceeded', 'اكتمل عدد الحصص الأسبوعية المطلوبة لهذا النصاب'));
+    hardConflicts.push(entryNotice('weekly_periods_exceeded', 'اكتمل عدد الدروس الأسبوعية المطلوبة لهذا النصاب'));
   }
 
   const loadById = new Map(input.loads.map((item) => [Number(item.id), item]));
@@ -1022,7 +1022,7 @@ export function evaluateTimetableEntryPlacement(input: {
     return existingLoad != null && timetableLoadsShareGroup(existingLoad, load);
   });
   if (groupCollision) {
-    hardConflicts.push(entryNotice('class_section_collision', 'توجد حصة أخرى للصف أو الشعبة في هذه الفترة'));
+    hardConflicts.push(entryNotice('class_section_collision', 'يوجد درس آخر للصف أو الشعبة في هذه الفترة'));
   }
 
   if (load.employee_id != null) {
@@ -1032,7 +1032,7 @@ export function evaluateTimetableEntryPlacement(input: {
         && Number(existingLoad.employee_id) === Number(load.employee_id);
     });
     if (teacherEntries.some((entry) => Number(entry.slot_id) === Number(slot.id))) {
-      hardConflicts.push(entryNotice('teacher_collision', 'المدرس مرتبط بحصة أخرى في الفترة نفسها'));
+      hardConflicts.push(entryNotice('teacher_collision', 'المدرس مرتبط بدرس آخر في الفترة نفسها'));
     }
 
     const availability = input.teacherAvailability?.find((override) => (
@@ -1058,7 +1058,7 @@ export function evaluateTimetableEntryPlacement(input: {
     input.onConstraintMetric?.('teacher_max_periods_per_day', teacherEntriesForDay.length + 1);
     if (constraints?.max_periods_per_day != null
       && teacherEntriesForDay.length + 1 > Number(constraints.max_periods_per_day)) {
-      hardConflicts.push(entryNotice('teacher_max_periods_per_day', 'تجاوز المدرس الحد الأقصى للحصص اليومية'));
+      hardConflicts.push(entryNotice('teacher_max_periods_per_day', 'تجاوز المدرس الحد الأقصى للدروس اليومية'));
     }
 
     const teacherWorkingDays = occupiedTimetableDays(activeTeacherEntries, input.slots);
@@ -1090,7 +1090,7 @@ export function evaluateTimetableEntryPlacement(input: {
     }
     if (constraints?.max_consecutive_periods != null
       && maximumRun > Number(constraints.max_consecutive_periods)) {
-      hardConflicts.push(entryNotice('teacher_max_consecutive_periods', 'تجاوز المدرس الحد الأقصى للحصص المتتالية'));
+      hardConflicts.push(entryNotice('teacher_max_consecutive_periods', 'تجاوز المدرس الحد الأقصى للدروس المتتالية'));
     }
     input.onConstraintMetric?.('teacher_max_consecutive_periods', maximumRun);
 
@@ -1112,10 +1112,10 @@ export function evaluateTimetableEntryPlacement(input: {
     }
     const lessonSlots = orderedSlots.filter((item) => item.slot_type === 'lesson');
     if (constraints?.avoid_first_period === 1 && Number(lessonSlots[0]?.id) === Number(slot.id)) {
-      warnings.push(entryNotice('first_period_preference', 'يفضل المدرس تجنب الحصة الأولى'));
+      warnings.push(entryNotice('first_period_preference', 'يفضل المدرس تجنب الدرس الأول'));
     }
     if (constraints?.avoid_last_period === 1 && Number(lessonSlots[lessonSlots.length - 1]?.id) === Number(slot.id)) {
-      warnings.push(entryNotice('last_period_preference', 'يفضل المدرس تجنب الحصة الأخيرة'));
+      warnings.push(entryNotice('last_period_preference', 'يفضل المدرس تجنب الدرس الأخير'));
     }
     if (constraints?.prefer_compact_schedule === 1 && teacherEntriesForDay.length > 0) {
       const candidatePosition = orderedSlots.findIndex((item) => Number(item.id) === Number(slot.id));
@@ -1123,7 +1123,7 @@ export function evaluateTimetableEntryPlacement(input: {
         const existingPosition = orderedSlots.findIndex((item) => Number(item.id) === Number(entry.slot_id));
         return existingPosition >= 0 && Math.abs(existingPosition - candidatePosition) === 1;
       });
-      if (!compact) warnings.push(entryNotice('non_compact_schedule', 'هذه الحصة لا تحقق تفضيل تجميع حصص المدرس'));
+      if (!compact) warnings.push(entryNotice('non_compact_schedule', 'هذا الدرس لا تحقق تفضيل تجميع دروس المدرس'));
     }
   }
 

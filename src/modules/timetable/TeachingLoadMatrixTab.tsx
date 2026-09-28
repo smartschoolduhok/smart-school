@@ -18,20 +18,20 @@ const withoutTeacher = 'بدون مدرس — يحدد لاحقًا';
 export function MatrixSummaryDetails({ summary }: { summary: MatrixSummary }) {
   return <div className="text-sm">
     <p>{summary.configured} من {summary.expected} نصابًا · {summary.missing} ناقص · {summary.without_teacher} بدون مدرس · {summary.invalid_teacher} مدرس غير متاح</p>
-    <p>إجمالي الحصص: {summary.weekly_periods} · الاكتمال: {summary.completion_percent}%</p>
+    <p>إجمالي الدروس: {summary.weekly_periods} · الاكتمال: {summary.completion_percent}%</p>
   </div>;
 }
 
 export function MatrixPlanSummary({ plan }: { plan: MatrixPlan }) {
   return <div className="space-y-3 text-sm">
     <p>سيتم إنشاء: {plan.counts.create} · تحديث: {plan.counts.update} · تعطيل: {plan.counts.deactivate} · بلا تغيير: {plan.counts.unchanged} · تعارضات: {plan.counts.blocked}</p>
-    <p>بدون مدرس بعد الحفظ: {plan.without_teacher_after} · مدرس غير متاح بعد الحفظ: {plan.invalid_teacher_after} · إجمالي الحصص: {plan.total_weekly_periods_before} ← {plan.total_weekly_periods_after}</p>
+    <p>بدون مدرس بعد الحفظ: {plan.without_teacher_after} · مدرس غير متاح بعد الحفظ: {plan.invalid_teacher_after} · إجمالي الدروس: {plan.total_weekly_periods_before} ← {plan.total_weekly_periods_after}</p>
     <MatrixSummaryDetails summary={plan.summary_after} />
     <div className="max-h-80 overflow-auto">
       {plan.items.map(item => <div key={matrixKey(item.subject_id, item.section_id)} className="border-t py-2">
         <b>{item.subject_name ?? 'مادة غير متاحة'} / {item.section_name ?? 'الصف بالكامل'}: {actionLabels[item.action]}</b>
-        <p>الحصص: {item.old_weekly_periods ?? '—'} ← {item.new_weekly_periods ?? '—'}؛ المدرس: {item.old_employee_name ?? (item.old_employee_id == null ? 'بدون مدرس' : 'مدرس غير متاح')} ← {item.new_employee_name ?? (item.new_employee_id == null ? 'بدون مدرس' : 'مدرس غير متاح')}</p>
-        {item.locked_entry_count > 0 && <p>حصص مقفلة مرتبطة: {item.locked_entry_count} — تبقى مواقعها وأقفالها كما هي.</p>}
+        <p>الدروس: {item.old_weekly_periods ?? '—'} ← {item.new_weekly_periods ?? '—'}؛ المدرس: {item.old_employee_name ?? (item.old_employee_id == null ? 'بدون مدرس' : 'مدرس غير متاح')} ← {item.new_employee_name ?? (item.new_employee_id == null ? 'بدون مدرس' : 'مدرس غير متاح')}</p>
+        {item.locked_entry_count > 0 && <p>دروس مقفلة مرتبطة: {item.locked_entry_count} — تبقى مواقعها وأقفالها كما هي.</p>}
         {item.warnings.map(n => <p key={n.code} className="text-amber-800">{n.message}</p>)}
         {item.blockers.map(n => <p key={n.code} className="text-red-700">{n.message}</p>)}
       </div>)}
@@ -188,7 +188,7 @@ export function TeachingLoadMatrixTab(props: Props) {
       {data && <>
         <h2 className="text-xl font-bold">مصفوفة نصاب {data.class.name}</h2>
         <div><p>القيم المحفوظة:</p><MatrixSummaryDetails summary={data.summary} /></div>
-        <p className="text-xs text-gray-500">الاكتمال = الأنصبة التي لها مدرس نشط مؤهل في المدرسة ÷ الخلايا القابلة للتطبيق. ترك الحصص فارغة لا يغير النصاب ولا يعطله.</p>
+        <p className="text-xs text-gray-500">الاكتمال = الأنصبة التي لها مدرس نشط مؤهل في المدرسة ÷ الخلايا القابلة للتطبيق. ترك الدروس فارغة لا يغير النصاب ولا يعطله.</p>
         <div className="flex flex-wrap gap-2">
           <input className={field + ' md:!w-64'} aria-label="البحث باسم المادة" placeholder="البحث باسم المادة" value={search} onChange={e => setSearch(e.target.value)} />
           <select className={field + ' md:!w-60'} aria-label="تصفية المصفوفة" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">إظهار جميع المواد</option><option value="missing">إظهار الأنصبة الناقصة فقط</option><option value="no-teacher">إظهار بدون مدرس فقط</option><option value="invalid-teacher">إظهار المدرس غير المتاح فقط</option><option value="changed">إظهار التغييرات فقط</option></select>
@@ -199,15 +199,15 @@ export function TeachingLoadMatrixTab(props: Props) {
         {dirty && <p role="status" className="text-blue-800">لديك {changes.length} تغييرًا غير محفوظ في {dirtyRows.size} مادة. المدخلات غير المكتملة لا تنشئ نصابًا.</p>}
         <fieldset disabled={busy} className="min-w-0">
           <div className="max-w-full overflow-x-auto rounded-xl border bg-white">
-            <table className="w-full min-w-[860px] text-sm"><thead className="bg-gray-50"><tr><th className="sticky right-0 z-10 min-w-40 bg-gray-50 p-3 text-right">المادة</th><th className="min-w-48 p-3">الحصص لجميع الشعب</th><th className="min-w-52 p-3">مدرس لجميع الشعب</th>{columns.map(s => <th key={s.id ?? 'none'} className="min-w-48 p-3">{s.name}</th>)}<th className="p-3">الحالة</th></tr></thead>
+            <table className="w-full min-w-[860px] text-sm"><thead className="bg-gray-50"><tr><th className="sticky right-0 z-10 min-w-40 bg-gray-50 p-3 text-right">المادة</th><th className="min-w-48 p-3">الدروس لجميع الشعب</th><th className="min-w-52 p-3">مدرس لجميع الشعب</th>{columns.map(s => <th key={s.id ?? 'none'} className="min-w-48 p-3">{s.name}</th>)}<th className="p-3">الحالة</th></tr></thead>
             <tbody>{rows?.map(subject => {
               const row = rowInputs[subject.id] ?? {};
               const periods = new Set(columns.filter(s => allowed.has(matrixKey(subject.id, s.id))).map(s => loadMap.get(matrixKey(subject.id, s.id))?.weekly_periods));
               return <tr key={subject.id} className="border-t align-top">
                 <th className="sticky right-0 z-10 bg-white p-3 text-right">{subject.name}{subject.section_id != null && <small className="block text-amber-800">خاص بالشعبة {data.sections.find(s => s.id === subject.section_id)?.name ?? 'غير النشطة'}</small>}<button className={button + ' mt-3'} onClick={() => { const next = { ...draft }; for (const s of columns) delete next[matrixKey(subject.id, s.id)]; changeDraft(next); setRowInputs(v => ({ ...v, [subject.id]: {} })); }}>إعادة الصف إلى القيم المحفوظة</button></th>
-                <td className="space-y-2 p-3"><input type="number" min="1" max={MAX_MATRIX_WEEKLY_PERIODS} className={field} aria-label={`عدد الحصص لجميع شعب ${subject.name}`} value={row.periods ?? ''} onChange={e => setRowInputs(v => ({ ...v, [subject.id]: { ...row, periods: e.target.value } }))} />
+                <td className="space-y-2 p-3"><input type="number" min="1" max={MAX_MATRIX_WEEKLY_PERIODS} className={field} aria-label={`عدد الدروس لجميع شعب ${subject.name}`} value={row.periods ?? ''} onChange={e => setRowInputs(v => ({ ...v, [subject.id]: { ...row, periods: e.target.value } }))} />
                   {periods.size > 1 && <p className="text-xs">مختلف حسب الشعبة</p>}
-                  <button className={button} disabled={!row.periods?.trim()} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { periods: row.periods }))}>تطبيق على جميع الشعب</button><p className="text-xs text-gray-500">تخصيص الحصص حسب الشعبة متاح في كل خلية.</p></td>
+                  <button className={button} disabled={!row.periods?.trim()} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { periods: row.periods }))}>تطبيق على جميع الشعب</button><p className="text-xs text-gray-500">تخصيص الدروس حسب الشعبة متاح في كل خلية.</p></td>
                 <td className="space-y-2 p-3"><select className={field} aria-label={`مدرس لجميع شعب ${subject.name}`} value={row.employeeId ?? ''} onChange={e => setRowInputs(v => ({ ...v, [subject.id]: { ...row, employeeId: e.target.value ? Number(e.target.value) : null } }))}>{teacherOptions()}</select>
                   <button className={button} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { employeeId: row.employeeId ?? null }))}>تطبيق المدرس على جميع الشعب</button>
                   <button className={button} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { employeeId: null }))}>مسح المدرس من جميع الشعب</button></td>
@@ -223,8 +223,8 @@ export function TeachingLoadMatrixTab(props: Props) {
                   const update = (patch: MatrixDraft[string]) => changeDraft({ ...draft, [key]: { ...edit, ...patch } });
                   return <td key={key} className={`space-y-2 p-3 ${tone}`}>
                     <select className={field} aria-label={`مدرس ${subject.name} / ${section.name}`} value={teacher ?? ''} onChange={e => update({ employeeId: e.target.value ? Number(e.target.value) : null, deactivate: false })}>{presentation.state === 'invalid_teacher' && <option value={teacher!}>مدرس غير متاح — اختر بديلًا</option>}{teacherOptions()}</select>
-                    <input className={field} type="number" min="1" max={MAX_MATRIX_WEEKLY_PERIODS} aria-label={`حصص ${subject.name} / ${section.name}`} value={value} onChange={e => update({ periods: e.target.value, deactivate: false })} />
-                    <p className="text-xs">{invalid ? 'عدد الحصص غير صالح' : presentation.state === 'invalid_teacher' ? presentation.label : change ? `${actionLabels[change.action === 'upsert' ? load ? 'update' : 'create' : 'deactivate']} غير محفوظ` : presentation.label}{load && ` · #${load.id}`}</p>
+                    <input className={field} type="number" min="1" max={MAX_MATRIX_WEEKLY_PERIODS} aria-label={`دروس ${subject.name} / ${section.name}`} value={value} onChange={e => update({ periods: e.target.value, deactivate: false })} />
+                    <p className="text-xs">{invalid ? 'عدد الدروس غير صالح' : presentation.state === 'invalid_teacher' ? presentation.label : change ? `${actionLabels[change.action === 'upsert' ? load ? 'update' : 'create' : 'deactivate']} غير محفوظ` : presentation.label}{load && ` · #${load.id}`}</p>
                     {load && <div className="flex flex-wrap gap-1"><button className={button} onClick={() => update({ deactivate: !edit.deactivate })}>{edit.deactivate ? 'إلغاء التعطيل' : 'تعطيل هذا النصاب'}</button><button className={button} onClick={() => { if (allowLeave()) props.onAdvanced(load); }}>تعديل متقدم</button></div>}
                   </td>;
                 })}
@@ -240,8 +240,8 @@ export function TeachingLoadMatrixTab(props: Props) {
       <h3 className="font-bold">نسخ النصاب من سنة سابقة — مسودة فقط</h3>
       {error && <p role="alert" className="text-red-700">{error}</p>}
       <select className={field} aria-label="السنة المصدر" value={sourceYearId} disabled={busy} onChange={e => { guard.invalidate(); setCopy(null); setSourceYearId(e.target.value); }}><option value="">اختر السنة المصدر</option>{props.years.filter(y => y.school_id === schoolId && y.id !== academicYearId).map(y => <option key={y.id} value={y.id}>{y.name}</option>)}</select>
-      <select className={field} aria-label="طريقة النسخ" value={copyMode} disabled={busy} onChange={e => { guard.invalidate(); setCopy(null); setCopyMode(e.target.value as MatrixCopyMode); }}><option value="periods_only">نسخ عدد الحصص فقط</option><option value="periods_and_teachers">نسخ عدد الحصص والمدرسين</option></select>
-      <p className="text-sm">يُنسخ النصاب بحسب معرّفات المواد والشعب، ولا تُنسخ الحصص المجدولة أو الأقفال. الخلايا غير الموجودة في المصدر لا تتغير.</p>
+      <select className={field} aria-label="طريقة النسخ" value={copyMode} disabled={busy} onChange={e => { guard.invalidate(); setCopy(null); setCopyMode(e.target.value as MatrixCopyMode); }}><option value="periods_only">نسخ عدد الدروس فقط</option><option value="periods_and_teachers">نسخ عدد الدروس والمدرسين</option></select>
+      <p className="text-sm">يُنسخ النصاب بحسب معرّفات المواد والشعب، ولا تُنسخ الدروس المجدولة أو الأقفال. الخلايا غير الموجودة في المصدر لا تتغير.</p>
       <button className={button} disabled={busy || !sourceYearId} onClick={() => void copyPreview()}>معاينة النسخ</button>
       {copy && <><MatrixPlanSummary plan={copy.plan} />{copy.warnings.map((n,i) => <p key={i} className="text-amber-800">{n.message}</p>)}{copy.unavailable.map(n => <p key={matrixKey(n.subject_id, n.section_id)} className="text-amber-800">المادة #{n.subject_id}: {n.message}</p>)}<button className={button} disabled={busy} onClick={acceptCopy}>تحميل إلى المسودة — دون حفظ</button></>}
       <button className={button} onClick={() => { guard.invalidate(); setBusy(false); setCopyOpen(false); setCopy(null); }}>إغلاق</button>

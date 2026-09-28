@@ -94,7 +94,7 @@ export function weekDatabaseError(error: unknown): WeekSetupError | null {
   if (error instanceof WeekSetupError) return error;
   const message = error instanceof Error ? error.message : String(error);
   if (/stale_timetable_proposal/.test(message)) return staleWeek();
-  if (/timetable slot has scheduled entries/.test(message)) return new WeekSetupError('slot_has_scheduled_entries', 'توجد حصص مجدولة تمنع تعديل الفترة.', 409);
+  if (/timetable slot has scheduled entries/.test(message)) return new WeekSetupError('slot_has_scheduled_entries', 'توجد دروس مجدولة تمنع تعديل الفترة.', 409);
   if (/timetable|constraint failed/i.test(message)) return new WeekSetupError('week_constraint_conflict', 'تعارض في إعدادات الأسبوع؛ أعد التحميل وراجع تخصيص اليوم.', 409);
   return null;
 }

@@ -14,7 +14,7 @@ const pageSource = read('src', 'modules', 'timetable', 'TimetablePage.tsx');
 const apiSource = read('src', 'lib', 'api.ts');
 
 test('automatic workflow exposes proposal locks and re-solves only unlocked lessons', () => {
-  for (const label of ['تثبيت الحصة', 'إلغاء التثبيت', 'إعادة توليد غير المثبت']) assert.ok(automaticSource.includes(label), label);
+  for (const label of ['تثبيت الدرس', 'إلغاء التثبيت', 'إعادة توليد غير المثبت']) assert.ok(automaticSource.includes(label), label);
   assert.match(automaticSource, /fixed_entries: result\.entries\.filter\(\(entry\) => entry\.is_locked === 1\)/);
 });
 
@@ -54,12 +54,12 @@ test('weekly grid displays persisted locks and confirms locked move or delete', 
   assert.match(gridSource, /entry\.is_locked === 1/);
   assert.match(gridSource, /setTimetableEntryLock/);
   assert.match(gridSource, /confirm_unlock_locked_entry/);
-  assert.match(gridSource, /هذه الحصة مثبتة/);
+  assert.match(gridSource, /هذا الدرس مثبت/);
 });
 
 test('master timetable indicates locks on screen without overcrowding print', () => {
   assert.match(masterSource, /entry\.is_locked === 1/);
-  assert.match(masterSource, /مثبتة/);
+  assert.match(masterSource, /title="درس مثبت"/);
   assert.match(masterSource, /no-print/);
 });
 
@@ -75,7 +75,8 @@ test('version restore uses stale request protection, preview and confirmation be
   assert.match(versionsSource, /previewTimetableVersionRestore/);
   assert.match(versionsSource, /window\.confirm/);
   assert.match(versionsSource, /confirm_restore: true/);
-  assert.match(pageSource, /onRestored=\{reloadYearData\}/);
+  assert.match(pageSource, /onRestored=\{async \(\) => \{/);
+  assert.match(pageSource, /setTab\('grid'\)/);
 });
 
 test('restore preview separates structural blockers from current weekly-demand warnings', () => {

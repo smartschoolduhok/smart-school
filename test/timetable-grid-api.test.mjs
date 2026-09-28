@@ -65,6 +65,7 @@ async function fixture() {
     '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
     '0026_timetable_adoption_locking.sql',
     '0037_timetable_teacher_collision_visibility.sql',
+    '0047_timetable_edit_saved_lesson_times.sql',
   ]) database.exec(migration(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
@@ -703,6 +704,56 @@ test('valid scheduled entries expose empty hard-conflict collections', async () 
   assert.deepEqual(savedEntry.hard_conflicts, []);
 });
 
+test('an existing lesson can change subject without changing its slot or creating another entry', async () => {
+  const context = await fixture(); setup(context);
+  const created = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  assert.equal(created.status, 201);
+  const id = (await created.json()).data.id;
+  const beforeRevision = currentRevision(context);
+  const updated = await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${id}`, {
+    school_id: 1, academic_year_id: 1, slot_id: 1, teaching_load_id: 2,
+    expected_revision: beforeRevision,
+  });
+  assert.equal(updated.status, 200, await updated.text());
+  assert.equal(savedEntries(context).length, 1);
+  assert.equal(savedEntries(context)[0].teaching_load_id, 2);
+  assert.equal(savedEntries(context)[0].slot_id, 1);
+  assert.equal(currentRevision(context), beforeRevision + 1);
+});
+
+test('lesson replacement rejects stale, locked, cross-group and over-capacity changes', async () => {
+  const context = await fixture(); setup(context);
+  const created = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
+  const id = (await created.json()).data.id;
+  const body = { school_id: 1, academic_year_id: 1, slot_id: 1, teaching_load_id: 2,
+    expected_revision: currentRevision(context) };
+  assert.equal((await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${id}`, {
+    ...body, expected_revision: body.expected_revision - 1,
+  })).status, 409);
+  assert.equal((await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${id}`, {
+    ...body, teaching_load_id: 3,
+  })).status, 400);
+  assert.equal(savedEntries(context)[0].teaching_load_id, 1);
+  assert.equal((await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${id}/lock`, {
+    school_id: 1, academic_year_id: 1, is_locked: 1,
+  })).status, 200);
+  assert.equal((await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${id}`, {
+    ...body, expected_revision: currentRevision(context), confirm_unlock_locked_entry: true,
+  })).status, 409);
+  assert.equal(savedEntries(context)[0].teaching_load_id, 1);
+  assert.equal((await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${id}/lock`, {
+    school_id: 1, academic_year_id: 1, is_locked: 0,
+  })).status, 200);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries',
+    createBody({ slot_id: 2, teaching_load_id: 2 }))).status, 201);
+  assert.equal((await api(context, context.tokens.owner, 'POST', '/api/timetable/entries',
+    createBody({ slot_id: 4, teaching_load_id: 2 }))).status, 201);
+  assert.equal((await api(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${id}`, {
+    ...body, expected_revision: currentRevision(context),
+  })).status, 409);
+  assert.equal(savedEntries(context).find((entry) => entry.id === id).teaching_load_id, 1);
+});
+
 test('move revalidates target atomically and successful move keeps one row', async () => {
   const context = await fixture(); setup(context);
   const created = await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
@@ -934,7 +985,7 @@ test('delete removes only the entry and leaves its canonical load and slot', asy
   assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_slots WHERE id=1').get().count, 1);
 });
 
-test('parent edits cannot silently invalidate scheduled entries', async () => {
+test('saved lesson times are editable while structural changes still protect entries', async () => {
   const context = await fixture(); setup(context);
   await api(context, context.tokens.owner, 'POST', '/api/timetable/entries', createBody());
   const slotPayload = {
@@ -942,7 +993,9 @@ test('parent edits cannot silently invalidate scheduled entries', async () => {
     slot_type: 'lesson', lesson_number: 1, label: 'Renamed', start_time: '08:00', end_time: '08:40', is_active: 1,
   };
   assert.equal((await api(context, context.tokens.owner, 'PUT', '/api/timetable/slots/1', slotPayload)).status, 200);
-  assert.equal((await api(context, context.tokens.owner, 'PUT', '/api/timetable/slots/1', { ...slotPayload, start_time: '08:05' })).status, 400);
+  assert.equal((await api(context, context.tokens.owner, 'PUT', '/api/timetable/slots/1', { ...slotPayload, start_time: '08:05' })).status, 200);
+  assert.equal(context.database.prepare('SELECT start_time FROM timetable_slots WHERE id=1').get().start_time, '08:05');
+  assert.equal((await api(context, context.tokens.owner, 'PUT', '/api/timetable/slots/1', { ...slotPayload, slot_type: 'break', lesson_number: null })).status, 400);
   assert.equal((await api(context, context.tokens.owner, 'DELETE', '/api/timetable/slots/1', { school_id: 1, academic_year_id: 1 })).status, 409);
   const loadResponse = await api(context, context.tokens.owner, 'PUT', '/api/timetable/teaching-loads/1', {
     school_id: 1, academic_year_id: 1, class_id: 1, section_id: 1,

@@ -173,12 +173,17 @@ test('scheduled lesson identity cannot be converted into a break even with ackno
  const p=await prepare(f,request(f,slots,[0],'update_matching_keep_extra'));assert.ok(p.plan.days[0].blockers.some(n=>n.code==='slot_has_scheduled_entries'));
  assert.equal((await apply(f,{...p.input,acknowledge_availability_impact:true})).status,409);assert.deepEqual(snapshot(f.db),before);
 });
-test('linked-time acknowledgement cannot bypass scheduled entries; permitted availability remains unchanged',async t=>{
+test('linked-time acknowledgement allows saved lessons to keep their positions and locks',async t=>{
  const f=weekFixture(t);addAvailability(f.db,2,1,'preferred');f.db.exec(historySQL);const before=snapshot(f.db),slot=periodValues(f.db.prepare('SELECT * FROM timetable_slots WHERE id=1').get());
  const p=await prepare(f,request(f,[{...slot,start_time:'07:50'}],[0],'update_matching_keep_extra'));assert.equal(p.plan.requires_availability_acknowledgement,true);
  assert.equal((await apply(f,p.input)).body.code,'availability_acknowledgement_required');assert.deepEqual(snapshot(f.db),before);
  const ok=await apply(f,{...p.input,acknowledge_availability_impact:true});assert.equal(ok.status,200,JSON.stringify(ok));assertPreserved(before,snapshot(f.db));
- entry(f.db,2,1,1);const linkedBefore=snapshot(f.db),blocked=await prepare(f,request(f,[{...slot,start_time:'07:40'}],[0],'update_matching_keep_extra'));assert.equal(blocked.plan.can_apply,false);assert.equal((await apply(f,{...blocked.input,acknowledge_availability_impact:true})).status,409);assert.deepEqual(snapshot(f.db),linkedBefore);
+ entry(f.db,2,1,1);const linkedBefore=snapshot(f.db),updated=await prepare(f,request(f,[{...slot,start_time:'07:40'}],[0],'update_matching_keep_extra'));
+ assert.equal(updated.plan.can_apply,true,JSON.stringify(updated.plan));
+ assert.ok(updated.plan.days[0].warnings.some(n=>n.code==='scheduled_lesson_time_change'));
+ assert.equal((await apply(f,{...updated.input,acknowledge_availability_impact:true})).status,200);
+ assertPreserved(linkedBefore,snapshot(f.db));
+ assert.equal(f.db.prepare('SELECT start_time FROM timetable_slots WHERE id=1').get().start_time,'07:40');
 });
 test('stale source/target revision is rejected; refreshed same-revision competing writes cannot both succeed',async t=>{
  const f=weekFixture(t),p=await prepare(f,request(f));const other=await prepare(f,request(f,example(),[4]));

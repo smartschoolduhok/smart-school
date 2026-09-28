@@ -58,15 +58,15 @@ const STATUS_PRESENTATION: Record<TimetableSolverStatus, { label: string; classe
   complete: { label: 'اقتراح مكتمل', classes: 'border-emerald-200 bg-emerald-50 text-emerald-800' },
   partial: { label: 'اقتراح جزئي', classes: 'border-amber-200 bg-amber-50 text-amber-900' },
   impossible: { label: 'غير ممكن بالقيود الحالية', classes: 'border-red-200 bg-red-50 text-red-800' },
-  fixed_conflict: { label: 'تعارض في الحصص المثبتة', classes: 'border-red-200 bg-red-50 text-red-800' },
+  fixed_conflict: { label: 'تعارض في الدروس المثبتة', classes: 'border-red-200 bg-red-50 text-red-800' },
 };
 
 const PENALTY_LABELS: Record<keyof TimetableSolverPenaltyBreakdown, string> = {
   avoid_slots: 'فترات مفضّل تجنبها',
   outside_preferred_slots: 'خارج الفترات المفضلة',
   teacher_gaps: 'فجوات جدول المدرس',
-  first_period_preferences: 'تفضيل تجنب الحصة الأولى',
-  last_period_preferences: 'تفضيل تجنب الحصة الأخيرة',
+  first_period_preferences: 'تفضيل تجنب الدرس الأول',
+  last_period_preferences: 'تفضيل تجنب الدرس الأخير',
   subject_clustering: 'تجميع المادة في يوم واحد',
   consecutive_same_subject: 'تكرار متتالٍ للمادة',
   class_daily_imbalance: 'عدم توازن الحمل اليومي',
@@ -93,7 +93,7 @@ function placementLabel(placement: TimetablePlacement) {
 
 function slotLabel(slot: TimetableSlot) {
   if (slot.slot_type === 'break') return slot.label || 'استراحة';
-  return slot.label || `الحصة ${slot.lesson_number || slot.slot_index}`;
+  return slot.label || `الدرس ${slot.lesson_number || slot.slot_index}`;
 }
 
 function ProposalGrid({ result, schoolId, disabled, onToggleLock }: {
@@ -153,10 +153,10 @@ function ProposalGrid({ result, schoolId, disabled, onToggleLock }: {
                                 disabled={disabled || entry.is_preserved}
                                 onClick={() => onToggleLock(entry.proposal_id)}
                                 className="mt-2 flex items-center gap-1 rounded-md border border-current/30 bg-white/70 px-2 py-1 text-[10px] font-bold disabled:opacity-50"
-                                aria-label={entry.is_locked === 1 ? 'إلغاء تثبيت الحصة' : 'تثبيت الحصة'}
+                                aria-label={entry.is_locked === 1 ? 'إلغاء تثبيت الدرس' : 'تثبيت الدرس'}
                               >
                                 {entry.is_locked === 1 ? <Lock size={12} /> : <Unlock size={12} />}
-                                {entry.is_preserved ? 'محفوظة من الجدول الحالي' : entry.is_locked === 1 ? 'إلغاء التثبيت' : 'تثبيت الحصة'}
+                                {entry.is_preserved ? 'محفوظة من الجدول الحالي' : entry.is_locked === 1 ? 'إلغاء التثبيت' : 'تثبيت الدرس'}
                               </button>
                             </div>
                           </td>
@@ -331,8 +331,8 @@ export function AutomaticTimetableTab({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="flex items-center gap-2 text-lg font-bold text-indigo-950"><WandSparkles size={22} />التوليد التلقائي</h2>
-            <p className="mt-1 max-w-3xl text-sm text-indigo-800">اختر مدرسة أو مرحلة أو صفًا أو شعبة. يكمل النظام أنصبة النطاق مع احترام الحصص المثبتة وتعارضات المدرسين وبقية الشعب.</p>
-            <p className="mt-2 max-w-3xl text-sm text-indigo-800">عند اختيار نطاق محدد تبقى جميع الحصص خارجه كما هي. يمكنك إعداد جزء يدويًا، تثبيته من الجدول الأسبوعي، ثم توليد الباقي.</p>
+            <p className="mt-1 max-w-3xl text-sm text-indigo-800">اختر مدرسة أو مرحلة أو صفًا أو شعبة. يكمل النظام أنصبة النطاق مع احترام الدروس المثبتة وتعارضات المدرسين وبقية الشعب.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">عند اختيار نطاق محدد تبقى جميع الدروس خارجه كما هي. يمكنك إعداد جزء يدويًا، تثبيته من الجدول الأسبوعي، ثم توليد الباقي.</p>
             <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-amber-800"><AlertTriangle size={17} />هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.</p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -364,7 +364,7 @@ export function AutomaticTimetableTab({
         <h3 className="mb-3 font-bold text-gray-900">ملخص الجاهزية قبل التوليد</h3>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <SolverMetric label="السعة الأسبوعية لكل شعبة" value={readiness?.weekly_capacity || 0} />
-          <SolverMetric label="الحصص المطلوبة" value={readiness?.total_required_periods || 0} tone="green" />
+          <SolverMetric label="الدروس المطلوبة" value={readiness?.total_required_periods || 0} tone="green" />
           <SolverMetric label="أنصبة بلا مدرس" value={readiness?.missing_teacher_count || 0} tone={readiness?.missing_teacher_count ? 'amber' : 'green'} />
           <SolverMetric label="مراجع غير صالحة" value={readiness?.invalid_reference_count || 0} tone={readiness?.invalid_reference_count ? 'red' : 'green'} />
         </div>
@@ -384,7 +384,7 @@ export function AutomaticTimetableTab({
 
           {result.fixed_conflicts.length > 0 && (
             <section className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
-              <h3 className="font-bold">الحصص المثبتة تمنع إنشاء جدول صالح</h3>
+              <h3 className="font-bold">الدروس المثبتة تمنع إنشاء جدول صالح</h3>
               <ul className="mt-2 list-inside list-disc space-y-1">
                 {result.fixed_conflicts.map((conflict, index) => (
                   <li key={`${conflict.code}:${conflict.slot_id}:${conflict.teaching_load_id}:${index}`}>
@@ -455,7 +455,7 @@ export function AutomaticTimetableTab({
 
           {result.unscheduled.length > 0 && (
             <section className="rounded-xl border border-red-200 bg-red-50 p-4">
-              <h3 className="flex items-center gap-2 font-bold text-red-900"><AlertTriangle size={19} />حصص لم يتمكن النظام من جدولتها</h3>
+              <h3 className="flex items-center gap-2 font-bold text-red-900"><AlertTriangle size={19} />دروس لم يتمكن النظام من جدولتها</h3>
               <div className="mt-3 grid gap-3 lg:grid-cols-2">
                 {result.unscheduled.map((item) => (
                   <article key={item.teaching_load_id} className="rounded-lg border border-red-200 bg-white p-3 text-sm">

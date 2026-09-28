@@ -167,7 +167,7 @@ test('teacher and placement views are scoped to the selected canonical ids', () 
 test('invalid placements are visible as an alert and link back to repair without becoming cells', () => {
   assert.match(workerSource, /hasBlockingTimetableEntryConflict\(item\.entry\.hard_conflicts\)/);
   assert.match(workerSource, /invalid_entry_count: invalidEntries\.length/);
-  assert.ok(viewSource.includes('حصة تحتاج إصلاح'));
+  assert.ok(viewSource.includes('درس تحتاج إصلاح'));
   assert.ok(viewSource.includes('لن تظهر كخلايا صحيحة في الجدول'));
   assert.ok(viewSource.includes('العودة إلى شبكة التحرير للإصلاح'));
   assert.match(viewSource, /onClick=\{onOpenRepair\}/);

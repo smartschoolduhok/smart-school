@@ -38,13 +38,13 @@ const input=async (el,value)=>{await act(async()=>{
  Object.getOwnPropertyDescriptor(proto,'value').set.call(el,value);
  el.dispatchEvent(new window.Event(el.tagName==='SELECT'?'change':'input',{bubbles:true}));
 });};
-async function openExample(u){await click(button(u,'إعداد سريع للحصص والاستراحات'));await click(button(u,'تحميل مثال فقط: 7 حصص و2 استراحة'));await click(button(u,'توليد الفترات'));}
+async function openExample(u){await click(button(u,'إعداد سريع للدروس والاستراحات'));await click(button(u,'تحميل مثال فقط: 7 دروس و2 استراحة'));await click(button(u,'توليد الفترات'));}
 async function targetWednesday(u){await click(find(u,'استهداف الأربعاء'));await click(find(u,'تفعيل الأربعاء ضمن الحفظ'));}
 
 test('behavior: generation shows all example periods/totals, no autosave or preset writes',async t=>{
  const u=await mount(t);await openExample(u);
- assert.equal(find(u,'بداية الفترة 1').value,'13:00');assert.equal(find(u,'نهاية الفترة 9').value,'17:30');assert.equal(find(u,'رقم حصة الفترة 7').value,'5');
- assert.match(u.container.textContent,/دقائق الحصص: 245.*الاستراحات: 25.*المدة الكلية: 270/);assert.equal(u.calls.apply.length,0);assert.equal(u.calls.preview.length,0);
+ assert.equal(find(u,'بداية الفترة 1').value,'13:00');assert.equal(find(u,'نهاية الفترة 9').value,'17:30');assert.equal(find(u,'رقم درس الفترة 7').value,'5');
+ assert.match(u.container.textContent,/دقائق الدروس: 245.*الاستراحات: 25.*المدة الكلية: 270/);assert.equal(u.calls.apply.length,0);assert.equal(u.calls.preview.length,0);
  assert.equal(u.container.querySelectorAll('[aria-label^="استهداف"]:checked').length,0);
  await input(find(u,'النهاية المرغوبة'),'18:00');assert.match(u.container.textContent,/الفرق عن النهاية المرغوبة: -30/);assert.equal(find(u,'نهاية الفترة 9').value,'17:30');
 });
@@ -62,7 +62,7 @@ test('behavior: copy is an editable local source snapshot with source exclusion,
 });
 test('behavior: all raw edits invalidate preview; unfinished generator input is dirty',async t=>{
  const u=await mount(t);await openExample(u);await targetWednesday(u);await click(button(u,'معاينة التغييرات'));assert.ok(button(u,'تأكيد الحفظ'));
- await input(find(u,'عدد الحصص'),'');assert.equal(find(u,'عدد الحصص').value,'');assert.equal(u.container.querySelector('[aria-label="خطة إعداد الأسبوع"]'),null);assert.equal(u.calls.dirty.at(-1),true);
+ await input(find(u,'عدد الدروس'),'');assert.equal(find(u,'عدد الدروس').value,'');assert.equal(u.container.querySelector('[aria-label="خطة إعداد الأسبوع"]'),null);assert.equal(u.calls.dirty.at(-1),true);
  await click(button(u,'معاينة التغييرات'));await input(find(u,'اسم الفترة 1'),'Edited');assert.equal(u.container.querySelector('[aria-label="خطة إعداد الأسبوع"]'),null);
  await click(button(u,'معاينة التغييرات'));await input(find(u,'طريقة التطبيق'),'update_matching_keep_extra');assert.equal(u.container.querySelector('[aria-label="خطة إعداد الأسبوع"]'),null);
 });
@@ -109,11 +109,11 @@ test('behavior: individual customization stays reachable without copying/saving 
 
 test('behavior: per-day count editor targets one day, derives start/duration and exposes deactivation preview',async t=>{
  const u=await mount(t),card=find(u,'ملخص الأحد');
- await click([...card.querySelectorAll('button')].find(b=>b.textContent==='عدد حصص هذا اليوم'));
- assert.equal(find(u,'بداية الدوام').value,'08:00');assert.equal(find(u,'المدة الافتراضية للحصة').value,'40');
- assert.equal(find(u,'عدد الحصص').value,'4');assert.equal(find(u,'استهداف الأحد').checked,true);assert.equal(find(u,'استهداف الاثنين').disabled,true);
+ await click([...card.querySelectorAll('button')].find(b=>b.textContent==='عدد دروس هذا اليوم'));
+ assert.equal(find(u,'بداية الدوام').value,'08:00');assert.equal(find(u,'المدة الافتراضية للدرس').value,'40');
+ assert.equal(find(u,'عدد الدروس').value,'4');assert.equal(find(u,'استهداف الأحد').checked,true);assert.equal(find(u,'استهداف الاثنين').disabled,true);
  assert.match(u.container.textContent,/عند التقليل ستظهر الفترات الزائدة كغير نشطة/);
- await input(find(u,'عدد الحصص'),'2');await click(button(u,'توليد الفترات'));await click(button(u,'معاينة التغييرات'));
+ await input(find(u,'عدد الدروس'),'2');await click(button(u,'توليد الفترات'));await click(button(u,'معاينة التغييرات'));
  assert.equal(u.calls.preview[0].mode,'configure_day');assert.deepEqual(u.calls.preview[0].targets,[{day_of_week:0,activate_day:false}]);assert.equal(u.calls.preview[0].template.filter(p=>p.slot_type==='lesson').length,2);
  assert.match(find(u,'خطة إعداد الأسبوع').textContent,/غير نشطة/);assert.equal(u.calls.apply.length,0);
 });

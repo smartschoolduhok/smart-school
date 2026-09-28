@@ -46,7 +46,7 @@ test('proposal uses the Master Timetable visual concepts including placements, b
 
 test('missing teachers and unresolved demand are visible', () => {
   assert.match(componentSource, /بدون مدرس/);
-  assert.match(componentSource, /حصص لم يتمكن النظام من جدولتها/);
+  assert.match(componentSource, /دروس لم يتمكن النظام من جدولتها/);
   assert.match(solverSource, /reason_codes: codes/);
   assert.match(componentSource, /item\.reasons/);
 });

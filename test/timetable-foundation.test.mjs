@@ -21,6 +21,7 @@ const migration = readMigration('0023_timetable_foundation.sql');
 const availabilityMigration = readMigration('0024_teacher_timetable_constraints.sql');
 const entriesMigration = readMigration('0025_timetable_entries.sql');
 const teacherCollisionVisibilityMigration = readMigration('0037_timetable_teacher_collision_visibility.sql');
+const savedLessonTimeMigration = readMigration('0047_timetable_edit_saved_lesson_times.sql');
 
 function insertId(database, sql, ...params) {
   return Number(database.prepare(`${sql} RETURNING id`).get(...params).id);
@@ -112,6 +113,20 @@ function addLoad(database, {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `, schoolId, yearId, classId, sectionId, subjectId, employeeId, weeklyPeriods, status);
 }
+
+test('saved lesson bell times can change without moving or deactivating the lesson', () => {
+  const database = createFixture();
+  database.exec(savedLessonTimeMigration);
+  addDay(database);
+  const slotId = addSlot(database);
+  const loadId = addLoad(database);
+  database.prepare('INSERT INTO timetable_entries (school_id, academic_year_id, slot_id, teaching_load_id) VALUES (1, 1, ?, ?)').run(slotId, loadId);
+  database.prepare("UPDATE timetable_slots SET start_time = '08:05', end_time = '08:45' WHERE id = ?").run(slotId);
+  assert.equal(database.prepare('SELECT start_time FROM timetable_slots WHERE id = ?').get(slotId).start_time, '08:05');
+  assert.throws(() => database.prepare('UPDATE timetable_slots SET lesson_number = 2 WHERE id = ?').run(slotId));
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM timetable_entries WHERE slot_id = ?').get(slotId).count, 1);
+  database.close();
+});
 
 test('0037 permits teacher overlap while retaining the other entry validation triggers', () => {
   const database = createFixture();
