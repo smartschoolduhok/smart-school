@@ -345,19 +345,34 @@ export interface TimetableSubjectColor {
 }
 
 const TIMETABLE_SUBJECT_PALETTE: readonly TimetableSubjectColor[] = [
-  { background: '#dbeafe', border: '#60a5fa', foreground: '#1e3a8a' },
-  { background: '#dcfce7', border: '#4ade80', foreground: '#14532d' },
-  { background: '#fef3c7', border: '#fbbf24', foreground: '#78350f' },
-  { background: '#fce7f3', border: '#f472b6', foreground: '#831843' },
-  { background: '#ede9fe', border: '#a78bfa', foreground: '#4c1d95' },
-  { background: '#cffafe', border: '#22d3ee', foreground: '#164e63' },
-  { background: '#ffedd5', border: '#fb923c', foreground: '#7c2d12' },
-  { background: '#e0e7ff', border: '#818cf8', foreground: '#312e81' },
-  { background: '#ccfbf1', border: '#2dd4bf', foreground: '#134e4a' },
-  { background: '#fae8ff', border: '#d946ef', foreground: '#701a75' },
-  { background: '#ecfccb', border: '#a3e635', foreground: '#365314' },
-  { background: '#fee2e2', border: '#f87171', foreground: '#7f1d1d' },
+  { background: '#dbeafe', border: '#2563eb', foreground: '#172554' },
+  { background: '#d1fae5', border: '#059669', foreground: '#064e3b' },
+  { background: '#fef3c7', border: '#d97706', foreground: '#78350f' },
+  { background: '#fce7f3', border: '#db2777', foreground: '#831843' },
+  { background: '#ede9fe', border: '#7c3aed', foreground: '#4c1d95' },
+  { background: '#cffafe', border: '#0891b2', foreground: '#164e63' },
+  { background: '#ffedd5', border: '#ea580c', foreground: '#7c2d12' },
+  { background: '#e0e7ff', border: '#4f46e5', foreground: '#312e81' },
+  { background: '#ccfbf1', border: '#0d9488', foreground: '#134e4a' },
+  { background: '#fae8ff', border: '#c026d3', foreground: '#701a75' },
+  { background: '#ecfccb', border: '#65a30d', foreground: '#365314' },
+  { background: '#fee2e2', border: '#dc2626', foreground: '#7f1d1d' },
+  { background: '#dcfce7', border: '#16a34a', foreground: '#14532d' },
+  { background: '#e0f2fe', border: '#0284c7', foreground: '#0c4a6e' },
+  { background: '#fef9c3', border: '#ca8a04', foreground: '#713f12' },
+  { background: '#ffe4e6', border: '#e11d48', foreground: '#881337' },
 ] as const;
+
+// Keep common school subjects distinct even when their names hash to the same
+// palette bucket. Unknown subjects still receive a deterministic color.
+const TIMETABLE_COMMON_SUBJECT_COLORS: Readonly<Record<string, number>> = {
+  'اللغة العربية': 0, 'الرياضيات': 1, 'اللغة الانكليزية': 2,
+  'التربية الاخلاقية': 3, 'الاسلامية': 4, 'التربية الاسلامية': 4,
+  'اللغة الكردية': 5, 'اللغة الفرنسية': 6, 'الحاسوب': 7,
+  'الاجتماعيات': 8, 'الفنية': 9, 'التربية الفنية': 9,
+  'الرياضة': 10, 'التربية الرياضية': 10, 'جرائم البعث': 11,
+  'الاحياء': 12, 'الفيزياء': 13, 'الكيمياء': 14, 'المسيحية': 15,
+};
 
 export function timetablePlacementKey(placement: Pick<TimetablePlacement, 'class_id' | 'section_id'>) {
   return `${Number(placement.class_id)}:${placement.section_id == null ? 'none' : Number(placement.section_id)}`;
@@ -432,7 +447,17 @@ export function timetableSubjectColorForSubject(
   schoolId: number | string,
   subjectName: string,
 ): TimetableSubjectColor {
-  return timetableSubjectColor(timetableSubjectVisualKey(schoolId, subjectName));
+  const key = normalizeTimetableSubjectVisualKey(subjectName);
+  const commonColorIndex = TIMETABLE_COMMON_SUBJECT_COLORS[key];
+  return commonColorIndex == null
+    ? timetableSubjectColor(timetableSubjectVisualKey(schoolId, subjectName))
+    : TIMETABLE_SUBJECT_PALETTE[commonColorIndex];
+}
+
+export function timetablePrintSlotLabel(slot: Pick<TimetableSlot, 'label' | 'lesson_number'>): string {
+  if (slot.lesson_number == null) return slot.label;
+  const numberedLesson = `الدرس ${slot.lesson_number}`;
+  return slot.label.trim() === numberedLesson ? numberedLesson : `${slot.label} — ${numberedLesson}`;
 }
 
 export interface TimetableSubjectOption {

@@ -69,7 +69,7 @@ const PENALTY_LABELS: Record<keyof TimetableSolverPenaltyBreakdown, string> = {
   teacher_gaps: 'فجوات جدول المدرس',
   first_period_preferences: 'تفضيل تجنب الدرس الأول',
   last_period_preferences: 'تفضيل تجنب الدرس الأخير',
-  subject_clustering: 'تجميع المادة في يوم واحد',
+  subject_clustering: 'تفضيل توزيع المادة على أيام مختلفة',
   consecutive_same_subject: 'تكرار متتالٍ للمادة',
   class_daily_imbalance: 'عدم توازن الحمل اليومي',
   early_light_subjects: 'المواد الخفيفة في بداية اليوم',
@@ -179,6 +179,22 @@ export function AutomaticTimetableTab({
   const scopeRef = useRef({ schoolId, academicYearId, dataVersion });
   scopeRef.current = { schoolId, academicYearId, dataVersion };
   const [result, setResult] = useState<TimetableSolverProposalWithIntegrity | null>(null);
+  const fiveDaySpreadExceptions = useMemo(() => {
+    if (!result || result.status !== 'complete') return [];
+    const activeDays = result.days.filter(day => Number(day.is_active) === 1).map(day => Number(day.day_of_week));
+    if (activeDays.length !== 5) return [];
+    const byLoad = new Map<number, typeof result.entries>();
+    for (const entry of result.entries) {
+      const current = byLoad.get(entry.teaching_load_id) || [];
+      current.push(entry);
+      byLoad.set(entry.teaching_load_id, current);
+    }
+    return [...byLoad.values()].filter(entries => entries.length === 5
+      && new Set(entries.map(entry => entry.day_of_week)).size < 5).map(entries => ({
+        label: `${entries[0].class_name}${entries[0].section_name ? ` / ${entries[0].section_name}` : ''} — ${entries[0].subject_name}`,
+        missingDays: activeDays.filter(day => !entries.some(entry => entry.day_of_week === day)),
+      }));
+  }, [result]);
   const [adoptionPreview, setAdoptionPreview] = useState<TimetableAdoptionPreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -438,6 +454,14 @@ export function AutomaticTimetableTab({
           {result.warnings.map((warning, index) => (
             <div key={`${warning}:${index}`} className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><AlertTriangle size={18} className="mt-0.5 shrink-0" />{warning}</div>
           ))}
+
+          {fiveDaySpreadExceptions.length > 0 && <details className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+            <summary className="cursor-pointer font-bold">تفضيل درس يوميًا لم يتحقق في {fiveDaySpreadExceptions.length} مواد ذات خمسة دروس أسبوعيًا</summary>
+            <p className="mt-2">هذه ملاحظة لتحسين التوزيع وليست مخالفة أو مانعًا لاعتماد الجدول. يمكن مراجعة توفر المدرسين والدروس المثبتة عند الرغبة بتحسينها.</p>
+            <ul className="mt-2 list-inside list-disc space-y-1">
+              {fiveDaySpreadExceptions.map(item => <li key={item.label}>{item.label}: بلا درس في {item.missingDays.map(day => TIMETABLE_DAY_NAMES[day]).join('، ')}</li>)}
+            </ul>
+          </details>}
 
           <section className="rounded-xl border border-gray-200 bg-white p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">

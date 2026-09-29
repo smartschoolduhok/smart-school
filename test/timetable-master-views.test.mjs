@@ -8,6 +8,7 @@ import {
   normalizeTimetableSubjectVisualKey,
   timetableEntryForPlacement,
   timetablePlacementKey,
+  timetablePrintSlotLabel,
   timetableSubjectColor,
   timetableSubjectColorForSubject,
   timetableSubjectVisualKey,
@@ -118,6 +119,13 @@ test('logical subject colors are deterministic across different subject row ids'
   assert.ok((viewSource.match(/<SubjectCell/g) || []).length >= 2);
 });
 
+test('printed lesson label does not repeat a stored numbered lesson', () => {
+  assert.equal(timetablePrintSlotLabel({label: 'الدرس 1', lesson_number: 1}), 'الدرس 1');
+  assert.equal(timetablePrintSlotLabel({label: ' مختبر ', lesson_number: 2}), ' مختبر  — الدرس 2');
+  assert.equal(timetablePrintSlotLabel({label: 'استراحة', lesson_number: null}), 'استراحة');
+  assert.match(viewSource, /timetablePrintSlotLabel\(slot\)/);
+});
+
 test('subject palette maintains readable text contrast for representative visual keys', () => {
   function luminance(hex) {
     const channels = hex.match(/[a-f\d]{2}/gi).map((value) => Number.parseInt(value, 16) / 255)
@@ -133,10 +141,19 @@ test('subject palette maintains readable text contrast for representative visual
     const color = timetableSubjectColor(`1:subject-${index}`);
     colors.set(color.background, color);
   }
-  assert.equal(colors.size, 12);
+  assert.equal(colors.size, 16);
   for (const color of colors.values()) {
     assert.ok(contrast(color.background, color.foreground) >= 4.5, JSON.stringify(color));
   }
+});
+
+test('common subjects in the school have distinct printed color signatures', () => {
+  const names = ['الاجتماعيات', 'الاحياء', 'الاسلامية', 'التربية الاخلاقية', 'الحاسوب',
+    'الرياضة', 'الرياضيات', 'الفنية', 'الفيزياء', 'الكيمياء', 'اللغة الانكليزية',
+    'اللغة العربية', 'اللغة الفرنسية', 'اللغة الكردية', 'المسيحية', 'جرائم البعث'];
+  const colors = names.map(name => timetableSubjectColorForSubject(3, name));
+  assert.equal(new Set(colors.map(color => `${color.background}:${color.border}`)).size, names.length);
+  assert.match(cssSource, /border-inline-start-width: 4px/);
 });
 
 test('subject legend deduplicates by normalized school-scoped visual key', () => {
