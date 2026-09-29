@@ -17,7 +17,14 @@ async function call(f,method,path,input){const r=await app.request('http://local
 function legacy(t,change=''){
  const f=financeFixture(t,{through:'0027',legacy:legacyFinanceSQL.replaceAll('60000','20000')});
  f.db.exec("UPDATE fee_receipts SET status='cancelled';"+change);
- for(const file of migrationFiles.filter(file=>file.slice(0,4)>'0027'))f.db.exec(migrationSQL(file));return f;
+ // Match Wrangler/D1's per-migration transaction. Populated parent-table
+ // rebuilds defer foreign keys until that transaction completes.
+ for(const file of migrationFiles.filter(file=>file.slice(0,4)>'0027')) {
+  f.db.exec('BEGIN');
+  try {f.db.exec(migrationSQL(file));f.db.exec('COMMIT');}
+  catch(error){f.db.exec('ROLLBACK');throw error;}
+ }
+ return f;
 }
 test('review 1: exact fresh migrations then repository seed succeeds without weakening triggers',async t=>{
  const db=new DatabaseSync(':memory:');t.after(()=>db.close());db.exec('PRAGMA foreign_keys=ON');
