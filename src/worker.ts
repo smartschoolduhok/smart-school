@@ -290,6 +290,7 @@ import {
   validateScopedTimetableSchedule,
   validateRestorableTimetableSchedule,
   type TimetableAdoptionPreview,
+  type TimetableClearPreview,
   type TimetableProposalPlacement,
   type TimetableRestorePreview,
   type TimetableScheduleVersion,
@@ -1141,7 +1142,7 @@ async function replaceOfficialTimetableAtomically(input: {
   entries: TimetableProposalPlacement[];
   preflightContext: Pick<TimetableSchedulingContext, 'loads' | 'entries'>;
   userId: number;
-  source: 'automatic_adoption' | 'manual_restore';
+  source: TimetableScheduleVersion['source'];
   restoredFromVersionId?: number | null;
   replaceLoadIds?: number[];
   generationScope?: TimetableScope;
@@ -3691,6 +3692,83 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
     const conflict = timetableEntryConstraintError(error)
     if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
     return c.json({ error: 'فشل في اعتماد الجدول ولم يتم تغيير الجدول الحالي' }, 500)
+  }
+})
+
+async function loadTimetableClearPreview(db: D1Database, schoolId: number, academicYearId: number) {
+  // Counts and revision share one SQLite read snapshot, including inactive lessons.
+  return db.prepare(`
+    SELECT year.school_id, year.id AS academic_year_id, school.name AS school_name,
+      year.name AS academic_year_name,
+      COALESCE((SELECT revision FROM timetable_revisions WHERE school_id = ?1 AND academic_year_id = ?2), 0) AS revision,
+      (SELECT COUNT(*) FROM timetable_entries WHERE school_id = ?1 AND academic_year_id = ?2) AS entry_count,
+      (SELECT COUNT(*) FROM timetable_entries WHERE school_id = ?1 AND academic_year_id = ?2 AND is_locked = 1) AS locked_entry_count,
+      (SELECT COUNT(*) FROM lesson_attendance_sessions session
+        JOIN timetable_entries entry ON entry.id = session.timetable_entry_id
+          AND entry.school_id = session.school_id AND entry.academic_year_id = session.academic_year_id
+        WHERE session.school_id = ?1 AND session.academic_year_id = ?2 AND session.status = 'draft') AS pending_attendance_count
+    FROM academic_years year JOIN schools school ON school.id = year.school_id
+    WHERE year.school_id = ?1 AND year.id = ?2
+  `).bind(schoolId, academicYearId).first<TimetableClearPreview>()
+}
+
+app.post('/api/timetable/clear-preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, ['school_id', 'academic_year_id'])
+    || !Number.isSafeInteger(body.academic_year_id) || Number(body.academic_year_id) <= 0) {
+    return c.json({ error: 'بيانات معاينة التفريغ غير صالحة' }, 400)
+  }
+  const target = await resolveActiveWriteSchool(c.env.DB, c.get('user') as UserContext, body.school_id)
+  if (!target.ok) return c.json({ error: target.error, code: 'invalid_tenant_scope' }, target.status)
+  try {
+    const preview = await loadTimetableClearPreview(c.env.DB, target.schoolId, Number(body.academic_year_id))
+    if (!preview) return c.json({ error: 'السنة الدراسية لا تتبع المدرسة المحددة' }, 400)
+    return c.json({ data: preview })
+  } catch {
+    return c.json({ error: 'فشل في معاينة تفريغ الجدول' }, 500)
+  }
+})
+
+app.post('/api/timetable/clear', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'expected_revision', 'confirm_clear'])
+    || !Number.isSafeInteger(body.academic_year_id) || Number(body.academic_year_id) <= 0
+    || !Number.isSafeInteger(body.expected_revision) || Number(body.expected_revision) < 0) {
+    return c.json({ error: 'بيانات تفريغ الجدول غير صالحة؛ أعد فتح المعاينة' }, 400)
+  }
+  if (body.confirm_clear !== true) return c.json({ error: 'يلزم تأكيد أرشفة وتفريغ الجدول الحالي' }, 400)
+  const user = c.get('user') as UserContext
+  const target = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!target.ok) return c.json({ error: target.error, code: 'invalid_tenant_scope' }, target.status)
+  const academicYearId = Number(body.academic_year_id)
+  const expectedRevision = Number(body.expected_revision)
+  try {
+    const preview = await loadTimetableClearPreview(c.env.DB, target.schoolId, academicYearId)
+    if (!preview) return c.json({ error: 'السنة الدراسية لا تتبع المدرسة المحددة' }, 400)
+    if (preview.revision !== expectedRevision) {
+      return c.json({ error: 'تغيّر الجدول أو إعداداته بعد المعاينة. أعد فتح معاينة التفريغ.', code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
+    }
+    if (preview.pending_attendance_count > 0) {
+      return c.json({ error: 'توجد مسودات حضور مرتبطة بالدروس الحالية. أكملها أو ألغها ثم أعد معاينة التفريغ.', code: 'pending_attendance_drafts' }, 409)
+    }
+    if (preview.entry_count === 0) return c.json({ data: { cleared: false, revision: preview.revision, previous_version: null } })
+    const digest = await computeTimetableProposalDigest({ schoolId: target.schoolId, academicYearId, revision: expectedRevision, entries: [] })
+    const cleared = await replaceOfficialTimetableAtomically({
+      db: c.env.DB, schoolId: target.schoolId, academicYearId, expectedRevision, digest,
+      entries: [], userId: user.id, source: 'manual_clear',
+      // Clearing makes no placement/dormant-load decisions and must also work with invalid references.
+      preflightContext: { loads: [], entries: [] },
+    })
+    return c.json({ data: { cleared: true, revision: cleared.revision, previous_version: cleared.version } })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/stale_timetable_proposal/i.test(message)) {
+      return c.json({ error: 'تغيّر الجدول أو إعداداته بعد المعاينة. أعد فتح معاينة التفريغ.', code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
+    }
+    if (/timetable clear draft attendance pending/i.test(message)) {
+      return c.json({ error: 'توجد مسودات حضور مرتبطة بالدروس الحالية. أكملها أو ألغها ثم أعد معاينة التفريغ.', code: 'pending_attendance_drafts' }, 409)
+    }
+    return c.json({ error: 'فشلت أرشفة وتفريغ الجدول؛ بقي الجدول الحالي دون تغيير' }, 500)
   }
 })
 
