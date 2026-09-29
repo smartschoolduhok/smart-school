@@ -44,6 +44,7 @@ jobs:
           npm run test:week-setup:local
           npm run test:teaching-load-matrix:local
           npm run test:timetable-parallel:local
+          npm run test:timetable-clear:local
           npm run test:school-workflows:local
 
       - name: Validate fresh local D1 seed

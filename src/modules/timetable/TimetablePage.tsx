@@ -52,6 +52,7 @@ import { AutomaticTimetableTab } from './AutomaticTimetableTab';
 import { MasterTimetableTab } from './MasterTimetableTab';
 import { TimetableGridTab } from './TimetableGridTab';
 import { TimetableVersionsTab } from './TimetableVersionsTab';
+import { ClearTimetableButton } from './ClearTimetableButton';
 import { TeachingLoadMatrixTab } from './TeachingLoadMatrixTab';
 import { ParallelLoadField } from './ParallelLoadField';
 import { TimetableLoadDiagnostics } from './TimetableLoadDiagnostics';
@@ -590,6 +591,16 @@ export default function TimetablePage() {
               </div>
 
               {loading && <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-500">جاري تحميل إعدادات الجدول...</div>}
+
+              {!loading && academicYearMatchesSchool && activeWorkflow === 'current' && (
+                <ClearTimetableButton key={`${schoolId}:${academicYearId}`} schoolId={schoolId} academicYearId={academicYearId}
+                  onCleared={async (versionId) => {
+                    if (!scopeIsCurrent(schoolId, academicYearId)) return;
+                    setSuccess(versionId == null ? 'الجدول فارغ وجاهز للتوليد.' : `تم تفريغ الجدول وحفظ النسخة رقم ${versionId} في السجل والإصدارات. يمكنك الآن توليد جدول جديد.`);
+                    setTab('automatic');
+                    await reloadYearData();
+                  }} />
+              )}
 
               {tab === 'week' && schoolId != null && academicYearId != null && (
                 <WeekSetupTab key={`${schoolId}:${academicYearId}`} schoolId={schoolId} academicYearId={academicYearId}

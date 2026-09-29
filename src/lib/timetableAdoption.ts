@@ -97,7 +97,7 @@ export interface TimetableScheduleVersion {
   id: number;
   school_id: number;
   academic_year_id: number;
-  source: 'automatic_adoption' | 'manual_restore';
+  source: 'automatic_adoption' | 'manual_restore' | 'manual_clear';
   previous_revision: number;
   created_by_user_id: number | null;
   created_by_name: string | null;
@@ -137,6 +137,17 @@ export interface TimetableValidationContext {
   availability: TimetableTeacherAvailabilityOverride[];
   constraints: TimetableTeacherConstraints[];
   currentEntries?: TimetableEntry[];
+}
+
+export interface TimetableClearPreview {
+  school_id: number;
+  academic_year_id: number;
+  school_name: string;
+  academic_year_name: string;
+  revision: number;
+  entry_count: number;
+  locked_entry_count: number;
+  pending_attendance_count: number;
 }
 
 function currentDemandContext(context: TimetableValidationContext, proposed: TimetableProposalPlacement[]): TimetableValidationContext {

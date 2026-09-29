@@ -24,6 +24,7 @@ interface TimetableVersionsTabProps {
 const SOURCE_LABELS: Record<TimetableScheduleVersion['source'], string> = {
   automatic_adoption: 'اعتماد تلقائي',
   manual_restore: 'استعادة يدوية',
+  manual_clear: 'أرشفة وتفريغ',
 };
 
 function formatTimestamp(value: number) {

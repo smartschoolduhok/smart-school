@@ -102,6 +102,7 @@ import type {
 } from './timetable';
 import type {
   TimetableAdoptionPreview,
+  TimetableClearPreview,
   TimetableProposalPlacement,
   TimetableRestorePreview,
   TimetableScheduleVersion,
@@ -841,6 +842,23 @@ export function moveTimetableEntry(id: number, data: {
     code?: string;
     status?: number;
   }>;
+}
+
+export function previewTimetableClear(schoolId: number, academicYearId: number) {
+  return fetchApi<TimetableClearPreview>('/api/timetable/clear-preview', {
+    method: 'POST', body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+  });
+}
+
+export function archiveAndClearTimetable(data: {
+  school_id: number;
+  academic_year_id: number;
+  expected_revision: number;
+  confirm_clear: true;
+}) {
+  return fetchApi<{ cleared: boolean; revision: number; previous_version: TimetableScheduleVersion | null }>(
+    '/api/timetable/clear', { method: 'POST', body: JSON.stringify(data) },
+  );
 }
 
 export function replaceTimetableEntry(id: number, data: {
