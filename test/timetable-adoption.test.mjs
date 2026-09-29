@@ -91,6 +91,30 @@ function validationContext(overrides = {}) {
   return { schoolId: 1, academicYearId: 1, days, slots, loads: [load(1), load(2)], availability: [], constraints: [], ...overrides };
 }
 
+test('archived placement demand stays dormant without weakening checks for scheduled or restored references', () => {
+  const active = load(1);
+  const dormant = load(2, {section_id: 20, section_name: 'Archived section', section_status: 'archived',
+    section_school_id: 1, section_class_id: 2, employee_status: 'archived'});
+  const entries = [1, 3].map(slot_id => ({slot_id, teaching_load_id: 1, is_locked: 0}));
+  const context = validationContext({loads: [active, dormant]});
+  const valid = validateCompleteTimetableSchedule(context, entries);
+  assert.equal(valid.complete, true);
+  assert.equal(valid.required_periods, 2);
+  assert.equal(validateRestorableTimetableSchedule(context, entries).weekly_demand.current_demand_complete, true);
+  const scheduledArchived = {slot_id: 2, teaching_load_id: 2, is_locked: 0};
+  for (const invalid of [
+    validateCompleteTimetableSchedule(context, [...entries, scheduledArchived]),
+    validateCompleteTimetableSchedule({...context, currentEntries: [scheduledArchived]}, entries),
+    validateCompleteTimetableSchedule({...context, loads: [active, {...dormant, section_status: 'active'}]}, entries),
+    validateCompleteTimetableSchedule({...context, loads: [active, {...dormant, subject_class_id: 999}]}, entries),
+  ]) {
+    assert.equal(invalid.complete, false);
+    assert.ok(invalid.blockers.some(blocker => blocker.code === 'invalid_teaching_load'));
+  }
+  assert.equal(validateRestorableTimetableSchedule(context, [...entries, scheduledArchived]).structurally_valid, false);
+  assert.equal(dormant.status, 'active', 'history and restore intent are not mutated');
+});
+
 test('parallel subjects occupy two section lessons while preserving four independent teacher entries',()=>{
  const primary=load(1),companion=load(2,{class_id:1,subject_class_id:1,parallel_with_load_id:1});
  const context=validationContext({loads:[primary,companion]});

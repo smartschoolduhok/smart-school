@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
 import { createServer } from 'vite';
 import { signJWT } from '../src/lib/jwtSecurity.ts';
+import { solvePreparedTimetable } from '../src/lib/timetableSolverPrepared.ts';
+import { computeTimetableProposalDigest } from '../src/lib/timetableAdoption.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -210,4 +212,85 @@ test('invalid archived-teacher demand is exposed and never proposed', async () =
   assert.equal(data.readiness.invalid_load_count, 1);
   assert.equal(data.entries.some((entry) => entry.teaching_load_id === 1), false);
   assert.ok(data.unscheduled.some((item) => item.teaching_load_id === 1 && item.reason_codes.includes('invalid_teaching_load')));
+});
+
+async function prepare(context, token, body) {
+  return app.request('http://localhost/api/timetable/solver/prepare', {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, context.env);
+}
+
+async function adoptionPreview(context, data) {
+  return app.request('http://localhost/api/timetable/solver/adoption-preview', {
+    method: 'POST', headers: { Authorization: `Bearer ${context.tokens.owner}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({school_id: 1, academic_year_id: 1, proposal_revision: data.timetable_revision,
+      proposal_digest: data.proposal_digest, generation_scope: data.generation_scope,
+      scope_load_ids: data.scope_load_ids, scope_token: data.scope_token,
+      entries: data.entries.map(({slot_id, teaching_load_id, is_locked}) => ({slot_id, teaching_load_id, is_locked}))}),
+  }, context.env);
+}
+
+test('browser preparation is read-only and a locally generated proposal passes authoritative adoption validation', async () => {
+  const context = await fixture();
+  const before = tableCounts(context.database);
+  context.d1.sqlLog = [];
+  const response = await prepare(context, context.tokens.owner, {school_id: 1, academic_year_id: 1});
+  assert.equal(response.status, 200);
+  const prepared = (await response.json()).data;
+  assert.equal(prepared.input.schoolId, 1);
+  assert.equal(prepared.input.academicYearId, 1);
+  assert.deepEqual(prepared.input.loads.map(load => load.id), [1, 2]);
+  assert.equal(Object.hasOwn(prepared, 'entries'), false, 'server prepares inputs without running search');
+  assert.equal(context.d1.sqlLog.some(sql => /^\s*(INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|REPLACE)\b/i.test(sql)), false);
+  const proposal = await solvePreparedTimetable(prepared);
+  assert.equal(proposal.status, 'complete');
+  const verified = await adoptionPreview(context, proposal);
+  assert.equal(verified.status, 200);
+  assert.equal((await verified.json()).data.can_apply, true);
+  assert.deepEqual(tableCounts(context.database), before);
+});
+
+test('browser preparation enforces school, year, management roles and the closed request schema', async () => {
+  const context = await fixture();
+  for (const role of ['teacher', 'accountant']) {
+    assert.equal((await prepare(context, context.tokens[role], {school_id: 1, academic_year_id: 1})).status, 403);
+  }
+  assert.equal((await prepare(context, context.tokens.owner, {school_id: 2, academic_year_id: 2})).status, 403);
+  assert.equal((await prepare(context, context.tokens.admin, {school_id: 1, academic_year_id: 2})).status, 403);
+  assert.equal((await prepare(context, context.tokens.admin, {academic_year_id: 1})).status, 400);
+  assert.equal((await prepare(context, context.tokens.owner, {school_id: 1, academic_year_id: 1, loads: []})).status, 400);
+  assert.equal((await prepare(context, context.tokens.principal, {school_id: 1, academic_year_id: 1})).status, 200);
+});
+
+test('scoped browser generation preserves outside lessons and scope proof remains server-issued', async () => {
+  const context = await fixture();
+  context.database.prepare('INSERT INTO timetable_entries (school_id, academic_year_id, slot_id, teaching_load_id) VALUES (1, 1, 1, 2)').run();
+  const response = await prepare(context, context.tokens.owner, {school_id: 1, academic_year_id: 1, generation_scope: {kind: 'class', class_id: 1}});
+  assert.equal(response.status, 200);
+  const prepared = (await response.json()).data;
+  assert.deepEqual(prepared.scope_load_ids, [1]);
+  assert.equal(typeof prepared.scope_token, 'string');
+  assert.deepEqual(prepared.input.fixedEntries, [{slot_id: 1, teaching_load_id: 2, is_locked: 0}]);
+  const proposal = await solvePreparedTimetable(prepared);
+  assert.ok(proposal.entries.some(entry => entry.teaching_load_id === 2 && entry.slot_id === 1 && entry.is_preserved));
+  assert.equal((await (await adoptionPreview(context, proposal)).json()).data.can_apply, true);
+  const forgedToken = proposal.scope_token.slice(0, -1) + (proposal.scope_token.endsWith('0') ? '1' : '0');
+  const tampered = await adoptionPreview(context, {...proposal, scope_token: forgedToken});
+  assert.equal(tampered.status, 409);
+});
+
+test('a browser proposal cannot bypass server validation by recomputing its digest', async () => {
+  const context = await fixture();
+  const prepared = (await (await prepare(context, context.tokens.owner, {school_id: 1, academic_year_id: 1})).json()).data;
+  const proposal = await solvePreparedTimetable(prepared);
+  // A valid digest is integrity metadata, not permission to schedule foreign or conflicting loads.
+  proposal.entries[0] = {...proposal.entries[0], teaching_load_id: 3};
+  proposal.proposal_digest = await computeTimetableProposalDigest({schoolId: 1, academicYearId: 1,
+    revision: proposal.timetable_revision, entries: proposal.entries, generationScope: proposal.generation_scope});
+  const response = await adoptionPreview(context, proposal);
+  assert.equal(response.status, 200);
+  const result = (await response.json()).data;
+  assert.equal(result.can_apply, false);
+  assert.ok(result.blockers.some(blocker => blocker.code === 'invalid_teaching_load'));
 });

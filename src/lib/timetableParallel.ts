@@ -85,13 +85,34 @@ export function parallelTimetableLoadGroup<T extends TimetableParallelLoad>(load
   return [primary, children[0]];
 }
 
+/** Build once for an immutable load snapshot, rather than rescanning it for each candidate slot. */
+export function indexTimetableParallelLoadGroups<T extends TimetableParallelLoad>(loads: readonly T[]): Map<number, T[]> {
+  const groups = new Map(loads.map(load => [load.id, [load]]));
+  const childrenByPrimary = new Map<number, T[]>();
+  for (const load of loads) {
+    const primaryId = linkedId(load);
+    if (load.status !== 'active' || primaryId == null) continue;
+    const children = childrenByPrimary.get(primaryId) ?? [];
+    children.push(load); childrenByPrimary.set(primaryId, children);
+  }
+  for (const primary of loads) {
+    if (primary.status !== 'active' || linkedId(primary) != null) continue;
+    const children = childrenByPrimary.get(primary.id);
+    if (children?.length !== 1 || childrenByPrimary.has(children[0].id) || !areParallelTimetableLoads(primary, children[0])) continue;
+    const pair = [primary, children[0]];
+    groups.set(primary.id, pair); groups.set(children[0].id, pair);
+  }
+  return groups;
+}
+
 /** Section occupancy, not teacher workload. Invalid links retain their full independent demand. */
 export function countTimetableSectionPeriods(loads: readonly TimetableParallelLoad[]): number {
   const seen = new Set<number>();
+  const groups = indexTimetableParallelLoadGroups(loads);
   let total = 0;
   for (const load of loads) {
     if (load.status !== 'active' || seen.has(load.id)) continue;
-    const group = parallelTimetableLoadGroup(load, loads);
+    const group = groups.get(load.id)!;
     for (const member of group) seen.add(member.id);
     total += Number(load.weekly_periods);
   }
@@ -112,6 +133,7 @@ export interface TimetableParallelEntryIssue {
 
 /** Counts actual section occupancy; malformed or unmatched entries never disappear. */
 export function countTimetableScheduledSectionPeriods(entries: readonly TimetableParallelEntry[], loads: readonly TimetableParallelLoad[]): number {
+  const groups = indexTimetableParallelLoadGroups(loads);
   const counts = new Map<string, number>();
   for (const entry of entries) {
     const key = `${entry.teaching_load_id}:${entry.slot_id}`;
@@ -119,7 +141,7 @@ export function countTimetableScheduledSectionPeriods(entries: readonly Timetabl
   }
   let total = entries.length;
   for (const load of loads) {
-    const group = parallelTimetableLoadGroup(load, loads);
+    const group = groups.get(load.id)!;
     if (group.length !== 2 || group[0].id !== load.id) continue;
     const slots = new Set(entries.filter(entry => entry.teaching_load_id === load.id).map(entry => entry.slot_id));
     for (const slotId of slots) total -= Math.min(counts.get(`${load.id}:${slotId}`) ?? 0, counts.get(`${group[1].id}:${slotId}`) ?? 0);
@@ -130,8 +152,9 @@ export function countTimetableScheduledSectionPeriods(entries: readonly Timetabl
 /** Complete schedules and adopted proposals must contain both pair members in every occupied slot. */
 export function validateTimetableParallelEntries(entries: readonly TimetableParallelEntry[], loads: readonly TimetableParallelLoad[]): TimetableParallelEntryIssue[] {
   const issues: TimetableParallelEntryIssue[] = [];
+  const groups = indexTimetableParallelLoadGroups(loads);
   for (const load of loads) {
-    const group = parallelTimetableLoadGroup(load, loads);
+    const group = groups.get(load.id)!;
     if (group.length !== 2 || group[0].id !== load.id) continue;
     const primary = entries.filter(entry => entry.teaching_load_id === group[0].id);
     const companion = entries.filter(entry => entry.teaching_load_id === group[1].id);

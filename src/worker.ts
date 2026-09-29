@@ -241,6 +241,7 @@ import {
 import {
   buildTeacherAvailabilityMatrix,
   buildTimetableReadiness,
+  dormantTimetableLoadIds,
   evaluateTimetableEntryPlacement,
   hasBlockingTimetableEntryConflict,
   isTimetableConstraintError,
@@ -278,7 +279,7 @@ import {
   type TimetableTeacherConstraints,
   type TimetableTeachingLoad,
 } from './lib/timetable'
-import { solveTimetable } from './lib/timetableSolver'
+import { solveTimetable, type TimetableSolverInput } from './lib/timetableSolver'
 import {
   STALE_TIMETABLE_PROPOSAL_CODE,
   STALE_TIMETABLE_PROPOSAL_MESSAGE,
@@ -1066,6 +1067,7 @@ async function buildTimetableAdoptionPreview(input: {
     loads: input.context.loads,
     availability: input.context.availability,
     constraints: input.context.constraints,
+    currentEntries: input.context.entries,
   };
   const validation = input.options.validationMode === 'complete'
     ? (() => {
@@ -1137,6 +1139,7 @@ async function replaceOfficialTimetableAtomically(input: {
   expectedRevision: number;
   digest: string;
   entries: TimetableProposalPlacement[];
+  preflightContext: Pick<TimetableSchedulingContext, 'loads' | 'entries'>;
   userId: number;
   source: 'automatic_adoption' | 'manual_restore';
   restoredFromVersionId?: number | null;
@@ -1144,14 +1147,53 @@ async function replaceOfficialTimetableAtomically(input: {
   generationScope?: TimetableScope;
 }) {
   const assertionToken = crypto.randomUUID();
+  const dormantAssertionToken = `${assertionToken}:dormant`;
   const versionKey = crypto.randomUUID();
   const unlockTokenPrefix = crypto.randomUUID();
   const canonicalEntries = canonicalTimetableProposalEntries(input.entries);
   const entriesJson = JSON.stringify(input.replaceLoadIds ? canonicalEntries.filter(entry => input.replaceLoadIds!.includes(entry.teaching_load_id)) : canonicalEntries);
   const scopeFilter = input.replaceLoadIds ? ' AND teaching_load_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))' : '';
   const scopeBindings = input.replaceLoadIds ? [JSON.stringify(input.replaceLoadIds)] : [];
+  const dormantIds = dormantTimetableLoadIds(input.preflightContext.loads,
+    [...input.preflightContext.entries, ...input.entries], input.schoolId, input.academicYearId);
+  const dormantReferenceSnapshot = input.preflightContext.loads.filter(load => dormantIds.has(load.id))
+    .sort((left, right) => left.id - right.id).map(load => [
+      load.id, load.school_id, load.academic_year_id, load.class_id, load.section_id, load.subject_id,
+      load.employee_id, load.weekly_periods, load.status, load.class_status, load.class_school_id,
+      Number(load.active_section_count || 0), load.section_status, load.section_school_id, load.section_class_id,
+      load.subject_status, load.subject_school_id, load.subject_class_id, load.subject_section_id,
+      load.employee_status, load.employee_school_id, load.employee_role, 0,
+    ]);
   const statements = [
     timetableRevisionAssertion(input.db, assertionToken, input.schoolId, input.academicYearId, input.expectedRevision, input.generationScope, input.replaceLoadIds),
+    // Archived placements have no timetable revision triggers. Assert the references that
+    // justified omitting their loads, inside the same transaction and before any archive writes.
+    ...(dormantReferenceSnapshot.length ? [input.db.prepare(`
+      INSERT INTO timetable_revision_assertions (token, school_id, academic_year_id, expected_revision)
+      SELECT ?1, ?2, ?3, CASE WHEN (
+        SELECT json_group_array(json(reference_row)) FROM (
+          SELECT json_array(
+            load.id, load.school_id, load.academic_year_id, load.class_id, load.section_id, load.subject_id,
+            load.employee_id, load.weekly_periods, load.status, class.status, class.school_id,
+            (SELECT COUNT(*) FROM sections WHERE school_id = load.school_id AND class_id = load.class_id AND status = 'active'),
+            section.status, section.school_id, section.class_id,
+            subject.status, subject.school_id, subject.class_id, subject.section_id,
+            employee.status, employee.school_id, employee.role,
+            (SELECT COUNT(*) FROM timetable_entries WHERE school_id = ?2 AND academic_year_id = ?3 AND teaching_load_id = load.id)
+          ) AS reference_row
+          FROM timetable_teaching_loads load
+          LEFT JOIN classes class ON class.id = load.class_id AND class.school_id = load.school_id
+          LEFT JOIN sections section ON section.id = load.section_id AND section.school_id = load.school_id
+          LEFT JOIN subjects subject ON subject.id = load.subject_id AND subject.school_id = load.school_id
+          LEFT JOIN employees employee ON employee.id = load.employee_id AND employee.school_id = load.school_id
+          WHERE load.school_id = ?2 AND load.academic_year_id = ?3
+            AND load.id IN (SELECT json_extract(value, '$[0]') FROM json_each(?5))
+          ORDER BY load.id
+        )
+      ) = ?5 THEN ?4 ELSE COALESCE((
+        SELECT revision FROM timetable_revisions WHERE school_id = ?2 AND academic_year_id = ?3
+      ), 0) + 1 END
+    `).bind(dormantAssertionToken, input.schoolId, input.academicYearId, input.expectedRevision, JSON.stringify(dormantReferenceSnapshot))] : []),
     input.db.prepare(`
       INSERT INTO timetable_schedule_versions (
         version_key, school_id, academic_year_id, source, previous_revision,
@@ -1220,7 +1262,7 @@ async function replaceOfficialTimetableAtomically(input: {
       ON CONFLICT(school_id, academic_year_id) DO UPDATE SET
         revision = revision + 1, updated_at = unixepoch()
     `).bind(input.schoolId, input.academicYearId),
-    input.db.prepare('DELETE FROM timetable_revision_assertions WHERE token = ?').bind(assertionToken),
+    input.db.prepare('DELETE FROM timetable_revision_assertions WHERE token IN (?, ?)').bind(assertionToken, dormantAssertionToken),
   ];
   await input.db.batch(statements);
   const [version, revision] = await Promise.all([
@@ -3434,7 +3476,7 @@ app.get('/api/timetable/teacher-workloads', requireSameSchoolOrAdmin(), requireR
   }
 })
 
-app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'], requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const body = await readJsonObject(c)
   if (!body) return c.json({ error: 'بيانات طلب التوليد غير صالحة' }, 400)
   if (!hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'fixed_entries', 'use_current_locked_entries', 'generation_scope'])) {
@@ -3480,7 +3522,7 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
     const solverLoads = scopedTimetableSolverLoads(context.loads, context.entries, generationScope)
     const scopeLoadIds = generationScope.kind === 'school' ? undefined
       : context.loads.filter(load => timetableLoadMatchesScope(load, generationScope)).map(load => load.id).sort((a, b) => a - b)
-    const solverData = solveTimetable({
+    const solverInput: TimetableSolverInput = {
       schoolId: targetSchool.schoolId,
       academicYearId,
       days: context.days,
@@ -3491,7 +3533,19 @@ app.post('/api/timetable/solver/preview', requireSameSchoolOrAdmin(), requireRol
       teacherAvailability: context.availability,
       teacherConstraints: context.constraints,
       fixedEntries,
-    })
+    }
+    // Search runs in a browser worker; adoption still validates all placements on the server.
+    if (c.req.path.endsWith('/prepare')) {
+      return c.json({ data: {
+        input: solverInput,
+        timetable_revision: timetableRevision,
+        generation_scope: generationScope,
+        ...(scopeLoadIds ? { scope_load_ids: scopeLoadIds, scope_token: await signTimetableScope({
+          schoolId: targetSchool.schoolId, academicYearId, revision: timetableRevision, scope: generationScope, loadIds: scopeLoadIds,
+        }, getValidatedJwtSecret(c.env.JWT_SECRET)) } : {}),
+      } })
+    }
+    const solverData = solveTimetable(solverInput)
     const proposalEntries = solverData.entries.map((entry) => ({
       slot_id: entry.slot_id,
       teaching_load_id: entry.teaching_load_id,
@@ -3615,6 +3669,7 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
       expectedRevision: revision,
       digest: parsed.digest,
       entries: parsed.entries,
+      preflightContext: context,
       userId: user.id,
       source: 'automatic_adoption',
       ...(parsed.scope.kind === 'school' ? {} : { generationScope: parsed.scope, replaceLoadIds: parsed.scopeLoadIds }),
@@ -3782,6 +3837,7 @@ app.post('/api/timetable/versions/:id/restore', requireSameSchoolOrAdmin(), requ
       expectedRevision,
       digest,
       entries,
+      preflightContext: context,
       userId: user.id,
       source: 'manual_restore',
       restoredFromVersionId: versionId,

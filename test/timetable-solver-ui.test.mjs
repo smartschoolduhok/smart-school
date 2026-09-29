@@ -23,7 +23,9 @@ test('proposal is explicitly labelled as an unapproved preview that does not mut
   for (const mutation of ['createTimetableEntry', 'moveTimetableEntry', 'deleteTimetableEntry']) {
     assert.doesNotMatch(componentSource, new RegExp(mutation));
   }
-  assert.match(apiSource, /previewAutomaticTimetable[\s\S]*\/api\/timetable\/solver\/preview/);
+  assert.match(apiSource, /prepareTimetableSolver[\s\S]*\/api\/timetable\/solver\/prepare/);
+  assert.match(componentSource, /solveTimetableInWorker/);
+  assert.doesNotMatch(componentSource, /previewAutomaticTimetable|\bsolveTimetable\(/);
 });
 
 test('automatic proposal protects against stale school, year, and data-version responses', () => {

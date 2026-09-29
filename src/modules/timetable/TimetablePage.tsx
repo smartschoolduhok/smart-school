@@ -41,6 +41,7 @@ import {
   TIMETABLE_DAY_NAMES,
   timetableYearBelongsToSchool,
   type TimetableDay,
+  type TimetableReadinessRow,
   type TimetableReadinessSummary,
   type TimetableSlot,
   type TimetableTeachingLoad,
@@ -53,6 +54,7 @@ import { TimetableGridTab } from './TimetableGridTab';
 import { TimetableVersionsTab } from './TimetableVersionsTab';
 import { TeachingLoadMatrixTab } from './TeachingLoadMatrixTab';
 import { ParallelLoadField } from './ParallelLoadField';
+import { TimetableLoadDiagnostics } from './TimetableLoadDiagnostics';
 import { parallelTimetableLoadGroup } from '../../lib/timetableParallel';
 import { MATRIX_LEAVE_MESSAGE } from '../../lib/teachingLoadMatrix';
 import { WeekSetupTab } from './WeekSetupTab';
@@ -146,8 +148,22 @@ function Metric({ label, value, tone = 'blue' }: { label: string; value: number;
 function readinessLabel(status: string) {
   if (status === 'empty_week') return 'لا توجد سعة أسبوعية';
   if (status === 'over_capacity') return 'تجاوز السعة';
-  if (status === 'exact') return 'مكتمل';
-  return 'دروس غير موزعة';
+  if (status === 'exact') return 'النصاب مطابق للسعة';
+  return 'النصاب أقل من السعة';
+}
+
+export function TimetableReadinessStatus({ placement }: { placement: TimetableReadinessRow }) {
+  const blockedCapacity = placement.status === 'over_capacity' || placement.status === 'empty_week';
+  const needsReview = !placement.ready || placement.invalid_load_ids.length > 0
+    || placement.missing_teacher_load_ids.length > 0 || placement.missing_subjects.length > 0;
+  const distribution = needsReview ? 'تحتاج البيانات إلى مراجعة'
+    : placement.required_periods === 0 ? 'لا توجد دروس مطلوبة'
+      : placement.scheduled_periods === 0 ? 'لم يبدأ التوزيع'
+        : placement.remaining_periods > 0 ? 'توزيع جزئي' : 'مكتمل التوزيع';
+  return <>
+    <td className={`p-3 font-semibold ${blockedCapacity ? 'text-red-700' : placement.status === 'exact' ? 'text-blue-700' : 'text-amber-700'}`}>{readinessLabel(placement.status)}</td>
+    <td className={`p-3 font-semibold ${needsReview ? 'text-red-700' : placement.remaining_periods > 0 || placement.required_periods === 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{distribution}</td>
+  </>;
 }
 
 export default function TimetablePage() {
@@ -677,13 +693,14 @@ export default function TimetablePage() {
 
               {!loading && tab === 'readiness' && readiness && (
                 <div className="space-y-5">
+                  <TimetableLoadDiagnostics readiness={readiness} />
                   <div className={`flex items-center gap-3 rounded-xl border p-4 ${readiness.schedule_ready ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
                     {readiness.schedule_ready ? <CheckCircle2 /> : <AlertTriangle />}
                     <div><p className="font-bold">{readiness.schedule_ready ? 'الجدول مكتمل وجاهز' : 'توجد عناصر تحتاج إلى مراجعة'}</p><p className="text-sm">يجب توزيع كل الدروس المطلوبة ومعالجة المراجع والتعارضات الصلبة. تفضيلات المدرسين تبقى تحذيرات غير مانعة.</p></div>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9"><Metric label="السعة الأسبوعية" value={readiness.weekly_capacity} /><Metric label="الدروس المطلوبة" value={readiness.total_required_periods} tone="green" /><Metric label="الدروس المجدولة" value={readiness.total_scheduled_periods} tone="blue" /><Metric label="الدروس المتبقية" value={readiness.total_unscheduled_periods} tone={readiness.total_unscheduled_periods ? 'amber' : 'green'} /><Metric label="التكليفات الفعالة" value={readiness.total_assignments} tone="amber" /><Metric label="مدرس غير محدد" value={readiness.missing_teacher_count} tone={readiness.missing_teacher_count ? 'red' : 'green'} /><Metric label="مراجع غير صالحة" value={readiness.invalid_reference_count} tone={readiness.invalid_reference_count ? 'red' : 'green'} /><Metric label="تعارضات صلبة" value={readiness.hard_constraint_violation_count} tone={readiness.hard_constraint_violation_count ? 'red' : 'green'} /><Metric label="مشكلات سعة المدرسين" value={readiness.teacher_feasibility_issues.length} tone={readiness.teacher_feasibility_issues.length ? 'red' : 'green'} /></div>
                   {readiness.teacher_feasibility_issues.map((issue) => <div key={`${issue.employee_id}:${issue.code}`} className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800"><AlertTriangle size={18} />{issue.message}</div>)}
-                  <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white"><table className="w-full min-w-[920px] text-sm"><thead className="bg-gray-50"><tr className="text-right text-gray-600"><th className="p-3">الصف / الشعبة</th><th className="p-3">السعة</th><th className="p-3">المطلوب</th><th className="p-3">المجدول</th><th className="p-3">المتبقي</th><th className="p-3">الفرق</th><th className="p-3">الحالة</th><th className="p-3">ملاحظات</th></tr></thead><tbody>{readiness.placements.map((placement) => <tr key={`${placement.class_id}:${placement.section_id ?? 'none'}`} className="border-t"><td className="p-3 font-medium">{placement.class_name}{placement.section_name ? ` / ${placement.section_name}` : ''}</td><td className="p-3"><bdi dir="ltr">{placement.available_capacity}</bdi></td><td className="p-3"><bdi dir="ltr">{placement.required_periods}</bdi></td><td className="p-3"><bdi dir="ltr">{placement.scheduled_periods}</bdi></td><td className={`p-3 font-bold ${placement.remaining_periods ? 'text-amber-700' : 'text-emerald-700'}`}><bdi dir="ltr">{placement.remaining_periods}</bdi></td><td className={`p-3 font-bold ${placement.difference < 0 ? 'text-red-700' : 'text-gray-800'}`}><bdi dir="ltr">{placement.difference}</bdi></td><td className={`p-3 font-semibold ${placement.status === 'over_capacity' || placement.status === 'empty_week' ? 'text-red-700' : placement.status === 'unallocated' ? 'text-amber-700' : 'text-emerald-700'}`}>{readinessLabel(placement.status)}</td><td className="p-3 text-xs text-gray-600">{placement.missing_subjects.length > 0 && <p>مواد بلا نصاب: {placement.missing_subjects.map((item) => item.name).join('، ')}</p>}{placement.missing_teacher_load_ids.length > 0 && <p className="text-amber-700">تكليفات بلا مدرس: {placement.missing_teacher_load_ids.length}</p>}{placement.invalid_load_ids.length > 0 && <p className="text-red-700">مراجع غير صالحة: {placement.invalid_load_ids.length}</p>}{placement.missing_subjects.length === 0 && placement.missing_teacher_load_ids.length === 0 && placement.invalid_load_ids.length === 0 && '—'}</td></tr>)}</tbody></table></div>
+                  <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white"><table className="w-full min-w-[920px] text-sm"><thead className="bg-gray-50"><tr className="text-right text-gray-600"><th className="p-3">الصف / الشعبة</th><th className="p-3">السعة</th><th className="p-3">المطلوب</th><th className="p-3">المجدول</th><th className="p-3">المتبقي</th><th className="p-3">الفرق</th><th className="p-3">مطابقة النصاب للسعة</th><th className="p-3">توزيع الدروس</th><th className="p-3">ملاحظات</th></tr></thead><tbody>{readiness.placements.map((placement) => <tr key={`${placement.class_id}:${placement.section_id ?? 'none'}`} className="border-t"><td className="p-3 font-medium">{placement.class_name}{placement.section_name ? ` / ${placement.section_name}` : ''}</td><td className="p-3"><bdi dir="ltr">{placement.available_capacity}</bdi></td><td className="p-3"><bdi dir="ltr">{placement.required_periods}</bdi></td><td className="p-3"><bdi dir="ltr">{placement.scheduled_periods}</bdi></td><td className={`p-3 font-bold ${placement.remaining_periods ? 'text-amber-700' : 'text-emerald-700'}`}><bdi dir="ltr">{placement.remaining_periods}</bdi></td><td className={`p-3 font-bold ${placement.difference < 0 ? 'text-red-700' : 'text-gray-800'}`}><bdi dir="ltr">{placement.difference}</bdi></td><TimetableReadinessStatus placement={placement} /><td className="p-3 text-xs text-gray-600">{placement.missing_subjects.length > 0 && <p>مواد بلا نصاب: {placement.missing_subjects.map((item) => item.name).join('، ')}</p>}{placement.missing_teacher_load_ids.length > 0 && <p className="text-amber-700">تكليفات بلا مدرس: {placement.missing_teacher_load_ids.length}</p>}{placement.invalid_load_ids.length > 0 && <p className="text-red-700">مراجع غير صالحة: {placement.invalid_load_ids.length}</p>}{placement.missing_subjects.length === 0 && placement.missing_teacher_load_ids.length === 0 && placement.invalid_load_ids.length === 0 && '—'}</td></tr>)}</tbody></table></div>
                 </div>
               )}
             </>

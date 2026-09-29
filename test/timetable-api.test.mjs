@@ -424,6 +424,27 @@ test('readiness API counts lessons, excludes breaks and aggregates teacher assig
   assert.deepEqual(summary.teacher_workloads, [{ employee_id: 1, employee_name: 'Teacher A', total_weekly_periods: 1, assignment_count: 1 }]);
 });
 
+test('readiness API separates archived-placement history and revalidates a restored section without changing loads', async () => {
+  const fixture=await createApiFixture();
+  fixture.database.exec("INSERT INTO sections(id,school_id,class_id,name,status) VALUES(3,1,1,'Old B','active'); INSERT INTO employees(id,school_id,full_name,role,status) VALUES(6,1,'Former teacher','teacher','active')");
+  for(const section of [1,3])assert.equal((await api(fixture,fixture.tokens.owner,'POST','/api/timetable/teaching-loads',{
+    school_id:1,academic_year_id:1,class_id:1,section_id:section,subject_id:1,employee_id:section===3?6:1,weekly_periods:4,
+  })).status,201);
+  fixture.database.exec("UPDATE sections SET status='archived' WHERE id=3; UPDATE employees SET status='archived' WHERE id=6");
+  const before=fixture.database.prepare('SELECT * FROM timetable_teaching_loads ORDER BY id').all();
+  let response=await api(fixture,fixture.tokens.owner,'GET','/api/timetable/readiness?school_id=1&academic_year_id=1');assert.equal(response.status,200);
+  let summary=(await response.json()).data;
+  assert.equal(summary.invalid_reference_count,0);assert.equal(summary.archived_load_count,1);assert.equal(summary.total_assignments,1);assert.equal(summary.total_required_periods,4);
+  assert.equal(summary.placements.some(p=>p.section_id===3),false);assert.deepEqual(summary.invalid_load_details,[]);
+  const detail=summary.archived_load_details[0];assert.equal(detail.section_name,'Old B');assert.equal(detail.subject_name,'Math');assert.equal(detail.employee_name,'Former teacher');assert.equal(detail.scheduled_entry_count,0);
+  assert.deepEqual(detail.reasons.map(r=>r.code),['section_archived','teacher_archived']);assert.ok(detail.reasons.every(r=>r.message&&r.action));
+  assert.deepEqual(fixture.database.prepare('SELECT * FROM timetable_teaching_loads ORDER BY id').all(),before);
+  fixture.database.exec("UPDATE sections SET status='active' WHERE id=3");
+  response=await api(fixture,fixture.tokens.owner,'GET','/api/timetable/readiness?school_id=1&academic_year_id=1');summary=(await response.json()).data;
+  assert.equal(summary.archived_load_count,0);assert.equal(summary.invalid_reference_count,1);assert.equal(summary.total_required_periods,8);assert.deepEqual(summary.invalid_load_details[0].reasons.map(r=>r.code),['teacher_archived']);
+  assert.deepEqual(fixture.database.prepare('SELECT * FROM timetable_teaching_loads ORDER BY id').all(),before);
+});
+
 test('teacher availability API supports default, override, clear, bulk-day and reset semantics', async () => {
   const fixture = await createApiFixture();
   for (const day of [0, 1]) {

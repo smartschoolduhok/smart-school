@@ -27,9 +27,14 @@ class LocalStatement {
 }
 
 class LocalD1 {
-  constructor(database) { this.database = database; this.prepareCount = 0; this.sqlLog = []; }
+  constructor(database) { this.database = database; this.prepareCount = 0; this.sqlLog = []; this.beforeBatch = null; }
   prepare(sql) { this.prepareCount += 1; this.sqlLog.push(sql); return new LocalStatement(this.database, sql); }
   async batch(statements) {
+    if (this.beforeBatch) {
+      const beforeBatch = this.beforeBatch;
+      this.beforeBatch = null;
+      await beforeBatch();
+    }
     this.database.exec('BEGIN IMMEDIATE');
     try {
       const results = [];
@@ -165,6 +170,27 @@ function officialRows(database, schoolId = 1, yearId = 1) {
 function seedCurrent(context, locked = false) {
   context.database.prepare('INSERT INTO timetable_entries (school_id, academic_year_id, slot_id, teaching_load_id, is_locked, created_by_user_id, updated_by_user_id) VALUES (1,1,1,1,?,1,1)').run(locked ? 1 : 0);
   context.database.prepare('INSERT INTO timetable_entries (school_id, academic_year_id, slot_id, teaching_load_id, is_locked, created_by_user_id, updated_by_user_id) VALUES (1,1,2,2,0,1,1)').run();
+}
+
+function seedDormantPlacement(context, placement = 'section') {
+  context.database.exec(`
+    INSERT INTO classes (id, school_id, name, stage, order_index, status)
+      VALUES (4,1,'Archived placement class','ابتدائي',4,'active');
+    INSERT INTO subjects (id, school_id, class_id, name, status) VALUES (4,1,4,'Historical subject','active');
+    INSERT INTO employees (id, school_id, full_name, role, status) VALUES (4,1,'Historical teacher','teacher','active');
+    ${placement === 'section' ? "INSERT INTO sections (id, school_id, class_id, name, status) VALUES (4,1,4,'Historical section','active');" : ''}
+    INSERT INTO timetable_teaching_loads
+      (id, school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods, status)
+      VALUES (5,1,1,4,${placement === 'section' ? 4 : 'NULL'},4,4,1,'active');
+    UPDATE ${placement === 'section' ? 'sections' : 'classes'} SET status = 'archived' WHERE id = 4;
+  `);
+}
+
+function replacementState(context) {
+  return Object.fromEntries([
+    'timetable_entries', 'timetable_revisions', 'timetable_schedule_versions',
+    'timetable_schedule_version_entries', 'timetable_revision_assertions', 'timetable_locked_entry_overrides',
+  ].map(table => [table, context.database.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 }
 
 function createHistoricalVersion(context, entries, versionKey = 'qa-historical-version') {
@@ -623,6 +649,71 @@ test('lock change makes an earlier proposal stale', async () => {
   const lock = await call(context, context.tokens.owner, 'PUT', `/api/timetable/entries/${id}/lock`, { school_id: 1, academic_year_id: 1, is_locked: 1 });
   assert.equal(lock.status, 200);
   assert.equal((await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal))).status, 409);
+});
+
+for (const placement of ['class', 'section']) {
+  test(`unchanged dormant ${placement} permits adoption and leaves no assertion rows`, async () => {
+    const context = await fixture(); seedCurrent(context, true); seedDormantPlacement(context, placement);
+    const dormantBefore = context.database.prepare('SELECT * FROM timetable_teaching_loads WHERE id = 5').get();
+    const proposal = await generate(context);
+    assert.equal(proposal.status, 'complete');
+    assert.ok(proposal.entries.every(entry => entry.teaching_load_id !== 5));
+    context.d1.beforeBatch = () => {
+      context.database.exec("UPDATE classes SET status = 'archived' WHERE id = 3");
+    };
+    const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+    assert.equal(response.status, 200, JSON.stringify(await response.json()));
+    assert.equal(officialRows(context.database).length, 4);
+    assert.deepEqual(context.database.prepare('SELECT * FROM timetable_teaching_loads WHERE id = 5').get(), dormantBefore);
+    assert.equal(context.database.prepare('SELECT COUNT(*) count FROM timetable_revision_assertions').get().count, 0);
+    assert.equal(context.database.prepare('SELECT COUNT(*) count FROM timetable_schedule_versions').get().count, 1);
+  });
+
+  for (const operation of ['apply', 'restore']) {
+    test(`${operation} atomically rejects dormant ${placement} restoration between preflight and batch`, async () => {
+      const context = await fixture(); seedCurrent(context, true); seedDormantPlacement(context, placement);
+      const proposal = await generate(context);
+      assert.equal(proposal.status, 'complete');
+      const version = operation === 'restore' ? createHistoricalVersion(context, proposalEntries(proposal)) : null;
+      const preview = version ? await previewHistoricalRestore(context, version.id) : null;
+      if (preview) assert.equal(preview.can_apply, true);
+      const before = replacementState(context), revision = currentRevision(context);
+      let raced = false;
+      context.d1.beforeBatch = () => {
+        raced = true;
+        context.database.exec(`UPDATE ${placement === 'section' ? 'sections' : 'classes'} SET status = 'active' WHERE id = 4`);
+        assert.equal(currentRevision(context), revision, 'placement restoration does not increment the legacy timetable revision');
+      };
+      const response = operation === 'apply'
+        ? await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal))
+        : await applyHistoricalRestore(context, version.id, preview);
+      assert.equal(raced, true, 'race must happen after successful preflight');
+      assert.equal(response.status, 409);
+      assert.equal((await response.json()).code, 'stale_timetable_proposal');
+      assert.deepEqual(replacementState(context), before, 'entries, locks, archives, revision and temporary assertions all stay unchanged');
+      assert.equal(context.database.prepare(`SELECT status FROM ${placement === 'section' ? 'sections' : 'classes'} WHERE id = 4`).get().status, 'active');
+    });
+  }
+}
+
+for (const [label, mutation] of [
+  ['section scope', 'UPDATE sections SET class_id = 2 WHERE id = 4'],
+  ['subject scope', 'UPDATE subjects SET class_id = 2 WHERE id = 4'],
+  ['teacher role', "UPDATE employees SET role = 'administrative' WHERE id = 4"],
+]) test(`adoption atomically rejects changed dormant ${label} even without a revision change`, async () => {
+  const context = await fixture(); seedCurrent(context, true); seedDormantPlacement(context);
+  const proposal = await generate(context), before = replacementState(context), revision = currentRevision(context);
+  let raced = false;
+  context.d1.beforeBatch = () => {
+    raced = true;
+    context.database.exec(mutation);
+    assert.equal(currentRevision(context), revision);
+  };
+  const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+  assert.equal(raced, true);
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'stale_timetable_proposal');
+  assert.deepEqual(replacementState(context), before);
 });
 
 test('two tabs applying the same revision allow only the first write', async () => {

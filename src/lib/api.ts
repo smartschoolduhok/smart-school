@@ -108,6 +108,7 @@ import type {
   TimetableScheduleVersionDetails,
   TimetableSolverProposalWithIntegrity,
 } from './timetableAdoption';
+import type { PreparedTimetableSolver } from './timetableSolverPrepared';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -725,6 +726,16 @@ export function previewAutomaticTimetable(
   return fetchApi<TimetableSolverProposalWithIntegrity>('/api/timetable/solver/preview', {
     method: 'POST',
     body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId, ...options }),
+  });
+}
+
+export function prepareTimetableSolver(schoolId: number, academicYearId: number, options?: {
+  fixed_entries?: Array<{slot_id: number; teaching_load_id: number}>;
+  use_current_locked_entries?: boolean;
+  generation_scope?: import('./timetableScope').TimetableScope;
+}, signal?: AbortSignal) {
+  return fetchApi<PreparedTimetableSolver>('/api/timetable/solver/prepare', {
+    method: 'POST', signal, body: JSON.stringify({school_id: schoolId, academic_year_id: academicYearId, ...options}),
   });
 }
 

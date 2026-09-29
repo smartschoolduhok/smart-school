@@ -1,5 +1,6 @@
 import {
-  evaluateTimetableEntryPlacement,
+  createTimetableEntryPlacementEvaluator,
+  dormantTimetableLoadIds,
   loadHasInvalidAcademicReference,
   loadHasInvalidTeacherReference,
   type TimetableDay,
@@ -135,6 +136,12 @@ export interface TimetableValidationContext {
   loads: TimetableTeachingLoad[];
   availability: TimetableTeacherAvailabilityOverride[];
   constraints: TimetableTeacherConstraints[];
+  currentEntries?: TimetableEntry[];
+}
+
+function currentDemandContext(context: TimetableValidationContext, proposed: TimetableProposalPlacement[]): TimetableValidationContext {
+  const dormant = dormantTimetableLoadIds(context.loads, [...(context.currentEntries || []), ...proposed], context.schoolId, context.academicYearId);
+  return dormant.size ? { ...context, loads: context.loads.filter(load => !dormant.has(load.id)) } : context;
 }
 
 function numericPlacement(entry: Pick<TimetableProposalPlacement, 'slot_id' | 'teaching_load_id' | 'is_locked'>): TimetableProposalPlacement {
@@ -352,6 +359,10 @@ function validateTimetableScheduleEntries(
     created_at: 0,
     updated_at: 0,
   }));
+  const evaluate = createTimetableEntryPlacementEvaluator({
+    days: context.days, slots: context.slots, loads: context.loads,
+    teacherAvailability: context.availability, teacherConstraints: context.constraints,
+  })(internalEntries);
 
   entries.forEach((entry, index) => {
     const pair = `${entry.slot_id}:${entry.teaching_load_id}`;
@@ -365,16 +376,7 @@ function validateTimetableScheduleEntries(
       blockers.push({ code: 'invalid_teaching_load', message: 'يحتوي المقترح على نصاب غير صالح', ...entry });
       return;
     }
-    const evaluation = evaluateTimetableEntryPlacement({
-      validateWholeSchedule: true,
-      candidate: internalEntries[index],
-      days: context.days,
-      slots: context.slots,
-      loads: context.loads,
-      entries: internalEntries,
-      teacherAvailability: context.availability,
-      teacherConstraints: context.constraints,
-    });
+    const evaluation = evaluate(internalEntries[index], { validateWholeSchedule: true });
     blockers.push(...evaluation.hard_conflicts.filter(notice => notice.code !== 'parallel_lesson_missing')
       .map((notice) => blockerFromNotice(notice, entry)));
   });
@@ -394,6 +396,7 @@ export function validateCompleteTimetableSchedule(
   context: TimetableValidationContext,
   proposedEntries: TimetableProposalPlacement[],
 ): TimetableScheduleValidation {
+  context = currentDemandContext(context, proposedEntries);
   const { entries, blockers, weeklyDemand } = validateTimetableScheduleEntries(context, proposedEntries);
   const activeLoads = context.loads.filter((load) => load.status === 'active');
   for (const load of activeLoads) {
@@ -425,6 +428,7 @@ export function validateRestorableTimetableSchedule(
   context: TimetableValidationContext,
   historicalEntries: TimetableProposalPlacement[],
 ): TimetableRestoreScheduleValidation {
+  context = currentDemandContext(context, historicalEntries);
   const { blockers, weeklyDemand } = validateTimetableScheduleEntries(context, historicalEntries);
   return {
     structurally_valid: blockers.length === 0,
@@ -436,6 +440,7 @@ export function validateRestorableTimetableSchedule(
 /** Validate all conflicts while requiring completion only inside the chosen scope. */
 export function validateScopedTimetableSchedule(context: TimetableValidationContext,
   proposedEntries: TimetableProposalPlacement[], currentEntries: TimetableEntry[], scope: TimetableScope): TimetableScheduleValidation {
+  context = currentDemandContext({ ...context, currentEntries }, proposedEntries);
   if (scope.kind === 'school') return validateCompleteTimetableSchedule(context, proposedEntries);
   const { entries, blockers, weeklyDemand } = validateTimetableScheduleEntries(context, proposedEntries);
   const selected = new Set(context.loads.filter(load => timetableLoadMatchesScope(load, scope)).map(load => load.id));

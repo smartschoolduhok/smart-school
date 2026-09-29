@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   buildTimetableReadiness,
+  createTimetableEntryPlacementEvaluator,
   evaluateTimetableEntryPlacement,
   projectTimetableEntryDrop,
   timetableLoadsShareGroup,
@@ -14,7 +15,7 @@ import {
   validateTimetableGridScopeInput,
 } from '../src/lib/timetable.ts';
 import {
-  areParallelTimetableLoads, parallelTimetableLoadGroup, countTimetableSectionPeriods,
+  areParallelTimetableLoads, parallelTimetableLoadGroup, indexTimetableParallelLoadGroups, countTimetableSectionPeriods,
   countTimetableScheduledSectionPeriods, validateTimetableParallelLoads, validateTimetableParallelEntries,
 } from '../src/lib/timetableParallel.ts';
 
@@ -429,8 +430,46 @@ for (const [name, mutate, reason] of [
     assert.ok(issues.some(issue => issue.reason === reason), JSON.stringify(issues));
     assert.equal(countTimetableSectionPeriods(context.loads), context.loads.filter(load => load.status === 'active').reduce((sum, load) => sum + load.weekly_periods, 0));
     assert.ok(context.loads.every(load => parallelTimetableLoadGroup(load, context.loads).length === 1));
+    const indexed = indexTimetableParallelLoadGroups(context.loads);
+    for (const load of context.loads) assert.deepEqual(indexed.get(load.id), parallelTimetableLoadGroup(load, context.loads));
   });
 }
+
+test('prepared placement checks rebuild occupancy after a schedule mutation and preserve metrics', () => {
+  const context = parallelContext();
+  context.teacherConstraints = [{school_id: 1, academic_year_id: 1, employee_id: 1,
+    max_periods_per_day: 1, max_working_days: 1, max_consecutive_periods: 1}];
+  const prepare = createTimetableEntryPlacementEvaluator(context);
+  const candidate = {slot_id: 2, teaching_load_id: 1};
+  assert.deepEqual(prepare(context.entries)(candidate).hard_conflicts, []);
+  context.entries.push({id: 10, slot_id: 1, teaching_load_id: 1}, {id: 11, slot_id: 1, teaching_load_id: 2});
+  const evaluate = prepare(context.entries);
+  const metrics = [];
+  const result = evaluate(candidate, {onConstraintMetric: (...values) => metrics.push(values)});
+  assert.deepEqual(result.hard_conflicts.map(issue => issue.code), ['teacher_max_periods_per_day', 'teacher_max_consecutive_periods']);
+  assert.deepEqual(metrics, [['weekly_periods_exceeded', 2], ['teacher_max_periods_per_day', 2],
+    ['teacher_max_working_days', 1], ['teacher_max_consecutive_periods', 2]]);
+  assert.deepEqual(evaluate({id: 10, slot_id: 1, teaching_load_id: 1}, {validateWholeSchedule: true}).hard_conflicts, []);
+  context.entries.splice(0);
+  assert.deepEqual(prepare(context.entries)(candidate).hard_conflicts, []);
+  const indexed = indexTimetableParallelLoadGroups(context.loads);
+  for (const load of context.loads) assert.deepEqual(indexed.get(load.id), parallelTimetableLoadGroup(load, context.loads));
+});
+
+test('prepared placement scope and parallel validity never leak across configurations', () => {
+  const context = parallelContext();
+  context.teacherAvailability = [
+    {school_id: 2, academic_year_id: 1, employee_id: 1, slot_id: 1, status: 'unavailable'},
+    {school_id: 1, academic_year_id: 2, employee_id: 1, slot_id: 1, status: 'unavailable'},
+  ];
+  context.entries = [{id: 1, slot_id: 1, teaching_load_id: 1}];
+  assert.deepEqual(createTimetableEntryPlacementEvaluator(context)(context.entries)({slot_id: 1, teaching_load_id: 2}).hard_conflicts, []);
+  context.loads[0].employee_status = 'archived';
+  const invalid = createTimetableEntryPlacementEvaluator(context)(context.entries)({slot_id: 1, teaching_load_id: 2});
+  assert.deepEqual(invalid.hard_conflicts.map(issue => issue.code), ['invalid_parallel_load', 'class_section_collision']);
+  const fresh = parallelContext();
+  assert.deepEqual(createTimetableEntryPlacementEvaluator(fresh)(fresh.entries)({slot_id: 1, teaching_load_id: 1}).hard_conflicts, []);
+});
 
 test('religious names alone never create a parallel pair', () => {
   const context = parallelContext();
