@@ -72,6 +72,9 @@ const PENALTY_LABELS: Record<keyof TimetableSolverPenaltyBreakdown, string> = {
   subject_clustering: 'تجميع المادة في يوم واحد',
   consecutive_same_subject: 'تكرار متتالٍ للمادة',
   class_daily_imbalance: 'عدم توازن الحمل اليومي',
+  early_light_subjects: 'المواد الخفيفة في بداية اليوم',
+  consecutive_heavy_subjects: 'تتابع زائد للدروس الثقيلة',
+  missed_section_continuity: 'فرص تتابع الشعب غير المتحققة',
 };
 
 function placementLabel(placement: TimetablePlacement) {
@@ -358,6 +361,8 @@ export function AutomaticTimetableTab({
             <h2 className="flex items-center gap-2 text-lg font-bold text-indigo-950"><WandSparkles size={22} />التوليد التلقائي</h2>
             <p className="mt-1 max-w-3xl text-sm text-indigo-800">اختر مدرسة أو مرحلة أو صفًا أو شعبة. يكمل النظام أنصبة النطاق مع احترام الدروس المثبتة وتعارضات المدرسين وبقية الشعب.</p>
             <p className="mt-2 max-w-3xl text-sm text-indigo-800">عند اختيار نطاق محدد تبقى جميع الدروس خارجه كما هي. يمكنك إعداد جزء يدويًا، تثبيته من الجدول الأسبوعي، ثم توليد الباقي.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يفضّل التوليد تأخير الأخلاقية والفنية والرياضة والكردية والفرنسية والحاسوب عن أول درسين، ويحاول تفريق الدروس الثقيلة خلال اليوم. ويفضّل أن يدرّس المدرس المادة نفسها للصف نفسه في شعبتين متتاليتين، مثل أ ثم ب.</p>
+            <p className="mt-2 max-w-3xl text-xs text-indigo-800">تظل أوقات توفر المدرسين ومنع التعارض والدروس المثبتة مقدّمة على هذه التفضيلات؛ لذلك قد تبقى استثناءات في الترتيب.</p>
             <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-amber-800"><AlertTriangle size={17} />هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.</p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -439,11 +444,16 @@ export function AutomaticTimetableTab({
               <h3 className="font-bold text-gray-900">تفاصيل درجة الجودة</h3>
               <p className="text-xs text-gray-500">{result.scoring.note}</p>
             </div>
+            <p className="mt-2 text-xs text-gray-600">القيم نقاط للتفضيلات غير المتحققة بحسب أهميتها. انخفاضها يعني ترتيبًا أقرب للأولويات ضمن القيود المتاحة.</p>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {(Object.entries(result.scoring.penalties) as Array<[keyof TimetableSolverPenaltyBreakdown, number]>).map(([key, value]) => (
-                <div key={key} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-sm"><span>{PENALTY_LABELS[key]}</span><bdi dir="ltr" className="font-bold [unicode-bidi:isolate]">{value}</bdi></div>
+                <div key={key} data-timetable-penalty={key} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-sm"><span>{PENALTY_LABELS[key]}</span><bdi dir="ltr" className="font-bold [unicode-bidi:isolate]">{value}</bdi></div>
               ))}
             </div>
+            {result.scoring.pedagogy && <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900" aria-label="نتيجة تفضيلات ترتيب الدروس">
+              <p>دروس خفيفة باقية في أول درسين: <bdi>{result.scoring.pedagogy.early_light_lessons}</bdi> · دروس ثقيلة متتابعة فوق الحد المفضّل: <bdi>{result.scoring.pedagogy.heavy_run_excess}</bdi></p>
+              <p>تتابع الشعب لنفس المدرس والمادة والصف: <bdi>{result.scoring.pedagogy.consecutive_section_pairs}</bdi> من <bdi>{result.scoring.pedagogy.possible_section_pairs}</bdi> فرصة.</p>
+            </div>}
             <p className="mt-3 text-xs text-gray-500">المحاولات: <bdi dir="ltr">{result.statistics.attempts}</bdi> — الرجوعات: <bdi dir="ltr">{result.statistics.backtracks}</bdi> — الزمن: <bdi dir="ltr">{result.statistics.elapsed_ms} ms</bdi></p>
           </section>
 
