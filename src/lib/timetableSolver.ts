@@ -204,10 +204,10 @@ export interface TimetableSolverInput {
 }
 
 const DEFAULT_LIMITS: TimetableSolverLimits = {
-  time_budget_ms: 2_000,
+  time_budget_ms: 3_000,
   max_attempts: 60_000,
   max_backtracks: 5_000,
-  max_local_improvement_attempts: 1_200,
+  max_local_improvement_attempts: 4_000,
 };
 
 const REASON_MESSAGES: Record<TimetableSolverReasonCode, string> = {
@@ -596,7 +596,9 @@ function candidatePenalty(
       && Number(otherLoad.class_id) === Number(load.class_id)
       && sameNullableId(otherLoad.section_id, load.section_id);
   }).map(entry => entry.slot_id)).size;
-  let penalty = warningPenalty(warnings) + sameLoadDayCount * 7 + samePlacementDayCount;
+  // Daily spread is a soft preference; unavailable teachers or fixed lessons
+  // may require more than one lesson of the same subject on a day.
+  let penalty = warningPenalty(warnings) + sameLoadDayCount * 14 + samePlacementDayCount;
 
   const orderedDaySlots = [...slotsById.values()]
     .filter((item) => Number(item.day_of_week) === Number(slot.day_of_week) && item.slot_type === 'lesson' && Number(item.is_active) === 1)
@@ -606,7 +608,9 @@ function candidatePenalty(
     .filter((entry) => Number(entry.teaching_load_id) === Number(load.id))
     .map((entry) => orderedDaySlots.findIndex((item) => Number(item.id) === Number(entry.slot_id)))
     .filter((position) => position >= 0);
-  if (sameLoadPositions.some((position) => Math.abs(position - candidatePosition) === 1)) penalty += 5;
+  if (new Set([...slotsById.values()].filter(item => item.slot_type === 'lesson' && Number(item.is_active) === 1)
+    .map(item => Number(item.day_of_week))).size > 1
+    && sameLoadPositions.some((position) => Math.abs(position - candidatePosition) === 1)) penalty += 10;
   return penalty;
 }
 
@@ -714,10 +718,11 @@ function scoreProposal(input: {
       byDay.set(Number(slot.day_of_week), current);
     }
     for (const slots of byDay.values()) {
-      if (slots.length > 1) penalties.subject_clustering += (slots.length - 1) * 3;
+      if (slots.length > 1) penalties.subject_clustering += (slots.length - 1) ** 2 * 12;
       const ordered = slots.sort((left, right) => left.start_time.localeCompare(right.start_time) || left.slot_index - right.slot_index);
       for (let index = 1; index < ordered.length; index += 1) {
-        if (Math.abs(ordered[index].slot_index - ordered[index - 1].slot_index) === 1) penalties.consecutive_same_subject += 2;
+        if (activeDayNumbers.length > 1
+          && Math.abs(ordered[index].slot_index - ordered[index - 1].slot_index) === 1) penalties.consecutive_same_subject += 10;
       }
     }
   }
@@ -1168,13 +1173,167 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   };
   const isFixedGroup = (entries: InternalEntry[]) => entries.some(entry => fixedEntryKeys.has(`${entry.slot_id}:${entry.teaching_load_id}`));
 
+  // A two-way swap cannot repair every missed day: the lesson displaced from
+  // that day may have a busy teacher in the source slot. Try a bounded third
+  // lesson in the same section before the general local search.
+  let threeWayAttempts = 0;
+  const spreadPriority = (entry: InternalEntry) => {
+    const slot = slotsById.get(entry.slot_id)!;
+    const dayCount = proposalEntries.filter(item => item.teaching_load_id === entry.teaching_load_id
+      && slotsById.get(item.slot_id)?.day_of_week === slot.day_of_week).length;
+    const load = loadsById.get(entry.teaching_load_id)!;
+    return (dayCount - 1) * 100 + (Number(load.weekly_periods) === activeDays.length ? 20 : 0);
+  };
+  for (const original of [...proposalEntries].sort((left, right) => spreadPriority(right) - spreadPriority(left))) {
+    if (!canImprove() || threeWayAttempts >= 900) break;
+    const source = proposalEntries.find(entry => entry.id === original.id);
+    if (!source) continue;
+    const sourceLoad = loadsById.get(source.teaching_load_id)!;
+    if (groupFor(sourceLoad)[0].id !== sourceLoad.id) continue;
+    const sourceSlot = slotsById.get(source.slot_id)!;
+    const duplicateCount = proposalEntries.filter(entry => entry.teaching_load_id === source.teaching_load_id
+      && slotsById.get(entry.slot_id)?.day_of_week === sourceSlot.day_of_week).length;
+    if (duplicateCount < 2) continue;
+    const sourceGroup = groupEntries(source);
+    if (isFixedGroup(sourceGroup)) continue;
+    const sourceAttemptLimit = threeWayAttempts + 60;
+    const sameSection = (entry: InternalEntry) => {
+      const load = loadsById.get(entry.teaching_load_id)!;
+      return load.class_id === sourceLoad.class_id && sameNullableId(load.section_id, sourceLoad.section_id);
+    };
+    const targets = proposalEntries.filter(entry => sameSection(entry) && entry.slot_id !== source.slot_id
+      && !proposalEntries.some(item => item.teaching_load_id === source.teaching_load_id
+        && slotsById.get(item.slot_id)?.day_of_week === slotsById.get(entry.slot_id)?.day_of_week));
+    let improved = false;
+    for (const target of targets) {
+      if (!canImprove() || threeWayAttempts >= sourceAttemptLimit) break;
+      const targetGroup = groupEntries(target);
+      if (isFixedGroup(targetGroup)) continue;
+      if (groupFor(sourceLoad).some(member => member.employee_id != null && proposalEntries.some(entry =>
+        entry.slot_id === target.slot_id && !targetGroup.some(item => item.id === entry.id)
+        && loadsById.get(entry.teaching_load_id)?.employee_id === member.employee_id))) continue;
+      const thirds = proposalEntries.filter(entry => sameSection(entry) && entry.slot_id !== source.slot_id
+        && entry.slot_id !== target.slot_id && entry.teaching_load_id !== source.teaching_load_id)
+        .sort((left, right) => Number(slotsById.get(right.slot_id)?.day_of_week === sourceSlot.day_of_week)
+          - Number(slotsById.get(left.slot_id)?.day_of_week === sourceSlot.day_of_week));
+      for (const third of thirds) {
+        if (!canImprove() || threeWayAttempts >= sourceAttemptLimit) break;
+        const thirdGroup = groupEntries(third);
+        if (isFixedGroup(thirdGroup)) continue;
+        threeWayAttempts += 1;
+        localImprovementAttempts += 1;
+        const movedGroups = [...sourceGroup, ...targetGroup, ...thirdGroup];
+        const movedIds = new Set(movedGroups.map(entry => entry.id));
+        if (movedIds.size !== movedGroups.length) continue;
+        const moved = [
+          ...sourceGroup.map(entry => ({...entry, slot_id: target.slot_id})),
+          ...targetGroup.map(entry => ({...entry, slot_id: third.slot_id})),
+          ...thirdGroup.map(entry => ({...entry, slot_id: source.slot_id})),
+        ];
+        const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
+        const evaluate = preparePlacementEvaluator(candidateEntries);
+        if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
+        const candidateScore = scoreEntries(candidateEntries).scoring;
+        if (!betterScore(candidateScore, currentScore)) continue;
+        proposalEntries = candidateEntries;
+        currentScore = candidateScore;
+        improved = true;
+        break;
+      }
+      if (improved) break;
+    }
+  }
+
+  // Some full sections need one more displacement to keep a demanding subject
+  // on separate days without moving a light subject into the first lessons.
+  let fourWayAttempts = 0;
+  for (const original of [...proposalEntries].sort((left, right) => spreadPriority(right) - spreadPriority(left))) {
+    if (!canImprove() || fourWayAttempts >= 650) break;
+    const source = proposalEntries.find(entry => entry.id === original.id);
+    if (!source) continue;
+    const sourceLoad = loadsById.get(source.teaching_load_id)!;
+    if (Number(sourceLoad.weekly_periods) !== activeDays.length || groupFor(sourceLoad)[0].id !== sourceLoad.id) continue;
+    const sourceSlot = slotsById.get(source.slot_id)!;
+    if (proposalEntries.filter(entry => entry.teaching_load_id === source.teaching_load_id
+      && slotsById.get(entry.slot_id)?.day_of_week === sourceSlot.day_of_week).length < 2) continue;
+    const sourceGroup = groupEntries(source);
+    if (isFixedGroup(sourceGroup)) continue;
+    const sectionEntries = proposalEntries.filter(entry => {
+      const load = loadsById.get(entry.teaching_load_id)!;
+      return load.class_id === sourceLoad.class_id && sameNullableId(load.section_id, sourceLoad.section_id);
+    });
+    const sourceAttemptLimit = fourWayAttempts + 90;
+    let improved = false;
+    for (const target of sectionEntries) {
+      if (!canImprove() || fourWayAttempts >= sourceAttemptLimit) break;
+      const targetSlot = slotsById.get(target.slot_id)!;
+      if (proposalEntries.some(entry => entry.teaching_load_id === source.teaching_load_id
+        && slotsById.get(entry.slot_id)?.day_of_week === targetSlot.day_of_week)) continue;
+      const targetGroup = groupEntries(target);
+      if (isFixedGroup(targetGroup)) continue;
+      if (groupFor(sourceLoad).some(member => member.employee_id != null && proposalEntries.some(entry =>
+        entry.slot_id === target.slot_id && !targetGroup.some(item => item.id === entry.id)
+        && loadsById.get(entry.teaching_load_id)?.employee_id === member.employee_id))) continue;
+      const thirdChoices = sectionEntries.filter(entry => entry.slot_id !== source.slot_id && entry.slot_id !== target.slot_id)
+        .sort((left, right) => Number(slotsById.get(right.slot_id)?.day_of_week === targetSlot.day_of_week)
+          - Number(slotsById.get(left.slot_id)?.day_of_week === targetSlot.day_of_week)
+          || Number(slotsById.get(right.slot_id)?.day_of_week === sourceSlot.day_of_week)
+          - Number(slotsById.get(left.slot_id)?.day_of_week === sourceSlot.day_of_week));
+      for (const third of thirdChoices) {
+        if (!canImprove() || fourWayAttempts >= sourceAttemptLimit) break;
+        const thirdGroup = groupEntries(third);
+        if (isFixedGroup(thirdGroup)) continue;
+        const thirdAttemptLimit = Math.min(sourceAttemptLimit, fourWayAttempts + 16);
+        const fourthChoices = sectionEntries.filter(entry => ![source.slot_id, target.slot_id, third.slot_id].includes(entry.slot_id)
+          && entry.teaching_load_id !== source.teaching_load_id)
+          .sort((left, right) => Number(slotsById.get(right.slot_id)?.day_of_week === sourceSlot.day_of_week)
+            - Number(slotsById.get(left.slot_id)?.day_of_week === sourceSlot.day_of_week));
+        for (const fourth of fourthChoices) {
+          if (!canImprove() || fourWayAttempts >= thirdAttemptLimit) break;
+          const fourthGroup = groupEntries(fourth);
+          if (isFixedGroup(fourthGroup)) continue;
+          // An early light lesson is a stronger preference than daily spread.
+          const fourthLoad = loadsById.get(fourth.teaching_load_id)!;
+          if (pedagogyScorer.candidatePenalty(fourthLoad, sourceSlot, []) >= 20) continue;
+          fourWayAttempts += 1;
+          localImprovementAttempts += 1;
+          const movedGroups = [...sourceGroup, ...targetGroup, ...thirdGroup, ...fourthGroup];
+          const movedIds = new Set(movedGroups.map(entry => entry.id));
+          if (movedIds.size !== movedGroups.length) continue;
+          const moved = [
+            ...sourceGroup.map(entry => ({...entry, slot_id: target.slot_id})),
+            ...targetGroup.map(entry => ({...entry, slot_id: third.slot_id})),
+            ...thirdGroup.map(entry => ({...entry, slot_id: fourth.slot_id})),
+            ...fourthGroup.map(entry => ({...entry, slot_id: source.slot_id})),
+          ];
+          const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
+          const evaluate = preparePlacementEvaluator(candidateEntries);
+          if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
+          const candidateScore = scoreEntries(candidateEntries).scoring;
+          if (!betterScore(candidateScore, currentScore)) continue;
+          proposalEntries = candidateEntries;
+          currentScore = candidateScore;
+          improved = true;
+          break;
+        }
+        if (improved) break;
+      }
+      if (improved) break;
+    }
+  }
+
   // Full sections have no free slot for single-entry moves. Swap two complete
   // teaching groups within a section so demand and section coverage never fall.
   for (let pass = 0; pass < 3 && canImprove(); pass += 1) {
     let improved = false;
     const representatives = proposalEntries.filter(entry => groupFor(loadsById.get(entry.teaching_load_id)!)[0].id === entry.teaching_load_id);
-    const priority = new Map(representatives.map(entry => [entry.id,
-      pedagogyScorer.candidatePenalty(loadsById.get(entry.teaching_load_id)!, slotsById.get(entry.slot_id)!, proposalEntries.filter(item => item.id !== entry.id))]));
+    const priority = new Map(representatives.map(entry => {
+      const slot = slotsById.get(entry.slot_id)!;
+      const dayCount = proposalEntries.filter(item => item.teaching_load_id === entry.teaching_load_id
+        && slotsById.get(item.slot_id)?.day_of_week === slot.day_of_week).length;
+      return [entry.id, (dayCount - 1) * 14 + pedagogyScorer.candidatePenalty(
+        loadsById.get(entry.teaching_load_id)!, slot, proposalEntries.filter(item => item.id !== entry.id))];
+    }));
     representatives.sort((a, b) => priority.get(b.id)! - priority.get(a.id)! || a.teaching_load_id - b.teaching_load_id || a.id - b.id);
     for (const original of representatives) {
       if (!canImprove()) break;

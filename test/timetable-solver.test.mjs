@@ -871,6 +871,36 @@ test('current timetable entries are measured without mutating records or reusing
   assert.equal(result.entries.some((entry) => entry.proposal_id === '99'), false);
 });
 
+test('five weekly lessons prefer separate days when a complete five-day schedule allows it', () => {
+  const { days, slots } = week(5, 2);
+  const input = solverInput({days, slots, placements: [placement(1)], loads: [
+    teachingLoad(1, {class_id: 1, subject_name: 'الرياضيات', weekly_periods: 5}),
+    teachingLoad(2, {class_id: 1, subject_name: 'اللغة العربية', weekly_periods: 5}),
+  ]});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(new Set(result.entries.filter(entry => entry.teaching_load_id === 1).map(entry => entry.day_of_week)).size, 5);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('daily spread stays a preference when teacher availability rules out one day', () => {
+  const { days, slots } = week(5, 2);
+  const availability = slots.filter(slot => slot.day_of_week === 4).map((slot, index) => ({
+    id: index + 1, school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: slot.id,
+    status: 'unavailable', created_by_user_id: null, updated_by_user_id: null, created_at: 0, updated_at: 0,
+  }));
+  const input = solverInput({days, slots, availability, placements: [placement(1)], loads: [
+    teachingLoad(1, {class_id: 1, subject_name: 'الرياضيات', weekly_periods: 5}),
+    teachingLoad(2, {class_id: 1, subject_name: 'اللغة العربية', weekly_periods: 5}),
+  ]});
+  const result = solveTimetable(input);
+  const mathDays = result.entries.filter(entry => entry.teaching_load_id === 1).map(entry => entry.day_of_week);
+  assert.equal(result.status, 'complete');
+  assert.equal(mathDays.length, 5);
+  assert.equal(mathDays.includes(4), false);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
 test('a valid complete saved timetable retains coverage and fixed parallel groups under a tiny search budget', () => {
   const input = parallelInput();
   input.loads.push(teachingLoad(3, {class_id: 1, section_id: 9, subject_name: 'الحاسوب', weekly_periods: 2}));

@@ -103,6 +103,7 @@
 .timetable-subject-card {
   min-height: 3rem;
   border: 1px solid var(--subject-border);
+  border-inline-start-width: 4px;
   border-radius: 0.45rem;
   background: var(--subject-bg);
   padding: 0.3rem;

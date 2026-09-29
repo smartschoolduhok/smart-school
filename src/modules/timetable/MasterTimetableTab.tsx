@@ -5,6 +5,7 @@ import { getTimetableMasterGrid } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
   timetablePlacementKey,
+  timetablePrintSlotLabel,
   timetableSubjectColorForSubject,
   timetableSubjectVisualKey,
   type TimetableGridEntry,
@@ -44,7 +45,7 @@ function placementLabel(placement: TimetablePlacement) {
 }
 
 function slotLabel(slot: TimetableSlot) {
-  return slot.lesson_number == null ? slot.label : `${slot.label} — الدرس ${slot.lesson_number}`;
+  return timetablePrintSlotLabel(slot);
 }
 
 function SubjectCell({ entry, extra }: { entry: TimetableGridEntry | null; extra?: ReactNode }) {
