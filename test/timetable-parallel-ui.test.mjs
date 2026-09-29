@@ -4,6 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {Window} from 'happy-dom';
 import {createServer} from 'vite';
 import {solvePreparedTimetable} from '../src/lib/timetableSolverPrepared.ts';
+import {solveTimetable, validateTimetableSolverProposal} from '../src/lib/timetableSolver.ts';
 import {computeTimetableProposalDigest} from '../src/lib/timetableAdoption.ts';
 import {solveTimetableInWorker} from '../src/lib/timetableSolverClient.ts';
 
@@ -279,9 +280,104 @@ test('dedicated worker entry point emits a proposal and a useful failure respons
   globalThis.self = worker;t.after(() => {globalThis.self = previousSelf;});
   await vite.ssrLoadModule('/src/lib/timetableSolverWorker.ts');
   await worker.onmessage({data: prepared()});
-  assert.equal(messages[0].ok, true);assert.equal(messages[0].data.entries.length, 2);assert.match(messages[0].data.proposal_digest, /^[a-f0-9]{64}$/);
+  const progress = messages.filter(message => message.type === 'progress'), completed = messages.at(-1);
+  assert.ok(progress.length > 0);assert.equal(progress[0].progress.run, 1);assert.equal(progress[0].progress.total_runs, 8);
+  assert.ok(progress.every(message => !Object.hasOwn(message, 'ok')));
+  assert.equal(messages.filter(message => message.ok === true).length, 1);
+  assert.equal(completed.ok, true);assert.equal(completed.data.entries.length, 2);assert.match(completed.data.proposal_digest, /^[a-f0-9]{64}$/);
   await worker.onmessage({data: {input: null}});
-  assert.equal(messages[1].ok, false);assert.match(messages[1].error, /تعذر بناء اقتراح الجدول/);
+  assert.equal(messages.at(-1).ok, false);assert.match(messages.at(-1).error, /تعذر بناء اقتراح الجدول/);
+});
+
+test('worker progress reports do not resolve a proposal and late reports are ignored after success or cancellation', async () => {
+  const source = prepared(), data = await solvePreparedTimetable(source);
+  for (const mode of ['success', 'abort']) {
+    const progress = [], controller = new AbortController();
+    const worker = {onmessage: null, onerror: null, onmessageerror: null, terminateCount: 0,
+      postMessage() {}, terminate() {this.terminateCount++;}};
+    let outcome = null;
+    const pending = solveTimetableInWorker(source, {createWorker: () => worker, signal: controller.signal,
+      onProgress: value => progress.push(value)});
+    pending.then(() => {outcome = 'resolved';}, () => {outcome = 'rejected';});
+    const deliver = worker.onmessage;
+    const update = {run: 2, total_runs: 8, best_scheduled: 1, best_required: 2, elapsed_ms: 45};
+    deliver({data: {type: 'progress', progress: update}});
+    await Promise.resolve();
+    assert.deepEqual(progress, [update]);assert.equal(outcome, null);assert.equal(worker.terminateCount, 0);
+    if (mode === 'success') {deliver({data: {ok: true, data}});assert.equal(await pending, data);}
+    else {controller.abort();await assert.rejects(pending, {name: 'AbortError'});}
+    deliver({data: {type: 'progress', progress: {...update, run: 8}}});
+    deliver({data: {ok: true, data}});
+    assert.deepEqual(progress, [update]);assert.equal(worker.terminateCount, 1);assert.equal(worker.onmessage, null);
+    assert.equal(outcome, mode === 'success' ? 'resolved' : 'rejected');
+  }
+});
+
+test('worker default timeout allows the longer search and still terminates a stalled worker', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const worker = {onmessage: null, onerror: null, onmessageerror: null, terminated: false,
+    postMessage() {}, terminate() {this.terminated = true;}};
+  const pending = solveTimetableInWorker(prepared(), {createWorker: () => worker});
+  const rejection = assert.rejects(pending, /استغرق التوليد وقتًا طويلًا/);
+  t.mock.timers.tick(99_999);assert.equal(worker.terminated, false);
+  t.mock.timers.tick(1);await rejection;assert.equal(worker.terminated, true);
+});
+
+test('multiple prepared searches retain full coverage and the best teaching preferences, with progress and aggregate statistics', async () => {
+  const names = ['رياضيات', 'فيزياء', 'اللغة الفرنسية'], loads = [];
+  for (let section = 1; section <= 3; section++) for (let subject = 0; subject < names.length; subject++) {
+    loads.push(load(loads.length + 1, {section_id: section, section_name: String(section), subject_id: subject + 1,
+      subject_name: names[subject], employee_id: subject + 1, weekly_periods: 2}));
+  }
+  const source = prepared(loads);
+  source.input.days = [0, 1].map(day => ({...days[0], id: day + 1, day_of_week: day, order_index: day}));
+  source.input.slots = source.input.days.flatMap(day => [1, 2, 3].map(lesson => {
+    const minutes = 480 + (lesson - 1) * 40, time = value => `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
+    return {...slots[0], id: day.day_of_week * 3 + lesson, day_of_week: day.day_of_week, slot_index: lesson,
+      lesson_number: lesson, label: `الدرس ${lesson}`, start_time: time(minutes), end_time: time(minutes + 40)};
+  }));
+  source.input.placements = [1, 2, 3].map(section => ({class_id: 1, class_name: 'الأول', section_id: section, section_name: String(section)}));
+  const limits = {time_budget_ms: 10_000, max_attempts: 200_000, max_backtracks: 12_000, max_local_improvement_attempts: 12_000};
+  const attempts = [0, 1, 2].map(searchVariant => solveTimetable({...source.input, searchVariant, limits}));
+  const progress = [], result = await solvePreparedTimetable(source, {maxRuns: 3, onProgress: value => progress.push(value)});
+  assert.equal(result.status, 'complete');assert.equal(result.scheduled_periods, 18);
+  assert.equal(result.statistics.search_runs, 3);assert.deepEqual(progress.map(value => value.run), [1, 2, 3]);
+  assert.ok(progress.every(value => value.total_runs === 3));
+  assert.equal(progress[0].best_scheduled, 0);assert.equal(progress[1].best_scheduled, 18);assert.equal(progress[2].best_scheduled, 18);
+  assert.ok(progress.every((value, index) => index === 0 || value.elapsed_ms >= progress[index - 1].elapsed_ms));
+  const preferenceKey = result => [-result.scheduled_periods, result.scoring.penalties.early_light_subjects || 0, result.scoring.total_penalty];
+  const compare = (left, right) => {const a = preferenceKey(left), b = preferenceKey(right);return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];};
+  const best = [...attempts].sort(compare)[0];
+  assert.deepEqual(preferenceKey(result), preferenceKey(best));
+  assert.ok(compare(best, attempts[0]) < 0, 'A later search improves this fixture beyond the initial proposal');
+  for (const key of ['attempts', 'backtracks', 'local_improvement_attempts']) {
+    assert.equal(result.statistics[key], attempts.reduce((sum, attempt) => sum + attempt.statistics[key], 0), key);
+  }
+  const entries = result.entries.map((entry, index) => ({...entry, id: index + 1, school_id: 1, academic_year_id: 1}));
+  assert.deepEqual(validateTimetableSolverProposal(source.input, entries), []);
+  for (const load of loads) assert.equal(entries.filter(entry => entry.teaching_load_id === load.id).length, load.weekly_periods);
+  assert.equal(result.proposal_digest, await computeTimetableProposalDigest({schoolId: 1, academicYearId: 1, revision: 1, entries: result.entries, generationScope: source.generation_scope}));
+});
+
+test('extended prepared search preserves fixed lessons, teacher availability and hard same-day links', async () => {
+  const source = prepared([
+    load(101, {weekly_periods: 1, subject_name: 'فيزياء'}),
+    load(102, {section_id: 12, section_name: 'ب', weekly_periods: 1, subject_name: 'فيزياء', employee_id: 301}),
+  ]);
+  source.input.linkSameTeacherSectionDays = true;
+  source.input.placements.push({class_id: 1, class_name: 'الأول', section_id: 12, section_name: 'ب'});
+  source.input.slots = [...slots, {...slots[0], id: 3, slot_index: 3, lesson_number: 3, start_time: '09:20', end_time: '10:00'}];
+  source.input.fixedEntries = [{slot_id: 1, teaching_load_id: 101, is_locked: 1}];
+  source.input.teacherAvailability = [{school_id: 1, academic_year_id: 1, employee_id: 301, slot_id: 2, status: 'unavailable'}];
+  const result = await solvePreparedTimetable(source, {maxRuns: 3});
+  assert.equal(result.status, 'complete');assert.equal(result.link_same_teacher_section_days, true);
+  assert.ok(result.entries.some(entry => entry.slot_id === 1 && entry.teaching_load_id === 101 && entry.is_locked === 1));
+  assert.ok(result.entries.some(entry => entry.slot_id === 3 && entry.teaching_load_id === 102));
+  assert.ok(result.entries.every(entry => entry.slot_id !== 2));
+  const entries = result.entries.map((entry, index) => ({...entry, id: index + 1, school_id: 1, academic_year_id: 1}));
+  assert.deepEqual(validateTimetableSolverProposal(source.input, entries), []);
+  assert.equal(result.proposal_digest, await computeTimetableProposalDigest({schoolId: 1, academicYearId: 1, revision: 1, entries: result.entries,
+    linkSameTeacherSectionDays: true, generationScope: source.generation_scope}));
 });
 
 test('readiness diagnostics distinguish dormant archived loads from actionable invalid references without mutation controls', () => {

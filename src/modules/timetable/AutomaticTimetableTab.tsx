@@ -8,6 +8,7 @@ import { TimetableLoadDiagnostics } from './TimetableLoadDiagnostics';
 import { timetableEntriesForPlacement } from './timetableViewEntries';
 import { applyTimetableProposal, prepareTimetableSolver, previewTimetableAdoption } from '../../lib/api';
 import { solveTimetableInWorker } from '../../lib/timetableSolverClient';
+import type { TimetableSearchProgress } from '../../lib/timetableSolverPrepared';
 import {
   TIMETABLE_DAY_NAMES,
   timetablePlacementKey,
@@ -75,6 +76,8 @@ const PENALTY_LABELS: Record<keyof TimetableSolverPenaltyBreakdown, string> = {
   early_light_subjects: 'المواد الخفيفة في بداية اليوم',
   consecutive_heavy_subjects: 'تتابع زائد للدروس الثقيلة',
   missed_section_continuity: 'فرص تتابع الشعب غير المتحققة',
+  late_science_subjects: 'تفضيل العلوم في بداية اليوم',
+  repeated_first_subjects: 'تنويع مادة الدرس الأول',
 };
 
 function placementLabel(placement: TimetablePlacement) {
@@ -135,13 +138,13 @@ function ProposalGrid({ result, schoolId, disabled, onToggleLock }: {
                           <td key={timetablePlacementKey(placement)} className="space-y-2 border-b border-l border-gray-200 p-2">
                             {entries.map(entry => { const color = timetableSubjectColorForSubject(schoolId, entry.subject_name); return <div key={entry.proposal_id} data-proposal-entry={entry.proposal_id} className="min-h-20 rounded-lg border-r-4 p-2" style={{ backgroundColor: color.background, borderColor: color.border, color: color.foreground }}>
                               <p className="font-bold">{entry.subject_name}</p>
-                              <p className={`mt-1 ${entry.employee_id == null ? 'font-bold text-amber-800' : 'opacity-80'}`}>{entry.employee_name || 'بدون مدرس'}</p>
-                              {entry.soft_warnings.length > 0 && <p className="mt-1 text-[10px] opacity-75">{entry.soft_warnings.map((warning) => warning.message).join('، ')}</p>}
+                              <p className={`mt-1 ${entry.employee_id == null ? 'font-bold' : ''}`}>{entry.employee_name || 'بدون مدرس'}</p>
+                              {entry.soft_warnings.length > 0 && <p className="mt-1 text-[10px]">{entry.soft_warnings.map((warning) => warning.message).join('، ')}</p>}
                               <button
                                 type="button"
                                 disabled={disabled || entry.is_preserved}
                                 onClick={() => onToggleLock(entry.proposal_id)}
-                                className="mt-2 flex items-center gap-1 rounded-md border border-current/30 bg-white/70 px-2 py-1 text-[10px] font-bold disabled:opacity-50"
+                                className="mt-2 flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-[10px] font-bold text-gray-900 disabled:opacity-70"
                                 aria-label={entry.is_locked === 1 ? 'إلغاء تثبيت الدرس' : 'تثبيت الدرس'}
                               >
                                 {entry.is_locked === 1 ? <Lock size={12} /> : <Unlock size={12} />}
@@ -197,11 +200,13 @@ export function AutomaticTimetableTab({
   }, [result]);
   const [adoptionPreview, setAdoptionPreview] = useState<TimetableAdoptionPreview | null>(null);
   const [loading, setLoading] = useState(false);
+  const [searchProgress, setSearchProgress] = useState<TimetableSearchProgress | null>(null);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [linkSectionDays, setLinkSectionDays] = useState(false);
   const [generationScope, setGenerationScope] = useState<TimetableScope>({ kind: 'school' });
-  useEffect(() => { setGenerationScope({ kind: 'school' }); }, [schoolId, academicYearId]);
+  useEffect(() => { setGenerationScope({ kind: 'school' }); setLinkSectionDays(false); }, [schoolId, academicYearId]);
 
   useEffect(() => {
     requestGenerationRef.current += 1;
@@ -219,6 +224,7 @@ export function AutomaticTimetableTab({
   async function generateProposal(options?: {
     fixed_entries?: Array<{ slot_id: number; teaching_load_id: number }>;
     use_current_locked_entries?: boolean;
+    link_same_teacher_section_days?: boolean;
     generation_scope?: TimetableScope;
   }) {
     const generation = ++requestGenerationRef.current;
@@ -232,11 +238,12 @@ export function AutomaticTimetableTab({
       && scopeRef.current.academicYearId === expectedScope.academicYearId
       && scopeRef.current.dataVersion === expectedScope.dataVersion;
     setLoading(true);
+    setSearchProgress(null);
     setResult(null);
     setAdoptionPreview(null);
     setError('');
     setSuccess('');
-    const response = await prepareTimetableSolver(schoolId, academicYearId, { generation_scope: generationScope, ...options }, controller.signal);
+    const response = await prepareTimetableSolver(schoolId, academicYearId, { generation_scope: generationScope, link_same_teacher_section_days: linkSectionDays, ...options }, controller.signal);
     if (
       generation !== requestGenerationRef.current
       || !isCurrentSchool()
@@ -258,7 +265,9 @@ export function AutomaticTimetableTab({
       return;
     }
     try {
-      const proposal = await solveTimetableInWorker(response.data, {signal: controller.signal});
+      const proposal = await solveTimetableInWorker(response.data, {signal: controller.signal,
+        onProgress: progress => { if (isCurrent()) setSearchProgress(progress); },
+      });
       if (isCurrent()) setResult(proposal);
     } catch (error) {
       if (isCurrent() && !controller.signal.aborted) setError(error instanceof Error ? error.message : 'تعذر إكمال توليد الجدول. أعد المحاولة.');
@@ -293,6 +302,7 @@ export function AutomaticTimetableTab({
       academicYearId,
       revision: result.timetable_revision,
       entries: nextEntries,
+      linkSameTeacherSectionDays: result.link_same_teacher_section_days,
       generationScope: result.generation_scope,
       scopeLoadIds: result.scope_load_ids,
     });
@@ -305,6 +315,7 @@ export function AutomaticTimetableTab({
   async function reSolveUnlocked() {
     if (!result) return;
     await generateProposal({
+      link_same_teacher_section_days: result.link_same_teacher_section_days,
       generation_scope: result.generation_scope,
       fixed_entries: result.entries.filter((entry) => entry.is_locked === 1).map((entry) => ({
         slot_id: entry.slot_id,
@@ -325,6 +336,7 @@ export function AutomaticTimetableTab({
       proposal_revision: result.timetable_revision,
       proposal_digest: result.proposal_digest,
       entries: result.entries,
+      link_same_teacher_section_days: result.link_same_teacher_section_days,
       generation_scope: result.generation_scope,
       scope_load_ids: result.scope_load_ids,
       scope_token: result.scope_token,
@@ -351,6 +363,7 @@ export function AutomaticTimetableTab({
       expected_revision: result.timetable_revision,
       proposal_digest: result.proposal_digest,
       entries: result.entries,
+      link_same_teacher_section_days: result.link_same_teacher_section_days,
       generation_scope: result.generation_scope,
       scope_load_ids: result.scope_load_ids,
       scope_token: result.scope_token,
@@ -378,6 +391,7 @@ export function AutomaticTimetableTab({
             <p className="mt-1 max-w-3xl text-sm text-indigo-800">اختر مدرسة أو مرحلة أو صفًا أو شعبة. يكمل النظام أنصبة النطاق مع احترام الدروس المثبتة وتعارضات المدرسين وبقية الشعب.</p>
             <p className="mt-2 max-w-3xl text-sm text-indigo-800">عند اختيار نطاق محدد تبقى جميع الدروس خارجه كما هي. يمكنك إعداد جزء يدويًا، تثبيته من الجدول الأسبوعي، ثم توليد الباقي.</p>
             <p className="mt-2 max-w-3xl text-sm text-indigo-800">يفضّل التوليد تأخير الأخلاقية والفنية والرياضة والكردية والفرنسية والحاسوب عن أول درسين، ويحاول تفريق الدروس الثقيلة خلال اليوم. ويفضّل أن يدرّس المدرس المادة نفسها للصف نفسه في شعبتين متتاليتين، مثل أ ثم ب.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يفضّل الرياضيات والفيزياء والكيمياء في بداية اليوم، بأولوية أكبر للصفوف المنتهية، مع تنويع مادة الدرس الأول بين الأيام.</p>
             <p className="mt-2 max-w-3xl text-xs text-indigo-800">تظل أوقات توفر المدرسين ومنع التعارض والدروس المثبتة مقدّمة على هذه التفضيلات؛ لذلك قد تبقى استثناءات في الترتيب.</p>
             <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-amber-800"><AlertTriangle size={17} />هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.</p>
           </div>
@@ -405,6 +419,15 @@ export function AutomaticTimetableTab({
         <div className="mt-4 max-w-xl"><TimetableScopeSelector classes={classes} sections={sections} value={generationScope} disabled={loading || applying} onChange={scope => {
           requestGenerationRef.current += 1; solverAbortRef.current?.abort(); solverAbortRef.current = null; setGenerationScope(scope); setResult(null); setAdoptionPreview(null); setError(''); setSuccess('');
         }} /></div>
+        <label className="mt-4 flex max-w-3xl items-start gap-3 rounded-lg border border-indigo-200 bg-white p-4">
+          <input type="checkbox" className="mt-1 h-5 w-5 accent-indigo-700" checked={linkSectionDays} disabled={loading || applying} onChange={event => {
+            requestGenerationRef.current += 1; setLinkSectionDays(event.target.checked); setResult(null); setAdoptionPreview(null); setError(''); setSuccess('');
+          }} />
+          <span><span className="block font-bold text-indigo-950">ربط شعب المدرس للمادة نفسها في اليوم نفسه</span>
+            <span className="mt-1 block text-sm text-indigo-800">للصف نفسه والمدرس نفسه فقط. عند التفعيل تتطابق أيام المادة بين شعبه، ويُفضّل أن تكون الدروس متتابعة، مثل أ ثم ب. لا يشترط التتابع. عند اختلاف النصاب قد يتكرر الدرس في الأيام المشتركة لإكماله.</span>
+            <span className="mt-1 block text-xs text-indigo-800">إذا منعت الدروس المثبتة أو التوفر إكمال الربط، تظهر التفاصيل للمراجعة. تبقى دروس النطاقات الأخرى محفوظة.</span>
+          </span>
+        </label>
       </section>
 
       <section className="rounded-xl border border-gray-200 bg-white p-4">
@@ -419,6 +442,11 @@ export function AutomaticTimetableTab({
       </section>
 
       {error && <div role="alert" className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800"><AlertTriangle size={19} />{error}</div>}
+      {loading && <div role="status" aria-live="polite" className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-950">
+        <p className="font-bold">{searchProgress ? `المحاولة ${searchProgress.run} من ${searchProgress.total_runs} — نبحث عن أفضل توزيع` : 'جاري تجهيز بيانات التوليد...'}</p>
+        {searchProgress && searchProgress.best_required > 0 && <p className="mt-1">أفضل تغطية حتى الآن: {searchProgress.best_scheduled} من {searchProgress.best_required} درس.</p>}
+        <p className="mt-1">قد يستغرق البحث الموسّع نحو دقيقة ونصف حسب تعقيد الجدول. يمكنك متابعة استخدام الصفحة أو إلغاء التوليد.</p>
+      </div>}
       {success && <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800"><CheckCircle2 size={19} />{success}</div>}
 
       {result && (
@@ -478,7 +506,7 @@ export function AutomaticTimetableTab({
               <p>دروس خفيفة باقية في أول درسين: <bdi>{result.scoring.pedagogy.early_light_lessons}</bdi> · دروس ثقيلة متتابعة فوق الحد المفضّل: <bdi>{result.scoring.pedagogy.heavy_run_excess}</bdi></p>
               <p>تتابع الشعب لنفس المدرس والمادة والصف: <bdi>{result.scoring.pedagogy.consecutive_section_pairs}</bdi> من <bdi>{result.scoring.pedagogy.possible_section_pairs}</bdi> فرصة.</p>
             </div>}
-            <p className="mt-3 text-xs text-gray-500">المحاولات: <bdi dir="ltr">{result.statistics.attempts}</bdi> — الرجوعات: <bdi dir="ltr">{result.statistics.backtracks}</bdi> — الزمن: <bdi dir="ltr">{result.statistics.elapsed_ms} ms</bdi></p>
+            <p className="mt-3 text-xs text-gray-500">جولات البحث: {result.statistics.search_runs || 1} — المحاولات: <bdi dir="ltr">{result.statistics.attempts}</bdi> — الرجوعات: <bdi dir="ltr">{result.statistics.backtracks}</bdi> — الزمن: <bdi dir="ltr">{Math.round(result.statistics.elapsed_ms / 1000)} s</bdi></p>
           </section>
 
           <ProposalGrid result={result} schoolId={schoolId} disabled={loading || applying} onToggleLock={(proposalId) => void toggleProposalLock(proposalId)} />

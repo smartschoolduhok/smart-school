@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { TimetableSolverSafetyLimitError, solveTimetable, validateTimetableSolverProposal } from '../src/lib/timetableSolver.ts';
-import { classifyTimetableSubject, createTimetablePedagogyScorer } from '../src/lib/timetablePedagogy.ts';
+import { classifyTimetableSubject, createTimetablePedagogyScorer, isTimetableTerminalClass } from '../src/lib/timetablePedagogy.ts';
+import { collectTimetableFixedEntries, scopedTimetableSolverLoads } from '../src/lib/timetableScope.ts';
 
 function week(dayCount = 5, lessonsPerDay = 6, options = {}) {
   const days = [];
@@ -1381,4 +1382,378 @@ test('impossible constrained stress maximizes independent coverage within determ
   assert.equal(result.scheduled_periods, independentRequired + 5);
   assert.ok(runtime < 2_500);
   assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+});
+
+function linkedSectionInput(quotas = [2, 2], calendar = week(3, 4)) {
+  return {...solverInput({...calendar,
+    loads: quotas.map((weekly_periods, index) => teachingLoad(index + 1, {
+      class_id: 1, section_id: index + 1, employee_id: 1, subject_id: 100 + index,
+      subject_name: index % 2 ? 'الفِيزْياء' : 'الفيزياء', weekly_periods,
+    })),
+    placements: quotas.map((_, index) => placement(1, index + 1)),
+  }), linkSameTeacherSectionDays: true};
+}
+
+function teachingDays(result, loadId) {
+  return [...new Set(result.entries.filter(entry => entry.teaching_load_id === loadId).map(entry => entry.day_of_week))].sort();
+}
+
+function assertLinkedComplete(input, result) {
+  assert.equal(result.status, 'complete');
+  for (const load of input.loads) {
+    assert.equal(result.entries.filter(entry => entry.teaching_load_id === load.id).length, load.weekly_periods);
+  }
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+}
+
+test('section-day linking matches normalized cloned subjects across every same-teacher section', () => {
+  const input = linkedSectionInput([2, 2, 2]);
+  const before = structuredClone(input);
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(teachingDays(result, 1), teachingDays(result, 2));
+  assert.deepEqual(teachingDays(result, 1), teachingDays(result, 3));
+  assert.ok(result.entries.length > 0);
+  assert.deepEqual(input, before);
+});
+
+test('section-day linking permits unequal quotas only within the shared teaching days', () => {
+  const input = linkedSectionInput([3, 1]);
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(teachingDays(result, 1), teachingDays(result, 2));
+  assert.equal(teachingDays(result, 1).length, 1);
+});
+
+test('section-day linking keeps following lessons soft under a hard consecutive limit', () => {
+  const input = linkedSectionInput([1, 1], week(2, 3));
+  input.teacherConstraints = [{school_id: 1, academic_year_id: 1, employee_id: 1,
+    max_consecutive_periods: 1, max_periods_per_day: null, max_working_days: null,
+    prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0}];
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(teachingDays(result, 1), teachingDays(result, 2));
+  assert.deepEqual(result.entries.map(entry => entry.lesson_number).sort(), [1, 3]);
+});
+
+test('section-day linking is optional and never retroactively rejects a timetable when disabled', () => {
+  const input = linkedSectionInput([1, 1], week(2, 2));
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}, {slot_id: 3, teaching_load_id: 2, is_locked: 1}];
+  delete input.linkSameTeacherSectionDays;
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.notDeepEqual(teachingDays(result, 1), teachingDays(result, 2));
+  assert.ok(validateTimetableSolverProposal({...input, linkSameTeacherSectionDays: true}, internalEntries(result))
+    .some(issue => issue.code === 'section_day_link'));
+});
+
+for (const [label, changes] of [
+  ['another teacher', {employee_id: 2}],
+  ['another class', {class_id: 2, section_class_id: 2, subject_class_id: 2}],
+  ['another subject', {subject_name: 'الكيمياء'}],
+]) test(`section-day linking does not bind ${label} to the same day`, () => {
+  const input = linkedSectionInput([1, 1], week(2, 2));
+  Object.assign(input.loads[1], changes);
+  input.placements[1] = placement(input.loads[1].class_id, 2);
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}, {slot_id: 3, teaching_load_id: 2, is_locked: 1}];
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.notDeepEqual(teachingDays(result, 1), teachingDays(result, 2));
+});
+
+test('section-day linking completes compatible fixed lessons and preserves explicit locks', () => {
+  const input = linkedSectionInput([2, 2], week(3, 3));
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}, {slot_id: 5, teaching_load_id: 2, is_locked: 1}];
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(teachingDays(result, 1), [0, 1]);
+  assert.deepEqual(teachingDays(result, 2), [0, 1]);
+  for (const fixed of input.fixedEntries) assert.ok(result.entries.some(entry => entry.slot_id === fixed.slot_id
+    && entry.teaching_load_id === fixed.teaching_load_id && entry.is_locked === 1));
+});
+
+test('section-day linking reports incompatible fixed days instead of silently relaxing them', () => {
+  const input = linkedSectionInput([1, 1], week(2, 2));
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}, {slot_id: 3, teaching_load_id: 2, is_locked: 1}];
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'fixed_conflict');
+  assert.deepEqual(result.entries, []);
+  assert.ok(result.fixed_conflicts.some(issue => issue.code === 'fixed_section_day_link'));
+});
+
+test('section-day linking honors teacher availability while finding a shared day', () => {
+  const input = linkedSectionInput([1, 1], week(3, 2));
+  input.teacherAvailability = [1, 2, 5, 6].map(slot_id => ({school_id: 1, academic_year_id: 1, employee_id: 1, slot_id, status: 'unavailable'}));
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(teachingDays(result, 1), [1]);
+  assert.deepEqual(teachingDays(result, 2), [1]);
+});
+
+test('section-day linking never emits a half-linked day when daily teacher capacity is insufficient', () => {
+  const input = linkedSectionInput([1, 1], week(2, 2));
+  input.teacherConstraints = [{school_id: 1, academic_year_id: 1, employee_id: 1,
+    max_periods_per_day: 1, max_consecutive_periods: null, max_working_days: null,
+    prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0}];
+  input.loads.push(teachingLoad(3, {class_id: 2, weekly_periods: 2}));
+  input.placements.push(placement(2));
+  const result = solveTimetable(input);
+  assert.notEqual(result.status, 'complete');
+  assert.equal(result.entries.filter(entry => [1, 2].includes(entry.teaching_load_id)).length, 0);
+  assert.equal(result.entries.filter(entry => entry.teaching_load_id === 3).length, 2);
+  assert.ok(result.unscheduled.filter(item => [1, 2].includes(item.teaching_load_id))
+    .every(item => item.reason_codes.includes('section_day_link')));
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('section-day linking preserves simultaneous Islamic and Christian groups in both sections', () => {
+  const input = linkedSectionInput([2, 2], week(3, 3));
+  input.loads.forEach(load => { load.subject_name = 'الإسلامية'; });
+  input.loads.push(...[1, 2].map(section_id => teachingLoad(section_id + 2, {
+    class_id: 1, section_id, employee_id: 2, subject_name: 'المسيحية', weekly_periods: 2, parallel_with_load_id: section_id,
+  })));
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.equal(result.scheduled_periods, 4);
+  assert.equal(result.entries.length, 8);
+  assertCompletePairs(result, 1, 3);
+  assertCompletePairs(result, 2, 4);
+  for (const id of [2, 3, 4]) assert.deepEqual(teachingDays(result, 1), teachingDays(result, id));
+});
+
+test('section-day linking uses preserved outside-section lessons without adding or moving them', () => {
+  const input = linkedSectionInput([2, 2], week(3, 3));
+  const scope = {kind: 'section', class_id: 1, section_id: 1};
+  input.currentEntries = internalEntries({entries: [{slot_id: 4, teaching_load_id: 2}]}).map(entry => ({...entry, is_locked: 0}));
+  input.fixedEntries = collectTimetableFixedEntries(input.loads, input.currentEntries, scope, []);
+  input.loads = scopedTimetableSolverLoads(input.loads, input.currentEntries, scope);
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(result.entries.filter(entry => entry.teaching_load_id === 2).map(entry => [entry.slot_id, entry.is_locked]), [[4, 0]]);
+  assert.deepEqual(teachingDays(result, 1), [1]);
+});
+
+test('section-day linking does not invent absent outside-section demand during scoped generation', () => {
+  const input = linkedSectionInput([2, 2], week(3, 3));
+  input.loads = scopedTimetableSolverLoads(input.loads, [], {kind: 'section', class_id: 1, section_id: 1});
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.equal(result.entries.length, 2);
+  assert.ok(result.entries.every(entry => entry.teaching_load_id === 1));
+});
+
+test('science priority identifies terminal stages without treating every third or sixth class as terminal', () => {
+  for (const [class_name, class_stage] of [['الثالث', 'متوسط'], ['الثالث', 'ثانوي'], ['السادس', 'ابتدائي'], ['السادس', 'إعدادي'], ['٦ العلمي', 'ثانوي']]) {
+    assert.equal(isTimetableTerminalClass({class_name, class_stage}), true, `${class_name} ${class_stage}`);
+  }
+  for (const [class_name, class_stage] of [['الثالث', 'ابتدائي'], ['الثاني', 'متوسط'], ['الخامس', 'إعدادي'], ['السادس', null], ['Class 6', 'primary']]) {
+    assert.equal(isTimetableTerminalClass({class_name, class_stage}), false, `${class_name} ${class_stage}`);
+  }
+});
+
+for (const subject_name of ['الرياضيات', 'الفيزياء', 'الكيمياء']) test(`science priority favors early ${subject_name} more strongly in terminal stages`, () => {
+  const load = teachingLoad(1, {class_name: 'الثالث', subject_name, weekly_periods: 1});
+  const {slots} = week(1, 4);
+  load.class_stage = 'ابتدائي';
+  const ordinary = createTimetablePedagogyScorer([load], slots).score([{slot_id: 4, teaching_load_id: 1}]);
+  load.class_stage = 'متوسط';
+  const terminal = createTimetablePedagogyScorer([load], slots);
+  const late = terminal.score([{slot_id: 4, teaching_load_id: 1}]);
+  const early = terminal.score([{slot_id: 1, teaching_load_id: 1}]);
+  assert.ok(late.penalties.late_science_subjects > ordinary.penalties.late_science_subjects);
+  assert.ok(ordinary.penalties.late_science_subjects > early.penalties.late_science_subjects);
+  const input = solverInput({days: week(1, 4).days, slots, loads: [load], placements: [placement(1)]});
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.ok(result.entries[0].lesson_number <= 2);
+});
+
+test('science priority varies the opening subject across days when the full curriculum permits', () => {
+  const input = solverInput({...week(3, 3), placements: [placement(1)], loads: ['الرياضيات', 'الفيزياء', 'الكيمياء'].map((subject_name, index) =>
+    teachingLoad(index + 1, {class_id: 1, class_name: 'الثالث', subject_name, weekly_periods: 3}))});
+  input.loads.forEach(load => {load.class_stage = 'متوسط';});
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.equal(new Set(result.entries.filter(entry => entry.lesson_number === 1).map(entry => entry.subject_name)).size, 3);
+  assert.equal(result.scoring.pedagogy.repeated_first_subjects, 0);
+});
+
+test('science priority and opening variety yield to fixed lessons and teacher availability', () => {
+  const input = solverInput({...week(3, 3), placements: [placement(1)], loads: [
+    teachingLoad(1, {class_id: 1, class_name: 'الثالث', subject_name: 'الرياضيات', weekly_periods: 2}),
+    teachingLoad(2, {class_id: 1, class_name: 'الثالث', subject_name: 'الفيزياء', weekly_periods: 1}),
+  ], fixedEntries: [{slot_id: 1, teaching_load_id: 1, is_locked: 1}, {slot_id: 4, teaching_load_id: 1, is_locked: 1}]});
+  input.loads.forEach(load => {load.class_stage = 'متوسط';});
+  input.teacherAvailability = input.slots.filter(slot => slot.id !== 9).map(slot => ({school_id: 1, academic_year_id: 1,
+    employee_id: 2, slot_id: slot.id, status: 'unavailable'}));
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.equal(result.entries.find(entry => entry.teaching_load_id === 2).slot_id, 9);
+  assert.ok(result.scoring.penalties.late_science_subjects > 0);
+  assert.ok(result.scoring.penalties.repeated_first_subjects > 0);
+  for (const fixed of input.fixedEntries) assert.ok(result.entries.some(entry => entry.slot_id === fixed.slot_id
+    && entry.teaching_load_id === fixed.teaching_load_id && entry.is_locked === 1));
+});
+
+test('section-day linking retains exact differing quotas across three sections', () => {
+  const input = linkedSectionInput([2, 3, 4], week(3, 5));
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(teachingDays(result, 1), teachingDays(result, 2));
+  assert.deepEqual(teachingDays(result, 1), teachingDays(result, 3));
+});
+
+test('section-day linking rejects an unlinked saved fallback and returns a valid new placement', () => {
+  const input = linkedSectionInput([1, 1], week(2, 3));
+  input.currentEntries = internalEntries({entries: [{slot_id: 1, teaching_load_id: 1}, {slot_id: 4, teaching_load_id: 2}]});
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(teachingDays(result, 1), teachingDays(result, 2));
+  assert.notDeepEqual(result.entries.map(entry => [entry.slot_id, entry.teaching_load_id]), [[1, 1], [4, 2]]);
+});
+
+test('section-day linking reports preserved outside days incompatible with a smaller target quota', () => {
+  const input = linkedSectionInput([1, 2], week(3, 3));
+  const scope = {kind: 'section', class_id: 1, section_id: 1};
+  input.currentEntries = internalEntries({entries: [{slot_id: 1, teaching_load_id: 2}, {slot_id: 4, teaching_load_id: 2}]})
+    .map(entry => ({...entry, is_locked: 0}));
+  input.fixedEntries = collectTimetableFixedEntries(input.loads, input.currentEntries, scope, []);
+  input.loads = scopedTimetableSolverLoads(input.loads, input.currentEntries, scope);
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'fixed_conflict');
+  assert.deepEqual(result.entries, []);
+  assert.ok(result.fixed_conflicts.some(issue => issue.code === 'fixed_section_day_link'));
+});
+
+test('section-day linking never splits parallel religious groups with disjoint companion availability', () => {
+  const input = linkedSectionInput([1, 1], week(2, 3));
+  input.loads.forEach(load => {load.subject_name = 'الإسلامية';});
+  input.loads.push(...[1, 2].map(section_id => teachingLoad(section_id + 2, {
+    class_id: 1, section_id, employee_id: section_id + 1, subject_name: 'المسيحية', weekly_periods: 1, parallel_with_load_id: section_id,
+  })));
+  input.teacherAvailability = input.slots.map(slot => ({school_id: 1, academic_year_id: 1,
+    employee_id: slot.day_of_week === 0 ? 2 : 3, slot_id: slot.id, status: 'unavailable'}));
+  const result = solveTimetable(input);
+  assert.notEqual(result.status, 'complete');
+  assert.deepEqual(result.entries, []);
+  assertCompletePairs(result, 1, 3);
+  assertCompletePairs(result, 2, 4);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('section-day linking repairs an automatic companion without moving its fixed partner', () => {
+  const input = linkedSectionInput([1, 1], week(1, 3));
+  input.loads.push(teachingLoad(3, {class_id: 1, section_id: 2, employee_id: 2, subject_name: 'الكيمياء', weekly_periods: 1}));
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}];
+  input.teacherAvailability = [1, 3].map(slot_id => ({school_id: 1, academic_year_id: 1, employee_id: 2, slot_id, status: 'unavailable'}));
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.equal(result.entries.find(entry => entry.teaching_load_id === 1).slot_id, 1);
+  assert.equal(result.entries.find(entry => entry.teaching_load_id === 1).is_locked, 1);
+  assert.equal(result.entries.find(entry => entry.teaching_load_id === 2).slot_id, 3);
+  assert.equal(result.entries.find(entry => entry.teaching_load_id === 2).is_locked, 0);
+  assert.equal(result.entries.find(entry => entry.teaching_load_id === 3).slot_id, 2);
+});
+
+test('section-day linking leaves wholly outside groups on their existing unmatched days', () => {
+  const input = linkedSectionInput([2, 2], week(3, 3));
+  const scope = {kind: 'class', class_id: 2};
+  input.loads.push(...[3, 4].map(id => teachingLoad(id, {
+    class_id: 2, section_id: id, employee_id: 2, subject_name: 'الفيزياء', weekly_periods: 1,
+  })));
+  input.placements.push(placement(2, 3), placement(2, 4));
+  input.currentEntries = internalEntries({entries: [{slot_id: 1, teaching_load_id: 1}, {slot_id: 4, teaching_load_id: 2}]})
+    .map(entry => ({...entry, is_locked: 0}));
+  input.fixedEntries = collectTimetableFixedEntries(input.loads, input.currentEntries, scope, []);
+  input.loads = scopedTimetableSolverLoads(input.loads, input.currentEntries, scope);
+  input.sectionDayLinkLoadIds = [3, 4];
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(result.entries.filter(entry => [1, 2].includes(entry.teaching_load_id))
+    .map(entry => [entry.teaching_load_id, entry.slot_id, entry.is_locked]).sort(), [[1, 1, 0], [2, 4, 0]]);
+  assert.notDeepEqual(teachingDays(result, 1), teachingDays(result, 2));
+  assert.deepEqual(teachingDays(result, 3), teachingDays(result, 4));
+  assert.ok(validateTimetableSolverProposal({...input, sectionDayLinkLoadIds: undefined}, internalEntries(result))
+    .some(issue => issue.code === 'section_day_link'));
+});
+
+test('section-day linking rejects swapped daily counts even when both sections share the same days', () => {
+  const input = linkedSectionInput([3, 3], week(2, 4));
+  const mismatched = internalEntries({entries: [
+    {slot_id: 1, teaching_load_id: 1}, {slot_id: 2, teaching_load_id: 1}, {slot_id: 5, teaching_load_id: 1},
+    {slot_id: 3, teaching_load_id: 2}, {slot_id: 6, teaching_load_id: 2}, {slot_id: 7, teaching_load_id: 2},
+  ]});
+  assert.deepEqual(validateTimetableSolverProposal({...input, linkSameTeacherSectionDays: false}, mismatched), []);
+  assert.ok(validateTimetableSolverProposal(input, mismatched).some(issue => issue.code === 'section_day_link'));
+});
+
+test('section-day linking accepts equal paired daily counts and preserves their fixed placements', () => {
+  const input = linkedSectionInput([3, 3], week(2, 4));
+  input.fixedEntries = [
+    {slot_id: 1, teaching_load_id: 1, is_locked: 1}, {slot_id: 2, teaching_load_id: 1, is_locked: 1},
+    {slot_id: 3, teaching_load_id: 2, is_locked: 1}, {slot_id: 4, teaching_load_id: 2, is_locked: 1},
+    {slot_id: 5, teaching_load_id: 1, is_locked: 1}, {slot_id: 6, teaching_load_id: 2, is_locked: 1},
+  ];
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  for (const fixed of input.fixedEntries) assert.ok(result.entries.some(entry => entry.slot_id === fixed.slot_id
+    && entry.teaching_load_id === fixed.teaching_load_id && entry.is_locked === 1));
+});
+
+test('section-day linking repairs a missing coupled pair by relocating the partner section blocker', () => {
+  const input = linkedSectionInput([1, 1], week(1, 3));
+  input.loads.push(teachingLoad(3, {class_id: 1, section_id: 2, employee_id: 3, subject_name: 'المطالعة', weekly_periods: 1}),
+    teachingLoad(4, {class_id: 1, section_id: 2, employee_id: 4, subject_name: 'التاريخ', weekly_periods: 1}));
+  input.teacherAvailability = [
+    {school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: 3, status: 'unavailable'},
+    {school_id: 1, academic_year_id: 1, employee_id: 3, slot_id: 2, status: 'unavailable'},
+    {school_id: 1, academic_year_id: 1, employee_id: 3, slot_id: 1, status: 'preferred'},
+    {school_id: 1, academic_year_id: 1, employee_id: 4, slot_id: 1, status: 'unavailable'},
+    {school_id: 1, academic_year_id: 1, employee_id: 4, slot_id: 2, status: 'preferred'},
+  ];
+  input.teacherConstraints = [3, 4].map(employee_id => ({school_id: 1, academic_year_id: 1, employee_id,
+    max_periods_per_day: 1, max_consecutive_periods: null, max_working_days: null,
+    prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0}));
+  // Both single lessons are placed before the coupled Physics demand. Completing
+  // Physics then requires moving one of the partner section's occupied lessons.
+  input.limits = {...input.limits, max_backtracks: 1, max_local_improvement_attempts: 0};
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(teachingDays(result, 1), teachingDays(result, 2));
+  assert.ok(result.entries.some(entry => [3, 4].includes(entry.teaching_load_id) && entry.slot_id === 3));
+  assert.ok(result.entries.filter(entry => [1, 2].includes(entry.teaching_load_id)).every(entry => entry.slot_id !== 3));
+});
+
+test('section-day seed budget retains the final viable ranked companion instead of reporting a fixed conflict', () => {
+  const input = linkedSectionInput([1, 1], week(1, 3));
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}];
+  input.limits = {...input.limits, max_attempts: 10, max_local_improvement_attempts: 0};
+  const result = solveTimetable(input);
+  assertLinkedComplete(input, result);
+  assert.deepEqual(result.fixed_conflicts, []);
+  assert.ok(result.statistics.attempts >= 2);
+  assert.ok(result.statistics.attempts <= input.limits.max_attempts);
+  assert.ok(result.entries.some(entry => entry.slot_id === 1 && entry.teaching_load_id === 1 && entry.is_locked === 1));
+  assert.ok(result.entries.some(entry => entry.slot_id === 2 && entry.teaching_load_id === 2));
+});
+
+test('section-day seed budget exhaustion reports an incomplete search with real statistics rather than incompatible fixed lessons', () => {
+  const input = linkedSectionInput([1, 1, 1], week(1, 3));
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}];
+  input.limits = {...input.limits, max_attempts: 10, max_local_improvement_attempts: 0};
+  const before = structuredClone(input);
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'partial');
+  assert.deepEqual(result.fixed_conflicts, []);
+  assert.equal(result.statistics.stopped_by_limit, true);
+  assert.equal(result.statistics.attempts, 2);
+  assert.ok(result.statistics.backtracks > 0);
+  assert.ok(result.unscheduled.length > 0);
+  assert.ok(result.unscheduled.every(item => item.reason_codes.includes('search_budget_exhausted')));
+  assert.ok(result.warnings.some(warning => warning.includes('لا يثبت استحالة الجدول')));
+  assert.deepEqual(input, before);
+  // The same fixed lessons really are feasible once the seed search can finish.
+  const completed = solveTimetable({...input, limits: {...input.limits, max_attempts: 100}});
+  assertLinkedComplete(input, completed);
+  assert.ok(completed.entries.some(entry => entry.slot_id === 1 && entry.teaching_load_id === 1 && entry.is_locked === 1));
 });

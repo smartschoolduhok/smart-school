@@ -8,7 +8,9 @@ const worker = self as unknown as {
 };
 worker.onmessage = async event => {
   try {
-    worker.postMessage({ok: true, data: await solvePreparedTimetable(event.data)});
+    worker.postMessage({ok: true, data: await solvePreparedTimetable(event.data, {maxRuns: 8,
+      onProgress: progress => worker.postMessage({type: 'progress', progress}),
+    })});
   } catch (error) {
     worker.postMessage({ok: false, error: error instanceof TimetableSolverSafetyLimitError
       ? 'استغرق التوليد وقتًا أطول من المسموح. اختر صفًا أو شعبة لتوليد نطاق أصغر ثم أعد المحاولة.'

@@ -12,6 +12,7 @@ import {
 } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
+  timetableSubjectColorForSubject,
   type TimetableEntryNotice,
   type TimetableGridData,
   type TimetableGridEntry,
@@ -617,11 +618,15 @@ export function TimetableGridTab({
                             ) : entries.map((entry) => {
                               const hasTeacherCollision = entry.hard_conflicts.some((conflict) => conflict.code === 'teacher_collision');
                               const hasBlockingHardConflicts = entry.hard_conflicts.some((conflict) => conflict.code !== 'teacher_collision');
+                              const subjectColor = timetableSubjectColorForSubject(schoolId, entry.subject_name);
                               return (
                                 <div
                                   key={entry.id}
                                   data-timetable-entry={entry.id}
                                   data-timetable-teacher-conflict={hasTeacherCollision ? 'true' : 'false'}
+                                  style={hasBlockingHardConflicts || hasTeacherCollision ? undefined : {
+                                    backgroundColor: subjectColor.background, borderColor: subjectColor.border, color: subjectColor.foreground,
+                                  }}
                                   className={`mb-2 rounded-lg border p-2 transition-opacity last:mb-0 ${draggedEntryId === entry.id ? 'opacity-45' : ''} ${hasBlockingHardConflicts
                                     ? 'border-red-400 bg-red-50'
                                     : hasTeacherCollision
@@ -630,9 +635,9 @@ export function TimetableGridTab({
                                 >
                                   <p className={`font-bold ${hasBlockingHardConflicts
                                     ? 'text-red-950'
-                                    : hasTeacherCollision ? 'text-rose-950' : 'text-primary-900'}`}>{entry.subject_name}</p>
-                                  <p className={`text-xs ${entry.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-600'}`}>{entry.employee_name || 'بدون مدرس'}</p>
-                                  {parallelPartnerName(entry) && <p className="mt-1 text-xs font-semibold text-blue-800">متزامن مع {parallelPartnerName(entry)} — النقل والتثبيت معًا</p>}
+                                    : hasTeacherCollision ? 'text-rose-950' : ''}`}>{entry.subject_name}</p>
+                                  <p className={`text-xs ${entry.employee_id == null ? 'font-semibold' : ''} ${hasBlockingHardConflicts || hasTeacherCollision ? 'text-gray-700' : ''}`}>{entry.employee_name || 'بدون مدرس'}</p>
+                                  {parallelPartnerName(entry) && <p className="mt-1 text-xs font-semibold">متزامن مع {parallelPartnerName(entry)} — النقل والتثبيت معًا</p>}
                                   <HardConflictNotice conflicts={entry.hard_conflicts} />
                                   {entry.warnings.length > 0 && (
                                     <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800" title={entry.warnings.map((warning) => warning.message).join(' • ')}>

@@ -6,9 +6,11 @@ export interface TimetablePedagogyMetrics {
   heavy_run_excess: number;
   consecutive_section_pairs: number;
   possible_section_pairs: number;
+  late_science_lessons: number;
+  repeated_first_subjects: number;
 }
 export interface TimetablePedagogyScore {
-  penalties: {early_light_subjects: number; consecutive_heavy_subjects: number; missed_section_continuity: number};
+  penalties: {early_light_subjects: number; consecutive_heavy_subjects: number; missed_section_continuity: number; late_science_subjects: number; repeated_first_subjects: number};
   metrics: TimetablePedagogyMetrics;
 }
 type Entry = {slot_id: number; teaching_load_id: number};
@@ -44,6 +46,18 @@ export function classifyTimetableSubject(name: string | null | undefined): Timet
   return 'neutral';
 }
 
+const earlyScienceNames = new Set(['رياضيات', 'الرياضيات', 'فيزياء', 'الفيزياء', 'كيمياء', 'الكيمياء', 'math', 'maths', 'mathematics', 'physics', 'chemistry']);
+
+/** Scheduling priority only; this never sets graduation or report-card policy. */
+export function isTimetableTerminalClass(load: Pick<TimetableTeachingLoad, 'class_name' | 'class_stage'>): boolean {
+  const label = normalizeTimetableSubjectName(`${load.class_name || ''} ${load.class_stage || ''}`)
+    .replace(/[٠-٩]/g, digit => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)));
+  const third = /(?:^| )(?:الثالث|ثالث|3)(?: |$)/.test(label);
+  const sixth = /(?:^| )(?:السادس|سادس|6)(?: |$)/.test(label);
+  return third && /متوسط|ثانوي/.test(label)
+    || sixth && /ابتدائي|اعدادي|ثانوي|علمي|ادبي/.test(label);
+}
+
 function append<K, V>(map: Map<K, V[]>, key: K, value: V) {
   const values = map.get(key);
   if (values) values.push(value); else map.set(key, [value]);
@@ -71,15 +85,26 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
   const continuityKey = (load: TimetableTeachingLoad) => `${load.school_id}:${load.academic_year_id}:${load.class_id}:${load.employee_id}:${identityByLoad.get(load.id)}`;
   const earlyPenalty = (loadId: number, slotId: number) => effortByLoad.get(loadId) !== 'light' ? 0
     : lessonPositionBySlot.get(slotId) === 0 ? 40 : lessonPositionBySlot.get(slotId) === 1 ? 20 : 0;
+  const scienceLatePenalty = (load: TimetableTeachingLoad, slotId: number) => earlyScienceNames.has(identityByLoad.get(load.id)!)
+    ? Math.max(0, (lessonPositionBySlot.get(slotId) ?? 0) - 1) * (isTimetableTerminalClass(load) ? 10 : 6) : 0;
 
   function score(entries: readonly Entry[]): TimetablePedagogyScore {
-    const penalties = {early_light_subjects: 0, consecutive_heavy_subjects: 0, missed_section_continuity: 0};
-    const metrics = {early_light_lessons: 0, heavy_run_excess: 0, consecutive_section_pairs: 0, possible_section_pairs: 0};
+    const penalties = {early_light_subjects: 0, consecutive_heavy_subjects: 0, missed_section_continuity: 0, late_science_subjects: 0, repeated_first_subjects: 0};
+    const metrics = {early_light_lessons: 0, heavy_run_excess: 0, consecutive_section_pairs: 0, possible_section_pairs: 0, late_science_lessons: 0, repeated_first_subjects: 0};
+    const firstSubjectDays = new Map<string, Set<number>>();
     const placementDays = new Map<string, Map<number, {heavy: boolean; early: number}>>();
     const continuity = new Map<string, {sectionCounts: Map<number, number>; days: Map<string, Array<{position: number; section: number}>>}>();
     for (const entry of entries) {
       const load = loadById.get(entry.teaching_load_id), slot = slotById.get(entry.slot_id);
       if (!load || !slot || slot.slot_type !== 'lesson' || !positionBySlot.has(slot.id)) continue;
+      const scienceLate = scienceLatePenalty(load, slot.id);
+      penalties.late_science_subjects += scienceLate;
+      if (scienceLate > 0) metrics.late_science_lessons += 1;
+      if (lessonPositionBySlot.get(slot.id) === 0) {
+        const firstKey = `${placementKey(load)}:${identityByLoad.get(load.id)}`;
+        const days = firstSubjectDays.get(firstKey) || new Set<number>();
+        days.add(slot.day_of_week); firstSubjectDays.set(firstKey, days);
+      }
       const dayKey = `${placementKey(load)}:${slot.day_of_week}`;
       const day = placementDays.get(dayKey) || new Map();
       const position = positionBySlot.get(slot.id)!;
@@ -118,21 +143,29 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
         }
       }
     }
+    for (const days of firstSubjectDays.values()) {
+      metrics.repeated_first_subjects += Math.max(0, days.size - 1);
+      penalties.repeated_first_subjects += days.size * (days.size - 1) / 2 * 14;
+    }
     penalties.consecutive_heavy_subjects = metrics.heavy_run_excess * 12;
     penalties.missed_section_continuity = Math.max(0, metrics.possible_section_pairs - metrics.consecutive_section_pairs) * 6;
     return {penalties, metrics};
   }
 
   function candidatePenalty(load: TimetableTeachingLoad, slot: TimetableSlot, entries: readonly Entry[]): number {
-    let penalty = earlyPenalty(load.id, slot.id);
+    let penalty = earlyPenalty(load.id, slot.id) + scienceLatePenalty(load, slot.id);
     const position = positionBySlot.get(slot.id);
     const lessonPosition = lessonPositionBySlot.get(slot.id);
     if (position == null || lessonPosition == null) return penalty;
     const heavyPositions = new Set<number>();
+    const sameFirstDays = new Set<number>();
     let adjacentSection = false;
     for (const entry of entries) {
       const other = loadById.get(entry.teaching_load_id), otherSlot = slotById.get(entry.slot_id);
-      if (!other || !otherSlot || scopeDay(otherSlot) !== scopeDay(slot)) continue;
+      if (!other || !otherSlot) continue;
+      if (lessonPosition === 0 && lessonPositionBySlot.get(otherSlot.id) === 0 && otherSlot.day_of_week !== slot.day_of_week
+        && placementKey(other) === placementKey(load) && identityByLoad.get(other.id) === identityByLoad.get(load.id)) sameFirstDays.add(otherSlot.day_of_week);
+      if (scopeDay(otherSlot) !== scopeDay(slot)) continue;
       if (placementKey(other) === placementKey(load) && effortByLoad.get(other.id) === 'heavy') heavyPositions.add(positionBySlot.get(otherSlot.id)!);
       if (load.employee_id != null && load.section_id != null && other.section_id != null && other.section_id !== load.section_id
         && continuityKey(other) === continuityKey(load)
@@ -145,6 +178,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       penalty += Math.max(0, before + after - 1) * 12;
     }
     if (adjacentSection) penalty -= 6;
+    penalty += sameFirstDays.size * 14;
     return penalty;
   }
   return {score, candidatePenalty};

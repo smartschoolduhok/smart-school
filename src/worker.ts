@@ -279,6 +279,7 @@ import {
   type TimetableTeacherConstraints,
   type TimetableTeachingLoad,
 } from './lib/timetable'
+import { validateTimetableSectionDays } from './lib/timetableSectionDays';
 import { solveTimetable, type TimetableSolverInput } from './lib/timetableSolver'
 import {
   STALE_TIMETABLE_PROPOSAL_CODE,
@@ -883,7 +884,7 @@ async function loadTimetableSchedulingContext(
 }
 
 type TimetableProposalPayloadValidation =
-  | { ok: true; revision: number; digest: string; entries: TimetableProposalPlacement[]; scope: TimetableScope; scopeLoadIds?: number[]; scopeToken?: string }
+  | { ok: true; revision: number; digest: string; entries: TimetableProposalPlacement[]; scope: TimetableScope; scopeLoadIds?: number[]; scopeToken?: string; linkSameTeacherSectionDays: boolean }
   | { ok: false; error: string };
 
 function hasOnlyObjectKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
@@ -951,18 +952,20 @@ function parseTimetableProposalPayload(
   if (!/^[a-f0-9]{64}$/.test(digest)) return { ok: false, error: 'بصمة المقترح غير صالحة' };
   const parsedEntries = parseTimetableProposalEntries(body.entries);
   if (!parsedEntries.ok) return parsedEntries;
+  if (body.link_same_teacher_section_days !== undefined && typeof body.link_same_teacher_section_days !== 'boolean') return { ok: false, error: 'خيار ربط الشعب غير صالح' };
+  const linkSameTeacherSectionDays = body.link_same_teacher_section_days === true;
   const scope = parseTimetableScope(body.generation_scope);
   if (!scope) return { ok: false, error: 'نطاق توليد الجدول غير صالح' };
   if (scope.kind === 'school') {
     if (body.scope_load_ids !== undefined || body.scope_token !== undefined) return { ok: false, error: 'بصمة النطاق لا تطابق طلب المدرسة كاملة' };
-    return { ok: true, revision, digest, entries: parsedEntries.entries, scope };
+    return { ok: true, revision, digest, entries: parsedEntries.entries, linkSameTeacherSectionDays, scope };
   }
   const ids = body.scope_load_ids;
   if (!Array.isArray(ids) || ids.length === 0 || ids.length > 5_000
     || !ids.every(id => typeof id === 'number' && Number.isSafeInteger(id) && id > 0)
     || new Set(ids).size !== ids.length || typeof body.scope_token !== 'string' || !/^[a-f0-9]{64}$/.test(body.scope_token))
     return { ok: false, error: 'يلزم إثبات نطاق التوليد الأصلي. أنشئ المعاينة من جديد.' };
-  return { ok: true, revision, digest, entries: parsedEntries.entries, scope,
+  return { ok: true, revision, digest, entries: parsedEntries.entries, linkSameTeacherSectionDays, scope,
     scopeLoadIds: [...ids].sort((a, b) => a - b), scopeToken: body.scope_token };
 }
 
@@ -1046,6 +1049,7 @@ async function buildTimetableAdoptionPreview(input: {
   digest: string;
   entries: TimetableProposalPlacement[];
   context: TimetableSchedulingContext;
+  linkSameTeacherSectionDays?: boolean;
   generationScope?: TimetableScope;
   scopeLoadIds?: number[];
   options:
@@ -1057,6 +1061,7 @@ async function buildTimetableAdoptionPreview(input: {
     academicYearId: input.academicYearId,
     revision: input.revision,
     entries: input.entries,
+    linkSameTeacherSectionDays: input.linkSameTeacherSectionDays,
     generationScope: input.generationScope,
     scopeLoadIds: input.scopeLoadIds,
   });
@@ -1093,6 +1098,10 @@ async function buildTimetableAdoptionPreview(input: {
   const blockers = [
     ...(recomputedDigest === input.digest ? [] : [{ code: 'proposal_digest_mismatch', message: 'بصمة المقترح لا تطابق محتواه الحالي.' }]),
     ...validation.blockers,
+    ...(input.linkSameTeacherSectionDays ? validateTimetableSectionDays(
+      scopedTimetableSolverLoads(input.context.loads, input.context.entries, input.generationScope || {kind: 'school'}),
+      input.context.slots, input.entries, input.generationScope && input.generationScope.kind !== 'school'
+        ? input.context.loads.filter(load => timetableLoadMatchesScope(load, input.generationScope!)).map(load => load.id) : undefined) : []),
     ...(input.generationScope && input.generationScope.kind !== 'school' && !input.context.loads.some(load => load.status === 'active' && timetableLoadMatchesScope(load, input.generationScope!))
       ? [{ code: 'empty_timetable_scope', message: 'لا توجد أنصبة فعالة ضمن النطاق المختار في هذه المدرسة والسنة.' }] : []),
     ...(input.options.preserveCurrentLocks
@@ -3480,7 +3489,7 @@ app.get('/api/timetable/teacher-workloads', requireSameSchoolOrAdmin(), requireR
 app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'], requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const body = await readJsonObject(c)
   if (!body) return c.json({ error: 'بيانات طلب التوليد غير صالحة' }, 400)
-  if (!hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'fixed_entries', 'use_current_locked_entries', 'generation_scope'])) {
+  if (!hasOnlyObjectKeys(body, ['school_id', 'academic_year_id', 'fixed_entries', 'use_current_locked_entries', 'generation_scope', 'link_same_teacher_section_days'])) {
     return c.json({ error: 'يحتوي طلب التوليد على حقول غير معروفة' }, 400)
   }
   const user: UserContext | null = c.get('user') || null
@@ -3494,6 +3503,9 @@ app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'
   if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
   if (body.use_current_locked_entries != null && typeof body.use_current_locked_entries !== 'boolean') {
     return c.json({ error: 'وضع إعادة تحسين الجدول الحالي غير صالح' }, 400)
+  }
+  if (body.link_same_teacher_section_days !== undefined && typeof body.link_same_teacher_section_days !== 'boolean') {
+    return c.json({ error: 'خيار ربط الشعب غير صالح' }, 400)
   }
   const fixedValidation = parseTimetableFixedEntries(body.fixed_entries)
   if (!fixedValidation.ok) return c.json({ error: fixedValidation.error }, 400)
@@ -3524,6 +3536,8 @@ app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'
     const scopeLoadIds = generationScope.kind === 'school' ? undefined
       : context.loads.filter(load => timetableLoadMatchesScope(load, generationScope)).map(load => load.id).sort((a, b) => a - b)
     const solverInput: TimetableSolverInput = {
+      linkSameTeacherSectionDays: body.link_same_teacher_section_days === true,
+      sectionDayLinkLoadIds: scopeLoadIds,
       schoolId: targetSchool.schoolId,
       academicYearId,
       days: context.days,
@@ -3568,6 +3582,7 @@ app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'
         academicYearId,
         revision: timetableRevision,
         entries: proposalEntries,
+        linkSameTeacherSectionDays: solverInput.linkSameTeacherSectionDays,
         generationScope,
         scopeLoadIds,
       }),
@@ -3586,7 +3601,7 @@ app.post('/api/timetable/solver/adoption-preview', requireSameSchoolOrAdmin(), r
   const user = c.get('user') as UserContext
   const body = await readJsonObject(c)
   if (!body || !hasOnlyObjectKeys(body, [
-    'school_id', 'academic_year_id', 'proposal_revision', 'proposal_digest', 'entries', 'generation_scope', 'scope_load_ids', 'scope_token',
+    'school_id', 'academic_year_id', 'proposal_revision', 'proposal_digest', 'entries', 'generation_scope', 'scope_load_ids', 'scope_token', 'link_same_teacher_section_days',
   ])) return c.json({ error: 'بيانات معاينة الاعتماد غير صالحة أو تحتوي على حقول غير معروفة' }, 400)
   const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
   if (!targetSchool.ok) return c.json({ error: targetSchool.error, code: 'invalid_tenant_scope' }, targetSchool.status)
@@ -3613,6 +3628,7 @@ app.post('/api/timetable/solver/adoption-preview', requireSameSchoolOrAdmin(), r
       digest: parsed.digest,
       entries: parsed.entries,
       context,
+      linkSameTeacherSectionDays: parsed.linkSameTeacherSectionDays,
       generationScope: parsed.scope,
       scopeLoadIds: parsed.scopeLoadIds,
       options: { validationMode: 'complete', preserveCurrentLocks: true },
@@ -3627,7 +3643,7 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
   const user = c.get('user') as UserContext
   const body = await readJsonObject(c)
   if (!body || !hasOnlyObjectKeys(body, [
-    'school_id', 'academic_year_id', 'expected_revision', 'proposal_digest', 'entries', 'confirm_apply', 'generation_scope', 'scope_load_ids', 'scope_token',
+    'school_id', 'academic_year_id', 'expected_revision', 'proposal_digest', 'entries', 'confirm_apply', 'generation_scope', 'scope_load_ids', 'scope_token', 'link_same_teacher_section_days',
   ])) return c.json({ error: 'بيانات اعتماد الجدول غير صالحة أو تحتوي على حقول غير معروفة' }, 400)
   if (body.confirm_apply !== true) return c.json({ error: 'يلزم تأكيد اعتماد الجدول الرسمي' }, 400)
   const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
@@ -3655,6 +3671,7 @@ app.post('/api/timetable/solver/apply', requireSameSchoolOrAdmin(), requireRoles
       digest: parsed.digest,
       entries: parsed.entries,
       context,
+      linkSameTeacherSectionDays: parsed.linkSameTeacherSectionDays,
       generationScope: parsed.scope,
       scopeLoadIds: parsed.scopeLoadIds,
       options: { validationMode: 'complete', preserveCurrentLocks: true },
