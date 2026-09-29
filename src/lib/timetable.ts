@@ -178,6 +178,7 @@ export interface TimetableEntry {
 }
 
 export type TimetableEntryHardConflictCode =
+  | 'subject_daily_repetition'
   | 'section_day_link'
   | 'slot_not_schedulable'
   | 'inactive_day'

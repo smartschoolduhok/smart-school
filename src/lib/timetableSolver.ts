@@ -18,10 +18,12 @@ import {
 import { countTimetableSectionPeriods, countTimetableScheduledSectionPeriods, indexTimetableParallelLoadGroups, parallelTimetableLoadGroup, validateTimetableParallelLoads } from './timetableParallel.ts';
 import { createTimetablePedagogyScorer, type TimetablePedagogyMetrics } from './timetablePedagogy.ts';
 import { missingTimetableSectionDays, timetableSectionDayGroups, validateTimetableSectionDays } from './timetableSectionDays.ts';
+import { createTimetableDailySubjectPolicy } from './timetableDailySubjects.ts';
 
 export type TimetableSolverStatus = 'complete' | 'partial' | 'impossible' | 'fixed_conflict';
 
 export type TimetableSolverReasonCode =
+  | 'subject_daily_repetition'
   | 'section_day_link'
   | 'no_class_capacity'
   | 'teacher_unavailable'
@@ -70,6 +72,7 @@ export interface TimetableSolverReadiness {
 }
 
 export interface TimetableSolverPenaltyBreakdown {
+  daily_subject_doubles?: number;
   early_light_subjects?: number;
   consecutive_heavy_subjects?: number;
   missed_section_continuity?: number;
@@ -119,6 +122,7 @@ export interface TimetableSolverProposalEntry {
 }
 
 export type TimetableFixedEntryConflictCode =
+  | 'fixed_subject_daily_repetition'
   | 'fixed_section_day_link'
   | 'fixed_duplicate'
   | 'fixed_invalid_scope'
@@ -201,6 +205,9 @@ export interface TimetableSolverInput {
   searchVariant?: number;
   searchDeadline?: number;
   searchSeedEntries?: TimetableEntry[];
+  /** Internal search phase: false tries one subject lesson per day first. */
+  allowConsecutiveSubjectDouble?: boolean;
+  dailySubjectLoadIds?: number[];
   linkSameTeacherSectionDays?: boolean;
   sectionDayLinkLoadIds?: number[];
   schoolId: number;
@@ -224,6 +231,7 @@ const DEFAULT_LIMITS: TimetableSolverLimits = {
 };
 
 const REASON_MESSAGES: Record<TimetableSolverReasonCode, string> = {
+  subject_daily_repetition: 'توزيع المادة على الأيام المتاحة لا يحقق قاعدة التكرار: يُسمح عند الضرورة بدرسين متتاليين فقط، ويُمنع التكرار المتباعد أو أكثر من درسين في اليوم للشعبة نفسها.',
   section_day_link: 'لم يتمكن البحث من وضع المادة في اليوم نفسه لجميع شعب الصف التي يدرّسها المدرس نفسه، مع احترام التوفر والدروس المثبتة. راجع القيود أو عطّل خيار الربط.',
   no_class_capacity: 'لا توجد سعة متبقية للصف أو الشعبة ضمن الفترات الصالحة.',
   teacher_unavailable: 'لا توجد فترات متاحة للمدرس ضمن القيود الحالية.',
@@ -237,6 +245,7 @@ const REASON_MESSAGES: Record<TimetableSolverReasonCode, string> = {
 };
 
 const REASON_ORDER: TimetableSolverReasonCode[] = [
+  'subject_daily_repetition',
   'section_day_link',
   'invalid_teaching_load',
   'no_class_capacity',
@@ -337,6 +346,11 @@ function validateFixedEntries(input: TimetableSolverInput): {
         teaching_load_id: entry.teaching_load_id,
       });
     }
+  }
+  for (const notice of createTimetableDailySubjectPolicy(input.loads, input.slots, input.dailySubjectLoadIds)
+    .validate(entries, input.allowConsecutiveSubjectDouble !== false)) {
+    conflicts.push({code: 'fixed_subject_daily_repetition', message: notice.message,
+      slot_id: notice.slot_id, teaching_load_id: notice.teaching_load_id});
   }
   return { entries, conflicts };
 }
@@ -612,9 +626,8 @@ function candidatePenalty(
       && Number(otherLoad.class_id) === Number(load.class_id)
       && sameNullableId(otherLoad.section_id, load.section_id);
   }).map(entry => entry.slot_id)).size;
-  // Daily spread is a soft preference; unavailable teachers or fixed lessons
-  // may require more than one lesson of the same subject on a day.
-  let penalty = warningPenalty(warnings) + sameLoadDayCount * 14 + samePlacementDayCount;
+  // The fallback phase can use an adjacent double, but separate days win.
+  let penalty = warningPenalty(warnings) + sameLoadDayCount * 114 + samePlacementDayCount;
 
   const orderedDaySlots = [...slotsById.values()]
     .filter((item) => Number(item.day_of_week) === Number(slot.day_of_week) && item.slot_type === 'lesson' && Number(item.is_active) === 1)
@@ -632,6 +645,7 @@ function candidatePenalty(
 
 function emptyPenaltyBreakdown(): TimetableSolverPenaltyBreakdown {
   return {
+    daily_subject_doubles: 0,
     early_light_subjects: 0,
     consecutive_heavy_subjects: 0,
     missed_section_continuity: 0,
@@ -654,6 +668,7 @@ function scoreProposal(input: {
   availability: TimetableTeacherAvailabilityOverride[];
   constraints: TimetableTeacherConstraints[];
   pedagogyScorer?: ReturnType<typeof createTimetablePedagogyScorer>;
+  dailySubjectPolicy?: ReturnType<typeof createTimetableDailySubjectPolicy>;
 }, safetyCheck?: () => void): { qualityScore: number; scoring: TimetableSolverScoring } {
   const penalties = emptyPenaltyBreakdown();
   const loadsById = new Map(input.loads.map((load) => [Number(load.id), load]));
@@ -774,6 +789,8 @@ function scoreProposal(input: {
 
   const pedagogy = (input.pedagogyScorer || createTimetablePedagogyScorer(input.loads, input.slots)).score(input.entries);
   Object.assign(penalties, pedagogy.penalties);
+  penalties.daily_subject_doubles = (input.dailySubjectPolicy || createTimetableDailySubjectPolicy(input.loads, input.slots))
+    .countDoubles(input.entries) * 100;
   const totalPenalty = Object.values(penalties).reduce((sum, value) => sum + value, 0);
   const maximumReferencePenalty = Math.max(1, input.entries.length * 12);
   const qualityScore = Math.max(0, Math.min(100, Math.round(100 - (totalPenalty / maximumReferencePenalty) * 100)));
@@ -797,6 +814,7 @@ function hardConflictReason(code: TimetableEntryNotice['code']): TimetableSolver
   if (code === 'teacher_max_periods_per_day') return 'teacher_daily_limit';
   if (code === 'teacher_max_working_days') return 'teacher_working_days_limit';
   if (code === 'teacher_max_consecutive_periods') return 'teacher_consecutive_limit';
+  if (code === 'subject_daily_repetition') return 'subject_daily_repetition';
   if (code === 'teacher_collision') return 'teacher_collision';
   if (code === 'invalid_teaching_load' || code === 'invalid_parallel_load' || code === 'invalid_tenant_scope' || code === 'invalid_academic_year') return 'invalid_teaching_load';
   return null;
@@ -832,10 +850,53 @@ export function validateTimetableSolverProposal(
     }
   }
   if (input.linkSameTeacherSectionDays) violations.push(...validateTimetableSectionDays(input.loads.filter(load => validLoadIds.has(load.id)), input.slots, entries, input.sectionDayLinkLoadIds));
+  violations.push(...createTimetableDailySubjectPolicy(input.loads, input.slots, input.dailySubjectLoadIds)
+    .validate(entries, input.allowConsecutiveSubjectDouble !== false));
   return violations;
 }
 
+/** Avoiding a double wins over any cosmetic improvement at equal coverage. */
+export function hasBetterTimetableScore(candidate: TimetableSolverScoring, current: TimetableSolverScoring): boolean {
+  const doubles = (candidate.penalties.daily_subject_doubles || 0) - (current.penalties.daily_subject_doubles || 0);
+  const early = (candidate.penalties.early_light_subjects || 0) - (current.penalties.early_light_subjects || 0);
+  return doubles < 0 || doubles === 0 && (early < 0 || early === 0 && candidate.total_penalty < current.total_penalty);
+}
+
 export function solveTimetable(input: TimetableSolverInput): TimetableSolverPreview {
+  if (input.allowConsecutiveSubjectDouble != null) return solveTimetableOnce(input);
+  const started = Date.now();
+  const limits = {...DEFAULT_LIMITS, ...input.limits};
+  const strict = solveTimetableOnce({...input, allowConsecutiveSubjectDouble: false,
+    searchDeadline: Math.min(input.searchDeadline ?? Infinity, started + limits.time_budget_ms * 0.5),
+    limits: {...limits, max_attempts: Math.floor(limits.max_attempts / 2),
+      max_backtracks: Math.floor(limits.max_backtracks / 2),
+      max_local_improvement_attempts: Math.floor(limits.max_local_improvement_attempts / 2)}});
+  let result = strict;
+  let fallback: TimetableSolverPreview | undefined;
+  const remaining = limits.time_budget_ms - (Date.now() - started);
+  if (strict.status !== 'complete' && remaining > 100
+    && strict.statistics.attempts < limits.max_attempts && strict.statistics.backtracks < limits.max_backtracks
+    && (strict.status !== 'fixed_conflict' || strict.fixed_conflicts.every(conflict => conflict.code === 'fixed_subject_daily_repetition'))) {
+    try {
+      fallback = solveTimetableOnce({...input, allowConsecutiveSubjectDouble: true,
+        limits: {...limits, time_budget_ms: remaining, max_attempts: limits.max_attempts - strict.statistics.attempts,
+          max_backtracks: limits.max_backtracks - strict.statistics.backtracks,
+          max_local_improvement_attempts: Math.max(0, limits.max_local_improvement_attempts - strict.statistics.local_improvement_attempts)}});
+      if (fallback.scheduled_periods > result.scheduled_periods
+        || result.status === 'fixed_conflict' && fallback.status !== 'fixed_conflict'
+        || fallback.scheduled_periods === result.scheduled_periods && hasBetterTimetableScore(fallback.scoring, result.scoring)) result = fallback;
+    } catch (error) {
+      if (!(error instanceof TimetableSolverSafetyLimitError)) throw error;
+    }
+  }
+  return {...result, statistics: {...result.statistics, attempts: strict.statistics.attempts + (fallback?.statistics.attempts || 0),
+    backtracks: strict.statistics.backtracks + (fallback?.statistics.backtracks || 0),
+    local_improvement_attempts: strict.statistics.local_improvement_attempts + (fallback?.statistics.local_improvement_attempts || 0),
+    elapsed_ms: Date.now() - started, time_budget_ms: limits.time_budget_ms,
+    attempt_budget: limits.max_attempts, backtrack_budget: limits.max_backtracks}};
+}
+
+function solveTimetableOnce(input: TimetableSolverInput): TimetableSolverPreview {
   const startedAt = Date.now();
   const dormantLoads = dormantTimetableLoadIds(input.loads, input.currentEntries || [], input.schoolId, input.academicYearId);
   const fixedLoadIds = new Set((input.fixedEntries || []).map(entry => entry.teaching_load_id));
@@ -899,6 +960,9 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   });
   const groupsByLoad = indexTimetableParallelLoadGroups(validLoads);
   const pedagogyScorer = createTimetablePedagogyScorer(validLoads, scopedSlots);
+  const dailySubjectPolicy = createTimetableDailySubjectPolicy(validLoads, scopedSlots, input.dailySubjectLoadIds);
+  const allowDouble = input.allowConsecutiveSubjectDouble === true;
+  const respectsDailySubjects = (entries: InternalEntry[]) => dailySubjectPolicy.validate(entries, allowDouble).length === 0;
   const groupFor = (load: TimetableTeachingLoad) => groupsByLoad.get(load.id) ?? [load];
   const sectionDayGroups = input.linkSameTeacherSectionDays ? timetableSectionDayGroups(validLoads, input.sectionDayLinkLoadIds) : [];
   const linkedLoadIds = new Set(sectionDayGroups.flatMap(group => group.loads.map(load => load.id)));
@@ -973,6 +1037,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         break;
       }
       attempts += 1;
+      if (groupFor(load).some(member => !dailySubjectPolicy.canPlace(member.id, slot.id, entries, allowDouble))) continue;
       const evaluations = groupFor(load).map(member => ({member, evaluation: evaluate({
         slot_id: Number(slot.id), teaching_load_id: Number(member.id),
       })}));
@@ -1161,6 +1226,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       let repaired = entries.filter(entry => !removedIds.has(entry.id));
       const evaluate = preparePlacementEvaluator(repaired);
       attempts += 1;
+      if (group.some(member => !dailySubjectPolicy.canPlace(member.id, slot.id, repaired, allowDouble))) continue;
       if (group.some(member => evaluate({slot_id: slot.id, teaching_load_id: member.id}).hard_conflicts.length > 0)) continue;
       repaired.push(...group.map(member => makeEntry(member, slot)));
       let complete = true;
@@ -1204,18 +1270,84 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       }
     }
   }
+  // Moving one linked blocker alone would break its shared teaching day.
+  // Temporarily lift that subject's whole day bundle, fill the missing linked
+  // demand, then reinsert every lifted lesson together on a feasible day.
+  const bundleRepairCeiling = Math.floor(limits.max_attempts * 0.9);
+  function repairLinkedDayBundle(load: TimetableTeachingLoad, entries: InternalEntry[]): InternalEntry[] | null {
+    if (!linkedLoadIds.has(load.id)) return null;
+    const targetIds = new Set(sectionDayGroups.filter(group => group.loads.some(member => member.id === load.id))
+      .flatMap(group => group.loads.map(member => member.id)));
+    const targetTeachers = new Set(groupFor(load).flatMap(member => member.employee_id == null ? [] : [member.employee_id]));
+    const originalCounts = new Map<number, number>();
+    for (const entry of entries) originalCounts.set(entry.teaching_load_id, (originalCounts.get(entry.teaching_load_id) || 0) + 1);
+    const candidates = [...scheduleSlots].sort((a, b) => entries.filter(entry => targetIds.has(entry.teaching_load_id)
+      && slotsById.get(entry.slot_id)?.day_of_week === a.day_of_week).length - entries.filter(entry => targetIds.has(entry.teaching_load_id)
+      && slotsById.get(entry.slot_id)?.day_of_week === b.day_of_week).length || a.id - b.id);
+    for (const slot of candidates) {
+      ensureWithinWallClockSafetyLimit();
+      if (attempts >= bundleRepairCeiling || deterministicBudgetExpired()) break;
+      attempts += 1;
+      const blockers = entries.filter(entry => entry.slot_id === slot.id && (() => {
+        const other = loadsById.get(entry.teaching_load_id)!;
+        return timetableLoadsShareGroup(other, load) || other.employee_id != null && targetTeachers.has(other.employee_id);
+      })());
+      if (blockers.length === 0) continue;
+      const liftedIds = new Set(blockers.map(entry => entry.teaching_load_id));
+      // Expand both section-day links and simultaneous religious pairs until
+      // no partner remains anchored to the source day outside the bundle.
+      let previousSize = 0;
+      while (previousSize !== liftedIds.size) {
+        previousSize = liftedIds.size;
+        for (const group of sectionDayGroups) if (group.loads.some(member => liftedIds.has(member.id))) {
+          group.loads.forEach(member => liftedIds.add(member.id));
+        }
+        for (const id of [...liftedIds]) groupFor(loadsById.get(id)!).forEach(member => liftedIds.add(member.id));
+      }
+      if ([...liftedIds].some(id => targetIds.has(id))) continue;
+      const lifted = entries.filter(entry => liftedIds.has(entry.teaching_load_id)
+        && slotsById.get(entry.slot_id)?.day_of_week === slot.day_of_week);
+      if (lifted.length > 12 || lifted.some(entry => fixedEntryKeys.has(`${entry.slot_id}:${entry.teaching_load_id}`))) continue;
+      const liftedEntryIds = new Set(lifted.map(entry => entry.id));
+      const base = entries.filter(entry => !liftedEntryIds.has(entry.id));
+      if (groupFor(load).some(member => !dailySubjectPolicy.canPlace(member.id, slot.id, base, allowDouble))) continue;
+      const evaluate = preparePlacementEvaluator(base);
+      if (groupFor(load).some(member => evaluate({slot_id: slot.id, teaching_load_id: member.id}).hard_conflicts.length > 0)) continue;
+      let repaired = completeLinkedDays([...base, ...groupFor(load).map(member => makeEntry(member, slot))], bundleRepairCeiling);
+      if (!repaired) continue;
+      for (const liftedLoad of orderedLoads.filter(member => liftedIds.has(member.id))) {
+        while (repaired.filter(entry => entry.teaching_load_id === liftedLoad.id).length < (originalCounts.get(liftedLoad.id) || 0)) {
+          if (attempts >= bundleRepairCeiling || deterministicBudgetExpired()) { repaired = null; break; }
+          const replacement = rankCandidates(liftedLoad, repaired, bundleRepairCeiling)[0];
+          if (!replacement) { repaired = null; break; }
+          repaired.push(...(replacement.additions || groupFor(liftedLoad).map(member => makeEntry(member, replacement.slot))));
+        }
+        if (!repaired) break;
+      }
+      if (repaired && coverage(repaired) > coverage(entries) && respectsSectionDays(repaired) && respectsDailySubjects(repaired)
+        && [...originalCounts].every(([id, count]) => repaired!.filter(entry => entry.teaching_load_id === id).length >= count)) return repaired;
+    }
+    return null;
+  }
+  if (coverage(bestEntries) < desiredCoverage) {
+    for (const load of orderedLoads) {
+      if (attempts >= bundleRepairCeiling || deterministicBudgetExpired()) break;
+      while (bestEntries.filter(entry => entry.teaching_load_id === load.id).length < Number(load.weekly_periods)) {
+        const repaired = repairLinkedDayBundle(load, bestEntries);
+        if (!repaired) break;
+        bestEntries = repaired;
+      }
+    }
+  }
   const savedEntries = input.currentEntries || [];
   if (savedEntries.length > 0 && coverage(savedEntries) >= coverage(bestEntries)
     && [...fixedEntryKeys].every(key => savedEntries.some(entry => `${entry.slot_id}:${entry.teaching_load_id}` === key))
     && validateTimetableSolverProposal(input, savedEntries, ensureWithinWallClockSafetyLimit).length === 0) {
     const savedScore = scoreProposal({entries: savedEntries, loads: validLoads, slots: scopedSlots, days: scopedDays,
-      availability, constraints, pedagogyScorer}, ensureWithinWallClockSafetyLimit).scoring;
+      availability, constraints, pedagogyScorer, dailySubjectPolicy}, ensureWithinWallClockSafetyLimit).scoring;
     const generatedScore = scoreProposal({entries: bestEntries, loads: validLoads, slots: scopedSlots, days: scopedDays,
-      availability, constraints, pedagogyScorer}, ensureWithinWallClockSafetyLimit).scoring;
-    if (coverage(savedEntries) > coverage(bestEntries)
-      || (savedScore.penalties.early_light_subjects || 0) < (generatedScore.penalties.early_light_subjects || 0)
-      || (savedScore.penalties.early_light_subjects || 0) === (generatedScore.penalties.early_light_subjects || 0)
-        && savedScore.total_penalty < generatedScore.total_penalty) bestEntries = [...savedEntries];
+      availability, constraints, pedagogyScorer, dailySubjectPolicy}, ensureWithinWallClockSafetyLimit).scoring;
+    if (coverage(savedEntries) > coverage(bestEntries) || hasBetterTimetableScore(savedScore, generatedScore)) bestEntries = [...savedEntries];
   }
   const workingEntries: InternalEntry[] = [...(linkedSeed || fixedEntries)];
   function searchForMoreCoverage(position: number): boolean {
@@ -1245,12 +1377,8 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   let proposalEntries = [...bestEntries];
 
   const scoreEntries = (entries: InternalEntry[]) => scoreProposal({entries, loads: validLoads, slots: scopedSlots,
-    days: scopedDays, availability, constraints, pedagogyScorer}, ensureWithinWallClockSafetyLimit);
-  const betterScore = (candidate: TimetableSolverScoring, current: TimetableSolverScoring) => (
-    (candidate.penalties.early_light_subjects || 0) < (current.penalties.early_light_subjects || 0)
-    || (candidate.penalties.early_light_subjects || 0) === (current.penalties.early_light_subjects || 0)
-      && candidate.total_penalty < current.total_penalty
-  );
+    days: scopedDays, availability, constraints, pedagogyScorer, dailySubjectPolicy}, ensureWithinWallClockSafetyLimit);
+  const betterScore = hasBetterTimetableScore;
   // Leave time for validation/formatting, even when the browser is slower than
   // the test machine. The count limit remains authoritative with a frozen clock.
   const improvementDeadline = startedAt + Math.max(0, limits.time_budget_ms - Math.max(100, limits.time_budget_ms * 0.35));
@@ -1324,7 +1452,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
         const evaluate = preparePlacementEvaluator(candidateEntries);
         if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
-        if (!respectsSectionDays(candidateEntries)) continue;
+        if (!respectsSectionDays(candidateEntries) || !respectsDailySubjects(candidateEntries)) continue;
         const candidateScore = scoreEntries(candidateEntries).scoring;
         if (!betterScore(candidateScore, currentScore)) continue;
         proposalEntries = candidateEntries;
@@ -1401,7 +1529,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
           const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
           const evaluate = preparePlacementEvaluator(candidateEntries);
           if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
-          if (!respectsSectionDays(candidateEntries)) continue;
+          if (!respectsSectionDays(candidateEntries) || !respectsDailySubjects(candidateEntries)) continue;
           const candidateScore = scoreEntries(candidateEntries).scoring;
           if (!betterScore(candidateScore, currentScore)) continue;
           proposalEntries = candidateEntries;
@@ -1452,7 +1580,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
         const evaluate = preparePlacementEvaluator(candidateEntries);
         if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
-        if (!respectsSectionDays(candidateEntries)) continue;
+        if (!respectsSectionDays(candidateEntries) || !respectsDailySubjects(candidateEntries)) continue;
         const candidateScore = scoreEntries(candidateEntries).scoring;
         if (!betterScore(candidateScore, currentScore)) continue;
         proposalEntries = candidateEntries;
@@ -1481,7 +1609,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         localImprovementAttempts += 1;
         const replacements = originalGroup.map(entry => ({...entry, slot_id: Number(candidate.slot.id)}));
         const candidateEntries = [...withoutOriginal, ...replacements];
-        if (!respectsSectionDays(candidateEntries)) continue;
+        if (!respectsSectionDays(candidateEntries) || !respectsDailySubjects(candidateEntries)) continue;
         const candidateScore = scoreEntries(candidateEntries).scoring;
         if (betterScore(candidateScore, currentScore)) {
           proposalEntries = candidateEntries;
@@ -1530,6 +1658,9 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
           slot_id: Number(slot.id), teaching_load_id: Number(member.id),
         }));
         const hardConflicts = evaluations.flatMap(item => item.hard_conflicts);
+        if (groupFor(load).some(member => !dailySubjectPolicy.canPlace(member.id, slot.id, proposalEntries, allowDouble))) {
+          hardConflicts.push({code: 'subject_daily_repetition', message: REASON_MESSAGES.subject_daily_repetition});
+        }
         if (hardConflicts.length === 0) {
           hasValidCandidate = true;
           continue;
@@ -1640,7 +1771,8 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       : 'partial';
   const warnings = [
     'هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.',
-    ...(input.linkSameTeacherSectionDays ? ['ربط الشعب مفعّل: المادة للمدرس نفسه والصف نفسه تقع في الأيام نفسها بين شعبه؛ تتابع الدروس تفضيل. عند اختلاف الأنصبة قد تتكرر المادة في اليوم نفسه لإكمال النصاب الأكبر.'] : []),
+    ...(dailySubjectPolicy.countDoubles(proposalEntries) > 0 ? [`استخدم المقترح ${dailySubjectPolicy.countDoubles(proposalEntries)} حالات لدرسين متتاليين للمادة نفسها بعد تعذّر إكمال البحث دون تكرار. راجع هذه الحالات؛ البحث المحدود لا يثبت استحالة توزيع آخر دون تكرار.`] : []),
+    ...(input.linkSameTeacherSectionDays ? ['ربط الشعب مفعّل: المادة للمدرس نفسه والصف نفسه تقع في الأيام نفسها بين شعبه؛ تتابع دروس المدرس بين الشعب أولوية قوية. عند الضرورة فقط يمكن استخدام درسين متتاليين للمادة نفسها لإكمال النصاب.'] : []),
     ...(readiness.missing_teacher_count > 0 ? [`توجد ${readiness.missing_teacher_count} أنصبة بلا مدرس، وقد جرى تمثيلها بوضوح في الاقتراح.`] : []),
     ...(stoppedByLimit ? ['توقف البحث عند حد الأمان المحدد؛ راجع الدروس غير المجدولة أو أعد ضبط القيود.'] : []),
     ...readiness.hard_feasibility_blockers.map((blocker) => blocker.message),

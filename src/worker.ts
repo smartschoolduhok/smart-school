@@ -280,6 +280,7 @@ import {
   type TimetableTeachingLoad,
 } from './lib/timetable'
 import { validateTimetableSectionDays } from './lib/timetableSectionDays';
+import { createTimetableDailySubjectPolicy } from './lib/timetableDailySubjects';
 import { solveTimetable, type TimetableSolverInput } from './lib/timetableSolver'
 import {
   STALE_TIMETABLE_PROPOSAL_CODE,
@@ -1098,6 +1099,12 @@ async function buildTimetableAdoptionPreview(input: {
   const blockers = [
     ...(recomputedDigest === input.digest ? [] : [{ code: 'proposal_digest_mismatch', message: 'بصمة المقترح لا تطابق محتواه الحالي.' }]),
     ...validation.blockers,
+    ...(input.options.validationMode === 'complete' ? createTimetableDailySubjectPolicy(
+      input.context.loads, input.context.slots,
+      input.generationScope && input.generationScope.kind !== 'school'
+        ? input.context.loads.filter(load => timetableLoadMatchesScope(load, input.generationScope!)).map(load => load.id)
+        : undefined,
+    ).validate(input.entries, true) : []),
     ...(input.linkSameTeacherSectionDays ? validateTimetableSectionDays(
       scopedTimetableSolverLoads(input.context.loads, input.context.entries, input.generationScope || {kind: 'school'}),
       input.context.slots, input.entries, input.generationScope && input.generationScope.kind !== 'school'
@@ -3538,6 +3545,7 @@ app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'
     const solverInput: TimetableSolverInput = {
       linkSameTeacherSectionDays: body.link_same_teacher_section_days === true,
       sectionDayLinkLoadIds: scopeLoadIds,
+      dailySubjectLoadIds: scopeLoadIds,
       schoolId: targetSchool.schoolId,
       academicYearId,
       days: context.days,

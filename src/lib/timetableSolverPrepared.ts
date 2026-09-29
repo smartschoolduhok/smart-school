@@ -1,6 +1,7 @@
-import { solveTimetable, TimetableSolverSafetyLimitError, type TimetableSolverInput, type TimetableSolverPreview } from './timetableSolver.ts';
+import { hasBetterTimetableScore, solveTimetable, TimetableSolverSafetyLimitError, type TimetableSolverInput, type TimetableSolverPreview } from './timetableSolver.ts';
 import { computeTimetableProposalDigest, type TimetableSolverProposalWithIntegrity } from './timetableAdoption.ts';
 import { timetableLoadMatchesScope, type TimetableScope } from './timetableScope.ts';
+import { minimumTimetableSubjectDoubles } from './timetableDailySubjects.ts';
 
 export interface PreparedTimetableSolver {
   input: TimetableSolverInput;
@@ -28,14 +29,21 @@ export async function solvePreparedTimetable(prepared: PreparedTimetableSolver, 
   const maxRuns = Math.max(1, Math.min(8, Math.floor(options?.maxRuns || 1)));
   let result: TimetableSolverPreview | undefined;
   let runs = 0, attempts = 0, backtracks = 0, improvements = 0;
+  let fixedDoubleRequired = false;
+  let fallbackStarted = false;
+  const requiredDouble = minimumTimetableSubjectDoubles(input) > 0;
   for (let run = 0; run < maxRuns; run += 1) {
     options?.onProgress?.({run: run + 1, total_runs: maxRuns, best_scheduled: result?.scheduled_periods || 0,
       best_required: result?.required_periods || 0, elapsed_ms: Date.now() - started});
     const remainingTime = 90_000 - (Date.now() - started);
     if (remainingTime < 2_000 && result) break;
     runs += 1;
+    // Search without any daily repeats first. Only an incomplete first phase
+    // enables adjacent doubles; a complete strict result never triggers fallback.
+    if (maxRuns > 1 && (fixedDoubleRequired || requiredDouble && run > 0 || run >= Math.max(1, Math.floor(maxRuns / 2)))
+      && result?.status !== 'complete') fallbackStarted = true;
     try {
-      const candidate = solveTimetable(maxRuns === 1 ? input : {...input, searchVariant: run,
+      const candidate = solveTimetable(maxRuns === 1 ? input : {...input, searchVariant: run, allowConsecutiveSubjectDouble: fallbackStarted,
         searchDeadline: Date.now() + Math.min(8_000, remainingTime - 1_000),
         searchSeedEntries: run % 2 === 1 && result?.status === 'partial' ? result.entries.map((entry, index) => ({
           id: index + 1, school_id: input.schoolId, academic_year_id: input.academicYearId,
@@ -50,11 +58,11 @@ export async function solvePreparedTimetable(prepared: PreparedTimetableSolver, 
       improvements += candidate.statistics.local_improvement_attempts;
       // Coverage always wins; soft preferences never drop required lessons.
       if (!result || candidate.scheduled_periods > result.scheduled_periods
-        || candidate.scheduled_periods === result.scheduled_periods && (
-          (candidate.scoring.penalties.early_light_subjects || 0) < (result.scoring.penalties.early_light_subjects || 0)
-          || (candidate.scoring.penalties.early_light_subjects || 0) === (result.scoring.penalties.early_light_subjects || 0)
-            && candidate.scoring.total_penalty < result.scoring.total_penalty)) result = candidate;
-      if (candidate.status === 'fixed_conflict' && !input.linkSameTeacherSectionDays
+        || result.status === 'fixed_conflict' && candidate.status !== 'fixed_conflict'
+        || candidate.scheduled_periods === result.scheduled_periods && hasBetterTimetableScore(candidate.scoring, result.scoring)) result = candidate;
+      fixedDoubleRequired = candidate.status === 'fixed_conflict' && candidate.fixed_conflicts.length > 0
+        && candidate.fixed_conflicts.every(conflict => conflict.code === 'fixed_subject_daily_repetition');
+      if (candidate.status === 'fixed_conflict' && !input.linkSameTeacherSectionDays && (!fixedDoubleRequired || fallbackStarted)
         || result.status === 'complete' && result.scoring.total_penalty === 0) break;
     } catch (error) {
       if (!(error instanceof TimetableSolverSafetyLimitError) || maxRuns === 1) throw error;
