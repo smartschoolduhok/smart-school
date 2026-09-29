@@ -247,6 +247,122 @@ test('solver proposal includes authoritative revision and SHA-256 digest', async
   assert.equal(proposal.status, 'complete');
 });
 
+function addThirdDailyLesson(context) {
+  context.database.exec(`INSERT INTO timetable_slots
+    (id, school_id, academic_year_id, day_of_week, slot_index, slot_type, lesson_number, label, start_time, end_time, is_active)
+    VALUES (7,1,1,0,3,'lesson',3,'Third','09:20','10:00',1)`);
+}
+
+async function reDigestProposal(proposal, entries) {
+  return computeTimetableProposalDigest({
+    schoolId: 1, academicYearId: 1, revision: proposal.timetable_revision, entries,
+    generationScope: proposal.generation_scope, scopeLoadIds: proposal.scope_load_ids,
+    linkSameTeacherSectionDays: proposal.link_same_teacher_section_days,
+  });
+}
+
+test('adoption independently rejects separated repetitions despite a matching client digest', async () => {
+  const context = await fixture(); addThirdDailyLesson(context);
+  const proposal = await generate(context);
+  const entries = [
+    {slot_id: 1, teaching_load_id: 1, is_locked: 0}, {slot_id: 7, teaching_load_id: 1, is_locked: 0},
+    {slot_id: 2, teaching_load_id: 2, is_locked: 0}, {slot_id: 4, teaching_load_id: 2, is_locked: 0},
+  ];
+  const digest = await reDigestProposal(proposal, entries), before = replacementState(context);
+  const response = await adoptionPreview(context, proposal, {entries, proposal_digest: digest});
+  assert.equal(response.status, 200);
+  const preview = (await response.json()).data;
+  assert.equal(preview.can_apply, false);
+  assert.ok(preview.blockers.some(item => item.code === 'subject_daily_repetition'));
+  assert.equal(preview.blockers.some(item => item.code === 'proposal_digest_mismatch'), false);
+  const applied = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal, {entries, proposal_digest: digest}));
+  assert.equal(applied.status, 400);
+  assert.ok((await applied.json()).data.blockers.some(item => item.code === 'subject_daily_repetition'));
+  assert.deepEqual(replacementState(context), before);
+});
+
+test('adoption rejects three same-subject lessons even when all three are consecutive', async () => {
+  const context = await fixture(); addThirdDailyLesson(context);
+  context.database.exec('UPDATE timetable_teaching_loads SET weekly_periods = 3 WHERE id = 1');
+  const proposal = await generate(context);
+  const entries = [1, 2, 7].map(slot_id => ({slot_id, teaching_load_id: 1, is_locked: 0}));
+  entries.push(...[3, 4].map(slot_id => ({slot_id, teaching_load_id: 2, is_locked: 0})));
+  const response = await adoptionPreview(context, proposal, {entries, proposal_digest: await reDigestProposal(proposal, entries)});
+  const preview = (await response.json()).data;
+  assert.equal(preview.can_apply, false);
+  assert.ok(preview.blockers.some(item => item.code === 'subject_daily_repetition'));
+});
+
+test('daily repetition validation combines separate loads for the same logical subject', async () => {
+  const context = await fixture(); addThirdDailyLesson(context);
+  context.database.exec(`
+    UPDATE timetable_teaching_loads SET weekly_periods = 1 WHERE id = 1;
+    INSERT INTO subjects (id, school_id, class_id, name, status) VALUES (4,1,1,' MATH ','active');
+    INSERT INTO timetable_teaching_loads
+      (id, school_id, academic_year_id, class_id, subject_id, employee_id, weekly_periods, status)
+      VALUES (5,1,1,1,4,2,1,'active');
+  `);
+  const proposal = await generate(context);
+  const entries = [
+    {slot_id: 1, teaching_load_id: 1, is_locked: 0}, {slot_id: 7, teaching_load_id: 5, is_locked: 0},
+    {slot_id: 3, teaching_load_id: 2, is_locked: 0}, {slot_id: 4, teaching_load_id: 2, is_locked: 0},
+  ];
+  const response = await adoptionPreview(context, proposal, {entries, proposal_digest: await reDigestProposal(proposal, entries)});
+  const preview = (await response.json()).data;
+  assert.equal(preview.can_apply, false);
+  assert.ok(preview.blockers.some(item => item.code === 'subject_daily_repetition'));
+});
+
+test('a necessary consecutive double is adoptable in non-sixth classes with a break between lessons', async () => {
+  const context = await fixture();
+  context.database.exec(`
+    UPDATE classes SET name = 'الثالث', stage = 'متوسط' WHERE id = 1;
+    UPDATE timetable_teaching_loads SET weekly_periods = 3 WHERE id = 1;
+    UPDATE timetable_slots SET slot_index = 3, start_time = '09:00', end_time = '09:40' WHERE id = 2;
+    INSERT INTO timetable_slots
+      (id, school_id, academic_year_id, day_of_week, slot_index, slot_type, lesson_number, label, start_time, end_time, is_active)
+      VALUES (7,1,1,0,2,'break',NULL,'Break','08:40','09:00',1);
+  `);
+  const proposal = await generate(context);
+  const entries = [1, 2, 3].map(slot_id => ({slot_id, teaching_load_id: 1, is_locked: 0}));
+  entries.push(...[1, 3].map(slot_id => ({slot_id, teaching_load_id: 2, is_locked: 0})));
+  const digest = await reDigestProposal(proposal, entries);
+  const response = await adoptionPreview(context, proposal, {entries, proposal_digest: digest});
+  assert.equal(response.status, 200);
+  const preview = (await response.json()).data;
+  assert.equal(preview.can_apply, true, JSON.stringify(preview.blockers));
+  const applied = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal, {entries, proposal_digest: digest}));
+  assert.equal(applied.status, 200, JSON.stringify(await applied.json()));
+});
+
+test('scoped generation and adoption preserve unrelated outside legacy repetitions', async () => {
+  const context = await fixture(); addThirdDailyLesson(context);
+  context.database.exec(`INSERT INTO timetable_entries (school_id, academic_year_id, slot_id, teaching_load_id, is_locked)
+    VALUES (1,1,1,2,0), (1,1,7,2,0)`);
+  const outsideBefore = officialRows(context.database).filter(item => item.teaching_load_id === 2);
+  const proposal = await generate(context, context.tokens.owner, {generation_scope: {kind: 'class', class_id: 1}});
+  assert.equal(proposal.status, 'complete');
+  const response = await adoptionPreview(context, proposal);
+  const preview = (await response.json()).data;
+  assert.equal(preview.can_apply, true, JSON.stringify(preview.blockers));
+  const applied = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+  assert.equal(applied.status, 200, JSON.stringify(await applied.json()));
+  assert.deepEqual(officialRows(context.database).filter(item => item.teaching_load_id === 2), outsideBefore);
+});
+
+test('historical restore remains independent of generation-only daily repetition rules', async () => {
+  const context = await fixture(); addThirdDailyLesson(context);
+  const entries = [
+    {slot_id: 1, teaching_load_id: 1, is_locked: 0}, {slot_id: 7, teaching_load_id: 1, is_locked: 0},
+    {slot_id: 1, teaching_load_id: 2, is_locked: 0}, {slot_id: 3, teaching_load_id: 2, is_locked: 0},
+  ];
+  const version = createHistoricalVersion(context, entries), preview = await previewHistoricalRestore(context, version.id);
+  assert.equal(preview.can_apply, true, JSON.stringify(preview.blockers));
+  const restored = await applyHistoricalRestore(context, version.id, preview);
+  assert.equal(restored.status, 200, JSON.stringify(await restored.json()));
+  assert.deepEqual(officialRows(context.database).filter(item => item.teaching_load_id === 1).map(item => item.slot_id), [1, 7]);
+});
+
 function seedDayLinkedSections(context) {
   context.database.exec(`
     INSERT INTO sections (id, school_id, class_id, name, status)

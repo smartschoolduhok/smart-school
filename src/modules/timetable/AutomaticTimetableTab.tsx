@@ -78,6 +78,7 @@ const PENALTY_LABELS: Record<keyof TimetableSolverPenaltyBreakdown, string> = {
   missed_section_continuity: 'فرص تتابع الشعب غير المتحققة',
   late_science_subjects: 'تفضيل العلوم في بداية اليوم',
   repeated_first_subjects: 'تنويع مادة الدرس الأول',
+  daily_subject_doubles: 'تكرار المادة المتتالي عند الضرورة',
 };
 
 function placementLabel(placement: TimetablePlacement) {
@@ -390,7 +391,9 @@ export function AutomaticTimetableTab({
             <h2 className="flex items-center gap-2 text-lg font-bold text-indigo-950"><WandSparkles size={22} />التوليد التلقائي</h2>
             <p className="mt-1 max-w-3xl text-sm text-indigo-800">اختر مدرسة أو مرحلة أو صفًا أو شعبة. يكمل النظام أنصبة النطاق مع احترام الدروس المثبتة وتعارضات المدرسين وبقية الشعب.</p>
             <p className="mt-2 max-w-3xl text-sm text-indigo-800">عند اختيار نطاق محدد تبقى جميع الدروس خارجه كما هي. يمكنك إعداد جزء يدويًا، تثبيته من الجدول الأسبوعي، ثم توليد الباقي.</p>
-            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يفضّل التوليد تأخير الأخلاقية والفنية والرياضة والكردية والفرنسية والحاسوب عن أول درسين، ويحاول تفريق الدروس الثقيلة خلال اليوم. ويفضّل أن يدرّس المدرس المادة نفسها للصف نفسه في شعبتين متتاليتين، مثل أ ثم ب.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يبدأ التوليد بمحاولة توزيع المادة مرة واحدة يوميًا لكل شعبة. إذا تعذّر إكمال الجدول ضمن البحث والقيود، يسمح بدرسين متتاليين للمادة نفسها عند الضرورة فقط، في جميع الصفوف. لا يسمح بتكرارها في درسين منفصلين أو أكثر من مرتين في اليوم.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يعطي أولوية لتتابع دروس المدرس للمادة نفسها بين شعب الصف، مثل درس في أ يليه مباشرة درس في ب، مع مراعاة التوفر ومنع التعارض.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يفضّل التوليد تأخير الأخلاقية والفنية والرياضة والكردية والفرنسية والحاسوب عن أول درسين، ويحاول تفريق الدروس الثقيلة خلال اليوم.</p>
             <p className="mt-2 max-w-3xl text-sm text-indigo-800">يفضّل الرياضيات والفيزياء والكيمياء في بداية اليوم، بأولوية أكبر للصفوف المنتهية، مع تنويع مادة الدرس الأول بين الأيام.</p>
             <p className="mt-2 max-w-3xl text-xs text-indigo-800">تظل أوقات توفر المدرسين ومنع التعارض والدروس المثبتة مقدّمة على هذه التفضيلات؛ لذلك قد تبقى استثناءات في الترتيب.</p>
             <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-amber-800"><AlertTriangle size={17} />هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.</p>
@@ -424,7 +427,7 @@ export function AutomaticTimetableTab({
             requestGenerationRef.current += 1; setLinkSectionDays(event.target.checked); setResult(null); setAdoptionPreview(null); setError(''); setSuccess('');
           }} />
           <span><span className="block font-bold text-indigo-950">ربط شعب المدرس للمادة نفسها في اليوم نفسه</span>
-            <span className="mt-1 block text-sm text-indigo-800">للصف نفسه والمدرس نفسه فقط. عند التفعيل تتطابق أيام المادة بين شعبه، ويُفضّل أن تكون الدروس متتابعة، مثل أ ثم ب. لا يشترط التتابع. عند اختلاف النصاب قد يتكرر الدرس في الأيام المشتركة لإكماله.</span>
+            <span className="mt-1 block text-sm text-indigo-800">للصف نفسه والمدرس نفسه فقط. عند التفعيل تتطابق أيام المادة بين شعبه، وتبقى أولوية التتابع مثل أ ثم ب مع مراعاة القيود. عند اختلاف النصاب لا يسمح بتكرار المادة إلا بدرسين متتاليين عند الضرورة.</span>
             <span className="mt-1 block text-xs text-indigo-800">إذا منعت الدروس المثبتة أو التوفر إكمال الربط، تظهر التفاصيل للمراجعة. تبقى دروس النطاقات الأخرى محفوظة.</span>
           </span>
         </label>

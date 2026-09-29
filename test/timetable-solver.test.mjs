@@ -4,6 +4,7 @@ import test from 'node:test';
 import { TimetableSolverSafetyLimitError, solveTimetable, validateTimetableSolverProposal } from '../src/lib/timetableSolver.ts';
 import { classifyTimetableSubject, createTimetablePedagogyScorer, isTimetableTerminalClass } from '../src/lib/timetablePedagogy.ts';
 import { collectTimetableFixedEntries, scopedTimetableSolverLoads } from '../src/lib/timetableScope.ts';
+import { createTimetableDailySubjectPolicy } from '../src/lib/timetableDailySubjects.ts';
 
 function week(dayCount = 5, lessonsPerDay = 6, options = {}) {
   const days = [];
@@ -119,7 +120,8 @@ test('parallel pair consumes two section periods and produces four co-timed teac
 test('33 section periods remain exactly 33 when two religious lessons run in parallel', () => {
   const input = parallelInput(week(5, 7));
   input.slots = input.slots.slice(0, 33);
-  input.loads.push(teachingLoad(3, {class_id: 1, section_id: 9, weekly_periods: 31}));
+  input.loads.push(...[5, 5, 5, 4, 4, 4, 4].map((weekly_periods, index) =>
+    teachingLoad(index + 3, {class_id: 1, section_id: 9, weekly_periods})));
   const result = solveTimetable(input);
   assert.equal(result.status, 'complete');
   assert.equal(result.required_periods, 33);
@@ -171,12 +173,17 @@ test('teacher daily and working-day constraints from either member apply to the 
   }
 });
 
-test('consecutive limit of the companion keeps both subjects separated by a free lesson', () => {
-  const result = solveTimetable(parallelInput({...week(1, 3), constraints: [{school_id: 1, academic_year_id: 1, employee_id: 2,
-    max_periods_per_day: null, max_working_days: null, max_consecutive_periods: 1, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0}]}));
+test('consecutive limit of the companion keeps independent subject pairs separated by a free lesson', () => {
+  const input = parallelInput({...week(1, 3), constraints: [{school_id: 1, academic_year_id: 1, employee_id: 2,
+    max_periods_per_day: null, max_working_days: null, max_consecutive_periods: 1, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0}]});
+  input.loads.forEach(load => {load.weekly_periods = 1;});
+  input.loads.push(teachingLoad(3, {class_id: 1, section_id: 9, employee_id: 1, weekly_periods: 1}),
+    teachingLoad(4, {class_id: 1, section_id: 9, employee_id: 2, weekly_periods: 1, parallel_with_load_id: 3}));
+  const result = solveTimetable(input);
   assert.equal(result.status, 'complete');
   assertCompletePairs(result);
-  assert.deepEqual(result.entries.filter(entry => entry.teaching_load_id === 1).map(entry => entry.slot_id), [1, 3]);
+  assertCompletePairs(result, 3, 4);
+  assert.deepEqual(result.entries.filter(entry => entry.employee_id === 1).map(entry => entry.slot_id), [1, 3]);
 });
 
 test('a companion teacher already teaching another class cannot be reused by a pair', () => {
@@ -311,7 +318,7 @@ test('unequal weekday capacity preserves manual placements and prevents shared t
   const dailyCounts = [7, 7, 6, 6, 5];
   const slots = allSlots.filter(slot => slot.lesson_number <= dailyCounts[slot.day_of_week]);
   const result = solveTimetable(solverInput({ days, slots,
-    loads: [teachingLoad(1, { weekly_periods: 12 }), teachingLoad(2, { employee_id: 1, weekly_periods: 12 })],
+    loads: Array.from({length: 6}, (_, index) => teachingLoad(index + 1, {class_id: index % 2 + 1, employee_id: 1, weekly_periods: 4})),
     placements: [placement(1), placement(2)], fixedEntries: [{ slot_id: 7, teaching_load_id: 1 }, { slot_id: 14, teaching_load_id: 1 }] }));
   assert.equal(result.status, 'complete');
   assert.equal(result.statistics.active_lesson_slot_count, 31);
@@ -534,7 +541,7 @@ test('max working days is a hard constraint', () => {
 test('max consecutive periods is a hard constraint', () => {
   const { days, slots } = week(1, 4);
   const constraints = [{ school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null, max_consecutive_periods: 1, max_working_days: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0, id: 1 }];
-  const result = solveTimetable(solverInput({ days, slots, loads: [teachingLoad(1, { weekly_periods: 2 })], placements: [placement(1)], constraints }));
+  const result = solveTimetable(solverInput({ days, slots, loads: [1, 2].map(id => teachingLoad(id, {class_id: 1, employee_id: 1, weekly_periods: 1})), placements: [placement(1)], constraints }));
   const indexes = result.entries.map((entry) => slots.find((slot) => slot.id === entry.slot_id).slot_index).sort();
   assert.equal(result.status, 'complete');
   assert.ok(Math.abs(indexes[1] - indexes[0]) > 1);
@@ -767,9 +774,9 @@ test('pedagogy separates four heavy lessons with an available neutral lesson in 
 });
 
 test('pedagogy keeps unavoidable heavy runs soft when every period is required', () => {
-  const input = solverInput({...week(1, 4), placements: [placement(1)], loads: [
-    teachingLoad(1, {subject_name: 'الرياضيات', weekly_periods: 4}),
-  ]});
+  const input = solverInput({...week(1, 4), placements: [placement(1)], loads:
+    ['الرياضيات', 'اللغة العربية', 'الفيزياء', 'الكيمياء'].map((subject_name, index) =>
+      teachingLoad(index + 1, {class_id: 1, subject_name, weekly_periods: 1}))});
   const result = solveTimetable(input);
   assert.equal(result.status, 'complete');
   assert.equal(result.scheduled_periods, 4);
@@ -884,7 +891,7 @@ test('five weekly lessons prefer separate days when a complete five-day schedule
   assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
 });
 
-test('daily spread stays a preference when teacher availability rules out one day', () => {
+test('adjacent doubles remain a last resort when teacher availability rules out one day', () => {
   const { days, slots } = week(5, 2);
   const availability = slots.filter(slot => slot.day_of_week === 4).map((slot, index) => ({
     id: index + 1, school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: slot.id,
@@ -899,6 +906,7 @@ test('daily spread stays a preference when teacher availability rules out one da
   assert.equal(result.status, 'complete');
   assert.equal(mathDays.length, 5);
   assert.equal(mathDays.includes(4), false);
+  assert.equal(createTimetableDailySubjectPolicy(input.loads, input.slots).countDoubles(result.entries), 2);
   assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
 });
 
@@ -928,8 +936,10 @@ test('a valid complete saved timetable retains coverage and fixed parallel group
 test('soft optimization stops with a valid complete proposal while retaining time for final validation', () => {
   const input = solverInput({...week(1, 3), placements: [placement(1)], loads: [
     teachingLoad(1, {class_id: 1, subject_name: 'الفنية', weekly_periods: 1}),
-    teachingLoad(2, {class_id: 1, subject_name: 'الرياضيات', weekly_periods: 2}),
+    teachingLoad(2, {class_id: 1, subject_name: 'الرياضيات', weekly_periods: 1}),
+    teachingLoad(3, {class_id: 1, subject_name: 'الفيزياء', weekly_periods: 1}),
   ], limits: {time_budget_ms: 1000, max_attempts: 1000, max_backtracks: 100, max_local_improvement_attempts: 500}});
+  input.allowConsecutiveSubjectDouble = false; // Exercise one pass's reserved final-validation time.
   const originalNow = Date.now;
   let first = true, result;
   Date.now = () => { if (first) { first = false; return 0; } return 750; };
@@ -1062,7 +1072,7 @@ test('active preferred override remains authoritative for ranking and scoring', 
 test('readiness accounts for max consecutive periods when teacher demand is impossible', () => {
   const { days, slots } = week(1, 4);
   const constraints = [{ school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null, max_consecutive_periods: 1, max_working_days: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0, id: 1 }];
-  const input = solverInput({ days, slots, loads: [teachingLoad(1, { weekly_periods: 3 })], placements: [placement(1)], constraints });
+  const input = solverInput({ days, slots, loads: [1, 2, 3].map(id => teachingLoad(id, {class_id: 1, employee_id: 1, weekly_periods: 1})), placements: [placement(1)], constraints });
   const result = solveTimetable(input);
   assert.equal(result.status, 'impossible');
   assert.equal(result.readiness.overloaded_teachers.length, 1);
@@ -1076,7 +1086,7 @@ test('an overloaded teacher does not suppress unrelated feasible teachers', () =
   const loads = [
     teachingLoad(1, { class_id: 1, employee_id: 1, weekly_periods: 2 }),
     teachingLoad(2, { class_id: 2, employee_id: 1, weekly_periods: 2 }),
-    teachingLoad(3, { class_id: 3, employee_id: 3, weekly_periods: 3 }),
+    ...[3, 4, 5].map(id => teachingLoad(id, {class_id: 3, employee_id: 3, weekly_periods: 1})),
   ];
   const input = solverInput({ days, slots, loads, placements: [placement(1), placement(2), placement(3)] });
   const result = solveTimetable(input);
@@ -1418,7 +1428,7 @@ test('section-day linking matches normalized cloned subjects across every same-t
 });
 
 test('section-day linking permits unequal quotas only within the shared teaching days', () => {
-  const input = linkedSectionInput([3, 1]);
+  const input = linkedSectionInput([2, 1]);
   const result = solveTimetable(input);
   assertLinkedComplete(input, result);
   assert.deepEqual(teachingDays(result, 1), teachingDays(result, 2));
@@ -1726,6 +1736,7 @@ test('section-day linking repairs a missing coupled pair by relocating the partn
 
 test('section-day seed budget retains the final viable ranked companion instead of reporting a fixed conflict', () => {
   const input = linkedSectionInput([1, 1], week(1, 3));
+  input.allowConsecutiveSubjectDouble = false; // Single-pass seed budget regression.
   input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}];
   input.limits = {...input.limits, max_attempts: 10, max_local_improvement_attempts: 0};
   const result = solveTimetable(input);
@@ -1739,6 +1750,7 @@ test('section-day seed budget retains the final viable ranked companion instead 
 
 test('section-day seed budget exhaustion reports an incomplete search with real statistics rather than incompatible fixed lessons', () => {
   const input = linkedSectionInput([1, 1, 1], week(1, 3));
+  input.allowConsecutiveSubjectDouble = false; // Single-pass seed budget regression.
   input.fixedEntries = [{slot_id: 1, teaching_load_id: 1, is_locked: 1}];
   input.limits = {...input.limits, max_attempts: 10, max_local_improvement_attempts: 0};
   const before = structuredClone(input);
@@ -1756,4 +1768,81 @@ test('section-day seed budget exhaustion reports an incomplete search with real 
   const completed = solveTimetable({...input, limits: {...input.limits, max_attempts: 100}});
   assertLinkedComplete(input, completed);
   assert.ok(completed.entries.some(entry => entry.slot_id === 1 && entry.teaching_load_id === 1 && entry.is_locked === 1));
+});
+
+test('daily subject rule completes without doubles before considering compact teacher preferences', () => {
+  const input = solverInput({...week(3, 3), placements: [placement(1)], loads: [
+    teachingLoad(1, {class_id: 1, subject_name: 'الرياضيات', weekly_periods: 3}),
+    teachingLoad(2, {class_id: 1, subject_name: 'العربية', weekly_periods: 3}),
+  ], constraints: [1, 2].map(employee_id => ({school_id: 1, academic_year_id: 1, employee_id,
+    max_periods_per_day: null, max_consecutive_periods: null, max_working_days: null,
+    prefer_compact_schedule: 1, avoid_first_period: 0, avoid_last_period: 0}))});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(createTimetableDailySubjectPolicy(input.loads, input.slots).countDoubles(result.entries), 0);
+  for (const load of input.loads) assert.equal(teachingDays(result, load.id).length, 3);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+for (const class_name of ['الأول', 'الثالث', 'السادس']) {
+  test(`daily subject fallback permits only an adjacent double when necessary in ${class_name}`, () => {
+    const input = solverInput({...week(2, 3), placements: [placement(1, 1)], loads: [
+      teachingLoad(1, {class_id: 1, section_id: 1, class_name, subject_name: 'الرياضيات', weekly_periods: 3}),
+    ]});
+    const result = solveTimetable(input);
+    const policy = createTimetableDailySubjectPolicy(input.loads, input.slots);
+    assert.equal(result.status, 'complete');
+    assert.equal(policy.countDoubles(result.entries), 1);
+    assert.deepEqual(policy.validate(result.entries), []);
+    assert.equal(policy.validate(result.entries, false).length, 1);
+    assert.ok(result.warnings.some(warning => warning.includes('درسين متتاليين')));
+    assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+  });
+}
+
+test('daily subject rule rejects separated fixed repetition even in sixth grade', () => {
+  const input = solverInput({...week(1, 3), placements: [placement(1)], loads: [
+    teachingLoad(1, {class_name: 'السادس', subject_name: 'الرياضيات', weekly_periods: 2}),
+  ], fixedEntries: [1, 3].map(slot_id => ({slot_id, teaching_load_id: 1, is_locked: 1}))});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'fixed_conflict');
+  assert.ok(result.fixed_conflicts.some(conflict => conflict.code === 'fixed_subject_daily_repetition'));
+  assert.ok(validateTimetableSolverProposal(input, input.fixedEntries).some(notice => notice.code === 'subject_daily_repetition'));
+});
+
+test('daily subject rule leaves excess demand unscheduled instead of creating a third daily occurrence', () => {
+  const input = solverInput({...week(1, 4), placements: [placement(1)], loads: [
+    teachingLoad(1, {subject_name: 'الرياضيات', weekly_periods: 3}),
+  ]});
+  const result = solveTimetable(input);
+  assert.notEqual(result.status, 'complete');
+  assert.equal(result.scheduled_periods, 2);
+  assert.equal(result.unscheduled_periods, 1);
+  assert.deepEqual(createTimetableDailySubjectPolicy(input.loads, input.slots).validate(result.entries), []);
+  assert.ok(result.unscheduled.some(item => item.reason_codes.includes('subject_daily_repetition')));
+});
+
+test('daily subject rule scopes generation while preserving unrelated legacy fixed repetition', () => {
+  const input = solverInput({...week(1, 3), placements: [placement(1), placement(2)], loads: [
+    teachingLoad(1, {weekly_periods: 2}), teachingLoad(2, {weekly_periods: 1}),
+  ], fixedEntries: [1, 3].map(slot_id => ({slot_id, teaching_load_id: 1, is_locked: 1}))});
+  input.dailySubjectLoadIds = [2];
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(result.entries.filter(entry => entry.teaching_load_id === 1).map(entry => entry.slot_id), [1, 3]);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+  assert.ok(validateTimetableSolverProposal({...input, dailySubjectLoadIds: undefined}, internalEntries(result))
+    .some(notice => notice.code === 'subject_daily_repetition'));
+});
+
+test('daily subject rule cannot be bypassed by cloned subject and teaching-load rows', () => {
+  const input = solverInput({...week(1, 4), placements: [placement(1, 1)], loads: [1, 2, 3].map(id =>
+    teachingLoad(id, {class_id: 1, section_id: 1, subject_name: id === 2 ? 'الرِّيَاضيات' : 'الرياضيات', weekly_periods: 1}))});
+  const result = solveTimetable(input);
+  assert.notEqual(result.status, 'complete');
+  assert.equal(result.scheduled_periods, 2);
+  assert.equal(result.unscheduled_periods, 1);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+  const forged = [1, 2, 3].map(id => ({slot_id: id, teaching_load_id: id}));
+  assert.ok(validateTimetableSolverProposal(input, forged).some(notice => notice.code === 'subject_daily_repetition'));
 });

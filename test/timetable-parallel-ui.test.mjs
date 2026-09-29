@@ -173,12 +173,13 @@ test('generation explains teaching preferences and separates weighted penalties 
   globalThis.fetch = async () => response({data: prepared()});t.after(() => {globalThis.fetch = previousFetch;});
   const container = await mount(t, createElement(AutomaticTimetableTab, {schoolId: 1, academicYearId: 1, dataVersion: 1, readiness: null, classes, sections, onAdopted: async () => {}}));
   for (const text of ['الأخلاقية والفنية والرياضة والكردية والفرنسية والحاسوب', 'عن أول درسين', 'مثل أ ثم ب', 'أوقات توفر المدرسين ومنع التعارض والدروس المثبتة', 'قد تبقى استثناءات']) assert.ok(container.textContent.includes(text), text);
+  for (const text of ['مرة واحدة يوميًا لكل شعبة', 'ضمن البحث والقيود', 'عند الضرورة فقط، في جميع الصفوف', 'لا يسمح بتكرارها في درسين منفصلين أو أكثر من مرتين', 'أولوية لتتابع دروس المدرس']) assert.ok(container.textContent.includes(text), text);
   await act(async () => button(container, 'إنشاء جدول تلقائي').click());
   const proposal = await solvePreparedTimetable(prepared());
-  proposal.scoring = {...proposal.scoring, penalties: {...proposal.scoring.penalties, early_light_subjects: 40, consecutive_heavy_subjects: 24, missed_section_continuity: 6},
+  proposal.scoring = {...proposal.scoring, penalties: {...proposal.scoring.penalties, early_light_subjects: 40, consecutive_heavy_subjects: 24, missed_section_continuity: 6, daily_subject_doubles: 100},
     pedagogy: {early_light_lessons: 1, heavy_run_excess: 2, consecutive_section_pairs: 3, possible_section_pairs: 4}};
   await act(async () => workers[0].onmessage({data: {ok: true, data: proposal}}));
-  for (const [key, label, value] of [['early_light_subjects', 'المواد الخفيفة في بداية اليوم', '40'], ['consecutive_heavy_subjects', 'تتابع زائد للدروس الثقيلة', '24'], ['missed_section_continuity', 'فرص تتابع الشعب غير المتحققة', '6']]) {
+  for (const [key, label, value] of [['early_light_subjects', 'المواد الخفيفة في بداية اليوم', '40'], ['consecutive_heavy_subjects', 'تتابع زائد للدروس الثقيلة', '24'], ['missed_section_continuity', 'فرص تتابع الشعب غير المتحققة', '6'], ['daily_subject_doubles', 'تكرار المادة المتتالي عند الضرورة', '100']]) {
     const metric = container.querySelector(`[data-timetable-penalty="${key}"]`);assert.ok(metric);
     assert.ok(metric.textContent.includes(label));assert.equal(metric.querySelector('bdi').textContent, value);
   }

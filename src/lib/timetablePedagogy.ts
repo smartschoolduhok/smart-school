@@ -14,6 +14,23 @@ export interface TimetablePedagogyScore {
   metrics: TimetablePedagogyMetrics;
 }
 type Entry = {slot_id: number; teaching_load_id: number};
+type SectionLesson = {position: number; section: number};
+
+// Keep the same teacher moving between sections ahead of minor timetable
+// preferences. Availability, fixed lessons and other hard limits still win.
+const sectionContinuityWeight = 48;
+
+function countSectionPairs(lessons: readonly SectionLesson[]): number {
+  const ordered = [...lessons].sort((a, b) => a.position - b.position);
+  let pairs = 0;
+  for (let index = 1; index < ordered.length; index += 1) {
+    if (ordered[index].position === ordered[index - 1].position + 1 && ordered[index].section !== ordered[index - 1].section) {
+      pairs += 1;
+      index += 1; // Each lesson belongs to at most one section pair.
+    }
+  }
+  return pairs;
+}
 
 export function normalizeTimetableSubjectName(name: string): string {
   return name.normalize('NFKC').toLowerCase().replace(/[\u064b-\u065f\u0670\u0640]/g, '')
@@ -93,7 +110,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
     const metrics = {early_light_lessons: 0, heavy_run_excess: 0, consecutive_section_pairs: 0, possible_section_pairs: 0, late_science_lessons: 0, repeated_first_subjects: 0};
     const firstSubjectDays = new Map<string, Set<number>>();
     const placementDays = new Map<string, Map<number, {heavy: boolean; early: number}>>();
-    const continuity = new Map<string, {sectionCounts: Map<number, number>; days: Map<string, Array<{position: number; section: number}>>}>();
+    const continuity = new Map<string, {sectionCounts: Map<number, number>; days: Map<string, SectionLesson[]>}>();
     for (const entry of entries) {
       const load = loadById.get(entry.teaching_load_id), slot = slotById.get(entry.slot_id);
       if (!load || !slot || slot.slot_type !== 'lesson' || !positionBySlot.has(slot.id)) continue;
@@ -134,13 +151,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       const total = counts.reduce((sum, value) => sum + value, 0);
       metrics.possible_section_pairs += Math.min(Math.floor(total / 2), total - Math.max(...counts));
       for (const day of group.days.values()) {
-        day.sort((a, b) => a.position - b.position);
-        for (let index = 1; index < day.length; index += 1) {
-          if (day[index].position === day[index - 1].position + 1 && day[index].section !== day[index - 1].section) {
-            metrics.consecutive_section_pairs += 1;
-            index += 1; // Each lesson belongs to at most one section pair.
-          }
-        }
+        metrics.consecutive_section_pairs += countSectionPairs(day);
       }
     }
     for (const days of firstSubjectDays.values()) {
@@ -148,7 +159,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       penalties.repeated_first_subjects += days.size * (days.size - 1) / 2 * 14;
     }
     penalties.consecutive_heavy_subjects = metrics.heavy_run_excess * 12;
-    penalties.missed_section_continuity = Math.max(0, metrics.possible_section_pairs - metrics.consecutive_section_pairs) * 6;
+    penalties.missed_section_continuity = Math.max(0, metrics.possible_section_pairs - metrics.consecutive_section_pairs) * sectionContinuityWeight;
     return {penalties, metrics};
   }
 
@@ -159,7 +170,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
     if (position == null || lessonPosition == null) return penalty;
     const heavyPositions = new Set<number>();
     const sameFirstDays = new Set<number>();
-    let adjacentSection = false;
+    const sectionLessons: SectionLesson[] = [];
     for (const entry of entries) {
       const other = loadById.get(entry.teaching_load_id), otherSlot = slotById.get(entry.slot_id);
       if (!other || !otherSlot) continue;
@@ -167,9 +178,9 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
         && placementKey(other) === placementKey(load) && identityByLoad.get(other.id) === identityByLoad.get(load.id)) sameFirstDays.add(otherSlot.day_of_week);
       if (scopeDay(otherSlot) !== scopeDay(slot)) continue;
       if (placementKey(other) === placementKey(load) && effortByLoad.get(other.id) === 'heavy') heavyPositions.add(positionBySlot.get(otherSlot.id)!);
-      if (load.employee_id != null && load.section_id != null && other.section_id != null && other.section_id !== load.section_id
-        && continuityKey(other) === continuityKey(load)
-        && Math.abs(lessonPositionBySlot.get(otherSlot.id)! - lessonPosition) === 1) adjacentSection = true;
+      const otherLessonPosition = lessonPositionBySlot.get(otherSlot.id);
+      if (load.employee_id != null && load.section_id != null && other.section_id != null && otherLessonPosition != null
+        && continuityKey(other) === continuityKey(load)) sectionLessons.push({position: otherLessonPosition, section: other.section_id});
     }
     if (effortByLoad.get(load.id) === 'heavy') {
       let before = 0, after = 0;
@@ -177,7 +188,12 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       while (heavyPositions.has(position + after + 1)) after += 1;
       penalty += Math.max(0, before + after - 1) * 12;
     }
-    if (adjacentSection) penalty -= 6;
+    if (load.section_id != null && sectionLessons.length > 0) {
+      // Reward a new pair only. Merely extending an already paired lesson must
+      // not make repeating the subject within its own section look better.
+      const newPairs = countSectionPairs([...sectionLessons, {position: lessonPosition, section: load.section_id}]) - countSectionPairs(sectionLessons);
+      penalty -= newPairs * sectionContinuityWeight;
+    }
     penalty += sameFirstDays.size * 14;
     return penalty;
   }
