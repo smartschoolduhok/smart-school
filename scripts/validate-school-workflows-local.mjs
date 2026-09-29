@@ -45,6 +45,15 @@ try{
    assert.deepEqual(actual,{...old,sql:expected},'only the declared nullable parallel FK is appended');
    const references=(await db.prepare('PRAGMA foreign_key_list(timetable_teaching_loads)').all()).results.filter(r=>r.from==='parallel_with_load_id');
    assert.deepEqual(references,[{id:0,seq:0,table:'timetable_teaching_loads',from:'parallel_with_load_id',to:'id',on_update:'NO ACTION',on_delete:'RESTRICT',match:'NONE'}]);
+  }else if(old.type==='table'&&old.name==='timetable_schedule_versions'){
+   // 0050 only extends source provenance; SQLite quotes the table name on rename.
+   const expected=old.sql.map(token=>[...token]);
+   assert.deepEqual(expected[2],['word','timetable_schedule_versions']);
+   expected[2]=['identifier','"timetable_schedule_versions"'];
+   const sourceIndex=expected.findIndex(([kind,text])=>kind==='literal'&&text==="'manual_restore'");
+   assert.ok(sourceIndex>0);
+   expected.splice(sourceIndex+1,0,['symbol',','],['literal',"'manual_clear'"]);
+   assert.deepEqual(actual,{...old,sql:expected},'only the declared archive source is added');
   }else if(old.type==='trigger'&&replacedEntryTriggers.has(old.name)){
    const statement=sqlStatements(parallelMigration).find(s=>s.tokens[0]?.text==='CREATE'&&s.tokens[1]?.text==='TRIGGER'&&s.tokens.some(t=>t.text===old.name));
    assert.ok(statement,'replacement trigger is declared in migration 0049: '+old.name);
