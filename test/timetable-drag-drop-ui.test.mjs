@@ -327,7 +327,7 @@ test('automatic scope controls request the selected stage, class and section rat
     await changeSelect(container.querySelector('select[aria-label="نطاق التوليد"]'), value);
     await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === 'إنشاء جدول تلقائي').click());
     assert.deepEqual(calls.at(-1).body.generation_scope, expected);
-    assert.equal(calls.at(-1).path, '/api/timetable/solver/preview');
+    assert.equal(calls.at(-1).path, '/api/timetable/solver/prepare');
   }
 });
 

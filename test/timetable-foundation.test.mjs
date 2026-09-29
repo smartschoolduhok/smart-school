@@ -7,6 +7,8 @@ import test from 'node:test';
 import {
   buildTimetableReadiness,
   calculateWeeklyCapacity,
+  dormantTimetableLoadIds,
+  timetableLoadReferenceReasons,
   validateTimetableDayInput,
   validateTimetableLoadInput,
   validateTimetableSlotInput,
@@ -532,18 +534,20 @@ test('readiness exposes references that become inactive or structurally invalid 
   const archivedClassSummary = buildTimetableReadiness({
     ...input,
     placements: [input.placements[0]],
-    loads: [{ ...input.loads[0], class_status: 'archived', employee_status: 'active' }],
+    loads: [{ ...input.loads[0], academic_year_id: 1, class_status: 'archived', employee_status: 'active' }],
   });
   assert.equal(archivedClassSummary.total_required_periods, 0);
-  assert.equal(archivedClassSummary.invalid_reference_count, 1);
+  assert.equal(archivedClassSummary.invalid_reference_count, 0);
+  assert.equal(archivedClassSummary.archived_load_count, 1);
 
   const archivedSectionSummary = buildTimetableReadiness({
     ...input,
     placements: [input.placements[0]],
-    loads: [{ ...input.loads[0], section_status: 'archived', employee_status: 'active' }],
+    loads: [{ ...input.loads[0], academic_year_id: 1, section_status: 'archived', employee_status: 'active' }],
   });
   assert.equal(archivedSectionSummary.total_required_periods, 0);
-  assert.equal(archivedSectionSummary.invalid_reference_count, 1);
+  assert.equal(archivedSectionSummary.invalid_reference_count, 0);
+  assert.equal(archivedSectionSummary.archived_load_count, 1);
 
   const nullSectionLoad = {
     ...input.loads[0],
@@ -585,6 +589,55 @@ test('readiness exposes references that become inactive or structurally invalid 
   assert.equal(movedSectionSummary.invalid_reference_count, 1);
 });
 
+test('nineteen unscheduled archived-section loads remain visible history outside current demand and placement rows', () => {
+  const input = readinessFixture({capacity: 4, loadPeriods: [4,4]});
+  input.schoolId=1; input.academicYearId=1;
+  const base={...input.loads[0],academic_year_id:1};
+  input.loads=input.loads.map(load=>({...load,academic_year_id:1}));
+  input.loads[1].employee_id=2;
+  for(let i=0;i<19;i++)input.loads.push({...base,id:100+i,section_id:i<11?10:18,section_name:'Archived',section_status:'archived',employee_status:i===18?'archived':'active'});
+  const original=JSON.stringify(input),summary=buildTimetableReadiness(input);
+  assert.equal(summary.invalid_reference_count,0);assert.equal(summary.archived_load_count,19);assert.equal(summary.total_assignments,2);assert.equal(summary.total_required_periods,8);
+  assert.equal(summary.ready,true);assert.ok(summary.placements.every(p=>p.invalid_load_ids.length===0));
+  assert.equal(summary.archived_load_details.length,19);assert.ok(summary.archived_load_details.every(load=>load.scheduled_entry_count===0&&load.reasons.some(r=>r.code==='section_archived')));
+  assert.deepEqual(summary.archived_load_details.at(-1).reasons.map(r=>r.code),['section_archived','teacher_archived']);
+  assert.deepEqual(summary.invalid_load_details,[]);assert.equal(JSON.stringify(input),original,'readiness never edits historical loads');
+});
+
+for(const [name,patch] of [
+  ['missing subject',{subject_status:null}],['foreign subject',{subject_school_id:2}],['wrong subject class',{subject_class_id:2}],
+  ['wrong subject section',{subject_section_id:55}],['missing teacher',{employee_status:null}],['foreign teacher',{employee_school_id:2}],
+  ['nonteacher',{employee_role:'accountant'}],['foreign class',{class_school_id:2}],['moved section',{section_class_id:2}],
+  ['foreign section',{section_school_id:2}],['missing section',{section_status:null}],['different school',{school_id:2}],['different year',{academic_year_id:2}],
+])test(`dormant archive detection does not hide ${name}`,()=>{
+  const load={...readinessFixture().loads[0],academic_year_id:1,section_status:'archived',...patch};
+  assert.equal(dormantTimetableLoadIds([load],[],1,1).size,0);
+});
+
+test('archived loads with current lessons remain blockers and restored sections revalidate teachers',()=>{
+  const input=readinessFixture({capacity:4,loadPeriods:[4]});input.placements=[input.placements[0]];
+  const load={...input.loads[0],academic_year_id:1,section_status:'archived',employee_status:'archived'};input.loads=[load];
+  input.entries=[{id:1,school_id:1,academic_year_id:1,slot_id:input.slots[0].id,teaching_load_id:load.id,is_locked:0}];
+  let summary=buildTimetableReadiness(input);assert.equal(summary.archived_load_count,0);assert.equal(summary.invalid_reference_count,1);assert.equal(summary.invalid_load_details[0].scheduled_entry_count,1);
+  assert.deepEqual(summary.invalid_load_details[0].reasons.map(r=>r.code),['section_archived','teacher_archived']);
+  input.entries=[];load.section_status='active';summary=buildTimetableReadiness(input);assert.equal(summary.archived_load_count,0);assert.equal(summary.invalid_reference_count,1);assert.deepEqual(summary.invalid_load_details[0].reasons.map(r=>r.code),['teacher_archived']);
+  load.employee_status='active';summary=buildTimetableReadiness(input);assert.equal(summary.invalid_reference_count,0);assert.equal(summary.total_required_periods,4);assert.equal(summary.ready,true);
+});
+
+test('diagnostic reasons explain structural invalid references without calling a missing teacher invalid',()=>{
+  const base={...readinessFixture().loads[0],academic_year_id:1};
+  for(const [patch,code] of [
+    [{class_status:null},'class_unavailable'],[{class_school_id:2},'class_school_mismatch'],
+    [{section_id:null,active_section_count:2},'section_required'],[{section_status:null},'section_unavailable'],
+    [{section_school_id:2},'section_school_mismatch'],[{section_class_id:2},'section_class_mismatch'],
+    [{subject_status:null},'subject_unavailable'],[{subject_status:'archived'},'subject_archived'],
+    [{subject_school_id:2},'subject_school_mismatch'],[{subject_class_id:2},'subject_class_mismatch'],
+    [{subject_section_id:99},'subject_section_mismatch'],[{employee_status:null},'teacher_unavailable'],
+    [{employee_school_id:2},'teacher_school_mismatch'],[{employee_role:'accountant'},'employee_not_teacher'],
+  ]){const reason=timetableLoadReferenceReasons({...base,...patch}).find(r=>r.code===code);assert.ok(reason,code);assert.ok(reason.message&&reason.action);}
+  assert.deepEqual(timetableLoadReferenceReasons({...base,employee_id:null}),[]);
+});
+
 test('input validation rejects malformed payloads before database writes', () => {
   assert.equal(validateTimetableDayInput({ academic_year_id: 1, day_of_week: 7, is_active: 1 }).ok, false);
   assert.equal(validateTimetableSlotInput({ academic_year_id: 1, day_of_week: 0, slot_index: 1, slot_type: 'lesson', lesson_number: 1, label: 'x', start_time: '08:40', end_time: '08:00' }).ok, false);
@@ -613,7 +666,7 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.delete('/api/timetable/teaching-loads/:id'",
     "app.get('/api/timetable/readiness'",
     "app.get('/api/timetable/teacher-workloads'",
-    "app.post('/api/timetable/solver/preview'",
+    "app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare']",
     "app.get('/api/timetable/master-grid'",
     "app.get('/api/timetable/teacher-availability'",
     "app.put('/api/timetable/teacher-availability/:slotId'",
@@ -626,7 +679,7 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.put('/api/timetable/entries/:id/drop'",
     "app.put('/api/timetable/entries/lock-scope'",
   ]) assert.ok(workerSource.includes(route), route);
-  const routeGuards = timetableWorkerSource.match(/app\.(?:get|post|put|delete)\('\/api\/timetable[^\n]*requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/g) || [];
+  const routeGuards = timetableWorkerSource.match(/app\.(?:(?:get|post|put|delete)\(|on\('POST',\s*)\[?'\/api\/timetable[^\n]*requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/g) || [];
   assert.equal(routeGuards.length, 38);
   assert.match(timetableWorkerSource, /for \(const operation of \['preview', 'apply'\] as const\)/);
   assert.ok(timetableWorkerSource.includes("app.post(`/api/timetable/teaching-load-matrix/${operation}`, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES)"));

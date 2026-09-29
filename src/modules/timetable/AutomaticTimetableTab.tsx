@@ -4,8 +4,10 @@ import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import type { Class, Section } from '../../types';
 import type { TimetableScope } from '../../lib/timetableScope';
 import { TimetableScopeSelector } from './TimetableScopeSelector';
+import { TimetableLoadDiagnostics } from './TimetableLoadDiagnostics';
 import { timetableEntriesForPlacement } from './timetableViewEntries';
-import { applyTimetableProposal, previewAutomaticTimetable, previewTimetableAdoption } from '../../lib/api';
+import { applyTimetableProposal, prepareTimetableSolver, previewTimetableAdoption } from '../../lib/api';
+import { solveTimetableInWorker } from '../../lib/timetableSolverClient';
 import {
   TIMETABLE_DAY_NAMES,
   timetablePlacementKey,
@@ -170,6 +172,7 @@ export function AutomaticTimetableTab({
 }: AutomaticTimetableTabProps) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const requestGenerationRef = useRef(0);
+  const solverAbortRef = useRef<AbortController | null>(null);
   const scopeRef = useRef({ schoolId, academicYearId, dataVersion });
   scopeRef.current = { schoolId, academicYearId, dataVersion };
   const [result, setResult] = useState<TimetableSolverProposalWithIntegrity | null>(null);
@@ -183,13 +186,15 @@ export function AutomaticTimetableTab({
 
   useEffect(() => {
     requestGenerationRef.current += 1;
+    solverAbortRef.current?.abort();
+    solverAbortRef.current = null;
     setResult(null);
     setAdoptionPreview(null);
     setLoading(false);
     setApplying(false);
     setError('');
     setSuccess('');
-    return () => { requestGenerationRef.current += 1; };
+    return () => { requestGenerationRef.current += 1; solverAbortRef.current?.abort(); solverAbortRef.current = null; };
   }, [academicYearId, dataVersion, schoolId]);
 
   async function generateProposal(options?: {
@@ -198,14 +203,21 @@ export function AutomaticTimetableTab({
     generation_scope?: TimetableScope;
   }) {
     const generation = ++requestGenerationRef.current;
+    solverAbortRef.current?.abort();
+    const controller = new AbortController();
+    solverAbortRef.current = controller;
     const expectedScope = { schoolId, academicYearId, dataVersion };
     const isCurrentSchool = captureSchoolRequest();
+    const isCurrent = () => generation === requestGenerationRef.current && isCurrentSchool()
+      && scopeRef.current.schoolId === expectedScope.schoolId
+      && scopeRef.current.academicYearId === expectedScope.academicYearId
+      && scopeRef.current.dataVersion === expectedScope.dataVersion;
     setLoading(true);
     setResult(null);
     setAdoptionPreview(null);
     setError('');
     setSuccess('');
-    const response = await previewAutomaticTimetable(schoolId, academicYearId, { generation_scope: generationScope, ...options });
+    const response = await prepareTimetableSolver(schoolId, academicYearId, { generation_scope: generationScope, ...options }, controller.signal);
     if (
       generation !== requestGenerationRef.current
       || !isCurrentSchool()
@@ -213,12 +225,34 @@ export function AutomaticTimetableTab({
       || scopeRef.current.academicYearId !== expectedScope.academicYearId
       || scopeRef.current.dataVersion !== expectedScope.dataVersion
     ) return;
-    setLoading(false);
     if (response.error) {
-      setError(response.error);
+      setLoading(false);
+      solverAbortRef.current = null;
+      setError(response.status === 503 && response.error === 'خطأ 503'
+        ? 'تعذر إكمال توليد الجدول الآن. حاول مرة أخرى، أو اختر صفًا أو شعبة لتوليد نطاق أصغر.'
+        : response.error);
       return;
     }
-    setResult(response.data || null);
+    if (!response.data || response.data.input?.schoolId !== schoolId || response.data.input?.academicYearId !== academicYearId) {
+      setLoading(false); solverAbortRef.current = null;
+      setError('تعذر تحميل بيانات الجدول للنطاق المحدد. حدّث الصفحة وأعد المحاولة.');
+      return;
+    }
+    try {
+      const proposal = await solveTimetableInWorker(response.data, {signal: controller.signal});
+      if (isCurrent()) setResult(proposal);
+    } catch (error) {
+      if (isCurrent() && !controller.signal.aborted) setError(error instanceof Error ? error.message : 'تعذر إكمال توليد الجدول. أعد المحاولة.');
+    } finally {
+      if (solverAbortRef.current === controller) solverAbortRef.current = null;
+      if (isCurrent()) setLoading(false);
+    }
+  }
+
+  function cancelGeneration() {
+    requestGenerationRef.current += 1;
+    solverAbortRef.current?.abort(); solverAbortRef.current = null;
+    setLoading(false); setError('');
   }
 
   async function toggleProposalLock(proposalId: string) {
@@ -327,6 +361,7 @@ export function AutomaticTimetableTab({
             <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-amber-800"><AlertTriangle size={17} />هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            {loading && <button type="button" onClick={cancelGeneration} className="rounded-lg border border-indigo-300 bg-white px-4 py-3 font-bold text-indigo-800">إلغاء التوليد</button>}
             <button
               type="button"
               disabled={loading || applying}
@@ -347,7 +382,7 @@ export function AutomaticTimetableTab({
           </div>
         </div>
         <div className="mt-4 max-w-xl"><TimetableScopeSelector classes={classes} sections={sections} value={generationScope} disabled={loading || applying} onChange={scope => {
-          requestGenerationRef.current += 1; setGenerationScope(scope); setResult(null); setAdoptionPreview(null); setError(''); setSuccess('');
+          requestGenerationRef.current += 1; solverAbortRef.current?.abort(); solverAbortRef.current = null; setGenerationScope(scope); setResult(null); setAdoptionPreview(null); setError(''); setSuccess('');
         }} /></div>
       </section>
 
@@ -359,9 +394,10 @@ export function AutomaticTimetableTab({
           <SolverMetric label="أنصبة بلا مدرس" value={readiness?.missing_teacher_count || 0} tone={readiness?.missing_teacher_count ? 'amber' : 'green'} />
           <SolverMetric label="مراجع غير صالحة" value={readiness?.invalid_reference_count || 0} tone={readiness?.invalid_reference_count ? 'red' : 'green'} />
         </div>
+        <div className="mt-4"><TimetableLoadDiagnostics readiness={readiness} /></div>
       </section>
 
-      {error && <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800"><AlertTriangle size={19} />{error}</div>}
+      {error && <div role="alert" className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800"><AlertTriangle size={19} />{error}</div>}
       {success && <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800"><CheckCircle2 size={19} />{success}</div>}
 
       {result && (

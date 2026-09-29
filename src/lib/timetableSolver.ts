@@ -1,8 +1,11 @@
 import {
   calculateTeacherAvailabilitySummary,
+  createTimetableEntryPlacementEvaluator,
+  dormantTimetableLoadIds,
   evaluateTimetableEntryPlacement,
   loadHasInvalidAcademicReference,
   loadHasInvalidTeacherReference,
+  timetableLoadsShareGroup,
   type TimetableDay,
   type TimetableEntry,
   type TimetableEntryNotice,
@@ -12,7 +15,7 @@ import {
   type TimetableTeacherConstraints,
   type TimetableTeachingLoad,
 } from './timetable.ts';
-import { countTimetableSectionPeriods, countTimetableScheduledSectionPeriods, parallelTimetableLoadGroup, validateTimetableParallelLoads } from './timetableParallel.ts';
+import { countTimetableSectionPeriods, countTimetableScheduledSectionPeriods, indexTimetableParallelLoadGroups, parallelTimetableLoadGroup, validateTimetableParallelLoads } from './timetableParallel.ts';
 
 export type TimetableSolverStatus = 'complete' | 'partial' | 'impossible' | 'fixed_conflict';
 
@@ -772,18 +775,13 @@ export function validateTimetableSolverProposal(
   safetyCheck?: () => void,
 ): TimetableEntryNotice[] {
   const violations: TimetableEntryNotice[] = [];
+  const evaluate = createTimetableEntryPlacementEvaluator(input)(entries);
   for (const entry of entries) {
     safetyCheck?.();
-    const evaluation = evaluateTimetableEntryPlacement({
-      validateWholeSchedule: true,
-      candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
-      days: input.days,
-      slots: input.slots,
-      loads: input.loads,
-      entries,
-      teacherAvailability: input.teacherAvailability,
-      teacherConstraints: input.teacherConstraints,
-    });
+    const evaluation = evaluate(
+      { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
+      { validateWholeSchedule: true },
+    );
     violations.push(...evaluation.hard_conflicts);
   }
   const parallelInvalid = invalidParallelLoadIds(input.loads, input.schoolId, input.academicYearId);
@@ -805,6 +803,9 @@ export function validateTimetableSolverProposal(
 
 export function solveTimetable(input: TimetableSolverInput): TimetableSolverPreview {
   const startedAt = Date.now();
+  const dormantLoads = dormantTimetableLoadIds(input.loads, input.currentEntries || [], input.schoolId, input.academicYearId);
+  const fixedLoadIds = new Set((input.fixedEntries || []).map(entry => entry.teaching_load_id));
+  if (dormantLoads.size > 0) input = {...input, loads: input.loads.filter(load => !dormantLoads.has(load.id) || fixedLoadIds.has(load.id))};
   const limits: TimetableSolverLimits = { ...DEFAULT_LIMITS, ...input.limits };
   let safetyCheckCounter = 0;
   const ensureWithinWallClockSafetyLimit = (force = false) => {
@@ -858,7 +859,10 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
     return expired;
   };
 
-  const groupsByLoad = new Map(validLoads.map(load => [load.id, parallelTimetableLoadGroup(load, validLoads)]));
+  const preparePlacementEvaluator = createTimetableEntryPlacementEvaluator({
+    ...input, teacherAvailability: availability, teacherConstraints: constraints,
+  });
+  const groupsByLoad = indexTimetableParallelLoadGroups(validLoads);
   const groupFor = (load: TimetableTeachingLoad) => groupsByLoad.get(load.id) ?? [load];
   const baseDomainSize = (load: TimetableTeachingLoad) => scheduleSlots.filter((slot) => groupFor(load).every(member => (
     member.employee_id == null
@@ -914,6 +918,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
 
   function rankCandidates(load: TimetableTeachingLoad, entries: InternalEntry[], attemptCeiling = limits.max_attempts): RankedCandidate[] {
     const ranked: RankedCandidate[] = [];
+    const evaluate = preparePlacementEvaluator(entries);
     for (const slot of scheduleSlots) {
       ensureWithinWallClockSafetyLimit();
       if (attempts >= attemptCeiling || deterministicBudgetExpired()) {
@@ -921,14 +926,8 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         break;
       }
       attempts += 1;
-      const evaluations = groupFor(load).map(member => ({member, evaluation: evaluateTimetableEntryPlacement({
-        candidate: { slot_id: Number(slot.id), teaching_load_id: Number(member.id) },
-        days: input.days,
-        slots: input.slots,
-        loads: input.loads,
-        entries,
-        teacherAvailability: availability,
-        teacherConstraints: constraints,
+      const evaluations = groupFor(load).map(member => ({member, evaluation: evaluate({
+        slot_id: Number(slot.id), teaching_load_id: Number(member.id),
       })}));
       if (evaluations.some(item => item.evaluation.hard_conflicts.length > 0)) continue;
       ranked.push({
@@ -1037,6 +1036,65 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   }
 
   let bestEntries = greedyFill(fixedEntries);
+  // Repair greedy dead ends by moving a small number of blocking lessons. All
+  // partners move together and every replacement uses the normal validator.
+  // The deterministic attempt ceiling also bounds this on runtimes whose clock
+  // does not advance during synchronous computation.
+  const repairAttemptCeiling = Math.floor(limits.max_attempts * 0.7);
+  function repairMissingLesson(load: TimetableTeachingLoad, entries: InternalEntry[], depth: number, ancestors: Set<number>): InternalEntry[] | null {
+    if (attempts >= repairAttemptCeiling || deterministicBudgetExpired() || ancestors.has(load.id)) return null;
+    const group = groupFor(load);
+    const teachers = new Set(group.flatMap(member => member.employee_id == null ? [] : [member.employee_id]));
+    const nextAncestors = new Set([...ancestors, ...group.map(member => member.id)]);
+    const candidates = scheduleSlots.map(slot => {
+      const blockers = entries.filter(entry => {
+        if (entry.slot_id !== slot.id) return false;
+        const existing = loadsById.get(entry.teaching_load_id);
+        return existing && (timetableLoadsShareGroup(existing, load)
+          || (existing.employee_id != null && teachers.has(existing.employee_id)));
+      });
+      const blockerGroups = new Map<number, TimetableTeachingLoad>();
+      for (const blocker of blockers) {
+        const representative = groupFor(loadsById.get(blocker.teaching_load_id)!)[0];
+        blockerGroups.set(representative.id, representative);
+      }
+      return {slot, blockerGroups};
+    }).sort((left, right) => left.blockerGroups.size - right.blockerGroups.size || left.slot.id - right.slot.id);
+    for (const {slot, blockerGroups} of candidates) {
+      ensureWithinWallClockSafetyLimit();
+      if (attempts >= repairAttemptCeiling || deterministicBudgetExpired()) return null;
+      if (blockerGroups.size > 2 || (depth === 0 && blockerGroups.size > 0)
+        || [...blockerGroups.keys()].some(id => nextAncestors.has(id))) continue;
+      const removedLoadIds = new Set([...blockerGroups.values()].flatMap(blocker => groupFor(blocker).map(member => member.id)));
+      const removed = entries.filter(entry => entry.slot_id === slot.id && removedLoadIds.has(entry.teaching_load_id));
+      if (removed.some(entry => fixedEntryKeys.has(`${entry.slot_id}:${entry.teaching_load_id}`))) continue;
+      const removedIds = new Set(removed.map(entry => entry.id));
+      let repaired = entries.filter(entry => !removedIds.has(entry.id));
+      const evaluate = preparePlacementEvaluator(repaired);
+      attempts += 1;
+      if (group.some(member => evaluate({slot_id: slot.id, teaching_load_id: member.id}).hard_conflicts.length > 0)) continue;
+      repaired.push(...group.map(member => makeEntry(member, slot)));
+      let complete = true;
+      for (const blocker of blockerGroups.values()) {
+        const relocated = repairMissingLesson(blocker, repaired, depth - 1, nextAncestors);
+        if (!relocated) { complete = false; break; }
+        repaired = relocated;
+      }
+      if (complete) return repaired;
+    }
+    return null;
+  }
+  if (coverage(bestEntries) < desiredCoverage) {
+    for (const load of orderedLoads) {
+      let missing = Number(load.weekly_periods) - bestEntries.filter(entry => entry.teaching_load_id === load.id).length;
+      while (missing > 0 && attempts < repairAttemptCeiling && !deterministicBudgetExpired()) {
+        const repaired = repairMissingLesson(load, bestEntries, 3, new Set());
+        if (!repaired) break;
+        bestEntries = repaired;
+        missing -= 1;
+      }
+    }
+  }
   const workingEntries: InternalEntry[] = [...fixedEntries];
   function searchForMoreCoverage(position: number): boolean {
     ensureWithinWallClockSafetyLimit();
@@ -1110,6 +1168,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   const overloadedPlacementKeys = new Set(readiness.overloaded_class_sections.map((item) => `${item.class_id}:${item.section_id ?? 'none'}`));
   const overloadedTeacherIds = new Set(readiness.overloaded_teachers.map((item) => Number(item.employee_id)));
 
+  const evaluateProposal = preparePlacementEvaluator(proposalEntries);
   const unscheduled = activeLoads.flatMap((load): TimetableSolverUnscheduledDemand[] => {
     ensureWithinWallClockSafetyLimit();
     const scheduled = scheduledByLoad.get(Number(load.id)) || 0;
@@ -1124,14 +1183,8 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       let hasValidCandidate = false;
       for (const slot of scheduleSlots) {
         ensureWithinWallClockSafetyLimit();
-        const evaluations = groupFor(load).map(member => evaluateTimetableEntryPlacement({
-          candidate: { slot_id: Number(slot.id), teaching_load_id: Number(member.id) },
-          days: input.days,
-          slots: input.slots,
-          loads: input.loads,
-          entries: proposalEntries,
-          teacherAvailability: availability,
-          teacherConstraints: constraints,
+        const evaluations = groupFor(load).map(member => evaluateProposal({
+          slot_id: Number(slot.id), teaching_load_id: Number(member.id),
         }));
         const hardConflicts = evaluations.flatMap(item => item.hard_conflicts);
         if (hardConflicts.length === 0) {
@@ -1182,19 +1235,14 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   });
 
   const currentEntries = input.currentEntries || [];
+  const evaluateCurrent = preparePlacementEvaluator(currentEntries);
   let currentValidEntryCount = 0;
   for (const entry of currentEntries) {
     ensureWithinWallClockSafetyLimit();
-    const evaluation = evaluateTimetableEntryPlacement({
-      validateWholeSchedule: true,
-      candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
-      days: input.days,
-      slots: input.slots,
-      loads: input.loads,
-      entries: currentEntries,
-      teacherAvailability: availability,
-      teacherConstraints: constraints,
-    });
+    const evaluation = evaluateCurrent(
+      { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
+      { validateWholeSchedule: true },
+    );
     if (evaluation.hard_conflicts.length === 0) currentValidEntryCount += 1;
   }
 
@@ -1215,15 +1263,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
     ensureWithinWallClockSafetyLimit();
     const load = loadsById.get(Number(entry.teaching_load_id))!;
     const slot = slotsById.get(Number(entry.slot_id))!;
-    const evaluation = evaluateTimetableEntryPlacement({
-      candidate: { id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id },
-      days: input.days,
-      slots: input.slots,
-      loads: input.loads,
-      entries: orderedProposal,
-      teacherAvailability: availability,
-      teacherConstraints: constraints,
-    });
+    const evaluation = evaluateProposal({ id: entry.id, slot_id: entry.slot_id, teaching_load_id: entry.teaching_load_id });
     return {
       proposal_id: `proposal-${String(index + 1).padStart(4, '0')}`,
       slot_id: Number(slot.id),

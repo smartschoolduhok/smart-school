@@ -8,6 +8,7 @@ import {spawnSync} from 'node:child_process';
 import {getPlatformProxy} from 'wrangler';
 import {createServer} from 'vite';
 import {signJWT} from '../src/lib/jwtSecurity.ts';
+import {solvePreparedTimetable} from '../src/lib/timetableSolverPrepared.ts';
 import {root,migrationFiles,fixtureSQL} from '../test/helpers/teaching-load-matrix-fixture.mjs';
 
 const directory=mkdtempSync(join(tmpdir(),'smart-school-parallel-local-'));
@@ -29,9 +30,9 @@ try{
  const db=proxy.env.DB,{default:app}=await vite.ssrLoadModule('/src/worker.ts');
  assert.equal((await db.prepare('PRAGMA foreign_keys').first()).foreign_keys,1);
  const secret='generated-local-parallel-test-secret-not-used-remotely',token=await signJWT({id:1,email:'owner@matrix.test',auth_version:1},secret);
- let failNextBatch=false;
+ let failNextBatch=false,beforeNextWrite=null;
  const wrap=(real,sql)=>({real,sql,bind(...args){return wrap(real.bind(...args),sql);},first:(...a)=>real.first(...a),all:(...a)=>real.all(...a),run:(...a)=>real.run(...a)});
- const guarded={prepare:sql=>wrap(db.prepare(sql),sql),async batch(statements){const real=statements.map(s=>s.real);if(failNextBatch&&statements.some(s=>/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql))){failNextBatch=false;real.push(db.prepare('SELECT * FROM intentional_parallel_late_failure'));}return db.batch(real);}};
+ const guarded={prepare:sql=>wrap(db.prepare(sql),sql),async batch(statements){const real=statements.map(s=>s.real);if(beforeNextWrite&&statements.some(s=>/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql))){const callback=beforeNextWrite;beforeNextWrite=null;await callback();}if(failNextBatch&&statements.some(s=>/^\s*(INSERT|UPDATE|DELETE)/i.test(s.sql))){failNextBatch=false;real.push(db.prepare('SELECT * FROM intentional_parallel_late_failure'));}return db.batch(real);}};
  const call=async(method,path,input)=>{const response=await app.request('http://localhost/api/timetable/'+path,{method,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(input)},{DB:guarded,JWT_SECRET:secret,APP_ENV:'test'});return {status:response.status,body:await response.json()};};
  const scope={school_id:1,academic_year_id:1},pairBody={...scope,class_id:1,section_id:1,subject_id:2,employee_id:2,weekly_periods:4,parallel_with_load_id:1};
  const rows=async()=> (await db.prepare('SELECT * FROM timetable_entries WHERE school_id=1 AND academic_year_id=1 ORDER BY teaching_load_id').all()).results;
@@ -65,6 +66,31 @@ try{
  const attendance=(await snapshot()).lesson_attendance_sessions;
  r=await call('DELETE',`teaching-loads/${second}`,{...scope,confirm_deactivate_scheduled:true,expected_revision:await revision()});assert.equal(r.status,200,JSON.stringify(r));assert.deepEqual(await rows(),[relinkedSurvivor]);assert.deepEqual((await snapshot()).lesson_attendance_sessions,attendance);
  evidence.push({case:'companion-exclusion-attendance',draft_blocked:true,confirmed_history_preserved:true,survivor_unchanged:true});
+ // A separate generated year exercises browser preparation and the new atomic
+ // dormant-reference guard against genuine workerd D1, including numbered binds.
+ await db.batch([
+  db.prepare("INSERT INTO academic_years(id,school_id,name,starts_at,ends_at,is_active) VALUES(99,1,'Generated guard year','2030-09-01','2031-06-01',0)"),
+  db.prepare('INSERT INTO timetable_days(school_id,academic_year_id,day_of_week,is_active,order_index) VALUES(1,99,0,1,0)'),
+  db.prepare("INSERT INTO timetable_slots(id,school_id,academic_year_id,day_of_week,slot_index,slot_type,lesson_number,label,start_time,end_time,is_active) VALUES(99,1,99,0,1,'lesson',1,'Generated','08:00','08:40',1)"),
+  db.prepare("UPDATE sections SET status='active' WHERE id=4"),
+  db.prepare("INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status) VALUES(990,1,99,1,1,1,1,1,'active'),(991,1,99,1,4,1,1,1,'active')"),
+  db.prepare("UPDATE sections SET status='archived' WHERE id=4"),
+ ]);
+ r=await call('POST','solver/prepare',{school_id:1,academic_year_id:99});assert.equal(r.status,200,JSON.stringify(r));
+ const proposal=await solvePreparedTimetable(r.body.data);assert.equal(proposal.status,'complete');assert.equal(proposal.required_periods,1);
+ const applyBody={school_id:1,academic_year_id:99,expected_revision:proposal.timetable_revision,
+  proposal_digest:proposal.proposal_digest,generation_scope:proposal.generation_scope,confirm_apply:true,
+  entries:proposal.entries.map(({slot_id,teaching_load_id,is_locked})=>({slot_id,teaching_load_id,is_locked}))};
+ before=await snapshot();
+ beforeNextWrite=()=>db.prepare("UPDATE sections SET status='active' WHERE id=4").run();
+ r=await call('POST','solver/apply',applyBody);assert.equal(r.status,409,JSON.stringify(r));assert.equal(r.body.code,'stale_timetable_proposal');
+ const afterRace=await snapshot();
+ for(const table of ['timetable_entries','timetable_schedule_versions','timetable_schedule_version_entries','timetable_revisions','timetable_revision_assertions'])assert.deepEqual(afterRace[table],before[table],table);
+ await db.prepare("UPDATE sections SET status='archived' WHERE id=4").run();
+ r=await call('POST','solver/apply',applyBody);assert.equal(r.status,200,JSON.stringify(r));
+ assert.equal((await db.prepare('SELECT COUNT(*) n FROM timetable_entries WHERE school_id=1 AND academic_year_id=99').first()).n,1);
+ assert.equal((await db.prepare("SELECT status FROM timetable_teaching_loads WHERE id=991").first()).status,'active');
+ evidence.push({case:'prepared-browser-proposal-dormant-guard',real_d1_numbered_parameters:true,restoration_race_blocked:true,archive_rollback:true,unchanged_metadata_applies:true});
  assert.equal((await db.prepare('SELECT COUNT(*) n FROM timetable_revision_assertions').first()).n,0);assert.equal((await db.prepare('SELECT COUNT(*) n FROM timetable_locked_entry_overrides').first()).n,0);assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
 }finally{await vite.close();await proxy.dispose();}
 const report={directory,migrations:migrationFiles.length,remote_d1:false,foreign_key_check:[],evidence};writeFileSync(join(directory,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));

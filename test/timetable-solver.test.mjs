@@ -964,6 +964,78 @@ test('wall clock is an emergency abort and never returns an ordinary speed-depen
   }
 });
 
+function denseParallelSchoolInput() {
+  const {days, slots} = week(5, 7);
+  const input = solverInput({days, slots: slots.filter(slot => slot.day_of_week < 3 || slot.lesson_number <= 6), loads: [], placements: []});
+  const weekly = [6, 4, 4, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1];
+  for (let section = 1; section <= 10; section += 1) {
+    const classId = Math.ceil(section / 2);
+    input.placements.push(placement(classId, section));
+    for (let subject = 0; subject < weekly.length; subject += 1) {
+      const id = input.loads.length + 1;
+      input.loads.push(teachingLoad(id, {class_id: classId, section_id: section, subject_id: classId * 100 + subject,
+        employee_id: 1 + (subject + section) % 23, weekly_periods: weekly[subject],
+        parallel_with_load_id: subject === 12 ? id - 1 : null}));
+    }
+  }
+  delete input.limits;
+  return input;
+}
+
+test('dense 130-load school completes all 330 section periods with atomic parallel repair and a frozen clock', () => {
+  const input = denseParallelSchoolInput();
+  const before = structuredClone(input);
+  const originalNow = Date.now;
+  Date.now = () => 100;
+  let result;
+  const started = performance.now();
+  try { result = solveTimetable(input); } finally { Date.now = originalNow; }
+  assert.equal(result.status, 'complete');
+  assert.equal(result.required_periods, 330);
+  assert.equal(result.scheduled_periods, 330);
+  assert.equal(result.entries.length, 340);
+  for (let section = 0; section < 10; section += 1) assertCompletePairs(result, section * 13 + 12, section * 13 + 13);
+  assert.ok(result.statistics.attempts <= result.statistics.attempt_budget);
+  assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+  assert.deepEqual(input, before);
+  assert.ok(performance.now() - started < 2_500);
+});
+
+test('dense repair respects fixed pairs and ends at the deterministic budget even when the clock is frozen', () => {
+  const input = denseParallelSchoolInput();
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 12, is_locked: 1}, {slot_id: 1, teaching_load_id: 13, is_locked: 1}];
+  input.limits = {time_budget_ms: 2000, max_attempts: 12_000, max_backtracks: 100, max_local_improvement_attempts: 10};
+  const originalNow = Date.now;
+  Date.now = () => 100;
+  let result;
+  try { result = solveTimetable(input); } finally { Date.now = originalNow; }
+  assert.ok(result.statistics.attempts <= input.limits.max_attempts);
+  for (const fixed of input.fixedEntries) assert.ok(result.entries.some(entry => entry.slot_id === fixed.slot_id
+    && entry.teaching_load_id === fixed.teaching_load_id && entry.is_locked === 1));
+  for (let section = 0; section < 10; section += 1) assertCompletePairs(result, section * 13 + 12, section * 13 + 13);
+  assert.equal(validateTimetableSolverProposal(input, internalEntries(result)).length, 0);
+});
+
+test('unscheduled known archived placements are dormant but restored, scheduled or fixed references remain explicit', () => {
+  const input = solverInput({...week(1, 2), loads: [teachingLoad(1), teachingLoad(2, {section_id: 2, section_status: 'archived'})], placements: [placement(1)]});
+  const before = structuredClone(input);
+  const dormant = solveTimetable(input);
+  assert.equal(dormant.status, 'complete');
+  assert.equal(dormant.required_periods, 2);
+  assert.equal(dormant.readiness.invalid_load_count, 0);
+  assert.deepEqual(input, before);
+  input.loads[1].section_status = 'active';
+  assert.equal(solveTimetable(input).required_periods, 4);
+  input.loads[1].section_status = 'archived';
+  input.currentEntries = [{id: 1, slot_id: 1, teaching_load_id: 2}];
+  const occupied = solveTimetable(input);
+  assert.equal(occupied.readiness.invalid_load_count, 1);
+  assert.equal(occupied.statistics.existing_invalid_entry_count, 1);
+  input.currentEntries = [];
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 2, is_locked: 1}];
+  assert.equal(solveTimetable(input).status, 'fixed_conflict');
+});
+
 test('authoritative final validation remains clean for a highly constrained generated proposal', () => {
   const { days, slots } = week(4, 5);
   const constraints = Array.from({ length: 4 }, (_, index) => ({
