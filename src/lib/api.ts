@@ -680,9 +680,9 @@ export function updateTimetableTeachingLoad(id: number, data: Record<string, unk
   return fetchApi<TimetableTeachingLoad>(`/api/timetable/teaching-loads/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 }
 
-export function deactivateTimetableTeachingLoad(id: number, schoolId: number, academicYearId: number) {
-  return fetchApi<{ id: number; status: 'inactive' }>(`/api/timetable/teaching-loads/${id}`, {
-    method: 'DELETE', body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId }),
+export function deactivateTimetableTeachingLoad(id: number, schoolId: number, academicYearId: number, confirmation?: { confirm_deactivate_scheduled: true; expected_revision: number }) {
+  return fetchApi<{ id?: number; status?: 'inactive'; scheduled_count?: number; locked_count?: number; revision?: number }>(`/api/timetable/teaching-loads/${id}`, {
+    method: 'DELETE', body: JSON.stringify({ school_id: schoolId, academic_year_id: academicYearId, ...confirmation }),
   });
 }
 

@@ -4,6 +4,7 @@ import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import type { Class, Section } from '../../types';
 import type { TimetableScope } from '../../lib/timetableScope';
 import { TimetableScopeSelector } from './TimetableScopeSelector';
+import { timetableEntriesForPlacement } from './timetableViewEntries';
 import { applyTimetableProposal, previewAutomaticTimetable, previewTimetableAdoption } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
@@ -16,7 +17,6 @@ import {
 import type {
   TimetableSolverPenaltyBreakdown,
   TimetableSolverPreview,
-  TimetableSolverProposalEntry,
   TimetableSolverStatus,
 } from '../../lib/timetableSolver';
 import {
@@ -72,21 +72,6 @@ const PENALTY_LABELS: Record<keyof TimetableSolverPenaltyBreakdown, string> = {
   class_daily_imbalance: 'عدم توازن الحمل اليومي',
 };
 
-function proposalEntryForPlacement(
-  entries: TimetableSolverProposalEntry[],
-  slotId: number,
-  placement: TimetablePlacement,
-) {
-  const candidates = entries.filter((entry) => (
-    Number(entry.slot_id) === Number(slotId)
-    && Number(entry.class_id) === Number(placement.class_id)
-    && (entry.section_id == null || Number(entry.section_id) === Number(placement.section_id))
-  ));
-  return candidates.find((entry) => (
-    placement.section_id != null && Number(entry.section_id) === Number(placement.section_id)
-  )) || candidates.find((entry) => entry.section_id == null) || null;
-}
-
 function placementLabel(placement: TimetablePlacement) {
   return `${placement.class_name}${placement.section_name ? ` / ${placement.section_name}` : ''}`;
 }
@@ -139,12 +124,11 @@ function ProposalGrid({ result, schoolId, disabled, onToggleLock }: {
                       {slot.slot_type === 'break' ? (
                         <td colSpan={Math.max(1, placements.length)} className="border-b border-gray-200 bg-amber-50 p-3 text-center font-semibold text-amber-800">{slotLabel(slot)}</td>
                       ) : placements.map((placement) => {
-                        const entry = proposalEntryForPlacement(result.entries, slot.id, placement);
-                        if (!entry) return <td key={timetablePlacementKey(placement)} className="border-b border-l border-gray-200 bg-white p-2" />;
-                        const color = timetableSubjectColorForSubject(schoolId, entry.subject_name);
+                        const entries = timetableEntriesForPlacement(result.entries, slot.id, placement);
+                        if (!entries.length) return <td key={timetablePlacementKey(placement)} className="border-b border-l border-gray-200 bg-white p-2" />;
                         return (
-                          <td key={timetablePlacementKey(placement)} className="border-b border-l border-gray-200 p-2">
-                            <div className="min-h-20 rounded-lg border-r-4 p-2" style={{ backgroundColor: color.background, borderColor: color.border, color: color.foreground }}>
+                          <td key={timetablePlacementKey(placement)} className="space-y-2 border-b border-l border-gray-200 p-2">
+                            {entries.map(entry => { const color = timetableSubjectColorForSubject(schoolId, entry.subject_name); return <div key={entry.proposal_id} data-proposal-entry={entry.proposal_id} className="min-h-20 rounded-lg border-r-4 p-2" style={{ backgroundColor: color.background, borderColor: color.border, color: color.foreground }}>
                               <p className="font-bold">{entry.subject_name}</p>
                               <p className={`mt-1 ${entry.employee_id == null ? 'font-bold text-amber-800' : 'opacity-80'}`}>{entry.employee_name || 'بدون مدرس'}</p>
                               {entry.soft_warnings.length > 0 && <p className="mt-1 text-[10px] opacity-75">{entry.soft_warnings.map((warning) => warning.message).join('، ')}</p>}
@@ -158,7 +142,7 @@ function ProposalGrid({ result, schoolId, disabled, onToggleLock }: {
                                 {entry.is_locked === 1 ? <Lock size={12} /> : <Unlock size={12} />}
                                 {entry.is_preserved ? 'محفوظة من الجدول الحالي' : entry.is_locked === 1 ? 'إلغاء التثبيت' : 'تثبيت الدرس'}
                               </button>
-                            </div>
+                            </div>; })}
                           </td>
                         );
                       })}
@@ -239,10 +223,17 @@ export function AutomaticTimetableTab({
 
   async function toggleProposalLock(proposalId: string) {
     if (!result || loading || applying) return;
-    if (result.entries.find(entry => entry.proposal_id === proposalId)?.is_preserved) return;
+    const selected = result.entries.find(entry => entry.proposal_id === proposalId);
+    if (!selected || selected.is_preserved) return;
+    const group = result.entries.filter(entry => entry.slot_id === selected.slot_id && entry.class_id === selected.class_id
+      && entry.section_id === selected.section_id && (entry.proposal_id === proposalId
+        || entry.parallel_with_load_id === selected.teaching_load_id || selected.parallel_with_load_id === entry.teaching_load_id));
+    if (group.some(entry => entry.is_preserved)) return;
+    const groupIds = new Set(group.map(entry => entry.proposal_id));
+    const nextLock = group.some(entry => entry.is_locked === 1) ? 0 as const : 1 as const;
     const generation = ++requestGenerationRef.current;
     const nextEntries = result.entries.map((entry) => (
-      entry.proposal_id === proposalId ? { ...entry, is_locked: entry.is_locked === 1 ? 0 as const : 1 as const } : entry
+      groupIds.has(entry.proposal_id) ? { ...entry, is_locked: nextLock } : entry
     ));
     const digest = await computeTimetableProposalDigest({
       schoolId,

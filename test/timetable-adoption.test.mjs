@@ -91,6 +91,31 @@ function validationContext(overrides = {}) {
   return { schoolId: 1, academicYearId: 1, days, slots, loads: [load(1), load(2)], availability: [], constraints: [], ...overrides };
 }
 
+test('parallel subjects occupy two section lessons while preserving four independent teacher entries',()=>{
+ const primary=load(1),companion=load(2,{class_id:1,subject_class_id:1,parallel_with_load_id:1});
+ const context=validationContext({loads:[primary,companion]});
+ const entries=[1,3].flatMap(slot_id=>[1,2].map(teaching_load_id=>({slot_id,teaching_load_id,is_locked:0})));
+ const valid=validateCompleteTimetableSchedule(context,entries);
+ assert.equal(valid.complete,true,JSON.stringify(valid));assert.equal(valid.required_periods,2);assert.equal(valid.scheduled_periods,2);
+ assert.equal(valid.weekly_demand.missing_periods,0);
+ assert.equal(validateRestorableTimetableSchedule(context,entries).structurally_valid,true);
+ const split=entries.map(e=>e.teaching_load_id===2?{...e,slot_id:e.slot_id+1}:e);
+ for(const rows of [split,entries.filter(e=>e.teaching_load_id===1)]){
+  const rejected=validateCompleteTimetableSchedule(context,rows);assert.equal(rejected.complete,false);
+  assert.ok(rejected.blockers.some(b=>b.code==='parallel_lessons_misaligned'));
+  assert.equal(validateRestorableTimetableSchedule(context,rows).structurally_valid,false);
+ }
+});
+
+test('parallel links never waive teacher availability or malformed-link validation in adoption',()=>{
+ const primary=load(1),companion=load(2,{class_id:1,subject_class_id:1,parallel_with_load_id:1});
+ const entries=[1,3].flatMap(slot_id=>[1,2].map(teaching_load_id=>({slot_id,teaching_load_id,is_locked:0})));
+ const context=validationContext({loads:[primary,companion],availability:[{school_id:1,academic_year_id:1,employee_id:2,slot_id:1,status:'unavailable'}]});
+ assert.ok(validateCompleteTimetableSchedule(context,entries).blockers.some(b=>b.code==='teacher_unavailable'));
+ const invalid=validateCompleteTimetableSchedule({...context,availability:[],loads:[primary,{...companion,weekly_periods:3}]},entries);
+ assert.equal(invalid.complete,false);assert.ok(invalid.blockers.some(b=>b.code==='invalid_parallel_load'));
+});
+
 test('0026 adds a default-unlocked canonical timetable entry field', () => {
   const db = databaseFixture();
   const columns = db.prepare("PRAGMA table_info('timetable_entries')").all();

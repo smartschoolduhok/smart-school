@@ -27,7 +27,7 @@ function response(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function gridFixture({ occupiedTarget = false, lockedSource = false, lockedTarget = false } = {}) {
+function gridFixture({ occupiedTarget = false, lockedSource = false, lockedTarget = false, parallelSource = false, parallelTarget = false } = {}) {
   const baseEntry = {
     school_id: 1,
     academic_year_id: 1,
@@ -66,7 +66,7 @@ function gridFixture({ occupiedTarget = false, lockedSource = false, lockedTarge
     employee_name: 'مدرس اللغة العربية',
     is_locked: lockedTarget ? 1 : 0,
   });
-  return {
+  const grid = {
     school_id: 1,
     academic_year_id: 1,
     revision: 17,
@@ -107,6 +107,17 @@ function gridFixture({ occupiedTarget = false, lockedSource = false, lockedTarge
       }] : []),
     ],
   };
+  for (const [enabled, id, primaryId, subjectName, employeeName] of [
+    [parallelSource, 103, 101, 'التربية المسيحية', 'مدرس التربية المسيحية'],
+    [parallelTarget, 104, 102, 'اللغة الإنكليزية', 'مدرس اللغة الإنكليزية'],
+  ]) {
+    if (!enabled) continue;
+    const primary = grid.loads.find(load => load.id === primaryId);
+    const entry = entries.find(item => item.teaching_load_id === primaryId);
+    grid.loads.push({...primary, id, parallel_with_load_id: primaryId, subject_id: id + 100, subject_name: subjectName, employee_id: id + 200, employee_name: employeeName});
+    entries.push({...entry, id: id + 400, teaching_load_id: id, subject_id: id + 100, subject_name: subjectName, employee_id: id + 200, employee_name: employeeName, is_locked: 0});
+  }
+  return grid;
 }
 
 async function waitFor(check, message) {
@@ -167,8 +178,15 @@ async function mount(t, options = {}) {
         ? null
         : grid.entries.find((entry) => entry.id === body.target_entry_id);
       const sourceSlot = source.slot_id;
-      source.slot_id = body.target_slot_id;
-      if (target) target.slot_id = sourceSlot;
+      const members = entry => {
+        const load = grid.loads.find(load => load.id === entry.teaching_load_id);
+        const primaryId = load.parallel_with_load_id || load.id;
+        const ids = grid.loads.filter(load => load.id === primaryId || load.parallel_with_load_id === primaryId).map(load => load.id);
+        return grid.entries.filter(item => item.slot_id === entry.slot_id && ids.includes(item.teaching_load_id));
+      };
+      const sourceGroup = members(source), targetGroup = target ? members(target) : [];
+      sourceGroup.forEach(entry => {entry.slot_id = body.target_slot_id;});
+      targetGroup.forEach(entry => {entry.slot_id = sourceSlot;});
       if (options.teacherConflictAfterDrop) {
         source.hard_conflicts = [{
           code: 'teacher_collision',
@@ -341,6 +359,25 @@ test('accepted teacher collision is colored rose and announced as a visible conf
   assert.match(card.textContent, /تعارض المدرّس/);
   assert.match(ui.container.querySelector('[role="alert"]').textContent, /تعارض المدرّس/);
   assert.match(ui.container.querySelector('[role="status"]').textContent, /يوجد تعارض للمدرّس/);
+});
+
+test('parallel source and target are visible and drop treats the target pair as one swappable group', async t => {
+  const ui = await mount(t, {occupiedTarget: true, parallelSource: true, parallelTarget: true});
+  const sourceCell = ui.container.querySelector('[data-timetable-drop-slot="11"]');
+  const targetCell = ui.container.querySelector('[data-timetable-drop-slot="12"]');
+  assert.equal(sourceCell.querySelectorAll('[data-timetable-entry]').length, 2);
+  assert.equal(targetCell.querySelectorAll('[data-timetable-entry]').length, 2);
+  await drag(ui.container.querySelector('[data-timetable-drag-entry="503"]'), targetCell);
+  await waitFor(() => ui.changed === 1, 'paired swap refresh');
+  assert.equal(ui.calls.find(call => call.path.endsWith('/503/drop')).body.target_entry_id, 502);
+  assert.match(sourceCell.textContent, /اللغة العربية/);assert.match(sourceCell.textContent, /اللغة الإنكليزية/);
+  assert.match(targetCell.textContent, /الرياضيات/);assert.match(targetCell.textContent, /التربية المسيحية/);
+});
+
+test('a locked partner prevents dragging either member even when the selected member itself is unlocked', async t => {
+  const ui = await mount(t, {parallelSource: true, lockedSource: true});
+  for (const id of [501, 503]) assert.equal(ui.container.querySelector(`[data-timetable-drag-entry="${id}"]`).getAttribute('draggable'), 'false');
+  assert.equal(ui.calls.some(call => call.path.endsWith('/drop')), false);
 });
 
 test('failed non-collision drop keeps the visible timetable unchanged and reports that nothing changed', async (t) => {

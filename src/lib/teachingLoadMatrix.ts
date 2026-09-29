@@ -3,6 +3,7 @@ import {
   type TimetableDay, type TimetableSlot, type TimetableEntry, type TimetableTeachingLoad,
   type TimetableTeacherAvailabilityOverride, type TimetableTeacherConstraints,
 } from './timetable.ts';
+import { countTimetableSectionPeriods, parallelTimetableLoadGroup, validateTimetableParallelLoads } from './timetableParallel.ts';
 
 export const MAX_MATRIX_CHANGES = 500;
 export const MAX_MATRIX_WEEKLY_PERIODS = 100;
@@ -30,7 +31,7 @@ export interface MatrixPlanItem {
   old_weekly_periods: number | null; new_weekly_periods: number | null;
   old_employee_id: number | null; new_employee_id: number | null;
   old_employee_name: string | null; new_employee_name: string | null;
-  locked_entry_count: number; warnings: MatrixNotice[]; blockers: MatrixNotice[];
+  locked_entry_count: number; removed_entry_count: number; warnings: MatrixNotice[]; blockers: MatrixNotice[];
 }
 export interface MatrixSummary {
   expected: number; configured: number; missing: number; excluded: number; without_teacher: number; invalid_teacher: number;
@@ -49,6 +50,7 @@ export interface MatrixPlan {
   without_teacher_after: number; invalid_teacher_after: number; summary_after: MatrixSummary;
   total_weekly_periods_before: number; total_weekly_periods_after: number;
   items: MatrixPlanItem[];
+  exclusion_snapshot?: Pick<MatrixContext, 'days' | 'slots' | 'entries' | 'loads' | 'availability'>;
 }
 export interface MatrixCopyPlan { changes: MatrixChange[]; plan: MatrixPlan; warnings: MatrixNotice[]; unavailable: Array<{ subject_id: number; section_id: number | null; code: string; message: string }> }
 
@@ -143,7 +145,7 @@ export function summarizeMatrix(classId: number, sections: MatrixSection[], subj
   return { expected, configured: configured.length, missing: expected - configured.length, excluded,
     without_teacher: configured.filter(l => l.employee_id == null).length,
     invalid_teacher: configured.filter(l => matrixLoadTeacherState(l) === 'invalid_teacher').length,
-    weekly_periods: configured.reduce((sum, l) => sum + l.weekly_periods, 0),
+    weekly_periods: countTimetableSectionPeriods(configured),
     completion_percent: expected ? Math.round(100 * configured.filter(l => matrixLoadTeacherState(l) === 'valid').length / expected) : cells.length ? 100 : 0,
     section_count: sections.filter(s => s.class_id === classId && s.status === 'active').length,
     subject_count: subjects.filter(s => s.class_id === classId && s.status === 'active').length };
@@ -190,6 +192,7 @@ export function teacherScheduleNotices(context: Pick<MatrixContext, 'days' | 'sl
 export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixChange[]): MatrixPlan {
   const applicable = new Set(matrixCells(context.class.id, context.sections, context.subjects).map(c => matrixKey(c.subject_id, c.section_id)));
   const activeLoads = new Map(context.loads.filter(l => l.class_id === context.class.id && l.status === 'active').map(l => [matrixKey(l.subject_id, l.section_id), l]));
+  const savedCells = matrixCellLoads(context.loads.filter(l => l.class_id === context.class.id));
   const finalLoads = context.loads.map(l => ({ ...l }));
   const destinations = new Set<number>();
   const items = [...changes].sort((a, b) => a.subject_id - b.subject_id || (a.section_id ?? 0) - (b.section_id ?? 0)).map<MatrixPlanItem>(change => {
@@ -205,18 +208,30 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
       old_employee_id: existing?.employee_id ?? null, new_employee_id: change.action === 'upsert' ? change.employee_id : null,
       old_employee_name: existing?.employee_name ?? null, new_employee_name: teacher?.full_name ?? null,
       locked_entry_count: context.entries.filter(e => e.teaching_load_id === existing?.id && e.is_locked === 1).length,
+      removed_entry_count: 0,
       warnings: [], blockers: [],
     };
     const block = (code: string, message: string) => item.blockers.push({ code, message });
     if (!applicable.has(matrixKey(change.subject_id, change.section_id))) block('missing_or_not_in_scope', 'المادة أو الشعبة غير متاحة ضمن الصف المحدد.');
     if (change.action === 'upsert' && change.employee_id != null && !teacher) block('invalid_teacher', 'المدرس غير متاح ضمن المدرسة المحددة.');
     const scheduled = context.entries.filter(e => e.teaching_load_id === existing?.id).length;
-    if (change.action === 'deactivate' && scheduled) block('load_has_scheduled_entries', 'لا يمكن تعطيل النصاب لأنه يحتوي على دروس مجدولة.');
+    if (change.action === 'deactivate' && scheduled) {
+      if (existing && parallelTimetableLoadGroup(existing, context.loads).length === 2) {
+        item.removed_entry_count = scheduled;
+        item.warnings.push({code: 'parallel_subject_exclusion', message: `ستؤرشف وتزال دروس هذه المادة فقط (${scheduled}) من الجدول، وتبقى دروس المادة الثانية ومدرسها ونصابها كما هي.`});
+      } else block('load_has_scheduled_entries', 'لا يمكن تعطيل النصاب لأنه يحتوي على دروس مجدولة.');
+    }
     if (change.action === 'upsert' && change.weekly_periods < scheduled) block('weekly_periods_below_scheduled', 'عدد الدروس أقل من عدد الدروس المجدولة حاليًا.');
+    if (change.action === 'upsert' && existing && change.weekly_periods !== existing.weekly_periods
+      && parallelTimetableLoadGroup(existing, context.loads).length > 1)
+      block('parallel_periods_change', 'فك ربط الدرس المتزامن من التعديل المتقدم قبل تغيير عدد دروس هذه المادة.');
     if (item.blockers.length) { item.action = 'blocked'; return item; }
     if (change.action === 'deactivate') {
-      item.action = existing ? 'deactivate' : 'unchanged';
-      if (existing) finalLoads.find(l => l.id === existing.id)!.status = 'inactive';
+      item.action = existing || !savedCells.has(matrixKey(change.subject_id, change.section_id)) ? 'deactivate' : 'unchanged';
+      if (existing) {
+        Object.assign(finalLoads.find(l => l.id === existing.id)!, {status: 'inactive', parallel_with_load_id: null});
+        for (const survivor of finalLoads) if (survivor.parallel_with_load_id === existing.id) survivor.parallel_with_load_id = null;
+      }
     } else if (existing) {
       item.action = existing.employee_id === change.employee_id && existing.weekly_periods === change.weekly_periods ? 'unchanged' : 'update';
       Object.assign(finalLoads.find(l => l.id === existing.id)!, {
@@ -230,7 +245,15 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
     }
     return item;
   });
-  const safety = teacherScheduleNotices({ ...context, loads: finalLoads }, destinations);
+  const parallelIssues = validateTimetableParallelLoads(finalLoads);
+  for (const item of items) {
+    if (item.action !== 'update') continue;
+    const issue = parallelIssues.find(issue => issue.load_id === item.existing_load_id || issue.parallel_with_load_id === item.existing_load_id);
+    if (issue) { item.blockers.push({code: issue.code, message: issue.message}); item.action = 'blocked'; }
+  }
+  const excludedIds = new Set(items.filter(i => i.action === 'deactivate' && i.removed_entry_count > 0).map(i => i.existing_load_id));
+  const excludedEntries = context.entries.filter(e => excludedIds.has(e.teaching_load_id));
+  const safety = teacherScheduleNotices({ ...context, loads: finalLoads, entries: context.entries.filter(e => !excludedIds.has(e.teaching_load_id)) }, destinations);
   for (const item of items) {
     if (item.action !== 'update' || item.new_employee_id === item.old_employee_id) continue;
     const notices = item.new_employee_id == null ? undefined : safety.get(item.new_employee_id);
@@ -241,12 +264,11 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
   const counts: MatrixPlan['counts'] = { create: 0, update: 0, deactivate: 0, unchanged: 0, blocked: 0 };
   items.forEach(i => { counts[i.action]++; });
   const before = context.loads.filter(l => l.class_id === context.class.id && l.status === 'active');
-  let periods = before.reduce((sum, l) => sum + l.weekly_periods, 0);
   let missingTeacher = before.filter(l => l.employee_id == null).length;
   for (const i of items) {
     if (!['create', 'update', 'deactivate'].includes(i.action)) continue;
-    if (i.existing_load_id != null) { periods -= i.old_weekly_periods!; if (i.old_employee_id == null) missingTeacher--; }
-    if (i.action !== 'deactivate') { periods += i.new_weekly_periods!; if (i.new_employee_id == null) missingTeacher++; }
+    if (i.existing_load_id != null && i.old_employee_id == null) missingTeacher--;
+    if (i.action !== 'deactivate' && i.new_employee_id == null) missingTeacher++;
   }
   // Project only accepted items. Invalid/blocked cells retain stored references;
   // summary/read paths never repair, clear, deactivate or hide academic demand.
@@ -256,25 +278,38 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
     const teacher = context.teachers.find(t => t.id === i.new_employee_id && isMatrixTeacherEligible(t, context.class.school_id));
     const values = { employee_id: i.new_employee_id, weekly_periods: i.new_weekly_periods!,
       employee_school_id: teacher?.school_id ?? null, employee_status: teacher?.status ?? null, employee_role: teacher?.role ?? null };
-    if (i.action === 'create') projected.push({ ...values, id: -1 - projected.length, school_id: context.class.school_id,
+    if (i.action === 'create' || (i.action === 'deactivate' && i.existing_load_id == null)) projected.push({ ...values,
+      ...(i.action === 'deactivate' ? {weekly_periods: 1, employee_id: null} : {}),
+      id: -1 - projected.length, school_id: context.class.school_id,
       academic_year_id: context.academic_year_id, class_id: context.class.id, subject_id: i.subject_id, section_id: i.section_id,
-      status: 'active', created_at: 0, updated_at: 0 });
+      status: i.action === 'deactivate' ? 'inactive' : 'active', created_at: 0, updated_at: 0 });
     else {
       const load = projected.find(l => l.id === i.existing_load_id)!;
-      if (i.action === 'deactivate') load.status = 'inactive';
+      if (i.action === 'deactivate') {
+        Object.assign(load, {status: 'inactive', parallel_with_load_id: null});
+        for (const survivor of projected) if (survivor.parallel_with_load_id === load.id) survivor.parallel_with_load_id = null;
+      }
       else Object.assign(load, values);
     }
   }
   const summaryAfter = summarizeMatrix(context.class.id, context.sections, context.subjects, projected);
+  const excludedSlotIds = new Set(excludedEntries.map(e => e.slot_id));
+  const excludedSlots = context.slots.filter(s => excludedSlotIds.has(s.id));
+  const excludedDayNumbers = new Set(excludedSlots.map(s => s.day_of_week));
+  const archivedLoadIds = new Set(context.loads.filter(l => excludedIds.has(l.id)).flatMap(l => parallelTimetableLoadGroup(l, context.loads).map(member => member.id)));
   return { can_apply: counts.blocked === 0, revision: context.timetable_revision, counts,
     without_teacher_after: missingTeacher, invalid_teacher_after: projected.filter(l => l.status === 'active' && matrixLoadTeacherState(l) === 'invalid_teacher').length,
-    summary_after: summaryAfter, total_weekly_periods_before: before.reduce((sum, l) => sum + l.weekly_periods, 0),
-    total_weekly_periods_after: periods, items };
+    summary_after: summaryAfter, total_weekly_periods_before: countTimetableSectionPeriods(before),
+    total_weekly_periods_after: summaryAfter.weekly_periods, items,
+    ...(excludedEntries.length ? {exclusion_snapshot: {days: context.days.filter(d => excludedDayNumbers.has(d.day_of_week)),
+      slots: excludedSlots, entries: excludedEntries, loads: context.loads.filter(l => archivedLoadIds.has(l.id)), availability: []}} : {}) };
 }
 
 export function planTeachingLoadCopy(context: MatrixContext, source: TimetableTeachingLoad[], mode: MatrixCopyMode): MatrixCopyPlan {
   const cells = new Set(matrixCells(context.class.id, context.sections, context.subjects).map(c => matrixKey(c.subject_id, c.section_id)));
   const changes: MatrixChange[] = []; const warnings: MatrixNotice[] = [];
+  if (source.some(l => l.status === 'active' && l.class_id === context.class.id && l.parallel_with_load_id != null))
+    warnings.push({code: 'parallel_link_not_copied', message: 'نسخ النصاب لا ينقل ربط الدروس المتزامنة بين السنوات. راجع ربط المادتين في السنة المستهدفة من التعديل المتقدم.'});
   const unavailable: MatrixCopyPlan['unavailable'] = [];
   for (const load of source.filter(l => l.status === 'active' && l.class_id === context.class.id)) {
     if (!cells.has(matrixKey(load.subject_id, load.section_id))) {
@@ -301,15 +336,24 @@ export function matrixSectionTotals(data: TeachingLoadMatrixData, draft: MatrixD
   const cells = matrixCells(data.class.id, data.sections, data.subjects);
   const sections = data.sections.length ? data.sections.map(s => ({id: s.id as number | null, name: s.name})) : [{id: null, name: 'الصف بالكامل'}];
   return sections.map(section => {
-    let weekly_periods = 0, excluded = 0, missing = 0, invalid_periods = 0;
+    let excluded = 0, missing = 0, invalid_periods = 0;
+    const projected: TimetableTeachingLoad[] = [];
     for (const cell of cells.filter(c => c.section_id === section.id)) {
       const key = matrixKey(cell.subject_id, cell.section_id), load = loads.get(key), edit = draft[key] ?? {};
       if (matrixCellExcluded(load, edit)) { excluded++; continue; }
       const periods = edit.periods?.trim() ? Number(edit.periods) : load?.status === 'active' ? load.weekly_periods : undefined;
       if (periods == null) missing++;
       else if (!Number.isInteger(periods) || periods < 1 || periods > MAX_MATRIX_WEEKLY_PERIODS) invalid_periods++;
-      else weekly_periods += periods;
+      else projected.push({...load, id: load?.id ?? -1 - projected.length,
+        school_id: data.class.school_id, academic_year_id: load?.academic_year_id ?? 0,
+        class_id: data.class.id, section_id: section.id, subject_id: cell.subject_id,
+        weekly_periods: periods, employee_id: edit.employeeId === undefined ? load?.employee_id ?? null : edit.employeeId,
+        status: 'active', created_at: load?.created_at ?? 0, updated_at: load?.updated_at ?? 0});
     }
+    // Excluding either member leaves the other as an independent lesson.
+    for (const survivor of projected) if (survivor.parallel_with_load_id != null
+      && !projected.some(l => l.id === survivor.parallel_with_load_id)) survivor.parallel_with_load_id = null;
+    const weekly_periods = countTimetableSectionPeriods(projected);
     return {...section, weekly_periods, weekly_capacity: data.weekly_capacity, difference: data.weekly_capacity - weekly_periods, excluded, missing, invalid_periods};
   });
 }
@@ -317,7 +361,7 @@ export function matrixDraftChanges(data: TeachingLoadMatrixData, draft: MatrixDr
   return matrixCells(data.class.id, data.sections, data.subjects).flatMap<MatrixChange>(cell => {
     const edit = draft[matrixKey(cell.subject_id, cell.section_id)]; if (!edit) return [];
     const existing = data.loads.find(l => l.status === 'active' && l.subject_id === cell.subject_id && l.section_id === cell.section_id);
-    if (edit.deactivate) return existing ? [{ ...cell, action: 'deactivate' }] : [];
+    if (edit.deactivate) return [{ ...cell, action: 'deactivate' }];
     const periods = edit.periods?.trim() ? Number(edit.periods) : existing?.weekly_periods;
     if (periods == null) return [];
     const employeeId = edit.employeeId === undefined ? existing?.employee_id ?? null : edit.employeeId;

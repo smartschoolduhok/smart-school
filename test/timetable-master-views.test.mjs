@@ -161,7 +161,7 @@ test('break rows span the complete table instead of repeating per class cell', (
 test('teacher and placement views are scoped to the selected canonical ids', () => {
   assert.match(viewSource, /Number\(entry\.employee_id\) === teacherId/);
   assert.match(printSource, /Number\(entry\.class_id\) === placement\.class_id/);
-  assert.match(viewSource, /timetableEntryForPlacement\(data\.entries, slot\.id, placement\)/);
+  assert.match(viewSource, /timetableEntriesForPlacement\(data\.entries, slot\.id, placement\)/);
 });
 
 test('invalid placements are visible as an alert and link back to repair without becoming cells', () => {

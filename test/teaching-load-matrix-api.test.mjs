@@ -39,6 +39,31 @@ test('matrix API retains scoped inactive exclusions and derives capacity from sa
  const preview=await call(f,'POST',prefix+'/preview',body(f,[up(1,1)]));assert.equal(preview.status,200);assert.equal(preview.body.data.summary_after.excluded,1);
 });
 
+test('authenticated exclusion of a missing load removes only that section requirement and preserves the catalog',async()=>{
+ const f=fixture(),before=snapshot(f.db),input={...body(f,[{subject_id:2,section_id:1,action:'deactivate'}]),confirm_apply:true};
+ const preview=await call(f,'POST',prefix+'/preview',body(f,input.changes));
+ assert.equal(preview.status,200);assert.equal(preview.body.data.can_apply,true);assert.deepEqual(snapshot(f.db),before);
+ const saved=await call(f,'POST',prefix+'/apply',input);assert.equal(saved.status,200,JSON.stringify(saved));
+ const read=await call(f,'GET',prefix+'?school_id=1&academic_year_id=1&class_id=1');assert.equal(read.body.data.summary.excluded,1);
+ const readiness=await call(f,'GET','/api/timetable/readiness?school_id=1&academic_year_id=1');
+ assert.ok(!readiness.body.data.placements.find(p=>p.section_id===1).missing_subjects.some(s=>s.id===2));
+ assert.ok(readiness.body.data.placements.find(p=>p.section_id===2).missing_subjects.some(s=>s.id===2));
+ for(const table of ['subjects','student_subjects','grades'])assert.deepEqual(snapshot(f.db)[table],before[table]);
+});
+
+for(const disabledSubject of [1,2])test(`matrix API archives only scheduled paired subject ${disabledSubject} after preview`,async()=>{
+ const f=fixture();f.db.exec(`UPDATE timetable_teaching_loads SET employee_id=1 WHERE id=1;
+ INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status,parallel_with_load_id)
+ VALUES(20,1,1,1,1,2,2,4,'active',1)`);entry(f.db,1,1,1);entry(f.db,20,1,1);
+ const before=snapshot(f.db),survivor=disabledSubject===1?20:1,input=body(f,[{subject_id:disabledSubject,section_id:1,action:'deactivate'}]);
+ const preview=await call(f,'POST',prefix+'/preview',input);assert.equal(preview.status,200);assert.equal(preview.body.data.items[0].removed_entry_count,1);
+ assert.deepEqual(snapshot(f.db),before);
+ const applied=await call(f,'POST',prefix+'/apply',{...input,confirm_apply:true});assert.equal(applied.status,200,JSON.stringify(applied));
+ const after=snapshot(f.db);assert.deepEqual(after.timetable_entries,before.timetable_entries.filter(e=>e.teaching_load_id===survivor));
+ assert.equal(after.timetable_week_archives.length,1);assert.equal(after.timetable_locked_entry_overrides.length,0);
+ for(const table of ['subjects','student_subjects','grades','lesson_attendance_sessions'])assert.deepEqual(after[table],before[table]);
+});
+
 for(const populated of [false,true])test(`complete HTTP 500 ${populated?'teacher updates':'creates'} uses Free-tier budget with headroom`,async(t)=>{
  const f=fixture();const changes=benchmarkMatrix(f.db,50,10,populated);const before=snapshot(f.db);
  const input={...body(f,changes),class_id:10,confirm_apply:true};

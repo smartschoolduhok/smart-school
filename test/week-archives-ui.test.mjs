@@ -75,12 +75,15 @@ test('archive is read-only and shows the old periods, class, subject and teacher
   const u = await mount(t, url => response({ data: url.pathname.endsWith('/1') ? detail() : [summary()] }));
   await waitFor(() => u.container.querySelector('table'), 'archive list');
   assert.match(u.container.textContent, /الأحد/);
-  assert.match(u.container.textContent, /الجدول الجديد هو المعروض/);
+  assert.match(u.container.textContent, /النسخة الحالية هي المعروضة/);
+  assert.match(u.container.textContent, /استبدال إعدادات أيام أو استبعاد مادة واحدة فقط/);
+  assert.match(u.container.textContent, /قد تبقى الفترات نفسها مستخدمة/);
+  assert.doesNotMatch(u.container.textContent, /الأيام المستبدلة/);
   const open = button(u, 'عرض أرشيف الجدول رقم 1');
   await click(open);
   await waitFor(() => u.container.textContent.includes('الرياضيات'), 'archive content');
   assert.equal(open.getAttribute('aria-expanded'), 'true');
-  assert.equal(document.activeElement.textContent, 'الجدول السابق قبل الاستبدال');
+  assert.equal(document.activeElement.textContent, 'البيانات المحفوظة قبل التغيير');
   for (const text of ['08:00', '08:40', '08:50', 'الأول المتوسط — أ', 'مدرس الرياضيات', 'درس مثبت', 'استراحة الصباح']) assert.ok(u.container.textContent.includes(text), text);
   assert.ok(u.container.querySelector('[aria-label="الجدول المؤرشف ليوم الأحد"]'));
   assert.ok(u.container.querySelector('.overflow-x-auto'));
@@ -152,7 +155,7 @@ test('archive list errors are retryable and do not hide existing timetable versi
   assert.equal(u.container.querySelector('[role="alert"]').textContent, 'تعذر تحميل الأرشيفإعادة تحميل الأرشيف');
   failed = false;
   await click(button(u, 'إعادة تحميل الأرشيف'));
-  await waitFor(() => u.container.textContent.includes('لا توجد جداول مستبدلة مؤرشفة بعد.'), 'empty archive');
+  await waitFor(() => u.container.textContent.includes('لا توجد تغييرات مؤرشفة للجدول بعد.'), 'empty archive');
   assert.match(u.container.textContent, /مسؤول الجدول/);
 });
 

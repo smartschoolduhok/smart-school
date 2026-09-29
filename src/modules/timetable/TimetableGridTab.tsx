@@ -19,6 +19,7 @@ import {
 } from '../../lib/timetable';
 import type { Class, Section } from '../../types';
 import type { TimetableScope } from '../../lib/timetableScope';
+import { parallelTimetableLoadGroup } from '../../lib/timetableParallel';
 
 interface TimetableGridTabProps {
   schoolId: number;
@@ -258,18 +259,33 @@ export function TimetableGridTab({
     await refreshAfterMutation(expectedScope, expectedGeneration, response.meta?.warnings || []);
   }
 
+  function entryGroup(entry: TimetableGridEntry) {
+    const load = grid?.loads.find(item => item.id === entry.teaching_load_id);
+    const loadIds = new Set(load && grid ? parallelTimetableLoadGroup(load, grid.loads).map(item => item.id) : [entry.teaching_load_id]);
+    return grid ? [...grid.entries, ...grid.historical_entries].filter(item => item.slot_id === entry.slot_id && loadIds.has(item.teaching_load_id)) : [entry];
+  }
+  function groupIsLocked(entry: TimetableGridEntry) { return entryGroup(entry).some(item => item.is_locked === 1); }
+  function validTargetGroup(entries: TimetableGridEntry[]) {
+    return entries.length <= 1 || (entries.length === 2 && entryGroup(entries[0]).length === 2
+      && entries.every(item => entryGroup(entries[0]).some(member => member.id === item.id)));
+  }
+  function parallelPartnerName(entry: TimetableGridEntry) {
+    const load = grid?.loads.find(item => item.id === entry.teaching_load_id);
+    return load && grid ? parallelTimetableLoadGroup(load, grid.loads).find(item => item.id !== load.id)?.subject_name : undefined;
+  }
+
   async function performEntryDrop(
     entry: TimetableGridEntry,
     targetSlotId: number,
     targetEntry: TimetableGridEntry | null,
   ) {
     if (!grid || saving || Number(entry.slot_id) === Number(targetSlotId)) return;
-    if (entry.is_locked === 1) {
+    if (groupIsLocked(entry)) {
       setError('الدرس مثبت. ألغِ تثبيته أولًا ثم أعد النقل.');
       setDropAnnouncement(`تعذر نقل درس ${entry.subject_name} لأنه مثبت.`);
       return;
     }
-    if (targetEntry?.is_locked === 1) {
+    if (targetEntry && groupIsLocked(targetEntry)) {
       setError('الدرس الموجود في الموقع الهدف مثبت. ألغِ تثبيته أولًا ثم أعد النقل.');
       setDropAnnouncement(`تعذر نقل درس ${entry.subject_name} لأن الموقع الهدف مثبت.`);
       return;
@@ -321,12 +337,12 @@ export function TimetableGridTab({
     const targetEntries = grid.entries.filter((entry) => (
       Number(entry.slot_id) === Number(slotId) && Number(entry.id) !== Number(moveDialog.entry.id)
     ));
-    if (targetEntries.length > 1) {
+    if (!validTargetGroup(targetEntries)) {
       setError('توجد عدة دروس في الموقع الهدف. أصلح التعارض قبل النقل.');
       return;
     }
     const targetEntry = targetEntries[0] || null;
-    if (moveDialog.entry.is_locked !== 1) {
+    if (!groupIsLocked(moveDialog.entry)) {
       await performEntryDrop(moveDialog.entry, slotId, targetEntry);
       return;
     }
@@ -334,7 +350,7 @@ export function TimetableGridTab({
       setError('لا يمكن تبديل درس مثبت. ألغِ تثبيته أولًا ثم أعد النقل.');
       return;
     }
-    if (!window.confirm('هذا الدرس مثبت. هل تريد إلغاء التثبيت ونقله؟')) return;
+    if (!window.confirm(parallelPartnerName(moveDialog.entry) ? 'هذه مجموعة دروس متزامنة مثبتة. هل تريد إلغاء التثبيت ونقل الدرسين معًا؟' : 'هذا الدرس مثبت. هل تريد إلغاء التثبيت ونقله؟')) return;
     const expectedScope = currentScopeRef.current;
     const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
@@ -357,7 +373,7 @@ export function TimetableGridTab({
   }
 
   function beginEntryDrag(event: DragEvent<HTMLButtonElement>, entry: TimetableGridEntry) {
-    if (saving || entry.is_locked === 1) {
+    if (saving || groupIsLocked(entry)) {
       event.preventDefault();
       setError('الدرس مثبت. ألغِ تثبيته أولًا ثم ابدأ السحب.');
       return;
@@ -400,7 +416,7 @@ export function TimetableGridTab({
     const targetEntries = grid.entries.filter((candidate) => (
       Number(candidate.slot_id) === Number(slotId) && Number(candidate.id) !== Number(entry.id)
     ));
-    if (targetEntries.length > 1) {
+    if (!validTargetGroup(targetEntries)) {
       setError('توجد عدة دروس في الموقع الهدف. أصلح التعارض قبل التبديل.');
       setDropAnnouncement(`تعذر نقل درس ${entry.subject_name}. لم يتغير الجدول.`);
       return;
@@ -409,7 +425,8 @@ export function TimetableGridTab({
   }
 
   async function removeEntry(entry: TimetableGridEntry) {
-    const message = entry.is_locked === 1
+    const partner = parallelPartnerName(entry), locked = groupIsLocked(entry);
+    const message = partner ? `سيُحذف درسا ${entry.subject_name} و${partner} المتزامنان من هذه الفترة معًا.${locked ? ' سيُلغى تثبيتهما أيضًا.' : ''} يبقى النصابان فعالين. هل تريد المتابعة؟` : locked
       ? `هذا الدرس مثبت. هل تريد إلغاء التثبيت وحذف درس ${entry.subject_name}؟`
       : `هل تريد حذف درس ${entry.subject_name} من الجدول؟`;
     if (!window.confirm(message)) return;
@@ -417,7 +434,7 @@ export function TimetableGridTab({
     const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
     setError('');
-    const response = await deleteTimetableEntry(entry.id, schoolId, academicYearId, entry.is_locked === 1);
+    const response = await deleteTimetableEntry(entry.id, schoolId, academicYearId, locked);
     if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setSaving(false);
     if (response.error) {
@@ -435,7 +452,7 @@ export function TimetableGridTab({
     const response = await setTimetableEntryLock(entry.id, {
       school_id: schoolId,
       academic_year_id: academicYearId,
-      is_locked: entry.is_locked === 1 ? 0 : 1,
+      is_locked: groupIsLocked(entry) ? 0 : 1,
     });
     if (!mutationScopeIsCurrent(expectedScope, expectedGeneration)) return;
     setSaving(false);
@@ -550,7 +567,7 @@ export function TimetableGridTab({
             <GripVertical className="mt-0.5 shrink-0" size={19} />
             <div>
               <p className="font-bold">تغيير مكان الدرس بالسحب والإفلات</p>
-              <p className="mt-0.5 text-blue-800">اسحب من المقبض إلى خانة فارغة للنقل، أو فوق مادة أخرى لتبديل الدرسين. إذا أصبح للمدرّس درسان في الفترة نفسها يتم النقل ويظهر الدرسان بالوردي المحمر مع تنبيه تعارض. يجب إلغاء تثبيت الدرس المثبت أولًا. ويمكن النقر على زر النقل بدل السحب.</p>
+              <p className="mt-0.5 text-blue-800">اسحب من المقبض إلى خانة فارغة للنقل، أو فوق مادة أخرى للتبديل. الدروسان المتزامنان ينتقلان ويُثبتان معًا. حذفهما من فترة يحذف الموضعين معًا، أما استبعاد مادة واحدة فيتم من النصاب. إذا أصبح للمدرّس درسان في الفترة نفسها يظهر تنبيه تعارض. يجب إلغاء تثبيت الدرس المثبت أولًا. ويمكن النقر على زر النقل بدل السحب.</p>
             </div>
           </div>
           <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
@@ -615,6 +632,7 @@ export function TimetableGridTab({
                                     ? 'text-red-950'
                                     : hasTeacherCollision ? 'text-rose-950' : 'text-primary-900'}`}>{entry.subject_name}</p>
                                   <p className={`text-xs ${entry.employee_id == null ? 'font-semibold text-amber-700' : 'text-gray-600'}`}>{entry.employee_name || 'بدون مدرس'}</p>
+                                  {parallelPartnerName(entry) && <p className="mt-1 text-xs font-semibold text-blue-800">متزامن مع {parallelPartnerName(entry)} — النقل والتثبيت معًا</p>}
                                   <HardConflictNotice conflicts={entry.hard_conflicts} />
                                   {entry.warnings.length > 0 && (
                                     <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800" title={entry.warnings.map((warning) => warning.message).join(' • ')}>
@@ -625,24 +643,24 @@ export function TimetableGridTab({
                                     </div>
                                   )}
                                   <div className="mt-2 flex flex-wrap items-center gap-1">
-                                    <button type="button" disabled={saving || entry.is_locked === 1} onClick={() => setEditDialog({ entry })} className="flex items-center gap-1 rounded bg-white px-2 py-1.5 text-xs font-semibold text-primary-800 hover:bg-primary-100 disabled:cursor-not-allowed disabled:opacity-50" title={entry.is_locked === 1 ? 'ألغِ تثبيت الدرس أولًا' : 'تغيير مادة الدرس'}><Pencil size={14} />تغيير المادة</button>
+                                    <button type="button" disabled={saving || groupIsLocked(entry)} onClick={() => setEditDialog({ entry })} className="flex items-center gap-1 rounded bg-white px-2 py-1.5 text-xs font-semibold text-primary-800 hover:bg-primary-100 disabled:cursor-not-allowed disabled:opacity-50" title={groupIsLocked(entry) ? 'ألغِ تثبيت الدرس أولًا' : 'تغيير مادة الدرس'}><Pencil size={14} />تغيير المادة</button>
                                     <button
                                       type="button"
-                                      draggable={entry.is_locked !== 1 && !saving}
+                                      draggable={!groupIsLocked(entry) && !saving}
                                       data-timetable-drag-entry={entry.id}
                                       onDragStart={(event) => beginEntryDrag(event, entry)}
                                       onDragEnd={finishEntryDrag}
                                       onClick={() => setMoveDialog({ entry })}
                                       aria-label={`سحب أو نقل درس ${entry.subject_name}`}
                                       aria-describedby="timetable-drag-help"
-                                      title={entry.is_locked === 1 ? 'الدرس مثبت؛ انقر لاختيار موقع أو ألغِ تثبيته قبل السحب' : 'اسحب لتغيير الموقع أو انقر لعرض قائمة الفترات'}
-                                      className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold ${entry.is_locked === 1
+                                      title={groupIsLocked(entry) ? 'الدرس مثبت؛ انقر لاختيار موقع أو ألغِ تثبيته قبل السحب' : 'اسحب لتغيير الموقع أو انقر لعرض قائمة الفترات'}
+                                      className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold ${groupIsLocked(entry)
                                         ? 'cursor-pointer bg-slate-100 text-slate-600'
                                         : 'cursor-grab bg-blue-100 text-blue-800 hover:bg-blue-200 active:cursor-grabbing'}`}
                                     >
                                       <GripVertical size={15} />سحب أو نقل
                                     </button>
-                                    <button type="button" onClick={() => void toggleEntryLock(entry)} className="rounded p-1.5 text-slate-700 hover:bg-slate-100" aria-label={entry.is_locked === 1 ? 'إلغاء تثبيت الدرس' : 'تثبيت الدرس'} title={entry.is_locked === 1 ? 'درس مثبت' : 'تثبيت الدرس'}>{entry.is_locked === 1 ? <Lock size={15} /> : <Unlock size={15} />}</button>
+                                    <button type="button" onClick={() => void toggleEntryLock(entry)} className="rounded p-1.5 text-slate-700 hover:bg-slate-100" aria-label={groupIsLocked(entry) ? 'إلغاء تثبيت الدرس' : 'تثبيت الدرس'} title={groupIsLocked(entry) ? 'درس مثبت' : 'تثبيت الدرس'}>{groupIsLocked(entry) ? <Lock size={15} /> : <Unlock size={15} />}</button>
                                     <button type="button" onClick={() => void removeEntry(entry)} className="rounded p-1.5 text-red-700 hover:bg-red-100" aria-label="حذف الدرس"><Trash2 size={15} /></button>
                                   </div>
                                 </div>
@@ -708,13 +726,14 @@ export function TimetableGridTab({
           <div className="w-full max-w-xl rounded-xl bg-white p-5 shadow-xl">
             <div className="flex items-center justify-between"><h2 className="font-bold">تغيير مادة الدرس</h2><button type="button" aria-label="إغلاق" onClick={() => setEditDialog(null)}><X /></button></div>
             <p className="mt-1 text-sm text-gray-600">المادة الحالية: {editDialog.entry.subject_name}. سيبقى الدرس في اليوم والوقت نفسيهما.</p>
+            {parallelPartnerName(editDialog.entry) && <p className="mt-2 rounded bg-blue-50 p-2 text-sm text-blue-900">هذا الدرس متزامن مع {parallelPartnerName(editDialog.entry)}؛ التغيير يستبدل مجموعة الدرسين في هذه الفترة.</p>}
             <div className="mt-4 max-h-96 space-y-2 overflow-y-auto">
               {schedulableLoads.filter((load) => load.class_id === editDialog.entry.class_id
                 && load.section_id === editDialog.entry.section_id
-                && load.id !== editDialog.entry.teaching_load_id).length === 0 && <p className="p-6 text-center text-gray-500">لا توجد مواد بديلة لهذا الصف والشعبة.</p>}
+                && !entryGroup(editDialog.entry).some(item => item.teaching_load_id === load.id)).length === 0 && <p className="p-6 text-center text-gray-500">لا توجد مواد بديلة لهذا الصف والشعبة.</p>}
               {schedulableLoads.filter((load) => load.class_id === editDialog.entry.class_id
                 && load.section_id === editDialog.entry.section_id
-                && load.id !== editDialog.entry.teaching_load_id).map((load) => (
+                && !entryGroup(editDialog.entry).some(item => item.teaching_load_id === load.id)).map((load) => (
                 <button key={load.id} type="button" disabled={saving || load.remaining_periods <= 0} onClick={() => void replaceEntryLoad(load.id)} className="flex w-full items-center justify-between rounded-lg border border-gray-200 p-3 text-right hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50">
                   <span><span className="block font-semibold">{load.subject_name}</span><span className="text-xs text-gray-500">{load.employee_name || 'بدون مدرس'}</span></span>
                   <span className="text-xs">المتبقي <bdi dir="ltr">{load.remaining_periods}</bdi></span>
@@ -729,20 +748,22 @@ export function TimetableGridTab({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="نقل الدرس">
           <div className="w-full max-w-xl rounded-xl bg-white p-5 shadow-xl">
             <div className="flex items-center justify-between"><h2 className="font-bold">نقل درس {moveDialog.entry.subject_name}</h2><button type="button" onClick={() => setMoveDialog(null)}><X /></button></div>
-            <p className="mt-1 text-sm text-gray-500">اختر فترة فعالة أخرى. الخانة الفارغة تنقل الدرس، والخانة المشغولة تبدّل الدرسين. سيعيد الخادم فحص جميع التعارضات والقيود.</p>
+            <p className="mt-1 text-sm text-gray-500">اختر فترة فعالة أخرى. الخانة الفارغة تنقل الدرس، والخانة المشغولة تبدّل المواقع. إذا كان الدرس متزامنًا مع مادة أخرى ينتقل الدروسان معًا. سيعيد الخادم فحص جميع التعارضات والقيود.</p>
             <div className="mt-4 grid max-h-96 gap-2 overflow-y-auto sm:grid-cols-2">
               {lessonSlots.filter((slot) => Number(slot.id) !== Number(moveDialog.entry.slot_id)).map((slot) => {
-                const targetEntry = grid.entries.find((entry) => Number(entry.slot_id) === Number(slot.id)) || null;
-                const unavailable = targetEntry?.is_locked === 1 || (moveDialog.entry.is_locked === 1 && targetEntry != null);
+                const targetEntries = grid.entries.filter((entry) => Number(entry.slot_id) === Number(slot.id));
+                const targetEntry = targetEntries[0] || null;
+                const invalidGroup = !validTargetGroup(targetEntries);
+                const unavailable = invalidGroup || targetEntries.some(entry => groupIsLocked(entry)) || (groupIsLocked(moveDialog.entry) && targetEntry != null);
                 return (
                   <button key={slot.id} type="button" disabled={saving || unavailable} onClick={() => void moveEntry(slot.id)} className="rounded-lg border border-gray-200 p-3 text-right hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:opacity-60">
                     <span className="block font-semibold">{slotLabel(slot)}</span>
                     <span className={`mt-1 block text-xs ${unavailable ? 'text-amber-700' : 'text-gray-500'}`}>
                       {targetEntry == null
                         ? 'خانة فارغة — نقل'
-                        : unavailable
+                        : invalidGroup ? 'تعارض غير صالح في الموقع الهدف — أصلحه أولًا' : unavailable
                           ? `درس ${targetEntry.subject_name} مثبت أو يتطلب المصدر إلغاء التثبيت أولًا`
-                          : `تبديل مع درس ${targetEntry.subject_name}`}
+                          : `تبديل مع ${targetEntries.map(entry => entry.subject_name).join(' و')}`}
                     </span>
                   </button>
                 );

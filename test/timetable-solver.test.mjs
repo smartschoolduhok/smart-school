@@ -66,6 +66,7 @@ function teachingLoad(id, overrides = {}) {
     employee_school_id: employeeId == null ? null : (overrides.employee_school_id ?? 1),
     employee_role: employeeId == null ? null : (overrides.employee_role ?? 'teacher'),
     weekly_periods: overrides.weekly_periods ?? 2,
+    parallel_with_load_id: overrides.parallel_with_load_id ?? null,
     status: overrides.status ?? 'active',
     created_at: 0,
     updated_at: 0,
@@ -87,6 +88,200 @@ function solverInput({ days, slots, loads, placements, availability = [], constr
     limits: limits || { time_budget_ms: 4_000, max_attempts: 200_000, max_backtracks: 10_000, max_local_improvement_attempts: 500 },
   };
 }
+
+function parallelInput(overrides = {}) {
+  return solverInput({...week(2, 2), loads: [
+    teachingLoad(1, {class_id: 1, section_id: 9, weekly_periods: 2}),
+    teachingLoad(2, {class_id: 1, section_id: 9, weekly_periods: 2, parallel_with_load_id: 1}),
+  ], placements: [placement(1, 9)], ...overrides});
+}
+
+function assertCompletePairs(result, primaryId = 1, companionId = 2) {
+  assert.deepEqual(result.entries.filter(entry => entry.teaching_load_id === primaryId).map(entry => entry.slot_id).sort(),
+    result.entries.filter(entry => entry.teaching_load_id === companionId).map(entry => entry.slot_id).sort());
+}
+
+test('parallel pair consumes two section periods and produces four co-timed teacher entries', () => {
+  const input = parallelInput(week(1, 2));
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.required_periods, 2);
+  assert.equal(result.scheduled_periods, 2);
+  assert.equal(result.unscheduled_periods, 0);
+  assert.equal(result.entries.length, 4);
+  assert.equal(result.readiness.overloaded_class_sections.length, 0);
+  assertCompletePairs(result);
+  assert.ok(result.entries.filter(entry => entry.teaching_load_id === 2).every(entry => entry.parallel_with_load_id === 1));
+});
+
+test('33 section periods remain exactly 33 when two religious lessons run in parallel', () => {
+  const input = parallelInput(week(5, 7));
+  input.slots = input.slots.slice(0, 33);
+  input.loads.push(teachingLoad(3, {class_id: 1, section_id: 9, weekly_periods: 31}));
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.required_periods, 33);
+  assert.equal(result.scheduled_periods, 33);
+  assert.equal(result.entries.length, 35);
+  assertCompletePairs(result);
+});
+
+test('pair candidate domain respects both teachers and permits missing teacher demand explicitly', () => {
+  const input = parallelInput({availability: [
+    {school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: 1, status: 'unavailable'},
+    {school_id: 1, academic_year_id: 1, employee_id: 2, slot_id: 2, status: 'unavailable'},
+  ]});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.ok(result.entries.every(entry => [3, 4].includes(entry.slot_id)));
+  assertCompletePairs(result);
+  input.loads[1].employee_id = null;
+  const noTeacher = solveTimetable(input);
+  assert.equal(noTeacher.status, 'complete');
+  assert.equal(noTeacher.readiness.missing_teacher_count, 1);
+  assertCompletePairs(noTeacher);
+});
+
+test('disjoint teacher availability produces no half pair and still schedules independent demand', () => {
+  const input = parallelInput({availability: [
+    ...[1, 2].map(slot_id => ({school_id: 1, academic_year_id: 1, employee_id: 1, slot_id, status: 'unavailable'})),
+    ...[3, 4].map(slot_id => ({school_id: 1, academic_year_id: 1, employee_id: 2, slot_id, status: 'unavailable'})),
+  ]});
+  input.loads.push(teachingLoad(3, {weekly_periods: 1}));
+  input.placements.push(placement(3));
+  const result = solveTimetable(input);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].teaching_load_id, 3);
+  assertCompletePairs(result);
+  assert.deepEqual(result.unscheduled.map(item => [item.teaching_load_id, item.remaining_count]), [[1, 2], [2, 2]]);
+  assert.ok(result.unscheduled.every(item => item.reason_codes.includes('teacher_unavailable')));
+});
+
+test('teacher daily and working-day constraints from either member apply to the whole pair', () => {
+  for (const employee_id of [1, 2]) {
+    const result = solveTimetable(parallelInput({constraints: [{school_id: 1, academic_year_id: 1, employee_id,
+      max_periods_per_day: 1, max_working_days: 1, max_consecutive_periods: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0}]}));
+    assert.equal(result.status, 'impossible');
+    assert.equal(result.entries.length, 2);
+    assertCompletePairs(result);
+    assert.equal(result.scheduled_periods, 1);
+    assert.equal(result.unscheduled_periods, 1);
+  }
+});
+
+test('consecutive limit of the companion keeps both subjects separated by a free lesson', () => {
+  const result = solveTimetable(parallelInput({...week(1, 3), constraints: [{school_id: 1, academic_year_id: 1, employee_id: 2,
+    max_periods_per_day: null, max_working_days: null, max_consecutive_periods: 1, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0}]}));
+  assert.equal(result.status, 'complete');
+  assertCompletePairs(result);
+  assert.deepEqual(result.entries.filter(entry => entry.teaching_load_id === 1).map(entry => entry.slot_id), [1, 3]);
+});
+
+test('a companion teacher already teaching another class cannot be reused by a pair', () => {
+  const input = parallelInput(week(1, 2));
+  input.loads.push(teachingLoad(3, {employee_id: 2, weekly_periods: 1}));
+  input.placements.push(placement(3));
+  input.fixedEntries = [{slot_id: 1, teaching_load_id: 3, is_locked: 1}];
+  const result = solveTimetable(input);
+  assertCompletePairs(result);
+  assert.ok(result.entries.filter(entry => [1, 2].includes(entry.teaching_load_id)).every(entry => entry.slot_id === 2));
+});
+
+test('fixing one member anchors its partner without inventing a second user lock', () => {
+  const result = solveTimetable(parallelInput({fixedEntries: [{slot_id: 4, teaching_load_id: 2, is_locked: 1}]}));
+  assert.equal(result.status, 'complete');
+  assertCompletePairs(result);
+  assert.equal(result.entries.find(entry => entry.slot_id === 4 && entry.teaching_load_id === 2).is_locked, 1);
+  assert.equal(result.entries.find(entry => entry.slot_id === 4 && entry.teaching_load_id === 1).is_locked, 0);
+});
+
+test('fixed complete pair preserves both explicit lock states without duplicate entries', () => {
+  const result = solveTimetable(parallelInput({fixedEntries: [
+    {slot_id: 4, teaching_load_id: 1, is_locked: 0}, {slot_id: 4, teaching_load_id: 2, is_locked: 1},
+  ]}));
+  assert.equal(result.status, 'complete');
+  assert.equal(result.entries.length, 4);
+  assertCompletePairs(result);
+  assert.equal(result.entries.filter(entry => entry.slot_id === 4 && entry.is_locked === 1).length, 1);
+});
+
+test('fixed primary fails if the required companion teacher is unavailable there', () => {
+  const result = solveTimetable(parallelInput({fixedEntries: [{slot_id: 1, teaching_load_id: 1}],
+    availability: [{school_id: 1, academic_year_id: 1, employee_id: 2, slot_id: 1, status: 'unavailable'}]}));
+  assert.equal(result.status, 'fixed_conflict');
+  assert.deepEqual(result.entries, []);
+  assert.ok(result.fixed_conflicts.some(issue => issue.code === 'fixed_teacher_unavailable' && issue.teaching_load_id === 2));
+});
+
+test('incompatible fixed locations cannot split a one-period pair', () => {
+  const input = parallelInput({fixedEntries: [{slot_id: 1, teaching_load_id: 1}, {slot_id: 2, teaching_load_id: 2}]});
+  input.loads.forEach(load => {load.weekly_periods = 1;});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'fixed_conflict');
+  assert.equal(result.entries.length, 0);
+  assert.ok(result.fixed_conflicts.some(issue => issue.code === 'fixed_weekly_limit'));
+});
+
+for (const [name, mutate] of [
+  ['missing parent', input => {input.loads[1].parallel_with_load_id = 99;}],
+  ['inactive parent', input => {input.loads[0].status = 'inactive';}],
+  ['invalid parent reference', input => {input.loads[0].subject_status = 'archived';}],
+  ['same teacher', input => {input.loads[1].employee_id = 1;}],
+  ['duplicate companion', input => {input.loads.push(teachingLoad(4, {class_id: 1, section_id: 9, parallel_with_load_id: 1}));}],
+]) {
+  test(`parallel ${name} is explicit impossible demand and does not suppress an independent section`, () => {
+    const input = parallelInput(); mutate(input);
+    input.loads.push(teachingLoad(3, {weekly_periods: 1})); input.placements.push(placement(3));
+    const result = solveTimetable(input);
+    assert.equal(result.status, 'impossible');
+    assert.ok(result.readiness.hard_feasibility_blockers.some(issue => issue.code === 'invalid_teaching_load'));
+    assert.ok(result.unscheduled.some(item => item.teaching_load_id === 2 && item.reason_codes.includes('invalid_teaching_load')));
+    assert.ok(result.entries.some(entry => entry.teaching_load_id === 3));
+    assert.equal(result.entries.some(entry => entry.teaching_load_id === 2), false);
+  });
+}
+
+test('bounded search and local improvement never emit a split pair', () => {
+  const input = parallelInput({limits: {time_budget_ms: 4000, max_attempts: 9, max_backtracks: 2, max_local_improvement_attempts: 4}});
+  const result = solveTimetable(input);
+  assertCompletePairs(result);
+  assert.equal(result.entries.length % 2, 0);
+  assert.deepEqual(result.entries, solveTimetable(input).entries);
+});
+
+test('authoritative proposal validation rejects a half pair or split pair even without a class collision', () => {
+  const input = parallelInput();
+  const first = {id: 1, slot_id: 1, teaching_load_id: 1};
+  const second = {id: 2, slot_id: 2, teaching_load_id: 2};
+  assert.ok(validateTimetableSolverProposal(input, [first]).some(issue => issue.code === 'parallel_lesson_missing'));
+  assert.ok(validateTimetableSolverProposal(input, [first, second]).some(issue => issue.code === 'parallel_lesson_missing'));
+  second.slot_id = 1;
+  assert.deepEqual(validateTimetableSolverProposal(input, [first, second]), []);
+});
+
+test('excluding either subject leaves the surviving subject independently schedulable', () => {
+  for (const excludedId of [1, 2]) {
+    const input = parallelInput();
+    input.loads.find(load => load.id === excludedId).status = 'inactive';
+    if (excludedId === 1) input.loads[1].parallel_with_load_id = null;
+    const result = solveTimetable(input);
+    assert.equal(result.status, 'complete');
+    assert.equal(result.required_periods, 2);
+    assert.equal(result.entries.length, 2);
+    assert.ok(result.entries.every(entry => entry.teaching_load_id !== excludedId));
+  }
+});
+
+test('invalid teacher blocks both pair members without inflating section demand', () => {
+  const input = parallelInput(); input.loads[0].employee_status = 'archived';
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'impossible');
+  assert.equal(result.required_periods, 2);
+  assert.equal(result.unscheduled_periods, 2);
+  assert.equal(result.entries.length, 0);
+  assert.equal(result.unscheduled.length, 2);
+  assert.equal(result.readiness.invalid_load_count, 2);
+});
 
 test('fixed lesson is preserved at the exact slot and marked locked', () => {
   const { days, slots } = week(3, 4);

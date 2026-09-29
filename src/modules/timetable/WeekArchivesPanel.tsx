@@ -91,18 +91,18 @@ export function WeekArchivesPanel({ schoolId, academicYearId, dataVersion }: Wee
   }) : [];
 
   return (
-    <section className="space-y-4 border-t border-slate-200 pt-5" aria-label="أرشيف الجداول المستبدلة" dir="rtl">
+    <section className="space-y-4 border-t border-slate-200 pt-5" aria-label="أرشيف تغييرات الجدول" dir="rtl">
       <div>
-        <h2 className="flex items-center gap-2 font-bold text-slate-900"><Archive size={20} aria-hidden="true" />أرشيف الجداول المستبدلة</h2>
-        <p className="mt-1 text-sm text-slate-600">نسخ للعرض من إعدادات الأيام ودروسها قبل الاستبدال. الجدول الجديد هو المعروض في «الجدول الحالي».</p>
+        <h2 className="flex items-center gap-2 font-bold text-slate-900"><Archive size={20} aria-hidden="true" />أرشيف تغييرات الجدول</h2>
+        <p className="mt-1 text-sm text-slate-600">بيانات ودروس محفوظة للعرض قبل تغييرات الجدول. قد يخص الأرشيف استبدال إعدادات أيام أو استبعاد مادة واحدة فقط؛ وقد تبقى الفترات نفسها مستخدمة. النسخة الحالية هي المعروضة في «الجدول الحالي».</p>
       </div>
       {loading && <p role="status" className="flex items-center gap-2 p-4 text-slate-600"><LoaderCircle size={18} className="animate-spin" aria-hidden="true" />جاري تحميل الأرشيف...</p>}
       {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800"><p>{error}</p><button type="button" onClick={() => setReload(value => value + 1)} className="mt-2 rounded-lg border border-red-300 px-3 py-2">إعادة تحميل الأرشيف</button></div>}
-      {!loading && !error && archives.length === 0 && <p className="rounded-xl border border-dashed p-5 text-center text-slate-500">لا توجد جداول مستبدلة مؤرشفة بعد.</p>}
+      {!loading && !error && archives.length === 0 && <p className="rounded-xl border border-dashed p-5 text-center text-slate-500">لا توجد تغييرات مؤرشفة للجدول بعد.</p>}
       {!loading && archives.length > 0 && <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
         <table className="w-full min-w-[640px] text-right text-sm">
-          <caption className="sr-only">الجداول المؤرشفة قبل استبدال إعدادات الأيام</caption>
-          <thead className="bg-slate-50 text-slate-600"><tr><th scope="col" className="p-3">تاريخ الأرشفة</th><th scope="col" className="p-3">الأيام المستبدلة</th><th scope="col" className="p-3">الفترات</th><th scope="col" className="p-3">الدروس الموزعة</th><th scope="col" className="p-3">التفاصيل</th></tr></thead>
+          <caption className="sr-only">بيانات ودروس مؤرشفة قبل تغييرات الجدول</caption>
+          <thead className="bg-slate-50 text-slate-600"><tr><th scope="col" className="p-3">تاريخ الأرشفة</th><th scope="col" className="p-3">الأيام</th><th scope="col" className="p-3">الفترات</th><th scope="col" className="p-3">الدروس المؤرشفة</th><th scope="col" className="p-3">التفاصيل</th></tr></thead>
           <tbody>{archives.map(archive => <tr key={archive.id} className="border-t border-slate-200">
             <td className="p-3">{formatTimestamp(archive.created_at)}</td>
             <td className="p-3">{archive.day_numbers.map(day => TIMETABLE_DAY_NAMES[day]).join('، ')}</td>
@@ -115,7 +115,7 @@ export function WeekArchivesPanel({ schoolId, academicYearId, dataVersion }: Wee
       <div id={panelId}>
         {selectedId !== null && <section className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/40 p-4" aria-label={`تفاصيل أرشيف الجدول رقم ${selectedId}`}>
           <div className="flex items-start justify-between gap-3">
-            <h3 ref={detailsHeadingRef} tabIndex={-1} className="font-bold text-slate-900">الجدول السابق قبل الاستبدال</h3>
+            <h3 ref={detailsHeadingRef} tabIndex={-1} className="font-bold text-slate-900">البيانات المحفوظة قبل التغيير</h3>
             <button type="button" onClick={closeDetails} className="flex shrink-0 items-center gap-1 rounded-lg border bg-white px-3 py-2 text-sm"><X size={16} aria-hidden="true" />إغلاق الأرشيف</button>
           </div>
           {detailLoading && <p role="status">جاري تحميل تفاصيل الأرشيف...</p>}
@@ -135,7 +135,7 @@ export function WeekArchivesPanel({ schoolId, academicYearId, dataVersion }: Wee
                       {entries.length > 0 ? <ul className="mt-2 grid gap-2 md:grid-cols-2">{entries.map(entry => {
                         const load = loads.get(entry.teaching_load_id);
                         return <li key={entry.id} className="rounded border border-slate-100 bg-slate-50 p-2 text-sm"><p className="font-bold">{load?.subject_name || `مادة نصاب رقم ${entry.teaching_load_id}`}</p><p>{loadGroup(load)}</p><p className="text-slate-600">{load?.employee_name || 'المدرس غير محدد'}{entry.is_locked === 1 && ' · درس مثبت'}</p></li>;
-                      })}</ul> : slot.slot_type === 'lesson' && <p className="mt-2 text-sm text-slate-500">لا توجد مادة موزعة في هذا الدرس.</p>}
+                      })}</ul> : slot.slot_type === 'lesson' && <p className="mt-2 text-sm text-slate-500">لا توجد دروس محفوظة لهذه الفترة في هذا الأرشيف.</p>}
                     </li>;
                   })}
                 </ol>}
