@@ -7,7 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {getPlatformProxy,unstable_splitSqlQuery} from 'wrangler';
 import {createServer} from 'vite';
 import {root,migrationFiles,baseFixtureSQL,schoolWorkflowFixtureSQL,request} from '../test/helpers/school-workflow-fixture.mjs';
-import {contentSnapshot,digest,sqlTokens} from './lib/local-d1-restore.mjs';
+import {contentSnapshot,digest,sqlTokens,sqlStatements} from './lib/local-d1-restore.mjs';
 const directory=mkdtempSync(join(tmpdir(),'smart-school-workflows-local-')),configPath=join(directory,'wrangler.json'),state=join(directory,'state');
 mkdirSync(join(directory,'migrations'));
 const name='school-workflows-local-only';
@@ -23,6 +23,10 @@ proxy=await open();const vite=await createServer({root,appType:'custom',server:{
 const cases=[];
 try{
  const db=proxy.env.DB,after=await contentSnapshot(async sql=>(await db.prepare(sql).all()).results);
+ const parallelMigration=readFileSync(join(root,'migrations/0049_timetable_parallel_lessons.sql'),'utf8');
+ const parallelColumn='parallel_with_load_id INTEGER REFERENCES timetable_teaching_loads(id) ON DELETE RESTRICT';
+ assert.match(parallelMigration,new RegExp('ALTER TABLE timetable_teaching_loads ADD COLUMN '+parallelColumn.replace(/[()]/g,'\\$&')+';'));
+ const replacedEntryTriggers=new Set(['trg_timetable_entries_validate_insert','trg_timetable_entries_validate_update']);
  for(const old of before.schema){
   const actual=after.schema.find(item=>item.type===old.type&&item.name===old.name);
   if(old.type==='view'&&old.name==='result_card_publication_readiness'){
@@ -35,9 +39,32 @@ try{
    const expected=sqlTokens(migration.slice(migration.indexOf('CREATE TRIGGER')).trim().replace(/;$/,'')).map(t=>[t.kind,t.text]);
    assert.deepEqual(actual.sql,expected);
    assert.deepEqual({...actual,sql:old.sql},old);
+  }else if(old.type==='table'&&old.name==='timetable_teaching_loads'){
+   assert.deepEqual(old.sql.at(-1),['symbol',')']);
+   const expected=[...old.sql.slice(0,-1),['symbol',','],...sqlTokens(parallelColumn).map(t=>[t.kind,t.text]),old.sql.at(-1)];
+   assert.deepEqual(actual,{...old,sql:expected},'only the declared nullable parallel FK is appended');
+   const references=(await db.prepare('PRAGMA foreign_key_list(timetable_teaching_loads)').all()).results.filter(r=>r.from==='parallel_with_load_id');
+   assert.deepEqual(references,[{id:0,seq:0,table:'timetable_teaching_loads',from:'parallel_with_load_id',to:'id',on_update:'NO ACTION',on_delete:'RESTRICT',match:'NONE'}]);
+  }else if(old.type==='trigger'&&replacedEntryTriggers.has(old.name)){
+   const statement=sqlStatements(parallelMigration).find(s=>s.tokens[0]?.text==='CREATE'&&s.tokens[1]?.text==='TRIGGER'&&s.tokens.some(t=>t.text===old.name));
+   assert.ok(statement,'replacement trigger is declared in migration 0049: '+old.name);
+   // SQLite omits IF NOT EXISTS in sqlite_schema, but the trigger body must
+   // otherwise match the migration exactly, including all previous guards.
+   const sql=parallelMigration.slice(statement.start,statement.end).replace(/CREATE TRIGGER IF NOT EXISTS/,'CREATE TRIGGER').trim().replace(/;$/,'');
+   assert.deepEqual(actual,{...old,sql:sqlTokens(sql).map(t=>[t.kind,t.text])},old.name);
   }else assert.deepEqual(actual,old,old.name);
  }
- for(const [name,value] of Object.entries(before.tables))if(!['d1_migrations','sqlite_sequence'].includes(name))assert.deepEqual(after.tables[name],value,name);
+ for(const [name,value] of Object.entries(before.tables))if(!['d1_migrations','sqlite_sequence'].includes(name)){
+  if(name==='timetable_teaching_loads'){
+   const actual=after.tables[name],newColumn=actual.columns.at(-1);
+   assert.deepEqual(newColumn,{cid:value.columns.length,name:'parallel_with_load_id',type:'INTEGER',notnull:0,dflt_value:null,pk:0,hidden:0});
+   const content=actual.content.map(encoded=>{
+    const row=JSON.parse(encoded);assert.deepEqual(row.pop(),['null',null],'existing loads must remain unlinked');
+    return JSON.stringify(row);
+   }).sort();
+   assert.deepEqual({...actual,columns:actual.columns.slice(0,-1),content,hash:digest(content)},value,'every prior load column, value and SQLite type is unchanged');
+  }else assert.deepEqual(after.tables[name],value,name);
+ }
  assert.equal(Object.keys(after.tables).length,96);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
  const {default:app}=await vite.ssrLoadModule('/src/worker.ts'),f={d1:db};
  const call=async(role,method,path,body,status)=>{const r=await request(app,f,role,method,path,body);assert.equal(r.status,status,JSON.stringify({path,...r}));return r.data;};
