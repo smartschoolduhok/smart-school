@@ -16,6 +16,7 @@ import {
   type TimetableTeachingLoad,
 } from './timetable.ts';
 import { countTimetableSectionPeriods, countTimetableScheduledSectionPeriods, indexTimetableParallelLoadGroups, parallelTimetableLoadGroup, validateTimetableParallelLoads } from './timetableParallel.ts';
+import { createTimetablePedagogyScorer, type TimetablePedagogyMetrics } from './timetablePedagogy.ts';
 
 export type TimetableSolverStatus = 'complete' | 'partial' | 'impossible' | 'fixed_conflict';
 
@@ -67,6 +68,9 @@ export interface TimetableSolverReadiness {
 }
 
 export interface TimetableSolverPenaltyBreakdown {
+  early_light_subjects?: number;
+  consecutive_heavy_subjects?: number;
+  missed_section_continuity?: number;
   avoid_slots: number;
   outside_preferred_slots: number;
   teacher_gaps: number;
@@ -78,11 +82,12 @@ export interface TimetableSolverPenaltyBreakdown {
 }
 
 export interface TimetableSolverScoring {
-  model: 'comparative-v1';
+  model: 'comparative-v1' | 'comparative-v2';
   total_penalty: number;
   maximum_reference_penalty: number;
   penalties: TimetableSolverPenaltyBreakdown;
   preferred_slots_used: number;
+  pedagogy?: TimetablePedagogyMetrics;
   note: string;
 }
 
@@ -202,7 +207,7 @@ const DEFAULT_LIMITS: TimetableSolverLimits = {
   time_budget_ms: 2_000,
   max_attempts: 60_000,
   max_backtracks: 5_000,
-  max_local_improvement_attempts: 250,
+  max_local_improvement_attempts: 1_200,
 };
 
 const REASON_MESSAGES: Record<TimetableSolverReasonCode, string> = {
@@ -607,6 +612,9 @@ function candidatePenalty(
 
 function emptyPenaltyBreakdown(): TimetableSolverPenaltyBreakdown {
   return {
+    early_light_subjects: 0,
+    consecutive_heavy_subjects: 0,
+    missed_section_continuity: 0,
     avoid_slots: 0,
     outside_preferred_slots: 0,
     teacher_gaps: 0,
@@ -625,6 +633,7 @@ function scoreProposal(input: {
   days: TimetableDay[];
   availability: TimetableTeacherAvailabilityOverride[];
   constraints: TimetableTeacherConstraints[];
+  pedagogyScorer?: ReturnType<typeof createTimetablePedagogyScorer>;
 }, safetyCheck?: () => void): { qualityScore: number; scoring: TimetableSolverScoring } {
   const penalties = emptyPenaltyBreakdown();
   const loadsById = new Map(input.loads.map((load) => [Number(load.id), load]));
@@ -742,17 +751,20 @@ function scoreProposal(input: {
     if (dailyCounts.length > 0) penalties.class_daily_imbalance += Math.max(...dailyCounts) - Math.min(...dailyCounts);
   }
 
+  const pedagogy = (input.pedagogyScorer || createTimetablePedagogyScorer(input.loads, input.slots)).score(input.entries);
+  Object.assign(penalties, pedagogy.penalties);
   const totalPenalty = Object.values(penalties).reduce((sum, value) => sum + value, 0);
   const maximumReferencePenalty = Math.max(1, input.entries.length * 12);
   const qualityScore = Math.max(0, Math.min(100, Math.round(100 - (totalPenalty / maximumReferencePenalty) * 100)));
   return {
     qualityScore,
     scoring: {
-      model: 'comparative-v1',
+      model: 'comparative-v2',
       total_penalty: totalPenalty,
       maximum_reference_penalty: maximumReferencePenalty,
       penalties,
       preferred_slots_used: preferredSlotsUsed,
+      pedagogy: pedagogy.metrics,
       note: 'درجة مقارنة لتحسين الاقتراح وليست تقييمًا رياضيًا مطلقًا.',
     },
   };
@@ -863,6 +875,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
     ...input, teacherAvailability: availability, teacherConstraints: constraints,
   });
   const groupsByLoad = indexTimetableParallelLoadGroups(validLoads);
+  const pedagogyScorer = createTimetablePedagogyScorer(validLoads, scopedSlots);
   const groupFor = (load: TimetableTeachingLoad) => groupsByLoad.get(load.id) ?? [load];
   const baseDomainSize = (load: TimetableTeachingLoad) => scheduleSlots.filter((slot) => groupFor(load).every(member => (
     member.employee_id == null
@@ -933,7 +946,8 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       ranked.push({
         slot,
         warnings: evaluations.flatMap(item => item.evaluation.warnings),
-        penalty: evaluations.reduce((sum, item) => sum + candidatePenalty(item.member, slot, entries, loadsById, slotsById, item.evaluation.warnings), 0),
+        penalty: evaluations.reduce((sum, item) => sum + candidatePenalty(item.member, slot, entries, loadsById, slotsById, item.evaluation.warnings)
+          + pedagogyScorer.candidatePenalty(item.member, slot, entries), 0),
       });
     }
     return ranked.sort((left, right) => (
@@ -1095,6 +1109,19 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       }
     }
   }
+  const savedEntries = input.currentEntries || [];
+  if (savedEntries.length > 0 && coverage(savedEntries) >= coverage(bestEntries)
+    && [...fixedEntryKeys].every(key => savedEntries.some(entry => `${entry.slot_id}:${entry.teaching_load_id}` === key))
+    && validateTimetableSolverProposal(input, savedEntries, ensureWithinWallClockSafetyLimit).length === 0) {
+    const savedScore = scoreProposal({entries: savedEntries, loads: validLoads, slots: scopedSlots, days: scopedDays,
+      availability, constraints, pedagogyScorer}, ensureWithinWallClockSafetyLimit).scoring;
+    const generatedScore = scoreProposal({entries: bestEntries, loads: validLoads, slots: scopedSlots, days: scopedDays,
+      availability, constraints, pedagogyScorer}, ensureWithinWallClockSafetyLimit).scoring;
+    if (coverage(savedEntries) > coverage(bestEntries)
+      || (savedScore.penalties.early_light_subjects || 0) < (generatedScore.penalties.early_light_subjects || 0)
+      || (savedScore.penalties.early_light_subjects || 0) === (generatedScore.penalties.early_light_subjects || 0)
+        && savedScore.total_penalty < generatedScore.total_penalty) bestEntries = [...savedEntries];
+  }
   const workingEntries: InternalEntry[] = [...fixedEntries];
   function searchForMoreCoverage(position: number): boolean {
     ensureWithinWallClockSafetyLimit();
@@ -1121,11 +1148,72 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   if (coverage(bestEntries) < desiredCoverage && !deterministicBudgetExpired()) searchForMoreCoverage(0);
   let proposalEntries = [...bestEntries];
 
-  if (!deterministicBudgetExpired() && proposalEntries.length > 1) {
-    let currentPenalty = scoreProposal({ entries: proposalEntries, loads: validLoads, slots: scopedSlots, days: scopedDays, availability, constraints }, ensureWithinWallClockSafetyLimit).scoring.total_penalty;
+  const scoreEntries = (entries: InternalEntry[]) => scoreProposal({entries, loads: validLoads, slots: scopedSlots,
+    days: scopedDays, availability, constraints, pedagogyScorer}, ensureWithinWallClockSafetyLimit);
+  const betterScore = (candidate: TimetableSolverScoring, current: TimetableSolverScoring) => (
+    (candidate.penalties.early_light_subjects || 0) < (current.penalties.early_light_subjects || 0)
+    || (candidate.penalties.early_light_subjects || 0) === (current.penalties.early_light_subjects || 0)
+      && candidate.total_penalty < current.total_penalty
+  );
+  // Leave time for validation/formatting, even when the browser is slower than
+  // the test machine. The count limit remains authoritative with a frozen clock.
+  const improvementDeadline = startedAt + Math.max(0, limits.time_budget_ms - Math.max(100, limits.time_budget_ms * 0.35));
+  const canImprove = () => localImprovementAttempts < limits.max_local_improvement_attempts
+    && attempts < limits.max_attempts && Date.now() < improvementDeadline;
+  let currentScore = scoreEntries(proposalEntries).scoring;
+  const groupEntries = (entry: InternalEntry) => {
+    const load = loadsById.get(entry.teaching_load_id)!;
+    const groupIds = new Set(groupFor(load).map(member => member.id));
+    return proposalEntries.filter(item => item.slot_id === entry.slot_id && groupIds.has(item.teaching_load_id));
+  };
+  const isFixedGroup = (entries: InternalEntry[]) => entries.some(entry => fixedEntryKeys.has(`${entry.slot_id}:${entry.teaching_load_id}`));
+
+  // Full sections have no free slot for single-entry moves. Swap two complete
+  // teaching groups within a section so demand and section coverage never fall.
+  for (let pass = 0; pass < 3 && canImprove(); pass += 1) {
+    let improved = false;
+    const representatives = proposalEntries.filter(entry => groupFor(loadsById.get(entry.teaching_load_id)!)[0].id === entry.teaching_load_id);
+    const priority = new Map(representatives.map(entry => [entry.id,
+      pedagogyScorer.candidatePenalty(loadsById.get(entry.teaching_load_id)!, slotsById.get(entry.slot_id)!, proposalEntries.filter(item => item.id !== entry.id))]));
+    representatives.sort((a, b) => priority.get(b.id)! - priority.get(a.id)! || a.teaching_load_id - b.teaching_load_id || a.id - b.id);
+    for (const original of representatives) {
+      if (!canImprove()) break;
+      const left = proposalEntries.find(entry => entry.id === original.id)!;
+      const leftLoad = loadsById.get(left.teaching_load_id)!;
+      const leftGroup = groupEntries(left);
+      if (isFixedGroup(leftGroup)) continue;
+      const targets = representatives.filter(target => {
+        const targetLoad = loadsById.get(target.teaching_load_id)!;
+        return targetLoad.class_id === leftLoad.class_id && sameNullableId(targetLoad.section_id, leftLoad.section_id)
+          && target.teaching_load_id !== left.teaching_load_id;
+      });
+      for (const target of targets) {
+        if (!canImprove()) break;
+        const right = proposalEntries.find(entry => entry.id === target.id)!;
+        if (right.slot_id === left.slot_id) continue;
+        const rightGroup = groupEntries(right);
+        if (isFixedGroup(rightGroup)) continue;
+        localImprovementAttempts += 1;
+        const movedIds = new Set([...leftGroup, ...rightGroup].map(entry => entry.id));
+        const moved = [...leftGroup.map(entry => ({...entry, slot_id: right.slot_id})),
+          ...rightGroup.map(entry => ({...entry, slot_id: left.slot_id}))];
+        const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
+        const evaluate = preparePlacementEvaluator(candidateEntries);
+        if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
+        const candidateScore = scoreEntries(candidateEntries).scoring;
+        if (!betterScore(candidateScore, currentScore)) continue;
+        proposalEntries = candidateEntries;
+        currentScore = candidateScore;
+        improved = true;
+        break;
+      }
+    }
+    if (!improved) break;
+  }
+
+  if (canImprove() && proposalEntries.length > 1) {
     for (const original of [...proposalEntries].sort((left, right) => Number(left.id) - Number(right.id))) {
-      ensureWithinWallClockSafetyLimit();
-      if (localImprovementAttempts >= limits.max_local_improvement_attempts || deterministicBudgetExpired()) break;
+      if (!canImprove()) break;
       if (fixedEntryKeys.has(`${original.slot_id}:${original.teaching_load_id}`)) continue;
       const load = loadsById.get(Number(original.teaching_load_id));
       if (!load) continue;
@@ -1140,13 +1228,13 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         localImprovementAttempts += 1;
         const replacements = originalGroup.map(entry => ({...entry, slot_id: Number(candidate.slot.id)}));
         const candidateEntries = [...withoutOriginal, ...replacements];
-        const candidatePenaltyValue = scoreProposal({ entries: candidateEntries, loads: validLoads, slots: scopedSlots, days: scopedDays, availability, constraints }, ensureWithinWallClockSafetyLimit).scoring.total_penalty;
-        if (candidatePenaltyValue < currentPenalty) {
+        const candidateScore = scoreEntries(candidateEntries).scoring;
+        if (betterScore(candidateScore, currentScore)) {
           proposalEntries = candidateEntries;
-          currentPenalty = candidatePenaltyValue;
+          currentScore = candidateScore;
           break;
         }
-        if (localImprovementAttempts >= limits.max_local_improvement_attempts) break;
+        if (!canImprove()) break;
       }
     }
   }
@@ -1258,7 +1346,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       || Number(leftLoad?.subject_id || 0) - Number(rightLoad?.subject_id || 0)
       || Number(left.teaching_load_id) - Number(right.teaching_load_id);
   });
-  const score = scoreProposal({ entries: orderedProposal, loads: validLoads, slots: scopedSlots, days: scopedDays, availability, constraints }, ensureWithinWallClockSafetyLimit);
+  const score = scoreEntries(orderedProposal);
   const proposal = orderedProposal.map<TimetableSolverProposalEntry>((entry, index) => {
     ensureWithinWallClockSafetyLimit();
     const load = loadsById.get(Number(entry.teaching_load_id))!;

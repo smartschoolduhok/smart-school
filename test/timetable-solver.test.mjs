@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { TimetableSolverSafetyLimitError, solveTimetable, validateTimetableSolverProposal } from '../src/lib/timetableSolver.ts';
+import { classifyTimetableSubject, createTimetablePedagogyScorer } from '../src/lib/timetablePedagogy.ts';
 
 function week(dayCount = 5, lessonsPerDay = 6, options = {}) {
   const days = [];
@@ -633,6 +634,192 @@ test('subject demand is distributed across the week when alternatives exist', ()
   assert.equal(result.scoring.penalties.subject_clustering, 0);
 });
 
+test('pedagogy classification recognizes normalized school labels and leaves unknown subjects neutral', () => {
+  for (const name of [' التّربية الأَخلاقِيّة ', 'التربية الفنية', 'التربية البدنية', 'اللغة الکوردیة', 'اللغة الفرنسية', 'الحاسوب', 'PHYSICAL EDUCATION']) {
+    assert.equal(classifyTimetableSubject(name), 'light', name);
+  }
+  for (const name of ['الرّياضيّات', 'اللغة العربية', 'اللغة الإنكليزية', 'الفيزياء', 'الكيمياء', 'الأحياء']) {
+    assert.equal(classifyTimetableSubject(name), 'heavy', name);
+  }
+  for (const name of ['المطالعة', 'الاسلامية', 'المسيحية', 'مادة مدرسية جديدة', '', null]) {
+    assert.equal(classifyTimetableSubject(name), 'neutral', String(name));
+  }
+});
+
+test('pedagogy resets heavy runs at recess but allows teacher section continuity across it', () => {
+  const {slots} = week(1, 4);
+  for (const slot of slots) if (slot.lesson_number >= 3) slot.slot_index += 1;
+  Object.assign(slots[2], {start_time: '09:30', end_time: '10:10'});
+  Object.assign(slots[3], {start_time: '10:10', end_time: '10:50'});
+  slots.push({...slots[1], id: 99, slot_index: 3, slot_type: 'break', lesson_number: null, start_time: '09:20', end_time: '09:30'});
+  const heavy = teachingLoad(1, {subject_name: 'الرياضيات', weekly_periods: 4});
+  const scorer = createTimetablePedagogyScorer([heavy], slots);
+  assert.equal(scorer.score([1, 2, 3, 4].map(slot_id => ({slot_id, teaching_load_id: 1}))).metrics.heavy_run_excess, 0);
+  const sectionLoads = [
+    teachingLoad(2, {class_id: 2, section_id: 21, employee_id: 2, subject_name: 'اللغة العربية'}),
+    teachingLoad(3, {class_id: 2, section_id: 22, employee_id: 2, subject_name: 'اللغة العربية'}),
+  ];
+  const continuity = createTimetablePedagogyScorer(sectionLoads, slots);
+  assert.equal(continuity.score([{slot_id: 2, teaching_load_id: 2}, {slot_id: 3, teaching_load_id: 3}]).metrics.consecutive_section_pairs, 1);
+  assert.equal(continuity.score([{slot_id: 1, teaching_load_id: 2}, {slot_id: 3, teaching_load_id: 3}]).metrics.consecutive_section_pairs, 0,
+    'an intervening lesson prevents consecutive continuity');
+});
+
+for (const [label, secondOverrides] of [
+  ['different teacher', {employee_id: 2}],
+  ['different class', {class_id: 2}],
+  ['different subject', {subject_name: 'اللغة العربية'}],
+  ['same section', {section_id: 1}],
+  ['unassigned teacher', {employee_id: null}],
+  ['whole class', {section_id: null}],
+]) test(`pedagogy does not reward false section continuity for ${label}`, () => {
+  const first = {class_id: 1, section_id: 1, employee_id: 1, subject_name: 'الرياضيات', weekly_periods: 1};
+  const second = {...first, section_id: 2, ...secondOverrides};
+  const scorer = createTimetablePedagogyScorer([teachingLoad(1, first), teachingLoad(2, second)], week(1, 2).slots);
+  const score = scorer.score([{slot_id: 1, teaching_load_id: 1}, {slot_id: 2, teaching_load_id: 2}]);
+  assert.equal(score.metrics.consecutive_section_pairs, 0);
+  assert.equal(score.metrics.possible_section_pairs, 0);
+});
+
+test('pedagogy counts each lesson once when three sections form a continuous run', () => {
+  const loads = [1, 2, 3].map(id => teachingLoad(id, {class_id: 1, section_id: id, employee_id: 1,
+    subject_name: 'الرياضيات', weekly_periods: 1}));
+  const score = createTimetablePedagogyScorer(loads, week(1, 3).slots)
+    .score(loads.map(load => ({teaching_load_id: load.id, slot_id: load.id})));
+  assert.equal(score.metrics.possible_section_pairs, 1);
+  assert.equal(score.metrics.consecutive_section_pairs, 1);
+});
+
+test('pedagogy counts parallel pupil periods once for early lessons and heavy runs', () => {
+  const loads = [
+    teachingLoad(1, {class_id: 1, section_id: 9, subject_name: 'الرياضيات', weekly_periods: 3}),
+    teachingLoad(2, {class_id: 1, section_id: 9, subject_name: 'الفيزياء', weekly_periods: 3, parallel_with_load_id: 1}),
+    teachingLoad(3, {class_id: 2, section_id: 10, subject_name: 'الفنية', weekly_periods: 1}),
+    teachingLoad(4, {class_id: 2, section_id: 10, subject_name: 'التربية الأخلاقية', weekly_periods: 1, parallel_with_load_id: 3}),
+  ];
+  const entries = [1, 2, 3].flatMap(slot_id => [1, 2].map(teaching_load_id => ({slot_id, teaching_load_id})));
+  entries.push({slot_id: 1, teaching_load_id: 3}, {slot_id: 1, teaching_load_id: 4});
+  const score = createTimetablePedagogyScorer(loads, week(1, 3).slots).score(entries);
+  assert.equal(score.metrics.heavy_run_excess, 1);
+  assert.equal(score.metrics.early_light_lessons, 1);
+  assert.equal(score.penalties.early_light_subjects, 40);
+});
+
+for (const subject_name of ['التربية الأخلاقية', 'الفنية', 'الرياضة', 'اللغة الكردية', 'اللغة الفرنسية', 'الحاسوب']) {
+  test(`pedagogy keeps ${subject_name} out of the first two lessons when capacity permits`, () => {
+    const input = solverInput({...week(1, 3), placements: [placement(1)], loads: [
+      teachingLoad(1, {class_id: 1, subject_name, weekly_periods: 1}),
+      teachingLoad(2, {class_id: 1, subject_name: 'الرياضيات', weekly_periods: 1}),
+      teachingLoad(3, {class_id: 1, subject_name: 'اللغة العربية', weekly_periods: 1}),
+    ]});
+    const before = structuredClone(input);
+    const result = solveTimetable(input);
+    assert.equal(result.status, 'complete');
+    assert.equal(result.entries.find(entry => entry.teaching_load_id === 1).lesson_number, 3);
+    assert.equal(result.scoring.penalties.early_light_subjects, 0);
+    assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+    assert.deepEqual(input, before, 'preferences must not change school settings or teacher assignments');
+  });
+}
+
+test('pedagogy prefers the second lesson over the first when a short day cannot avoid both', () => {
+  const input = solverInput({...week(1, 2), placements: [placement(1)], loads: [
+    teachingLoad(1, {subject_name: 'اللغة الفرنسية', weekly_periods: 1}),
+  ]});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.entries[0].lesson_number, 2);
+  assert.equal(result.scoring.pedagogy.early_light_lessons, 1);
+});
+
+test('pedagogy permits a light first lesson when hard teacher availability requires it', () => {
+  const input = solverInput({...week(1, 3), placements: [placement(1)], loads: [
+    teachingLoad(1, {subject_name: 'الفنية', weekly_periods: 1}),
+  ], availability: [2, 3].map(slot_id => ({school_id: 1, academic_year_id: 1, employee_id: 1, slot_id, status: 'unavailable'}))});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.entries[0].lesson_number, 1);
+  assert.ok(result.scoring.penalties.early_light_subjects > 0);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('pedagogy preserves a fixed light first lesson instead of moving or rejecting it', () => {
+  const input = solverInput({...week(2, 3), placements: [placement(1)], loads: [
+    teachingLoad(1, {subject_name: 'الرياضة', weekly_periods: 2}),
+  ], fixedEntries: [{slot_id: 1, teaching_load_id: 1, is_locked: 1}]});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.ok(result.entries.some(entry => entry.slot_id === 1 && entry.teaching_load_id === 1 && entry.is_locked === 1));
+  assert.equal(result.scoring.pedagogy.early_light_lessons, 1);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('pedagogy separates four heavy lessons with an available neutral lesson in a full day', () => {
+  const names = ['الرياضيات', 'اللغة العربية', 'الفيزياء', 'الكيمياء', 'المطالعة'];
+  const input = solverInput({...week(1, 5), placements: [placement(1)], loads: names.map((subject_name, index) =>
+    teachingLoad(index + 1, {class_id: 1, subject_name, weekly_periods: 1}))});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.entries.find(entry => entry.teaching_load_id === 5).lesson_number, 3);
+  assert.equal(result.scoring.pedagogy.heavy_run_excess, 0);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('pedagogy keeps unavoidable heavy runs soft when every period is required', () => {
+  const input = solverInput({...week(1, 4), placements: [placement(1)], loads: [
+    teachingLoad(1, {subject_name: 'الرياضيات', weekly_periods: 4}),
+  ]});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.scheduled_periods, 4);
+  assert.equal(result.scoring.pedagogy.heavy_run_excess, 2);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('pedagogy prefers consecutive A to B lessons for the same teacher and normalized subject', () => {
+  const input = solverInput({...week(1, 4), placements: [placement(1, 1), placement(1, 2)], loads: [
+    teachingLoad(1, {class_id: 1, section_id: 1, employee_id: 1, subject_name: 'اللُّغة العَرَبيّة', weekly_periods: 1}),
+    teachingLoad(2, {class_id: 1, section_id: 2, employee_id: 1, subject_name: 'اللغة العربية', weekly_periods: 1}),
+  ]});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  const lessons = result.entries.map(entry => entry.lesson_number).sort((left, right) => left - right);
+  assert.equal(lessons[1] - lessons[0], 1);
+  assert.equal(result.scoring.pedagogy.consecutive_section_pairs, 1);
+  assert.equal(result.scoring.pedagogy.possible_section_pairs, 1);
+  assert.equal(result.scoring.penalties.missed_section_continuity, 0);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('pedagogy never sacrifices teacher consecutive limits for cross-section continuity', () => {
+  const input = solverInput({...week(1, 3), placements: [placement(1, 1), placement(1, 2)], loads: [
+    teachingLoad(1, {class_id: 1, section_id: 1, employee_id: 1, subject_name: 'الرياضيات', weekly_periods: 1}),
+    teachingLoad(2, {class_id: 1, section_id: 2, employee_id: 1, subject_name: 'الرياضيات', weekly_periods: 1}),
+  ], constraints: [{school_id: 1, academic_year_id: 1, employee_id: 1, max_consecutive_periods: 1,
+    max_periods_per_day: null, max_working_days: null, prefer_compact_schedule: 0, avoid_first_period: 0, avoid_last_period: 0}]});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(result.entries.map(entry => entry.lesson_number).sort(), [1, 3]);
+  assert.equal(result.scoring.pedagogy.consecutive_section_pairs, 0);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
+test('pedagogy evaluates a light parallel companion while keeping both teachers co-timed', () => {
+  const input = solverInput({...week(1, 3), placements: [placement(1, 9)], loads: [
+    teachingLoad(1, {class_id: 1, section_id: 9, subject_name: 'الرياضيات', weekly_periods: 1}),
+    teachingLoad(2, {class_id: 1, section_id: 9, subject_name: 'التربية الأخلاقية', weekly_periods: 1, parallel_with_load_id: 1}),
+    teachingLoad(3, {class_id: 1, section_id: 9, subject_name: 'اللغة العربية', weekly_periods: 1}),
+    teachingLoad(4, {class_id: 1, section_id: 9, subject_name: 'المطالعة', weekly_periods: 1}),
+  ]});
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.scheduled_periods, 3);
+  assert.equal(result.entries.length, 4);
+  assertCompletePairs(result);
+  assert.equal(result.entries.find(entry => entry.teaching_load_id === 2).lesson_number, 3);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+});
+
 test('compact teacher preference avoids unnecessary gaps', () => {
   const { days, slots } = week(1, 4);
   const constraints = [{ school_id: 1, academic_year_id: 1, employee_id: 1, max_periods_per_day: null, max_consecutive_periods: null, max_working_days: null, prefer_compact_schedule: 1, avoid_first_period: 0, avoid_last_period: 0, id: 1 }];
@@ -673,7 +860,7 @@ test('exact class capacity boundary can complete', () => {
   assert.equal(result.entries.length, slots.length);
 });
 
-test('current timetable entries are measured but never mutated or used as proposal placements', () => {
+test('current timetable entries are measured without mutating records or reusing their record identifiers', () => {
   const { days, slots } = week(2, 2);
   const loads = [teachingLoad(1, { weekly_periods: 2 })];
   const currentEntries = [{ id: 99, school_id: 1, academic_year_id: 1, slot_id: slots[0].id, teaching_load_id: 1, created_by_user_id: 1, updated_by_user_id: 1, created_at: 1, updated_at: 1 }];
@@ -682,6 +869,44 @@ test('current timetable entries are measured but never mutated or used as propos
   assert.deepEqual(currentEntries, snapshot);
   assert.equal(result.statistics.current_valid_entry_count, 1);
   assert.equal(result.entries.some((entry) => entry.proposal_id === '99'), false);
+});
+
+test('a valid complete saved timetable retains coverage and fixed parallel groups under a tiny search budget', () => {
+  const input = parallelInput();
+  input.loads.push(teachingLoad(3, {class_id: 1, section_id: 9, subject_name: 'الحاسوب', weekly_periods: 2}));
+  const saved = solveTimetable(input);
+  assert.equal(saved.status, 'complete');
+  input.currentEntries = internalEntries(saved);
+  const fixedSlot = saved.entries.find(entry => entry.teaching_load_id === 1).slot_id;
+  input.fixedEntries = [1, 2].map(teaching_load_id => ({slot_id: fixedSlot, teaching_load_id, is_locked: 1}));
+  for (const entry of input.currentEntries) entry.is_locked = entry.slot_id === fixedSlot && entry.teaching_load_id !== 3 ? 1 : 0;
+  input.limits = {time_budget_ms: 1000, max_attempts: 1, max_backtracks: 1, max_local_improvement_attempts: 0};
+  const before = structuredClone(input);
+  const result = solveTimetable(input);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.scheduled_periods, 4);
+  assert.equal(result.entries.length, 6);
+  assert.ok(result.statistics.attempts <= 1);
+  for (const fixed of input.fixedEntries) assert.ok(result.entries.some(entry => entry.slot_id === fixed.slot_id
+    && entry.teaching_load_id === fixed.teaching_load_id && entry.is_locked === 1));
+  assertCompletePairs(result);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
+  assert.deepEqual(input, before);
+});
+
+test('soft optimization stops with a valid complete proposal while retaining time for final validation', () => {
+  const input = solverInput({...week(1, 3), placements: [placement(1)], loads: [
+    teachingLoad(1, {class_id: 1, subject_name: 'الفنية', weekly_periods: 1}),
+    teachingLoad(2, {class_id: 1, subject_name: 'الرياضيات', weekly_periods: 2}),
+  ], limits: {time_budget_ms: 1000, max_attempts: 1000, max_backtracks: 100, max_local_improvement_attempts: 500}});
+  const originalNow = Date.now;
+  let first = true, result;
+  Date.now = () => { if (first) { first = false; return 0; } return 750; };
+  try { result = solveTimetable(input); } finally { Date.now = originalNow; }
+  assert.equal(result.status, 'complete');
+  assert.equal(result.statistics.local_improvement_attempts, 0);
+  assert.equal(result.scheduled_periods, 3);
+  assert.deepEqual(validateTimetableSolverProposal(input, internalEntries(result)), []);
 });
 
 function benchmarkInput(placementCount, teacherCount, loadCount) {
