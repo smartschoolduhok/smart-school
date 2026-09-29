@@ -30,6 +30,15 @@ test('genuine schema GET/readiness work; preview deterministic and read-only; co
  assert.deepEqual(snapshot(f.db),before);
 });
 
+test('matrix API retains scoped inactive exclusions and derives capacity from saved active week',async()=>{
+ const f=fixture();f.db.exec("UPDATE timetable_teaching_loads SET status='inactive' WHERE id=2; UPDATE timetable_days SET is_active=0 WHERE school_id=1 AND academic_year_id=1 AND day_of_week=1");
+ const before=snapshot(f.db),read=await call(f,'GET',prefix+'?school_id=1&academic_year_id=1&class_id=1');
+ assert.equal(read.status,200);const data=read.body.data;assert.equal(data.weekly_capacity,5);
+ assert.equal(data.loads.find(l=>l.id===2).status,'inactive');assert.ok(data.loads.every(l=>l.school_id===1&&l.academic_year_id===1&&l.class_id===1));
+ assert.equal(data.summary.excluded,1);assert.equal(data.summary.expected,4);assert.equal(data.summary.missing,3);assert.deepEqual(snapshot(f.db),before);
+ const preview=await call(f,'POST',prefix+'/preview',body(f,[up(1,1)]));assert.equal(preview.status,200);assert.equal(preview.body.data.summary_after.excluded,1);
+});
+
 for(const populated of [false,true])test(`complete HTTP 500 ${populated?'teacher updates':'creates'} uses Free-tier budget with headroom`,async(t)=>{
  const f=fixture();const changes=benchmarkMatrix(f.db,50,10,populated);const before=snapshot(f.db);
  const input={...body(f,changes),class_id:10,confirm_apply:true};

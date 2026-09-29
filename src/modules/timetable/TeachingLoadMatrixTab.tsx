@@ -5,26 +5,40 @@ import {
   type MatrixPlan, type MatrixCopyPlan, type MatrixCopyMode, type MatrixDraft, type MatrixSummary,
   matrixClassCards, matrixCells, matrixKey, matrixDraftChanges, applyMatrixRow,
   createMatrixRequestGuard, parseMatrixRequest, MATRIX_LEAVE_MESSAGE, MAX_MATRIX_WEEKLY_PERIODS,
-  matrixLoadTeacherState, matrixCellPresentation, isMatrixTeacherEligible,
+  matrixLoadTeacherState, matrixCellPresentation, isMatrixTeacherEligible, matrixCellLoads, matrixCellExcluded, matrixSectionTotals,
 } from '../../lib/teachingLoadMatrix';
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import type { TimetableTeachingLoad } from '../../lib/timetable';
 
 const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm';
 const button = 'rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-40';
-const actionLabels = { create: 'إنشاء', update: 'تحديث', deactivate: 'تعطيل', unchanged: 'بلا تغيير', blocked: 'تعارض' };
+const actionLabels = { create: 'إدراج', update: 'تحديث', deactivate: 'استبعاد', unchanged: 'بلا تغيير', blocked: 'تعارض' };
 const withoutTeacher = 'بدون مدرس — يحدد لاحقًا';
 
 export function MatrixSummaryDetails({ summary }: { summary: MatrixSummary }) {
   return <div className="text-sm">
-    <p>{summary.configured} من {summary.expected} نصابًا · {summary.missing} ناقص · {summary.without_teacher} بدون مدرس · {summary.invalid_teacher} مدرس غير متاح</p>
+    <p>{summary.configured} من {summary.expected} نصابًا · {summary.missing} ناقص · {summary.excluded} مستبعد · {summary.without_teacher} بدون مدرس · {summary.invalid_teacher} مدرس غير متاح</p>
     <p>إجمالي الدروس: {summary.weekly_periods} · الاكتمال: {summary.completion_percent}%</p>
   </div>;
 }
 
+export function MatrixSectionTotals({ data, draft }: { data: TeachingLoadMatrixData; draft: MatrixDraft }) {
+  return <section aria-label="إجمالي دروس كل شعبة" className="space-y-2">
+    <h3 className="font-bold">دروس كل شعبة مقابل سعة الأسبوع المحفوظة</h3>
+    <p className="text-xs text-gray-600">تتحدث الأعداد مع المسودة. السعة من أيام الدوام والدروس النشطة المحفوظة؛ الفراغ لا يضيف مواد تلقائيًا.</p>
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{matrixSectionTotals(data, draft).map(total => <div key={total.id ?? 'none'} aria-label={`إجمالي دروس ${total.name}`} className={`rounded-lg border p-3 text-sm ${total.invalid_periods || total.difference < 0 ? 'border-red-200 bg-red-50' : total.difference === 0 && !total.missing ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'}`}>
+      <p className="font-bold">{total.id === null ? total.name : `الشعبة ${total.name}`}</p>
+      <p>الدروس المطلوبة: <bdi>{total.weekly_periods}</bdi> / سعة الأسبوع: <bdi>{total.weekly_capacity}</bdi></p>
+      <p>{total.difference < 0 ? `تجاوز السعة بـ ${-total.difference} درس` : total.difference > 0 ? `فترات متاحة: ${total.difference}` : 'مطابق لسعة الأسبوع'}</p>
+      <p className="text-xs">مواد مستبعدة: {total.excluded} · أنصبة ناقصة: {total.missing}</p>
+      {total.invalid_periods > 0 && <p className="text-xs text-red-800">{total.invalid_periods} قيمة غير صالحة غير محسوبة في الإجمالي.</p>}
+    </div>)}</div>
+  </section>;
+}
+
 export function MatrixPlanSummary({ plan }: { plan: MatrixPlan }) {
   return <div className="space-y-3 text-sm">
-    <p>سيتم إنشاء: {plan.counts.create} · تحديث: {plan.counts.update} · تعطيل: {plan.counts.deactivate} · بلا تغيير: {plan.counts.unchanged} · تعارضات: {plan.counts.blocked}</p>
+    <p>سيتم إنشاء: {plan.counts.create} · تحديث: {plan.counts.update} · استبعاد: {plan.counts.deactivate} · بلا تغيير: {plan.counts.unchanged} · تعارضات: {plan.counts.blocked}</p>
     <p>بدون مدرس بعد الحفظ: {plan.without_teacher_after} · مدرس غير متاح بعد الحفظ: {plan.invalid_teacher_after} · إجمالي الدروس: {plan.total_weekly_periods_before} ← {plan.total_weekly_periods_after}</p>
     <MatrixSummaryDetails summary={plan.summary_after} />
     <div className="max-h-80 overflow-auto">
@@ -67,7 +81,7 @@ export function TeachingLoadMatrixTab(props: Props) {
   const changes = useMemo(() => data ? matrixDraftChanges(data, draft) : [], [data, draft]);
   // Incomplete edits (e.g. a teacher on a missing cell with no periods) must
   // still prompt on navigation, even though they cannot create a load.
-  const dirty = changes.length > 0 || Object.values(draft).some(e => e.periods?.trim() || e.employeeId !== undefined || e.deactivate);
+  const dirty = changes.length > 0 || Object.values(draft).some(e => e.periods?.trim() || e.employeeId !== undefined || e.deactivate || e.include);
   const dirtyRef = useRef(false); dirtyRef.current = dirty;
   const callbackRef = useRef(props.onDirtyChange); callbackRef.current = props.onDirtyChange;
   useEffect(() => { callbackRef.current(dirty); }, [dirty]);
@@ -127,7 +141,7 @@ export function TeachingLoadMatrixTab(props: Props) {
     if (response.error || !response.data?.applied) { setError(response.error ?? 'تعذر حفظ المصفوفة.'); return; }
     const result = response.data;
     setDraft({}); setRowInputs({}); setCopy(null); dirtyRef.current = false; callbackRef.current(false);
-    setSuccess(`تم حفظ مصفوفة النصاب بنجاح. تم إنشاء: ${result.counts.create} · تم تحديث: ${result.counts.update} · تم تعطيل: ${result.counts.deactivate} · بلا تغيير: ${result.counts.unchanged} · بدون مدرس: ${result.without_teacher_after} · مدرس غير متاح: ${result.invalid_teacher_after}`);
+    setSuccess(`تم حفظ مصفوفة النصاب بنجاح. تم إنشاء: ${result.counts.create} · تم تحديث: ${result.counts.update} · تم استبعاد: ${result.counts.deactivate} · بلا تغيير: ${result.counts.unchanged} · بدون مدرس: ${result.without_teacher_after} · مدرس غير متاح: ${result.invalid_teacher_after}`);
     setReload(v => v + 1);
     await props.onChanged();
   }
@@ -154,15 +168,16 @@ export function TeachingLoadMatrixTab(props: Props) {
   const edits = new Map(changes.map(c => [matrixKey(c.subject_id, c.section_id), c]));
   const columns = data?.sections.length ? data.sections.map(s => ({ id: s.id as number | null, name: s.name })) : [{ id: null, name: 'الصف بالكامل' }];
   const allowed = new Set(data ? matrixCells(data.class.id, data.sections, data.subjects).map(c => matrixKey(c.subject_id, c.section_id)) : []);
-  const loadMap = new Map(data?.loads.map(l => [matrixKey(l.subject_id, l.section_id), l]));
+  const loadMap = matrixCellLoads(data?.loads ?? []);
   const dirtyRows = new Set(changes.map(c => c.subject_id));
   const rows = data?.subjects.filter(subject => {
     if (!subject.name.includes(search.trim())) return false;
     const cells = columns.filter(s => allowed.has(matrixKey(subject.id, s.id)));
     if (filter === 'changed') return dirtyRows.has(subject.id);
     if (filter === 'missing') return cells.some(s => !loadMap.has(matrixKey(subject.id, s.id)));
-    if (filter === 'no-teacher') return cells.some(s => { const l = loadMap.get(matrixKey(subject.id, s.id)); return l && l.employee_id == null; });
-    if (filter === 'invalid-teacher') return cells.some(s => { const l = loadMap.get(matrixKey(subject.id, s.id)); return l && matrixLoadTeacherState(l) === 'invalid_teacher'; });
+    if (filter === 'excluded') return cells.some(s => {const key = matrixKey(subject.id, s.id); return matrixCellExcluded(loadMap.get(key), draft[key]);});
+    if (filter === 'no-teacher') return cells.some(s => { const key = matrixKey(subject.id, s.id), l = loadMap.get(key); return l?.status === 'active' && !matrixCellExcluded(l, draft[key]) && l.employee_id == null; });
+    if (filter === 'invalid-teacher') return cells.some(s => { const key = matrixKey(subject.id, s.id), l = loadMap.get(key); return l?.status === 'active' && !matrixCellExcluded(l, draft[key]) && matrixLoadTeacherState(l) === 'invalid_teacher'; });
     return true;
   });
   function teacherOptions() {
@@ -188,10 +203,11 @@ export function TeachingLoadMatrixTab(props: Props) {
       {data && <>
         <h2 className="text-xl font-bold">مصفوفة نصاب {data.class.name}</h2>
         <div><p>القيم المحفوظة:</p><MatrixSummaryDetails summary={data.summary} /></div>
-        <p className="text-xs text-gray-500">الاكتمال = الأنصبة التي لها مدرس نشط مؤهل في المدرسة ÷ الخلايا القابلة للتطبيق. ترك الدروس فارغة لا يغير النصاب ولا يعطله.</p>
+        <p className="text-xs text-gray-500">الاكتمال = الأنصبة التي لها مدرس نشط مؤهل في المدرسة ÷ الأنصبة المطلوبة بعد الاستبعاد. المادة المستبعدة لا تُحسب نقصًا. ترك العدد فارغًا لا يغير النصاب؛ استعمل «استبعاد من جدول الشعبة» بدل إدخال صفر للنصاب المحفوظ.</p>
+        <MatrixSectionTotals data={data} draft={draft} />
         <div className="flex flex-wrap gap-2">
           <input className={field + ' md:!w-64'} aria-label="البحث باسم المادة" placeholder="البحث باسم المادة" value={search} onChange={e => setSearch(e.target.value)} />
-          <select className={field + ' md:!w-60'} aria-label="تصفية المصفوفة" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">إظهار جميع المواد</option><option value="missing">إظهار الأنصبة الناقصة فقط</option><option value="no-teacher">إظهار بدون مدرس فقط</option><option value="invalid-teacher">إظهار المدرس غير المتاح فقط</option><option value="changed">إظهار التغييرات فقط</option></select>
+          <select className={field + ' md:!w-60'} aria-label="تصفية المصفوفة" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">إظهار جميع المواد</option><option value="missing">إظهار الأنصبة الناقصة فقط</option><option value="excluded">إظهار المواد المستبعدة</option><option value="no-teacher">إظهار بدون مدرس فقط</option><option value="invalid-teacher">إظهار المدرس غير المتاح فقط</option><option value="changed">إظهار التغييرات فقط</option></select>
           <button className={button} disabled={busy} onClick={() => { guard.invalidate(); setCopy(null); setCopyOpen(true); }}>نسخ النصاب من سنة سابقة</button>
           <button className={button} disabled={busy || !dirty} onClick={reset}>إلغاء جميع التغييرات غير المحفوظة</button>
           <button className={button + ' !bg-primary-600 text-white'} disabled={busy || changes.length === 0} onClick={() => void showPreview()}>معاينة التغييرات</button>
@@ -199,33 +215,40 @@ export function TeachingLoadMatrixTab(props: Props) {
         {dirty && <p role="status" className="text-blue-800">لديك {changes.length} تغييرًا غير محفوظ في {dirtyRows.size} مادة. المدخلات غير المكتملة لا تنشئ نصابًا.</p>}
         <fieldset disabled={busy} className="min-w-0">
           <div className="max-w-full overflow-x-auto rounded-xl border bg-white">
-            <table className="w-full min-w-[860px] text-sm"><thead className="bg-gray-50"><tr><th className="sticky right-0 z-10 min-w-40 bg-gray-50 p-3 text-right">المادة</th><th className="min-w-48 p-3">الدروس لجميع الشعب</th><th className="min-w-52 p-3">مدرس لجميع الشعب</th>{columns.map(s => <th key={s.id ?? 'none'} className="min-w-48 p-3">{s.name}</th>)}<th className="p-3">الحالة</th></tr></thead>
+            <table className="w-full min-w-[860px] text-sm"><thead className="bg-gray-50"><tr><th className="sticky right-0 z-10 min-w-40 bg-gray-50 p-3 text-right">المادة</th><th className="min-w-48 p-3">الدروس للشعب غير المستبعدة</th><th className="min-w-52 p-3">مدرس للشعب غير المستبعدة</th>{columns.map(s => <th key={s.id ?? 'none'} className="min-w-48 p-3">{s.name}</th>)}<th className="p-3">الحالة</th></tr></thead>
             <tbody>{rows?.map(subject => {
               const row = rowInputs[subject.id] ?? {};
-              const periods = new Set(columns.filter(s => allowed.has(matrixKey(subject.id, s.id))).map(s => loadMap.get(matrixKey(subject.id, s.id))?.weekly_periods));
+              const periods = new Set(columns.filter(s => allowed.has(matrixKey(subject.id, s.id))).map(s => {const l = loadMap.get(matrixKey(subject.id, s.id)); return l?.status === 'active' ? l.weekly_periods : l ? 0 : undefined;}));
               return <tr key={subject.id} className="border-t align-top">
                 <th className="sticky right-0 z-10 bg-white p-3 text-right">{subject.name}{subject.section_id != null && <small className="block text-amber-800">خاص بالشعبة {data.sections.find(s => s.id === subject.section_id)?.name ?? 'غير النشطة'}</small>}<button className={button + ' mt-3'} onClick={() => { const next = { ...draft }; for (const s of columns) delete next[matrixKey(subject.id, s.id)]; changeDraft(next); setRowInputs(v => ({ ...v, [subject.id]: {} })); }}>إعادة الصف إلى القيم المحفوظة</button></th>
                 <td className="space-y-2 p-3"><input type="number" min="1" max={MAX_MATRIX_WEEKLY_PERIODS} className={field} aria-label={`عدد الدروس لجميع شعب ${subject.name}`} value={row.periods ?? ''} onChange={e => setRowInputs(v => ({ ...v, [subject.id]: { ...row, periods: e.target.value } }))} />
                   {periods.size > 1 && <p className="text-xs">مختلف حسب الشعبة</p>}
-                  <button className={button} disabled={!row.periods?.trim()} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { periods: row.periods }))}>تطبيق على جميع الشعب</button><p className="text-xs text-gray-500">تخصيص الدروس حسب الشعبة متاح في كل خلية.</p></td>
+                  <button className={button} disabled={!row.periods?.trim()} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { periods: row.periods }))}>تطبيق على الشعب غير المستبعدة</button><p className="text-xs text-gray-500">تخصيص الدروس حسب الشعبة متاح في كل خلية. المواد المستبعدة تبقى مستبعدة عند التطبيق الجماعي.</p></td>
                 <td className="space-y-2 p-3"><select className={field} aria-label={`مدرس لجميع شعب ${subject.name}`} value={row.employeeId ?? ''} onChange={e => setRowInputs(v => ({ ...v, [subject.id]: { ...row, employeeId: e.target.value ? Number(e.target.value) : null } }))}>{teacherOptions()}</select>
-                  <button className={button} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { employeeId: row.employeeId ?? null }))}>تطبيق المدرس على جميع الشعب</button>
-                  <button className={button} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { employeeId: null }))}>مسح المدرس من جميع الشعب</button></td>
+                  <button className={button} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { employeeId: row.employeeId ?? null }))}>تطبيق المدرس على الشعب غير المستبعدة</button>
+                  <button className={button} onClick={() => changeDraft(applyMatrixRow(data, draft, subject.id, { employeeId: null }))}>مسح المدرس من الشعب غير المستبعدة</button></td>
                 {columns.map(section => {
                   const key = matrixKey(subject.id, section.id); const load = loadMap.get(key); const edit = draft[key] ?? {}; const change = edits.get(key);
                   if (!allowed.has(key)) return <td key={key} className="bg-gray-100 p-3 text-gray-400" aria-disabled="true">غير منطبق</td>;
-                  const value = edit.periods ?? (load ? String(load.weekly_periods) : '');
+                  const excluded = matrixCellExcluded(load, edit);
+                  const value = excluded ? '0' : edit.periods ?? (load?.status === 'active' ? String(load.weekly_periods) : '');
                   const teacher = edit.employeeId === undefined ? load?.employee_id ?? null : edit.employeeId;
-                  const invalid = value.trim() && (!Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > MAX_MATRIX_WEEKLY_PERIODS);
+                  const invalid = !excluded && value.trim() && (!Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > MAX_MATRIX_WEEKLY_PERIODS);
                   const conflict = preview?.items.find(i => matrixKey(i.subject_id, i.section_id) === key)?.blockers.length;
-                  const presentation = matrixCellPresentation(load, teacher, data.teachers, schoolId);
+                  const presentedLoad = load && (excluded ? {...load, status: 'inactive' as const} : {...load, status: 'active' as const});
+                  const presentation = matrixCellPresentation(presentedLoad, teacher, data.teachers, schoolId);
                   const tone = invalid || conflict || presentation.state === 'invalid_teacher' ? 'bg-red-50' : change ? 'bg-blue-50' : presentation.tone;
                   const update = (patch: MatrixDraft[string]) => changeDraft({ ...draft, [key]: { ...edit, ...patch } });
                   return <td key={key} className={`space-y-2 p-3 ${tone}`}>
-                    <select className={field} aria-label={`مدرس ${subject.name} / ${section.name}`} value={teacher ?? ''} onChange={e => update({ employeeId: e.target.value ? Number(e.target.value) : null, deactivate: false })}>{presentation.state === 'invalid_teacher' && <option value={teacher!}>مدرس غير متاح — اختر بديلًا</option>}{teacherOptions()}</select>
-                    <input className={field} type="number" min="1" max={MAX_MATRIX_WEEKLY_PERIODS} aria-label={`دروس ${subject.name} / ${section.name}`} value={value} onChange={e => update({ periods: e.target.value, deactivate: false })} />
-                    <p className="text-xs">{invalid ? 'عدد الدروس غير صالح' : presentation.state === 'invalid_teacher' ? presentation.label : change ? `${actionLabels[change.action === 'upsert' ? load ? 'update' : 'create' : 'deactivate']} غير محفوظ` : presentation.label}{load && ` · #${load.id}`}</p>
-                    {load && <div className="flex flex-wrap gap-1"><button className={button} onClick={() => update({ deactivate: !edit.deactivate })}>{edit.deactivate ? 'إلغاء التعطيل' : 'تعطيل هذا النصاب'}</button><button className={button} onClick={() => { if (allowLeave()) props.onAdvanced(load); }}>تعديل متقدم</button></div>}
+                    <select className={field + ' disabled:bg-slate-100 disabled:text-slate-500'} disabled={excluded} aria-label={`مدرس ${subject.name} / ${section.name}`} value={excluded ? '' : teacher ?? ''} onChange={e => update({ employeeId: e.target.value ? Number(e.target.value) : null, deactivate: false })}>{excluded ? <option value="">مستبعدة — لا تحتاج مدرسًا</option> : <>{presentation.state === 'invalid_teacher' && <option value={teacher!}>مدرس غير متاح — اختر بديلًا</option>}{teacherOptions()}</>}</select>
+                    <input className={field + ' disabled:bg-slate-100 disabled:text-slate-500'} disabled={excluded} type="number" min={excluded ? '0' : '1'} max={MAX_MATRIX_WEEKLY_PERIODS} aria-label={`دروس ${subject.name} / ${section.name}`} value={value} onChange={e => update({ periods: e.target.value, deactivate: false })} />
+                    <p className="text-xs">{invalid ? Number(value) === 0 ? load?.status === 'active' ? 'للعدد صفر استعمل زر الاستبعاد.' : 'أدخل عددًا من 1 إلى 100؛ الصفر لا ينشئ نصابًا أو استبعادًا.' : 'عدد الدروس غير صالح' : presentation.state === 'invalid_teacher' ? presentation.label : change ? `${actionLabels[change.action === 'upsert' ? load?.status === 'active' ? 'update' : 'create' : 'deactivate']} غير محفوظ` : presentation.label}{load && ` · #${load.id}`}</p>
+                    {load && <div className="flex flex-wrap gap-1">
+                      {load.status === 'active' ? <button className={button} onClick={() => update({ deactivate: !edit.deactivate })}>{edit.deactivate ? 'إلغاء الاستبعاد' : 'استبعاد من جدول الشعبة'}</button>
+                        : excluded ? <button className={button} onClick={() => update({include: true, deactivate: false, periods: String(load.weekly_periods), employeeId: data.teachers.some(t => t.id === load.employee_id && isMatrixTeacherEligible(t, schoolId)) ? load.employee_id : null})}>إدراج المادة في جدول الشعبة</button>
+                        : <button className={button} onClick={() => {const next = {...draft}; delete next[key]; changeDraft(next);}}>إلغاء الإدراج</button>}
+                      <button className={button} onClick={() => { if (allowLeave()) props.onAdvanced(load); }}>تعديل متقدم</button>
+                    </div>}
                   </td>;
                 })}
                 <td className="p-3">{dirtyRows.has(subject.id) ? 'تعديل غير محفوظ' : 'محفوظ'}</td>

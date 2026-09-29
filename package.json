@@ -5,7 +5,10 @@
     "node": ">=24"
   },
   "overrides": {
-    "sharp": "0.35.4"
+    "sharp": "0.35.4",
+    "miniflare": {
+      "undici": "7.29.1"
+    }
   },
   "scripts": {
     "test:finance-fees": "node --experimental-strip-types --test --test-concurrency=1 test/finance-fees.test.mjs test/finance-fees-api.test.mjs test/finance-installments-parent.test.mjs test/finance-fees-ui.test.mjs test/finance-review.test.mjs",

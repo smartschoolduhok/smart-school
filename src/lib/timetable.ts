@@ -1131,6 +1131,8 @@ export function evaluateTimetableEntryPlacement(input: {
 }
 
 export function buildTimetableReadiness(input: {
+  schoolId?: number;
+  academicYearId?: number;
   days: TimetableDay[];
   slots: TimetableSlot[];
   placements: TimetablePlacement[];
@@ -1144,6 +1146,23 @@ export function buildTimetableReadiness(input: {
   const entries = input.entries || [];
   const placedLoadIds = new Set(entries.map((entry) => Number(entry.teaching_load_id)));
   const activeLoads = input.loads.filter((load) => load.status === 'active');
+  const loadWithinScope = (load: TimetableTeachingLoad) => (
+    (input.schoolId == null || load.school_id === input.schoolId)
+    && (input.academicYearId == null || load.academic_year_id === input.academicYearId)
+  );
+  const subjectPlacementKey = (load: TimetableTeachingLoad) => (
+    `${load.school_id}:${load.academic_year_id}:${load.class_id}:${load.section_id ?? 'none'}:${load.subject_id}`
+  );
+  const activeSubjectPlacements = new Set(activeLoads.map(subjectPlacementKey));
+  // Inactive matrix records explicitly exclude a subject for this placement.
+  // A replacement active record (including an invalid one) keeps its demand
+  // and diagnostics; an inactive record with saved lessons still needs repair.
+  const excludedLoads = input.loads.filter((load) => (
+    load.status === 'inactive' && loadWithinScope(load)
+    && !loadHasInvalidAcademicReference(load)
+    && !placedLoadIds.has(Number(load.id))
+    && !activeSubjectPlacements.has(subjectPlacementKey(load))
+  ));
   // An inactive load normally leaves current demand. If it still owns a saved
   // placement, retain that demand until the historical placement is repaired
   // or deleted instead of silently making required periods disappear.
@@ -1218,8 +1237,11 @@ export function buildTimetableReadiness(input: {
       && (subject.section_id == null || subject.section_id === placement.section_id)
     ));
     const loadedSubjects = new Set(placementLoads.map((load) => load.subject_id));
+    const excludedSubjects = new Set(excludedLoads.filter((load) => (
+      load.class_id === placement.class_id && load.section_id === placement.section_id
+    )).map((load) => load.subject_id));
     const missingSubjects = applicableSubjects
-      .filter((subject) => !loadedSubjects.has(subject.id))
+      .filter((subject) => !loadedSubjects.has(subject.id) && !excludedSubjects.has(subject.id))
       .map(({ id, name }) => ({ id, name }));
     const requiredPeriods = placementLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0);
     const scheduledPeriods = placementLoads.reduce((sum, load) => (

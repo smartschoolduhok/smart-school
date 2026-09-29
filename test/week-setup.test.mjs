@@ -62,12 +62,43 @@ test('day profile checks combined section demand across teachers and unassigned 
  }
 });
 
-test('day profile class-wide demand is counted in every specific section once',async t=>{
- const f=weekFixture(t),context=await loadWeekSetup(f.d1,1,1),load=context.loads[0];
- const c={...context,loads:[{...load,id:101,section_id:null,employee_id:null,weekly_periods:2},{...load,id:102,section_id:1,employee_id:null,weekly_periods:2},{...load,id:103,section_id:2,employee_id:null,weekly_periods:1}]};
- const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(1)),mode:'configure_day'});
- const blockers=p.blockers.filter(b=>b.code==='placement_weekly_capacity_exceeded');
- assert.equal(blockers.length,1);assert.equal(blockers[0].section_id,1);assert.equal(blockers[0].evidence.actual,4);
+test('legacy class-wide loads do not inflate section or teacher demand after sections are added',async t=>{
+ const f=weekFixture(t);
+ f.db.exec(`UPDATE timetable_teaching_loads SET status='inactive' WHERE school_id=1 AND academic_year_id=1 AND class_id=1;
+  INSERT INTO sections(id,school_id,class_id,name,status) VALUES(10,1,2,'New section','active');
+  INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status)
+  VALUES(10,1,1,2,10,4,6,2,'active');`);
+ const c=await loadWeekSetup(f.d1,1,1),before=snapshot(f.db);
+ assert.equal(c.loads.find(l=>l.id===3).active_section_count,1);
+ for(const mode of ['configure_day','replace_selected_days']) {
+  const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(1)),mode});
+  assert.equal(p.can_apply,true,JSON.stringify(p));
+  assert.ok(![...p.blockers,...p.warnings].some(n=>n.evidence?.dimension==='placement_capacity_deficit'||n.evidence?.dimension==='capacity_deficit'));
+ }
+ assert.deepEqual(snapshot(f.db),before);
+});
+
+for(const scheduled of [false,true])test(`archived subject demand is excluded while scheduled invalid references remain visible (scheduled=${scheduled})`,async t=>{
+ const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(4));
+ f.db.exec(`UPDATE timetable_teaching_loads SET weekly_periods=3 WHERE id=40;
+  INSERT INTO subjects(id,school_id,class_id,name,status) VALUES(10,1,1,'Sports','active');
+  INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status)
+  VALUES(50,1,40,1,1,10,1,1,'active');`);
+ if(scheduled) f.db.exec('INSERT INTO timetable_entries(id,school_id,academic_year_id,slot_id,teaching_load_id) VALUES(400,1,40,4000,50)');
+ f.db.exec("UPDATE subjects SET status='archived' WHERE id=10");
+ const c=await loadWeekSetup(f.d1,1,40),before=snapshot(f.db);
+ assert.equal(c.loads.reduce((sum,l)=>sum+l.weekly_periods,0),4);
+ for(const mode of ['configure_day','replace_selected_days']) {
+  const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(3)),mode});
+  assert.ok(![...p.blockers,...p.warnings].some(n=>n.evidence?.dimension==='placement_capacity_deficit'||n.evidence?.dimension==='capacity_deficit'));
+  if(scheduled&&mode==='replace_selected_days') {
+   assert.equal(p.can_apply,false);assert.ok(p.blockers.some(n=>n.code==='invalid_teaching_load'&&n.entry_id===400));
+  } else {
+   assert.equal(p.can_apply,true,JSON.stringify(p));
+   if(scheduled) assert.ok(p.warnings.some(n=>n.code==='existing_invalid_teaching_load'&&n.entry_id===400));
+  }
+ }
+ assert.deepEqual(snapshot(f.db),before);
 });
 
 test('review capacity 0 -> 2 demand 4: safe incremental setup is allowed with AFTER shortage',async t=>{

@@ -1373,6 +1373,7 @@ async function loadTimetableReadinessSummary(db: D1Database, schoolId: number, a
   ]);
 
   return buildTimetableReadiness({
+    schoolId, academicYearId,
     days: context.days,
     slots: context.slots,
     placements: placementsResult.results || [],

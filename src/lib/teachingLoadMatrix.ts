@@ -33,14 +33,14 @@ export interface MatrixPlanItem {
   locked_entry_count: number; warnings: MatrixNotice[]; blockers: MatrixNotice[];
 }
 export interface MatrixSummary {
-  expected: number; configured: number; missing: number; without_teacher: number; invalid_teacher: number;
+  expected: number; configured: number; missing: number; excluded: number; without_teacher: number; invalid_teacher: number;
   weekly_periods: number; completion_percent: number; section_count: number; subject_count: number;
 }
 export interface TeachingLoadMatrixData {
   class: MatrixClass; sections: MatrixSection[]; subjects: MatrixSubject[]; teachers: MatrixTeacher[];
-  loads: TimetableTeachingLoad[]; timetable_revision: number; summary: MatrixSummary;
+  loads: TimetableTeachingLoad[]; timetable_revision: number; summary: MatrixSummary; weekly_capacity: number;
 }
-export interface MatrixContext extends Omit<TeachingLoadMatrixData, 'summary'> {
+export interface MatrixContext extends Omit<TeachingLoadMatrixData, 'summary' | 'weekly_capacity'> {
   academic_year_id: number; days: TimetableDay[]; slots: TimetableSlot[]; entries: TimetableEntry[];
   availability: TimetableTeacherAvailabilityOverride[]; constraints: TimetableTeacherConstraints[];
 }
@@ -112,6 +112,7 @@ export function matrixLoadTeacherState(load: TimetableTeachingLoad): 'valid' | '
 }
 
 export function matrixCellPresentation(load: TimetableTeachingLoad | undefined, employeeId: number | null, teachers: MatrixTeacher[], schoolId: number) {
+  if (load?.status === 'inactive') return { state: 'excluded', tone: 'bg-slate-100', label: 'مستبعدة من جدول الشعبة' } as const;
   if (employeeId != null && !teachers.some(t => t.id === employeeId && isMatrixTeacherEligible(t, schoolId)))
     return { state: 'invalid_teacher', tone: 'bg-red-50', label: 'مدرس غير متاح — اختر بديلًا' } as const;
   if (!load) return { state: 'missing', tone: 'bg-gray-50', label: 'لا يوجد نصاب بعد' } as const;
@@ -119,15 +120,31 @@ export function matrixCellPresentation(load: TimetableTeachingLoad | undefined, 
   return { state: 'valid', tone: 'bg-emerald-50', label: 'مكتمل' } as const;
 }
 
+// An older inactive row is history when an active counterpart exists. Only
+// inactive-only cells represent the school's explicit exclusion decision.
+export function matrixCellLoads(loads: TimetableTeachingLoad[]) {
+  const cells = new Map<string, TimetableTeachingLoad>();
+  for (const load of loads) {
+    const key = matrixKey(load.subject_id, load.section_id), current = cells.get(key);
+    if (!current || (load.status === 'active' && current.status !== 'active')
+      || (load.status === current.status && (load.updated_at > current.updated_at
+        || (load.updated_at === current.updated_at && load.id > current.id)))) cells.set(key, load);
+  }
+  return cells;
+}
+
 export function summarizeMatrix(classId: number, sections: MatrixSection[], subjects: MatrixSubject[], loads: TimetableTeachingLoad[]): MatrixSummary {
   const cells = matrixCells(classId, sections, subjects);
-  const expected = new Set(cells.map(c => matrixKey(c.subject_id, c.section_id)));
-  const configured = loads.filter(l => l.class_id === classId && l.status === 'active' && expected.has(matrixKey(l.subject_id, l.section_id)));
-  return { expected: cells.length, configured: configured.length, missing: cells.length - configured.length,
+  const loadMap = matrixCellLoads(loads.filter(l => l.class_id === classId));
+  const cellLoads = cells.map(c => loadMap.get(matrixKey(c.subject_id, c.section_id)));
+  const excluded = cellLoads.filter(l => l?.status === 'inactive').length;
+  const expected = cells.length - excluded;
+  const configured = cellLoads.filter((l): l is TimetableTeachingLoad => l?.status === 'active');
+  return { expected, configured: configured.length, missing: expected - configured.length, excluded,
     without_teacher: configured.filter(l => l.employee_id == null).length,
     invalid_teacher: configured.filter(l => matrixLoadTeacherState(l) === 'invalid_teacher').length,
     weekly_periods: configured.reduce((sum, l) => sum + l.weekly_periods, 0),
-    completion_percent: cells.length ? Math.round(100 * configured.filter(l => matrixLoadTeacherState(l) === 'valid').length / cells.length) : 0,
+    completion_percent: expected ? Math.round(100 * configured.filter(l => matrixLoadTeacherState(l) === 'valid').length / expected) : cells.length ? 100 : 0,
     section_count: sections.filter(s => s.class_id === classId && s.status === 'active').length,
     subject_count: subjects.filter(s => s.class_id === classId && s.status === 'active').length };
 }
@@ -233,7 +250,7 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
   }
   // Project only accepted items. Invalid/blocked cells retain stored references;
   // summary/read paths never repair, clear, deactivate or hide academic demand.
-  const projected = before.map(l => ({ ...l }));
+  const projected = context.loads.filter(l => l.class_id === context.class.id).map(l => ({ ...l }));
   for (const i of items) {
     if (!['create', 'update', 'deactivate'].includes(i.action)) continue;
     const teacher = context.teachers.find(t => t.id === i.new_employee_id && isMatrixTeacherEligible(t, context.class.school_id));
@@ -275,7 +292,27 @@ export function planTeachingLoadCopy(context: MatrixContext, source: TimetableTe
   return { changes, plan: planTeachingLoadMatrix(context, changes), warnings, unavailable };
 }
 
-export type MatrixDraft = Record<string, { periods?: string; employeeId?: number | null; deactivate?: boolean }>;
+export type MatrixDraft = Record<string, { periods?: string; employeeId?: number | null; deactivate?: boolean; include?: boolean }>;
+export function matrixCellExcluded(load: TimetableTeachingLoad | undefined, edit: MatrixDraft[string] = {}) {
+  return edit.deactivate === true || (load?.status === 'inactive' && !edit.include && !edit.periods?.trim());
+}
+export function matrixSectionTotals(data: TeachingLoadMatrixData, draft: MatrixDraft = {}) {
+  const loads = matrixCellLoads(data.loads);
+  const cells = matrixCells(data.class.id, data.sections, data.subjects);
+  const sections = data.sections.length ? data.sections.map(s => ({id: s.id as number | null, name: s.name})) : [{id: null, name: 'الصف بالكامل'}];
+  return sections.map(section => {
+    let weekly_periods = 0, excluded = 0, missing = 0, invalid_periods = 0;
+    for (const cell of cells.filter(c => c.section_id === section.id)) {
+      const key = matrixKey(cell.subject_id, cell.section_id), load = loads.get(key), edit = draft[key] ?? {};
+      if (matrixCellExcluded(load, edit)) { excluded++; continue; }
+      const periods = edit.periods?.trim() ? Number(edit.periods) : load?.status === 'active' ? load.weekly_periods : undefined;
+      if (periods == null) missing++;
+      else if (!Number.isInteger(periods) || periods < 1 || periods > MAX_MATRIX_WEEKLY_PERIODS) invalid_periods++;
+      else weekly_periods += periods;
+    }
+    return {...section, weekly_periods, weekly_capacity: data.weekly_capacity, difference: data.weekly_capacity - weekly_periods, excluded, missing, invalid_periods};
+  });
+}
 export function matrixDraftChanges(data: TeachingLoadMatrixData, draft: MatrixDraft): MatrixChange[] {
   return matrixCells(data.class.id, data.sections, data.subjects).flatMap<MatrixChange>(cell => {
     const edit = draft[matrixKey(cell.subject_id, cell.section_id)]; if (!edit) return [];
@@ -291,8 +328,10 @@ export function matrixDraftChanges(data: TeachingLoadMatrixData, draft: MatrixDr
 
 export function applyMatrixRow(data: TeachingLoadMatrixData, draft: MatrixDraft, subjectId: number, edit: MatrixDraft[string]): MatrixDraft {
   const next = { ...draft };
+  const loads = matrixCellLoads(data.loads);
   for (const c of matrixCells(data.class.id, data.sections, data.subjects).filter(c => c.subject_id === subjectId)) {
     const key = matrixKey(c.subject_id, c.section_id);
+    if (matrixCellExcluded(loads.get(key), next[key])) continue;
     next[key] = { ...next[key], ...edit, deactivate: false };
   }
   return next;
