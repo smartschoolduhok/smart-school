@@ -13,8 +13,8 @@ const {createRoot} = await import('react-dom/client');
 const vite = await createServer({root: fileURLToPath(new URL('..', import.meta.url)), configFile: false, appType: 'custom', optimizeDeps: {noDiscovery: true, include: []}, esbuild: {jsx: 'automatic'}, server: {middlewareMode: true, hmr: false}});
 const {MasterTimetableTab} = await vite.ssrLoadModule('/src/modules/timetable/MasterTimetableTab.tsx');
 after(async () => {await vite.close(); await window.happyDOM.close();});
-async function mount(t) {
-  const data = printFixture(), container = document.createElement('div'); document.body.append(container);
+async function mount(t, data = printFixture()) {
+  const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);
   const props = {schoolId: 1, academicYearId: 1, dataVersion: 0, onOpenRepair() {}, loadGrid: async () => ({data})};
   await act(async () => root.render(createElement(MasterTimetableTab, props)));
@@ -23,6 +23,25 @@ async function mount(t) {
 }
 const select = async (u, label, value) => {const el = u.container.querySelector(`[aria-label="${label}"]`); assert.ok(el, label); await act(async () => {el.value = value; el.dispatchEvent(new Event('change', {bubbles: true}));});};
 const button = (u, label) => [...u.container.querySelectorAll('button')].find(el => el.textContent === label);
+
+test('master and section print show both parallel subjects and their teachers in the same cell', async t => {
+  const data = printFixture();
+  const base = {...data.entries[0], class_id: 1, section_id: 11, section_name: 'أ'};
+  data.entries.push({...base, id: 3, teaching_load_id: 3, subject_id: 3, subject_name: 'التربية الإسلامية', employee_id: 8, employee_name: 'أحمد'},
+    {...base, id: 4, teaching_load_id: 4, subject_id: 4, subject_name: 'التربية المسيحية', employee_id: 9, employee_name: 'مريم'});
+  const u = await mount(t, data);
+  const assertPair = () => {
+    const card = [...u.container.querySelectorAll('.timetable-subject-card')].find(el => el.textContent.includes('التربية الإسلامية'));
+    assert.ok(card);const cell = card.closest('td');
+    assert.equal(cell.querySelectorAll('.timetable-subject-card').length, 2);
+    for (const text of ['التربية الإسلامية', 'التربية المسيحية', 'أحمد', 'مريم']) assert.ok(cell.textContent.includes(text), text);
+    assert.doesNotMatch(cell.textContent, /رياضيات مشتركة/);
+  };
+  assertPair();
+  await act(async () => button(u, 'جدول صف / شعبة').click());
+  await select(u, 'شعبة الطباعة', '1:11');
+  assertPair();
+});
 
 test('print scope controls render separate section/stage sheets and A4/A3 dimensions follow selection', async t => {
   const u = await mount(t);

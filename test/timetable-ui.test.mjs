@@ -31,7 +31,7 @@ test('weekly grid exposes explicit class/section flow, breaks and missing-teache
   assert.match(gridSource, /entry\.hard_conflicts\.some\(\(conflict\) => conflict\.code === 'teacher_collision'\)/);
   assert.match(gridSource, /entry\.hard_conflicts\.some\(\(conflict\) => conflict\.code !== 'teacher_collision'\)/);
   assert.match(gridSource, /entry\.warnings\.length > 0/);
-  assert.match(gridSource, /draggable=\{entry\.is_locked !== 1 && !saving\}/);
+  assert.match(gridSource, /draggable=\{!groupIsLocked\(entry\) && !saving\}/);
   assert.match(gridSource, /onDragStart/);
   assert.match(gridSource, /onDragOver/);
   assert.match(gridSource, /onDrop/);

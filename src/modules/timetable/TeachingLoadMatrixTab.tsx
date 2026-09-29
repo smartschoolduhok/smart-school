@@ -9,6 +9,7 @@ import {
 } from '../../lib/teachingLoadMatrix';
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import type { TimetableTeachingLoad } from '../../lib/timetable';
+import { parallelTimetableLoadGroup } from '../../lib/timetableParallel';
 
 const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm';
 const button = 'rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-40';
@@ -45,7 +46,8 @@ export function MatrixPlanSummary({ plan }: { plan: MatrixPlan }) {
       {plan.items.map(item => <div key={matrixKey(item.subject_id, item.section_id)} className="border-t py-2">
         <b>{item.subject_name ?? 'مادة غير متاحة'} / {item.section_name ?? 'الصف بالكامل'}: {actionLabels[item.action]}</b>
         <p>الدروس: {item.old_weekly_periods ?? '—'} ← {item.new_weekly_periods ?? '—'}؛ المدرس: {item.old_employee_name ?? (item.old_employee_id == null ? 'بدون مدرس' : 'مدرس غير متاح')} ← {item.new_employee_name ?? (item.new_employee_id == null ? 'بدون مدرس' : 'مدرس غير متاح')}</p>
-        {item.locked_entry_count > 0 && <p>دروس مقفلة مرتبطة: {item.locked_entry_count} — تبقى مواقعها وأقفالها كما هي.</p>}
+        {item.removed_entry_count > 0 && <p className="font-semibold text-amber-900">سيُحفظ أرشيف وتُزال {item.removed_entry_count} من دروس هذه المادة وحدها من الجدول. تبقى دروس المادة المتزامنة الأخرى كما هي ويُفك الربط عنها.</p>}
+        {item.locked_entry_count > 0 && <p>دروس مثبتة مرتبطة: {item.locked_entry_count} — {item.removed_entry_count > 0 ? 'يشمل الاستبعاد هذه الدروس المثبتة بعد الحفظ.' : 'تبقى مواقعها وأقفالها كما هي.'}</p>}
         {item.warnings.map(n => <p key={n.code} className="text-amber-800">{n.message}</p>)}
         {item.blockers.map(n => <p key={n.code} className="text-red-700">{n.message}</p>)}
       </div>)}
@@ -57,7 +59,7 @@ interface Props {
   schoolId: number; academicYearId: number; years: AcademicYearRecord[];
   classes: MatrixClass[]; sections: MatrixSection[]; subjects: MatrixSubject[]; loads: TimetableTeachingLoad[];
   dataVersion: number; onChanged: () => Promise<void>; onDirtyChange: (dirty: boolean) => void;
-  onAdvanced: (load?: TimetableTeachingLoad) => void;
+  onAdvanced: (load?: TimetableTeachingLoad, cell?: {class_id: number; section_id: number | null; subject_id: number}) => void;
 }
 
 export function TeachingLoadMatrixTab(props: Props) {
@@ -203,7 +205,7 @@ export function TeachingLoadMatrixTab(props: Props) {
       {data && <>
         <h2 className="text-xl font-bold">مصفوفة نصاب {data.class.name}</h2>
         <div><p>القيم المحفوظة:</p><MatrixSummaryDetails summary={data.summary} /></div>
-        <p className="text-xs text-gray-500">الاكتمال = الأنصبة التي لها مدرس نشط مؤهل في المدرسة ÷ الأنصبة المطلوبة بعد الاستبعاد. المادة المستبعدة لا تُحسب نقصًا. ترك العدد فارغًا لا يغير النصاب؛ استعمل «استبعاد من جدول الشعبة» بدل إدخال صفر للنصاب المحفوظ.</p>
+        <p className="text-xs text-gray-500">الاكتمال = الأنصبة التي لها مدرس نشط مؤهل في المدرسة ÷ الأنصبة المطلوبة بعد الاستبعاد. المادة المستبعدة لا تُحسب نقصًا. ترك العدد فارغًا لا يغير النصاب؛ استعمل «استبعاد من جدول الشعبة» بدل إدخال صفر، حتى إن لم يسبق حفظ نصاب المادة.</p>
         <MatrixSectionTotals data={data} draft={draft} />
         <div className="flex flex-wrap gap-2">
           <input className={field + ' md:!w-64'} aria-label="البحث باسم المادة" placeholder="البحث باسم المادة" value={search} onChange={e => setSearch(e.target.value)} />
@@ -239,16 +241,18 @@ export function TeachingLoadMatrixTab(props: Props) {
                   const presentation = matrixCellPresentation(presentedLoad, teacher, data.teachers, schoolId);
                   const tone = invalid || conflict || presentation.state === 'invalid_teacher' ? 'bg-red-50' : change ? 'bg-blue-50' : presentation.tone;
                   const update = (patch: MatrixDraft[string]) => changeDraft({ ...draft, [key]: { ...edit, ...patch } });
+                  const partner = load && parallelTimetableLoadGroup(load, data.loads).find(other => other.id !== load.id);
                   return <td key={key} className={`space-y-2 p-3 ${tone}`}>
                     <select className={field + ' disabled:bg-slate-100 disabled:text-slate-500'} disabled={excluded} aria-label={`مدرس ${subject.name} / ${section.name}`} value={excluded ? '' : teacher ?? ''} onChange={e => update({ employeeId: e.target.value ? Number(e.target.value) : null, deactivate: false })}>{excluded ? <option value="">مستبعدة — لا تحتاج مدرسًا</option> : <>{presentation.state === 'invalid_teacher' && <option value={teacher!}>مدرس غير متاح — اختر بديلًا</option>}{teacherOptions()}</>}</select>
                     <input className={field + ' disabled:bg-slate-100 disabled:text-slate-500'} disabled={excluded} type="number" min={excluded ? '0' : '1'} max={MAX_MATRIX_WEEKLY_PERIODS} aria-label={`دروس ${subject.name} / ${section.name}`} value={value} onChange={e => update({ periods: e.target.value, deactivate: false })} />
-                    <p className="text-xs">{invalid ? Number(value) === 0 ? load?.status === 'active' ? 'للعدد صفر استعمل زر الاستبعاد.' : 'أدخل عددًا من 1 إلى 100؛ الصفر لا ينشئ نصابًا أو استبعادًا.' : 'عدد الدروس غير صالح' : presentation.state === 'invalid_teacher' ? presentation.label : change ? `${actionLabels[change.action === 'upsert' ? load?.status === 'active' ? 'update' : 'create' : 'deactivate']} غير محفوظ` : presentation.label}{load && ` · #${load.id}`}</p>
-                    {load && <div className="flex flex-wrap gap-1">
-                      {load.status === 'active' ? <button className={button} onClick={() => update({ deactivate: !edit.deactivate })}>{edit.deactivate ? 'إلغاء الاستبعاد' : 'استبعاد من جدول الشعبة'}</button>
+                    <p className="text-xs">{invalid ? Number(value) === 0 ? 'للعدد صفر استعمل زر الاستبعاد؛ لا يُحفظ نصاب بقيمة صفر.' : 'عدد الدروس غير صالح' : presentation.state === 'invalid_teacher' ? presentation.label : change ? `${actionLabels[change.action === 'upsert' ? load?.status === 'active' ? 'update' : 'create' : 'deactivate']} غير محفوظ` : presentation.label}{load && ` · #${load.id}`}</p>
+                    {partner && <p className="text-xs text-blue-800">متزامن مع {partner.subject_name || data.subjects.find(item => item.id === partner.subject_id)?.name}. الاستبعاد يخص هذه المادة وحدها ويُفك التزامن.</p>}
+                    <div className="flex flex-wrap gap-1">
+                      {!load || load.status === 'active' ? <button className={button} onClick={() => update({ deactivate: !edit.deactivate })}>{edit.deactivate ? 'إلغاء الاستبعاد' : 'استبعاد من جدول الشعبة'}</button>
                         : excluded ? <button className={button} onClick={() => update({include: true, deactivate: false, periods: String(load.weekly_periods), employeeId: data.teachers.some(t => t.id === load.employee_id && isMatrixTeacherEligible(t, schoolId)) ? load.employee_id : null})}>إدراج المادة في جدول الشعبة</button>
                         : <button className={button} onClick={() => {const next = {...draft}; delete next[key]; changeDraft(next);}}>إلغاء الإدراج</button>}
-                      <button className={button} onClick={() => { if (allowLeave()) props.onAdvanced(load); }}>تعديل متقدم</button>
-                    </div>}
+                      <button className={button} onClick={() => { if (allowLeave()) props.onAdvanced(load, {class_id: data.class.id, section_id: section.id, subject_id: subject.id}); }}>{load ? 'تعديل متقدم' : 'إضافة نصاب / تزامن'}</button>
+                    </div>
                   </td>;
                 })}
                 <td className="p-3">{dirtyRows.has(subject.id) ? 'تعديل غير محفوظ' : 'محفوظ'}</td>

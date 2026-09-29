@@ -1,3 +1,5 @@
+import { countTimetableSectionPeriods, parallelTimetableLoadGroup, validateTimetableParallelLoads, type TimetableParallelLoadIssue } from './timetableParallel.ts';
+
 export const TIMETABLE_DAY_NAMES = [
   'الأحد',
   'الاثنين',
@@ -156,6 +158,7 @@ export interface TimetableTeachingLoad {
   employee_school_id?: number | null;
   employee_role?: string | null;
   weekly_periods: number;
+  parallel_with_load_id?: number | null;
   status: TimetableLoadStatus;
   created_at: number;
   updated_at: number;
@@ -179,6 +182,8 @@ export type TimetableEntryHardConflictCode =
   | 'inactive_day'
   | 'inactive_slot'
   | 'invalid_teaching_load'
+  | 'invalid_parallel_load'
+  | 'parallel_lesson_missing'
   | 'weekly_periods_exceeded'
   | 'class_section_collision'
   | 'teacher_collision'
@@ -482,6 +487,7 @@ export interface TimetableReadinessSummary {
   hard_constraint_violation_count: number;
   load_progress: TimetableLoadProgress[];
   entry_issues: TimetableEntryIssue[];
+  parallel_issues?: TimetableParallelLoadIssue[];
 }
 
 function asPositiveInteger(value: unknown): number | null {
@@ -595,13 +601,18 @@ export function validateTimetableLoadInput(input: Record<string, unknown>) {
   const subjectId = asPositiveInteger(input.subject_id);
   const employeeId = input.employee_id == null || input.employee_id === '' ? null : asPositiveInteger(input.employee_id);
   const weeklyPeriods = asPositiveInteger(input.weekly_periods);
+  const parallelWithLoadId = Object.prototype.hasOwnProperty.call(input, 'parallel_with_load_id')
+    ? input.parallel_with_load_id == null || input.parallel_with_load_id === '' ? null : asPositiveInteger(input.parallel_with_load_id)
+    : undefined;
   if (academicYearId == null) return { ok: false as const, error: 'السنة الدراسية مطلوبة' };
   if (classId == null) return { ok: false as const, error: 'الصف مطلوب' };
   if (input.section_id != null && input.section_id !== '' && sectionId == null) return { ok: false as const, error: 'الشعبة غير صالحة' };
   if (subjectId == null) return { ok: false as const, error: 'المادة مطلوبة' };
   if (input.employee_id != null && input.employee_id !== '' && employeeId == null) return { ok: false as const, error: 'الموظف غير صالح' };
   if (weeklyPeriods == null) return { ok: false as const, error: 'عدد الدروس الأسبوعية يجب أن يكون عددًا صحيحًا موجبًا' };
-  return { ok: true as const, value: { academicYearId, classId, sectionId, subjectId, employeeId, weeklyPeriods } };
+  if (input.parallel_with_load_id != null && input.parallel_with_load_id !== '' && parallelWithLoadId == null) return { ok: false as const, error: 'نصاب الدرس المتزامن غير صالح' };
+  return { ok: true as const, value: { academicYearId, classId, sectionId, subjectId, employeeId, weeklyPeriods,
+    ...(parallelWithLoadId === undefined ? {} : { parallelWithLoadId }) } };
 }
 
 export function validateTimetableGridScopeInput(input: Record<string, unknown>) {
@@ -997,6 +1008,15 @@ export function evaluateTimetableEntryPlacement(input: {
     hardConflicts.push(entryNotice('invalid_teaching_load', 'نصاب المادة غير فعال أو يحتوي على مرجع غير صالح'));
   }
   if (!slot || !load) return { hard_conflicts: hardConflicts, warnings };
+  const parallelGroup = parallelTimetableLoadGroup(load, input.loads);
+  const hasParallelLink = load.parallel_with_load_id != null
+    || input.loads.some(item => item.status === 'active' && item.parallel_with_load_id === load.id);
+  const validParallelGroup = parallelGroup.length === 2 && parallelGroup.every(item => (
+    !loadHasInvalidAcademicReference(item) && !loadHasInvalidTeacherReference(item)
+  ));
+  if (hasParallelLink && !validParallelGroup) {
+    hardConflicts.push(entryNotice('invalid_parallel_load', 'ربط الدروس المتزامنة غير صالح أو يشير إلى نصاب غير صالح'));
+  }
   if (Number(slot.school_id) !== Number(load.school_id)) {
     hardConflicts.push(entryNotice('invalid_tenant_scope', 'الفترة ونصاب المادة لا ينتميان إلى المدرسة نفسها'));
   }
@@ -1019,10 +1039,17 @@ export function evaluateTimetableEntryPlacement(input: {
   const sameSlotEntries = otherEntries.filter((entry) => Number(entry.slot_id) === Number(slot.id));
   const groupCollision = sameSlotEntries.some((entry) => {
     const existingLoad = loadById.get(Number(entry.teaching_load_id));
-    return existingLoad != null && timetableLoadsShareGroup(existingLoad, load);
+    return existingLoad != null && timetableLoadsShareGroup(existingLoad, load)
+      && !(validParallelGroup && existingLoad.id !== load.id && parallelGroup.some(member => member.id === existingLoad.id));
   });
   if (groupCollision) {
     hardConflicts.push(entryNotice('class_section_collision', 'يوجد درس آخر للصف أو الشعبة في هذه الفترة'));
+  }
+  if (input.validateWholeSchedule && validParallelGroup) {
+    const partner = parallelGroup.find(member => member.id !== load.id)!;
+    if (!sameSlotEntries.some(entry => entry.teaching_load_id === partner.id)) {
+      hardConflicts.push(entryNotice('parallel_lesson_missing', 'يجب أن يكون الدرسان المرتبطان في الفترة نفسها'));
+    }
   }
 
   if (load.employee_id != null) {
@@ -1173,7 +1200,20 @@ export function buildTimetableReadiness(input: {
   const inactivePlacedLoadIds = new Set(placedInactiveLoads.map((load) => Number(load.id)));
   const invalidAcademicLoadIds = new Set(demandLoads.filter(loadHasInvalidAcademicReference).map((load) => Number(load.id)));
   const invalidTeacherLoadIds = new Set(demandLoads.filter(loadHasInvalidTeacherReference).map((load) => Number(load.id)));
-  const invalidLoadIds = new Set([...invalidAcademicLoadIds, ...invalidTeacherLoadIds, ...inactivePlacedLoadIds]);
+  const parallelIssues = validateTimetableParallelLoads(input.loads);
+  const invalidParallelLoadIds = new Set(parallelIssues.map(issue => issue.load_id));
+  for (const load of activeLoads) {
+    const group = parallelTimetableLoadGroup(load, input.loads);
+    if (group.length === 2 && group.some(member => invalidAcademicLoadIds.has(member.id) || invalidTeacherLoadIds.has(member.id))) {
+      for (const member of group) {
+        if (invalidParallelLoadIds.has(member.id)) continue;
+        invalidParallelLoadIds.add(member.id);
+        parallelIssues.push({code: 'invalid_parallel_load', reason: 'invalid_reference', load_id: member.id,
+          parallel_with_load_id: member.parallel_with_load_id ?? null, message: 'أحد نصابي الدرسين المتزامنين يحتوي على مرجع أكاديمي أو مدرس غير صالح.'});
+      }
+    }
+  }
+  const invalidLoadIds = new Set([...invalidAcademicLoadIds, ...invalidTeacherLoadIds, ...inactivePlacedLoadIds, ...invalidParallelLoadIds]);
   const academicallyValidLoads = demandLoads.filter((load) => !invalidAcademicLoadIds.has(Number(load.id)));
   const missingTeacherLoads = activeLoads.filter((load) => (
     !invalidAcademicLoadIds.has(Number(load.id)) && load.employee_id == null
@@ -1226,6 +1266,20 @@ export function buildTimetableReadiness(input: {
     };
   });
   const progressByLoadId = new Map(loadProgress.map((item) => [item.teaching_load_id, item]));
+  // Keep per-subject progress and teacher demand separate; section occupancy
+  // counts one period only when both valid partners occupy it together.
+  const sectionDemand = (loads: TimetableTeachingLoad[]) => countTimetableSectionPeriods(loads)
+    + loads.filter(load => load.status !== 'active').reduce((sum, load) => sum + Number(load.weekly_periods), 0);
+  const sectionScheduled = (loads: TimetableTeachingLoad[]) => {
+    const seen = new Set<number>(); let total = 0;
+    for (const load of loads) {
+      if (seen.has(load.id)) continue;
+      const group = parallelTimetableLoadGroup(load, loads);
+      group.forEach(member => seen.add(member.id));
+      total += Math.min(...group.map(member => progressByLoadId.get(member.id)?.scheduled_periods ?? 0));
+    }
+    return total;
+  };
 
   const placements = input.placements.map<TimetableReadinessRow>((placement) => {
     const placementLoads = academicallyValidLoads.filter((load) => (
@@ -1243,13 +1297,9 @@ export function buildTimetableReadiness(input: {
     const missingSubjects = applicableSubjects
       .filter((subject) => !loadedSubjects.has(subject.id) && !excludedSubjects.has(subject.id))
       .map(({ id, name }) => ({ id, name }));
-    const requiredPeriods = placementLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0);
-    const scheduledPeriods = placementLoads.reduce((sum, load) => (
-      sum + (progressByLoadId.get(Number(load.id))?.scheduled_periods || 0)
-    ), 0);
-    const remainingPeriods = placementLoads.reduce((sum, load) => (
-      sum + (progressByLoadId.get(Number(load.id))?.remaining_periods || 0)
-    ), 0);
+    const requiredPeriods = sectionDemand(placementLoads);
+    const scheduledPeriods = sectionScheduled(placementLoads);
+    const remainingPeriods = Math.max(0, requiredPeriods - scheduledPeriods);
     const difference = capacity.weeklyCapacity - requiredPeriods;
     const status = capacity.weeklyCapacity === 0
       ? 'empty_week'
@@ -1304,8 +1354,8 @@ export function buildTimetableReadiness(input: {
       employee_name: summary.employee_name,
     }))
   ));
-  const totalScheduledPeriods = loadProgress.reduce((sum, item) => sum + item.scheduled_periods, 0);
-  const totalUnscheduledPeriods = loadProgress.reduce((sum, item) => sum + item.remaining_periods, 0);
+  const totalScheduledPeriods = sectionScheduled(academicallyValidLoads);
+  const totalUnscheduledPeriods = Math.max(0, sectionDemand(academicallyValidLoads) - totalScheduledPeriods);
   const foundationReady = placements.length > 0
     && capacity.weeklyCapacity > 0
     && invalidLoadIds.size === 0
@@ -1317,7 +1367,7 @@ export function buildTimetableReadiness(input: {
     teaching_days: capacity.teachingDays,
     lesson_slots: capacity.lessonSlots,
     break_slots: capacity.breakSlots,
-    total_required_periods: academicallyValidLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0),
+    total_required_periods: sectionDemand(academicallyValidLoads),
     total_assignments: demandLoads.length,
     active_teachers: teacherWorkloads.length,
     missing_teacher_count: missingTeacherLoads.length,
@@ -1333,6 +1383,7 @@ export function buildTimetableReadiness(input: {
     hard_constraint_violation_count: entryIssues.length,
     load_progress: loadProgress,
     entry_issues: entryIssues,
+    parallel_issues: parallelIssues,
   };
 }
 

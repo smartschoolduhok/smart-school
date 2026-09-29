@@ -1,3 +1,4 @@
+import { countTimetableSectionPeriods } from './timetableParallel.ts';
 import {
   evaluateTimetableEntryPlacement, calculateTeacherAvailabilitySummary, activeTimetableLessonSlots, occupiedTimetableDays, loadHasInvalidAcademicReference,
   type TimetableDay, type TimetableSlot, type TimetableEntry, type TimetableTeachingLoad,
@@ -220,7 +221,7 @@ function scheduleEvidence(c: WeekContext) {
     for (const sectionId of sections.length ? sections : [null]) {
       const className = classLoads[0].class_name || 'المحدد';
       const sectionName = classLoads.find(l => l.section_id === sectionId)?.section_name || 'المحددة';
-      const demand = classLoads.filter(l => l.section_id === sectionId).reduce((total, l) => total + l.weekly_periods, 0);
+      const demand = countTimetableSectionPeriods(classLoads.filter(l => l.section_id === sectionId));
       const shortage = Math.max(0, demand - activeSlots.length);
       if (shortage > 0) evidence.set(`placement:${classId}:${sectionId ?? 'none'}:capacity_deficit`, {severity: shortage, notice: {
         code: 'placement_weekly_capacity_exceeded', class_id: classId, section_id: sectionId,

@@ -1,4 +1,5 @@
 import { activeTimetableLessonSlots, type TimetableTeachingLoad } from './timetable.ts';
+import { parallelExclusionArchiveStatements } from './timetableParallelDb.ts';
 import {
   type MatrixContext, type MatrixScope, type MatrixPlan,
   STALE_MATRIX_CODE, STALE_MATRIX_MESSAGE, summarizeMatrix,
@@ -76,13 +77,22 @@ export function buildMatrixApplyStatements(db: D1Database, scope: Required<Matri
   const statements = [db.prepare(`INSERT INTO timetable_revision_assertions
     (token, school_id, academic_year_id, expected_revision) VALUES (?, ?, ?, ?)`)
     .bind(token, scope.school_id, scope.academic_year_id, plan.revision)];
+  if (plan.exclusion_snapshot) statements.push(...parallelExclusionArchiveStatements(db, scope, userId, plan.exclusion_snapshot, plan.revision));
   const updates = plan.items.filter(i => i.action === 'update');
   const creates = plan.items.filter(i => i.action === 'create');
-  const deactivations = plan.items.filter(i => i.action === 'deactivate');
+  const deactivations = plan.items.filter(i => i.action === 'deactivate' && i.existing_load_id != null);
+  const exclusions = plan.items.filter(i => i.action === 'deactivate' && i.existing_load_id == null);
   // Bind validated numeric/null data, never interpolate it into SQL. Each
   // non-empty group is ONE statement regardless of cell count (maximum 500).
   const group = (sql: string, values: unknown[]) => db.prepare(sql).bind(
     JSON.stringify(values), scope.school_id, scope.academic_year_id, scope.class_id, userId);
+  // Unlink excluded pairs before assigning teachers to surviving loads.
+  if (deactivations.length) {
+    statements.push(group(`UPDATE timetable_teaching_loads
+      SET status = 'inactive', updated_by_user_id = ?5, updated_at = unixepoch()
+      WHERE school_id = ?2 AND academic_year_id = ?3 AND class_id = ?4 AND status = 'active'
+        AND id IN (SELECT value FROM json_each(?1))`, deactivations.map(i => i.existing_load_id)));
+  }
   // Clear ONLY changing, previously assigned teachers, inside this same batch.
   // This permits coupled swaps without weakening any DB trigger.
   const changingTeachers = updates.filter(i => i.old_employee_id != null && i.old_employee_id !== i.new_employee_id);
@@ -112,11 +122,15 @@ export function buildMatrixApplyStatements(db: D1Database, scope: Required<Matri
         AND school_id = ?2 AND academic_year_id = ?3 AND class_id = ?4 AND status = 'active'`,
       updates.map(i => ({ id: i.existing_load_id, employee_id: i.new_employee_id, weekly_periods: i.new_weekly_periods }))));
   }
-  if (deactivations.length) {
-    statements.push(group(`UPDATE timetable_teaching_loads
-      SET status = 'inactive', updated_by_user_id = ?5, updated_at = unixepoch()
-      WHERE school_id = ?2 AND academic_year_id = ?3 AND class_id = ?4 AND status = 'active'
-        AND id IN (SELECT value FROM json_each(?1))`, deactivations.map(i => i.existing_load_id)));
+  if (exclusions.length) {
+    // An inactive marker records an explicit decision for a previously empty
+    // cell. Its positive storage count is never active timetable demand.
+    statements.push(group(`INSERT INTO timetable_teaching_loads
+      (school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods,
+       status, created_by_user_id, updated_by_user_id)
+      SELECT ?2, ?3, ?4, json_extract(value, '$.section_id'), json_extract(value, '$.subject_id'),
+        NULL, 1, 'inactive', ?5, ?5
+      FROM json_each(?1) ORDER BY CAST(key AS INTEGER)`, exclusions.map(i => ({section_id: i.section_id, subject_id: i.subject_id}))));
   }
   // Even a confirmed all-unchanged apply consumes its revision. Capture the
   // response revision in this batch, never through a post-commit plan reread.
@@ -134,6 +148,7 @@ export function matrixDatabaseError(error: unknown): MatrixError | null {
   const message = error instanceof Error ? error.message : String(error);
   if (/stale_timetable_proposal/.test(message)) return staleMatrixError();
   const failures: Array<[RegExp, string, string]> = [
+    [/timetable week draft attendance pending/, 'draft_attendance_blocks_exclusion', 'توجد جلسة حضور مسودة مرتبطة بدروس المادة؛ أكملها أو ألغها قبل استبعاد المادة.'],
     [/teacher collision/, 'teacher_collision', 'المدرس مرتبط بدرس آخر في الفترة نفسها.'],
     [/teacher unavailable/, 'teacher_unavailable', 'المدرس غير متاح في إحدى الدروس المجدولة.'],
     [/max periods per day/, 'teacher_max_periods_per_day', 'تجاوز المدرس الحد الأقصى للدروس اليومية.'],

@@ -86,6 +86,15 @@ for(const kind of ['archived','nonteacher','other-school','missing'])test(`rende
  assert.match(source,/presentation.state === 'invalid_teacher' \? 'bg-red-50'/);assert.match(source,/value="invalid-teacher"/);assert.match(source,/matrixLoadTeacherState\(l\) === 'invalid_teacher'/);
 });
 
+test('scheduled exclusion preview states selected-only archive/removal and does not claim its locks remain',async()=>{
+ const f=fixture();const c=await loadTeachingLoadMatrix(f.d1,1,1,1);
+ const plan=planTeachingLoadMatrix(c,[{subject_id:1,section_id:1,action:'deactivate'}]);
+ plan.items[0]={...plan.items[0],removed_entry_count:2,locked_entry_count:1};
+ const html=renderToStaticMarkup(React.createElement(MatrixPlanSummary,{plan}));
+ assert.match(html,/سيُحفظ أرشيف وتُزال 2 من دروس هذه المادة وحدها/);assert.match(html,/تبقى دروس المادة المتزامنة الأخرى كما هي/);
+ assert.match(html,/يشمل الاستبعاد هذه الدروس المثبتة/);assert.doesNotMatch(html,/تبقى مواقعها وأقفالها كما هي/);
+});
+
 test('section totals render draft changes against saved capacity and disclose invalid counts without filling gaps',async()=>{
  const f=fixture();const data=publicTeachingLoadMatrix(await loadTeachingLoadMatrix(f.d1,1,1,1));
  const html=renderToStaticMarkup(React.createElement(MatrixSectionTotals,{data:{...data,weekly_capacity:9},draft:{'1:1':{periods:'11'},'1:2':{deactivate:true},'2:1':{periods:'0'}}}));
@@ -119,6 +128,11 @@ test('interactive excluded cells stay disabled, reinclude explicitly, and totals
  await input(find('عدد الدروس لجميع شعب Math'),'3');await click(button('تطبيق على الشعب غير المستبعدة',find('عدد الدروس لجميع شعب Math').closest('td')));
  assert.equal(find('دروس Math / A').disabled,true);assert.equal(find('دروس Math / B').disabled,true);
  await click(button('إلغاء الاستبعاد',find('دروس Math / A').closest('td')));assert.equal(find('دروس Math / A').value,'4');
- await input(find('دروس Arabic / A'),'0');assert.match(find('دروس Arabic / A').closest('td').textContent,/الصفر لا ينشئ نصابًا أو استبعادًا/);
+ await input(find('دروس Arabic / A'),'0');assert.match(find('دروس Arabic / A').closest('td').textContent,/للعدد صفر استعمل زر الاستبعاد/);
+ await click(button('استبعاد من جدول الشعبة',find('دروس Arabic / A').closest('td')));
+ assert.equal(find('دروس Arabic / A').disabled,true);assert.equal(find('دروس Arabic / A').value,'0');
+ assert.match(find('دروس Arabic / A').closest('td').textContent,/استبعاد غير محفوظ/);
+ await click(button('إلغاء الاستبعاد',find('دروس Arabic / A').closest('td')));
+ assert.equal(find('دروس Arabic / A').disabled,false);
  assert.deepEqual(calls.map(call=>call.method),['GET']);
 });

@@ -5,6 +5,7 @@
 // ===========================================
 
 import { Hono } from 'hono'
+import { ParallelTimetableError, parallelLoads, parallelEntryGroup, newParallelEntry, validateParallelEntryProjection, parallelEntryStatements, parallelLockStatements, parallelLoadDeactivationStatements, linkedScheduleProjection, assertParallelLoads } from './lib/timetableParallelDb'
 import { parseTimetableScope, timetableLoadMatchesScope, scopedTimetableSolverLoads, collectTimetableFixedEntries, type TimetableScope } from './lib/timetableScope'
 import { signTimetableScope, verifyTimetableScope } from './lib/timetableScopeIntegrity'
 import { getCookie, setCookie } from 'hono/cookie'
@@ -2896,6 +2897,14 @@ app.post('/api/timetable/teaching-load-matrix/copy-preview', requireSameSchoolOr
   }
 })
 
+function parallelLoadProjection(id:number, school:number, value:{academicYearId:number;classId:number;sectionId:number|null;subjectId:number;employeeId:number|null;weeklyPeriods:number;parallelWithLoadId?:number|null}): TimetableTeachingLoad {
+  return {id,school_id:school,academic_year_id:value.academicYearId,class_id:value.classId,section_id:value.sectionId,subject_id:value.subjectId,
+    employee_id:value.employeeId,weekly_periods:value.weeklyPeriods,parallel_with_load_id:value.parallelWithLoadId??null,status:'active',created_at:0,updated_at:0,
+    class_status:'active',class_school_id:school,section_status:value.sectionId==null?null:'active',section_school_id:school,section_class_id:value.classId,
+    subject_status:'active',subject_school_id:school,subject_class_id:value.classId,subject_section_id:null,
+    employee_status:value.employeeId==null?null:'active',employee_school_id:school,employee_role:'teacher'}
+}
+
 app.post('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const user = c.get('user') as UserContext
   try {
@@ -2907,6 +2916,23 @@ app.post('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRol
     if (!validation.ok) return c.json({ error: validation.error }, 400)
     const references = await validateTimetableLoadReferences(c.env.DB, targetSchool.schoolId, validation.value)
     if (!references.ok) return c.json({ error: references.error }, references.status)
+    if (validation.value.parallelWithLoadId != null) {
+      const school = targetSchool.schoolId, value = validation.value
+      const revision = await loadCurrentTimetableRevision(c.env.DB, school, value.academicYearId)
+      const context = await loadTimetableSchedulingContext(c.env.DB, school, value.academicYearId)
+      // The projected ID is resolved to SQLite's allocated ID inside the same
+      // batch, so a concurrent insert in another school cannot steal it.
+      const id = -1
+      const projected = parallelLoadProjection(id, school, value)
+      const updated = {...context, loads:[...context.loads,projected]}
+      assertParallelLoads(updated)
+      const sync = linkedScheduleProjection(updated,id)
+      const insert = c.env.DB.prepare(`INSERT INTO timetable_teaching_loads(school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status,parallel_with_load_id,created_by_user_id,updated_by_user_id)
+        VALUES(?,?,?,?,?,?,?,'active',?,?,?)`).bind(school,value.academicYearId,value.classId,value.sectionId,value.subjectId,value.employeeId,value.weeklyPeriods,value.parallelWithLoadId,user.id,user.id)
+      await c.env.DB.batch(parallelEntryStatements(c.env.DB,school,value.academicYearId,user.id,revision,sync.before,sync.after,[insert],{temporaryId:id,primaryId:value.parallelWithLoadId!}))
+      const load = await c.env.DB.prepare("SELECT * FROM timetable_teaching_loads WHERE school_id=? AND academic_year_id=? AND parallel_with_load_id=? AND status='active'").bind(school,value.academicYearId,value.parallelWithLoadId).first<TimetableTeachingLoad>()
+      return c.json({data:load},201)
+    }
     const result = await c.env.DB.prepare(`
       INSERT INTO timetable_teaching_loads (
         school_id, academic_year_id, class_id, section_id, subject_id,
@@ -2927,6 +2953,8 @@ app.post('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRol
       .bind(result.meta.last_row_id, targetSchool.schoolId).first<TimetableTeachingLoad>()
     return c.json({ data: load }, 201)
   } catch (error) {
+    if (error instanceof ParallelTimetableError) return c.json({error:error.message,code:error.code},error.status as 409)
+    if (/timetable .*parallel|stale_timetable_proposal/.test(String(error))) return c.json({error:'تعذر ربط الدرسين. تحقق من توافق النصابين ثم أعد المحاولة.',code:'invalid_parallel_load'},409)
     if (isTimetableConstraintError(error)) return c.json({ error: 'يوجد نصاب فعال لهذه المادة في الصف والشعبة المحددين' }, 409)
     return c.json({ error: 'فشل في إنشاء نصاب المادة' }, 500)
   }
@@ -2941,8 +2969,8 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
     if (!body) return c.json({ error: 'بيانات النصاب غير صالحة' }, 400)
     const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
-    const existing = await c.env.DB.prepare('SELECT school_id, academic_year_id FROM timetable_teaching_loads WHERE id = ?')
-      .bind(id).first<{ school_id: number; academic_year_id: number }>()
+    const existing = await c.env.DB.prepare('SELECT * FROM timetable_teaching_loads WHERE id = ?')
+      .bind(id).first<TimetableTeachingLoad>()
     if (!existing) return c.json({ error: 'النصاب غير موجود' }, 404)
     if (Number(existing.school_id) !== targetSchool.schoolId) return c.json({ error: 'غير مسموح: النصاب من مدرسة أخرى' }, 403)
     const validation = validateTimetableLoadInput(body)
@@ -2950,6 +2978,23 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
     if (Number(existing.academic_year_id) !== validation.value.academicYearId) return c.json({ error: 'لا يمكن نقل النصاب إلى سنة دراسية أخرى' }, 400)
     const references = await validateTimetableLoadReferences(c.env.DB, targetSchool.schoolId, validation.value)
     if (!references.ok) return c.json({ error: references.error }, references.status)
+    const peer = await c.env.DB.prepare('SELECT * FROM timetable_teaching_loads WHERE school_id=? AND academic_year_id=?').bind(targetSchool.schoolId,validation.value.academicYearId).all<TimetableTeachingLoad>()
+    const hasPair = existing.parallel_with_load_id != null || (peer.results || []).some(l=>l.status==='active'&&l.parallel_with_load_id===id)
+    if (hasPair || validation.value.parallelWithLoadId !== undefined) {
+      const school = targetSchool.schoolId, value = validation.value
+      const revision = await loadCurrentTimetableRevision(c.env.DB,school,value.academicYearId)
+      const context = await loadTimetableSchedulingContext(c.env.DB,school,value.academicYearId)
+      const parallelId = value.parallelWithLoadId === undefined ? existing.parallel_with_load_id ?? null : value.parallelWithLoadId
+      const projected = {...parallelLoadProjection(id,school,value),parallel_with_load_id:parallelId}
+      const updated = {...context,loads:context.loads.map(l=>l.id===id?projected:l)}
+      assertParallelLoads(updated)
+      const sync = linkedScheduleProjection(updated,id)
+      const update = c.env.DB.prepare(`UPDATE timetable_teaching_loads SET class_id=?,section_id=?,subject_id=?,employee_id=?,weekly_periods=?,status='active',parallel_with_load_id=?,updated_by_user_id=?,updated_at=unixepoch()
+        WHERE id=? AND school_id=? AND academic_year_id=?`).bind(value.classId,value.sectionId,value.subjectId,value.employeeId,value.weeklyPeriods,parallelId,user.id,id,school,value.academicYearId)
+      await c.env.DB.batch(parallelEntryStatements(c.env.DB,school,value.academicYearId,user.id,revision,sync.before,sync.after,[update]))
+      const load = await c.env.DB.prepare('SELECT * FROM timetable_teaching_loads WHERE id=? AND school_id=?').bind(id,school).first<TimetableTeachingLoad>()
+      return c.json({data:load})
+    }
     await c.env.DB.prepare(`
       UPDATE timetable_teaching_loads SET
         class_id = ?, section_id = ?, subject_id = ?, employee_id = ?,
@@ -2970,7 +3015,10 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
       .bind(id, targetSchool.schoolId).first<TimetableTeachingLoad>()
     return c.json({ data: load })
   } catch (error) {
+    if (error instanceof ParallelTimetableError) return c.json({error:error.message,code:error.code},error.status as 409)
     const message = error instanceof Error ? error.message : String(error)
+    if (/timetable parallel scheduled load/.test(message)) return c.json({error:'أزل دروس هذا النصاب من الجدول قبل فك الربط أو تعطيله.',code:'parallel_load_has_entries'},409)
+    if (/timetable .*parallel|stale_timetable_proposal/.test(message)) return c.json({error:'يجب أن يتساوى عدد الدروس وتختلف المادة والمدرس للدرسين المتزامنين. فك الربط أولًا لتعديل أحد النصابين بصورة مستقلة.',code:'invalid_parallel_load'},409)
     if (/timetable load has scheduled entries/i.test(message)) {
       return c.json({ error: 'توجد دروس مجدولة مرتبطة بهذا النصاب تمنع تغيير صفه أو شعبته أو مادته.' }, 400)
     }
@@ -2992,17 +3040,44 @@ app.delete('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), requ
   if (!body) return c.json({ error: 'سياق تعطيل النصاب غير صالح' }, 400)
   const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
   if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
-  const existing = await c.env.DB.prepare('SELECT school_id, academic_year_id FROM timetable_teaching_loads WHERE id = ?')
-    .bind(id).first<{ school_id: number; academic_year_id: number }>()
+  const existing = await c.env.DB.prepare('SELECT * FROM timetable_teaching_loads WHERE id = ?')
+    .bind(id).first<TimetableTeachingLoad>()
   if (!existing) return c.json({ error: 'النصاب غير موجود' }, 404)
   if (Number(existing.school_id) !== targetSchool.schoolId) return c.json({ error: 'غير مسموح: النصاب من مدرسة أخرى' }, 403)
   if (Number(body.academic_year_id) !== Number(existing.academic_year_id)) return c.json({ error: 'السنة الدراسية لا تطابق النصاب' }, 400)
-  await c.env.DB.prepare(`
-    UPDATE timetable_teaching_loads
-    SET status = 'inactive', updated_by_user_id = ?, updated_at = unixepoch()
-    WHERE id = ? AND school_id = ? AND academic_year_id = ?
-  `).bind(user.id, id, targetSchool.schoolId, existing.academic_year_id).run()
-  return c.json({ data: { id, status: 'inactive' } })
+  try {
+    const school=targetSchool.schoolId,year=Number(existing.academic_year_id)
+    const loads=await c.env.DB.prepare('SELECT * FROM timetable_teaching_loads WHERE school_id=? AND academic_year_id=?').bind(school,year).all<TimetableTeachingLoad>()
+    const linked=existing.parallel_with_load_id!=null||(loads.results||[]).some(l=>l.status==='active'&&l.parallel_with_load_id===id)
+    if(linked){
+    const revision=await loadCurrentTimetableRevision(c.env.DB,school,year)
+    const context=await loadTimetableSchedulingContext(c.env.DB,school,year)
+    const scheduled=context.entries.filter(e=>e.teaching_load_id===id)
+    if(parallelLoads(context,id).length===2 && scheduled.length){
+      if(body.confirm_deactivate_scheduled!==true)return c.json({error:'سيتم حفظ نسخة من دروس المادة المختارة ثم إزالتها من الجدول، بما فيها الدروس المثبتة. تبقى دروس المادة الأخرى دون تغيير.',code:'parallel_load_deactivation_confirmation_required',data:{scheduled_count:scheduled.length,locked_count:scheduled.filter(e=>e.is_locked===1).length,revision}},409)
+      if(!Number.isSafeInteger(body.expected_revision)||Number(body.expected_revision)!==revision)return c.json({error:'تغيّر الجدول. أعد تحميله وراجع التأكيد مجددًا.',code:'stale_timetable_proposal'},409)
+      const token=crypto.randomUUID()
+      const removal=parallelLoadDeactivationStatements(c.env.DB,{context,schoolId:school,academicYearId:year,userId:user.id,revision,loadIds:[id]})
+      await c.env.DB.batch([
+        c.env.DB.prepare('INSERT INTO timetable_revision_assertions(token,school_id,academic_year_id,expected_revision) VALUES(?,?,?,?)').bind(token,school,year,revision),
+        ...removal.statements,
+        c.env.DB.prepare('DELETE FROM timetable_revision_assertions WHERE token=?').bind(token)
+      ])
+      return c.json({data:{id,status:'inactive',archived_entry_count:scheduled.length}})
+    }
+    }
+    await c.env.DB.prepare(`
+      UPDATE timetable_teaching_loads
+      SET status = 'inactive', updated_by_user_id = ?, updated_at = unixepoch()
+      WHERE id = ? AND school_id = ? AND academic_year_id = ?
+    `).bind(user.id, id, targetSchool.schoolId, existing.academic_year_id).run()
+    return c.json({ data: { id, status: 'inactive' } })
+  } catch(error) {
+    const known=weekDatabaseError(error)
+    if(known)return c.json({error:known.message,code:known.code},known.status)
+    if (/timetable parallel scheduled load/.test(String(error))) return c.json({error:'أزل دروس هذا النصاب من الجدول قبل تعطيله. سيبقى النصاب الآخر فعالًا دون تغيير مدرسه أو عدد دروسه.',code:'parallel_load_has_entries'},409)
+    return c.json({error:'تعذر تعطيل النصاب؛ لم تتغير البيانات.'},409)
+  }
 })
 
 app.get('/api/timetable/teacher-availability', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
@@ -3996,6 +4071,17 @@ app.post('/api/timetable/entries', requireSameSchoolOrAdmin(), requireRoles(ACAD
       validation.value.teachingLoadId,
     )
     if (!references.ok) return c.json({ error: references.error, code: references.code }, references.status)
+    if (parallelLoads(context,validation.value.teachingLoadId).length===2) {
+      const school=targetSchool.schoolId,yearId=validation.value.academicYearId
+      const revision=await loadCurrentTimetableRevision(c.env.DB,school,yearId)
+      const current=await loadTimetableSchedulingContext(c.env.DB,school,yearId)
+      const group=parallelLoads(current,validation.value.teachingLoadId)
+      const after=group.map((load,i)=>newParallelEntry(school,yearId,validation.value.slotId,load.id,-1-i,user.id))
+      const evaluation=validateParallelEntryProjection(current,[],after)
+      await c.env.DB.batch(parallelEntryStatements(c.env.DB,school,yearId,user.id,revision,[],after))
+      const entry=await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE school_id=? AND academic_year_id=? AND slot_id=? AND teaching_load_id=?').bind(school,yearId,validation.value.slotId,validation.value.teachingLoadId).first<TimetableEntry>()
+      return c.json({data:entry?timetableGridEntry(entry,group.find(l=>l.id===validation.value.teachingLoadId)!,evaluation.warnings):entry,meta:evaluation},201)
+    }
     const evaluation = evaluateTimetableEntryPlacement({
       candidate: { slot_id: validation.value.slotId, teaching_load_id: validation.value.teachingLoadId },
       days: context.days,
@@ -4028,6 +4114,7 @@ app.post('/api/timetable/entries', requireSameSchoolOrAdmin(), requireRoles(ACAD
     const load = context.loads.find((item) => Number(item.id) === validation.value.teachingLoadId)!
     return c.json({ data: entry ? timetableGridEntry(entry, load, evaluation.warnings) : entry, meta: { warnings: evaluation.warnings } }, 201)
   } catch (error) {
+    if (error instanceof ParallelTimetableError) return c.json({error:error.message,code:error.code},error.status as 409)
     const conflict = timetableEntryConstraintError(error)
     if (conflict) return c.json({ error: conflict.error, code: conflict.code }, conflict.status)
     return c.json({ error: 'فشل في جدولة الدرس' }, 500)
@@ -4098,6 +4185,15 @@ app.put('/api/timetable/entries/:id/lock', requireSameSchoolOrAdmin(), requireRo
     if (Number(existing.academic_year_id) !== academicYearId) {
       return c.json({ error: 'الدرس المجدول لا ينتمي إلى السنة الدراسية المحددة', code: 'invalid_academic_year' }, 400)
     }
+    const context=await loadTimetableSchedulingContext(c.env.DB,targetSchool.schoolId,academicYearId)
+    if(parallelLoads(context,existing.teaching_load_id).length===2){
+      const revision=await loadCurrentTimetableRevision(c.env.DB,targetSchool.schoolId,academicYearId)
+      const current=await loadTimetableSchedulingContext(c.env.DB,targetSchool.schoolId,academicYearId)
+      const before=parallelEntryGroup(current,existing)
+      await c.env.DB.batch(parallelLockStatements(c.env.DB,targetSchool.schoolId,academicYearId,user.id,revision,before,isLocked as 0|1))
+      const entry=await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE id=? AND school_id=?').bind(id,targetSchool.schoolId).first<TimetableEntry>()
+      return c.json({data:{entry,revision:await loadCurrentTimetableRevision(c.env.DB,targetSchool.schoolId,academicYearId)}})
+    }
     if (Number(existing.is_locked) !== isLocked) {
       if (Number(existing.is_locked) === 1) {
         const overrideToken = crypto.randomUUID()
@@ -4128,7 +4224,9 @@ app.put('/api/timetable/entries/:id/lock', requireSameSchoolOrAdmin(), requireRo
       loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
     ])
     return c.json({ data: { entry, revision } })
-  } catch {
+  } catch(error) {
+    if (error instanceof ParallelTimetableError) return c.json({error:error.message,code:error.code},error.status as 409)
+    if (/stale_timetable_proposal/.test(String(error))) return c.json({error:STALE_TIMETABLE_PROPOSAL_MESSAGE,code:STALE_TIMETABLE_PROPOSAL_CODE},409)
     return c.json({ error: 'فشل في تغيير حالة تثبيت الدرس' }, 500)
   }
 })
@@ -4189,6 +4287,23 @@ app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(A
       nextLoadId,
     )
     if (!references.ok) return c.json({ error: references.error, code: references.code }, references.status)
+    if(parallelLoads(context,existing.teaching_load_id).length===2||parallelLoads(context,nextLoadId).length===2){
+      const school=targetSchool.schoolId,yearId=validation.value.academicYearId
+      const revision=replacingLoad?Number(body.expected_revision):await loadCurrentTimetableRevision(c.env.DB,school,yearId)
+      const current=await loadTimetableSchedulingContext(c.env.DB,school,yearId)
+      const before=parallelEntryGroup(current,existing)
+      const currentEntry=before.find(e=>e.id===id)!
+      if(before.some(e=>e.is_locked===1)&&(replacingLoad||body.confirm_unlock_locked_entry!==true)) throw new ParallelTimetableError('locked_entry_requires_confirmation','ألغِ تثبيت الدرسين المتزامنين قبل تعديلهما.')
+      const group=parallelLoads(current,nextLoadId)
+      const after=group.map((load,i)=>{
+        const saved=before.find(e=>e.teaching_load_id===load.id)||(load.id===nextLoadId?currentEntry:null)
+        return saved?{...saved,teaching_load_id:load.id,slot_id:validation.value.slotId,is_locked:0 as const}:newParallelEntry(school,yearId,validation.value.slotId,load.id,-1-i,user.id)
+      })
+      const evaluation=validateParallelEntryProjection(current,before,after)
+      await c.env.DB.batch(parallelEntryStatements(c.env.DB,school,yearId,user.id,revision,before,after))
+      const entry=await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE school_id=? AND academic_year_id=? AND slot_id=? AND teaching_load_id=?').bind(school,yearId,validation.value.slotId,nextLoadId).first<TimetableEntry>()
+      return c.json({data:entry?timetableGridEntry(entry,group.find(l=>l.id===nextLoadId)!,evaluation.warnings):entry,meta:evaluation})
+    }
     const evaluation = evaluateTimetableEntryPlacement({
       candidate: { id, slot_id: validation.value.slotId, teaching_load_id: nextLoadId },
       days: context.days,
@@ -4248,6 +4363,7 @@ app.put('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRoles(A
     const load = context.loads.find((item) => Number(item.id) === nextLoadId)!
     return c.json({ data: entry ? timetableGridEntry(entry, load, evaluation.warnings) : entry, meta: { warnings: evaluation.warnings } })
   } catch (error) {
+    if (error instanceof ParallelTimetableError) return c.json({error:error.message,code:error.code},error.status as 409)
     if (/stale_timetable_proposal/.test(error instanceof Error ? error.message : String(error))) {
       return c.json({ error: 'تغير الجدول أثناء التعديل. أعد تحميله ثم حاول مجددًا.', code: 'stale_timetable_proposal' }, 409)
     }
@@ -4313,6 +4429,20 @@ app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRo
       const load = context.loads.find((item) => Number(item.id) === Number(entry.teaching_load_id))
       return load != null && timetableLoadsShareGroup(sourceLoad, load)
     })
+    if(parallelLoads(context,existing.teaching_load_id).length===2||targetGroupEntries.some(e=>parallelLoads(context,e.teaching_load_id).length===2)){
+      const beforeSource=parallelEntryGroup(context,existing)
+      const target=validation.value.targetEntryId==null?null:targetGroupEntries.find(e=>e.id===validation.value.targetEntryId)
+      if((!target&&targetGroupEntries.length)|| (validation.value.targetEntryId!=null&&!target)) throw new ParallelTimetableError('stale_timetable_drop','تغيّر محتوى الفترة الهدف. أعد تحميل الجدول.')
+      const beforeTarget=target?parallelEntryGroup(context,target):[]
+      if(beforeTarget.length!==targetGroupEntries.length) throw new ParallelTimetableError('ambiguous_timetable_drop_target','الفترة الهدف تحتوي على دروس متعارضة لا تنتمي إلى زوج متزامن واحد.')
+      if([...beforeSource,...beforeTarget].some(e=>e.is_locked===1)) throw new ParallelTimetableError('locked_entry_requires_confirmation','ألغِ تثبيت الدروس المتزامنة قبل نقلها.')
+      const before=[...beforeSource,...beforeTarget]
+      const after=[...beforeSource.map(e=>({...e,slot_id:validation.value.targetSlotId})),...beforeTarget.map(e=>({...e,slot_id:validation.value.sourceSlotId}))]
+      const evaluation=validateParallelEntryProjection(context,before,after,true)
+      await c.env.DB.batch(parallelEntryStatements(c.env.DB,targetSchool.schoolId,validation.value.academicYearId,user.id,validation.value.expectedRevision,before,after))
+      const saved=await c.env.DB.prepare('SELECT * FROM timetable_entries WHERE school_id=? AND academic_year_id=? AND id IN(SELECT value FROM json_each(?)) ORDER BY id').bind(targetSchool.schoolId,validation.value.academicYearId,JSON.stringify(before.map(e=>e.id))).all<TimetableEntry>()
+      return c.json({data:{operation:target?'swap':'move',entries:saved.results||[],revision:await loadCurrentTimetableRevision(c.env.DB,targetSchool.schoolId,validation.value.academicYearId)},meta:evaluation})
+    }
     if (targetGroupEntries.length > 1) return c.json({
       error: 'توجد عدة دروس متعارضة في الموقع الهدف. أصلح التعارض قبل التبديل.',
       code: 'ambiguous_timetable_drop_target',
@@ -4445,6 +4575,7 @@ app.put('/api/timetable/entries/:id/drop', requireSameSchoolOrAdmin(), requireRo
       meta: { warnings, conflicts },
     })
   } catch (error) {
+    if (error instanceof ParallelTimetableError) return c.json({error:error.message,code:error.code},error.status as 409)
     if (/stale_timetable_proposal/.test(error instanceof Error ? error.message : String(error))) {
       return c.json({
         error: 'تغيّر الجدول أثناء النقل. أُعيد تحميله دون تنفيذ أي تغيير.',
@@ -4483,6 +4614,15 @@ app.delete('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRole
     }, 409)
   }
   try {
+    const context=await loadTimetableSchedulingContext(c.env.DB,targetSchool.schoolId,academicYearId)
+    if(parallelLoads(context,existing.teaching_load_id).length===2){
+      const revision=await loadCurrentTimetableRevision(c.env.DB,targetSchool.schoolId,academicYearId)
+      const current=await loadTimetableSchedulingContext(c.env.DB,targetSchool.schoolId,academicYearId)
+      const before=parallelEntryGroup(current,existing)
+      if(before.some(e=>e.is_locked===1)&&body.confirm_unlock_locked_entry!==true) throw new ParallelTimetableError('locked_entry_requires_confirmation','يلزم تأكيد إلغاء تثبيت الدرسين المتزامنين قبل حذفهما.')
+      await c.env.DB.batch(parallelEntryStatements(c.env.DB,targetSchool.schoolId,academicYearId,user.id,revision,before,[]))
+      return c.json({data:{id,deleted_ids:before.map(e=>e.id)}})
+    }
     if (Number(existing.is_locked) === 1) {
       const overrideToken = crypto.randomUUID()
       await c.env.DB.batch([
@@ -4509,7 +4649,9 @@ app.delete('/api/timetable/entries/:id', requireSameSchoolOrAdmin(), requireRole
       `).bind(id, targetSchool.schoolId, academicYearId).run()
     }
     return c.json({ data: { id } })
-  } catch {
+  } catch(error) {
+    if (error instanceof ParallelTimetableError) return c.json({error:error.message,code:error.code},error.status as 409)
+    if (/stale_timetable_proposal/.test(String(error))) return c.json({error:STALE_TIMETABLE_PROPOSAL_MESSAGE,code:STALE_TIMETABLE_PROPOSAL_CODE},409)
     return c.json({ error: 'فشل في حذف الدرس المجدول' }, 500)
   }
 })

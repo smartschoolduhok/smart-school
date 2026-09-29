@@ -96,12 +96,83 @@ test('deterministic mixed create/update/no-op/deactivate and inactive history pr
  const f=fixture(); f.db.exec("INSERT INTO timetable_teaching_loads(school_id,academic_year_id,class_id,section_id,subject_id,weekly_periods,status) VALUES(1,1,1,1,2,2,'inactive')");
  const c=await context(f); const changes=[up(2,1,null,2),up(1,2,2),up(1,1,1),{subject_id:3,section_id:1,action:'deactivate'}];
  const p=planTeachingLoadMatrix(c,changes); assert.deepEqual(p,planTeachingLoadMatrix(c,[...changes].reverse()));
- assert.deepEqual(p.counts,{create:1,update:1,unchanged:2,deactivate:0,blocked:0});
+ assert.deepEqual(p.counts,{create:1,update:1,unchanged:1,deactivate:1,blocked:0});
  await f.d1.batch(buildMatrixApplyStatements(f.d1,scope,p,1));
  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM timetable_teaching_loads WHERE subject_id=2 AND academic_year_id=1").get().n,2);
  const created=f.db.prepare("SELECT * FROM timetable_teaching_loads WHERE subject_id=2 AND academic_year_id=1 AND status='active'").get();
  assert.equal(created.created_by_user_id,1); assert.equal(created.updated_by_user_id,1);
  assert.equal(f.db.prepare('SELECT updated_by_user_id FROM timetable_teaching_loads WHERE id=1').get().updated_by_user_id,1);
+ assert.equal(f.db.prepare('SELECT status FROM timetable_teaching_loads WHERE subject_id=3 AND section_id=1').get().status,'inactive');
+});
+
+test('excluding an unconfigured subject persists only its inactive marker and can be included later',async()=>{
+ const f=fixture(),c=await context(f),before=snapshot(f.db),change={subject_id:2,section_id:1,action:'deactivate'};
+ assert.deepEqual(matrixDraftChanges(publicTeachingLoadMatrix(c),{'2:1':{deactivate:true}}),[change]);
+ const p=planTeachingLoadMatrix(c,[change]);assert.equal(p.can_apply,true);assert.equal(p.counts.deactivate,1);
+ assert.equal(p.summary_after.excluded,1);assert.equal(p.summary_after.missing,2);
+ await f.d1.batch(buildMatrixApplyStatements(f.d1,scope,p,1));
+ const saved=await context(f),marker=saved.loads.find(l=>l.subject_id===2&&l.section_id===1);
+ assert.equal(marker.status,'inactive');assert.equal(marker.employee_id,null);assert.equal(marker.weekly_periods,1);
+ assert.deepEqual(saved.loads.filter(l=>l.id!==marker.id),c.loads);
+ for(const table of ['subjects','student_subjects','grades'])assert.deepEqual(snapshot(f.db)[table],before[table]);
+ assert.equal(planTeachingLoadMatrix(saved,[change]).counts.unchanged,1);
+ const include=planTeachingLoadMatrix(saved,[up(2,1,2,2)]);await f.d1.batch(buildMatrixApplyStatements(f.d1,scope,include,1));
+ const included=publicTeachingLoadMatrix(await context(f));assert.equal(included.summary.excluded,0);
+ assert.equal(included.loads.find(l=>l.subject_id===2&&l.status==='active').weekly_periods,2);
+});
+
+for(const disabledSubject of [1,2])for(const scheduled of [false,true])test(`parallel subject ${disabledSubject} exclusion preserves the other load and schedule (${scheduled})`,async()=>{
+ const f=fixture();f.db.exec(`UPDATE timetable_teaching_loads SET employee_id=1 WHERE id=1;
+ INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status,parallel_with_load_id)
+ VALUES(20,1,1,1,1,2,2,4,'active',1)`);
+ if(scheduled) {entry(f.db,1,1,1);entry(f.db,20,1,1);entry(f.db,1,2);entry(f.db,20,2);}
+ const allBefore=snapshot(f.db);
+ const c=await context(f),data=publicTeachingLoadMatrix(c),survivorId=disabledSubject===1?20:1;
+ assert.equal(matrixSectionTotals(data).find(s=>s.id===1).weekly_periods,4);
+ const draft={[`${disabledSubject}:1`]:{deactivate:true}};
+ assert.equal(matrixSectionTotals(data,draft).find(s=>s.id===1).weekly_periods,4);
+ const p=planTeachingLoadMatrix(c,matrixDraftChanges(data,draft));assert.equal(p.can_apply,true);
+ assert.equal(p.items[0].removed_entry_count,scheduled?2:0);
+ assert.equal(p.total_weekly_periods_before,8);assert.equal(p.total_weekly_periods_after,8);
+ const before=c.loads.find(l=>l.id===survivorId);await f.d1.batch(buildMatrixApplyStatements(f.d1,scope,p,1));
+ const after=(await context(f)).loads.find(l=>l.id===survivorId);
+ assert.equal(after.status,'active');assert.equal(after.employee_id,before.employee_id);assert.equal(after.weekly_periods,before.weekly_periods);
+ assert.equal(after.parallel_with_load_id,null);
+ assert.equal((await context(f)).loads.find(l=>l.subject_id===disabledSubject&&l.section_id===1).status,'inactive');
+ const allAfter=snapshot(f.db);
+ assert.deepEqual(allAfter.timetable_entries,allBefore.timetable_entries.filter(e=>e.teaching_load_id===survivorId));
+ if(scheduled){const archive=JSON.parse(allAfter.timetable_week_archives[0].snapshot_json);
+  assert.equal(archive.entries.length,2);assert.ok(archive.entries.every(e=>e.teaching_load_id!==survivorId));
+  assert.deepEqual(archive.entries.sort((a,b)=>a.id-b.id),JSON.parse(JSON.stringify(allBefore.timetable_entries.filter(e=>e.teaching_load_id!==survivorId).sort((a,b)=>a.id-b.id))));}
+ assert.equal(allAfter.timetable_locked_entry_overrides.length,0);
+ for(const table of ['subjects','student_subjects','grades','lesson_attendance_sessions'])assert.deepEqual(allAfter[table],allBefore[table]);
+ assert.deepEqual(f.db.prepare('PRAGMA foreign_key_check').all(),[]);
+});
+
+test('scheduled paired exclusion rolls back its archive, deleted entries, unlink and status on late failure',async()=>{
+ const f=fixture();f.db.exec(`UPDATE timetable_teaching_loads SET employee_id=1 WHERE id=1;
+ INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status,parallel_with_load_id)
+ VALUES(20,1,1,1,1,2,2,4,'active',1)`);entry(f.db,1,1,1);entry(f.db,20,1,1);
+ const p=planTeachingLoadMatrix(await context(f),[{subject_id:1,section_id:1,action:'deactivate'}]),before=snapshot(f.db);
+ const statements=buildMatrixApplyStatements(f.d1,scope,p,1);f.d1.failAt=statements.length-1;
+ await assert.rejects(f.d1.batch(statements),/injected/);assert.deepEqual(snapshot(f.db),before);
+});
+
+test('matrix can exclude a paired load and explicitly reassign its teacher to the survivor atomically',async()=>{
+ const f=fixture();f.db.exec(`UPDATE timetable_teaching_loads SET employee_id=1 WHERE id=1;
+ INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status,parallel_with_load_id)
+ VALUES(20,1,1,1,1,2,2,4,'active',1)`);entry(f.db,1,1,1);entry(f.db,20,1,1);
+ const p=planTeachingLoadMatrix(await context(f),[up(1,1,2),{subject_id:2,section_id:1,action:'deactivate'}]);
+ assert.equal(p.can_apply,true);await f.d1.batch(buildMatrixApplyStatements(f.d1,scope,p,1));
+ const current=await context(f);assert.equal(current.loads.find(l=>l.id===1).employee_id,2);assert.equal(current.loads.find(l=>l.id===20).status,'inactive');
+ assert.equal(current.entries.length,1);assert.equal(current.entries[0].teaching_load_id,1);assert.equal(current.entries[0].is_locked,1);
+});
+
+test('matrix rejects assigning the companion teacher to either side of a pair',async()=>{
+ const f=fixture();f.db.exec(`UPDATE timetable_teaching_loads SET employee_id=1 WHERE id=1;
+ INSERT INTO timetable_teaching_loads(id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status,parallel_with_load_id)
+ VALUES(20,1,1,1,1,2,2,4,'active',1)`);
+ for(const change of [up(1,1,2),up(2,1,1)])assert.equal(planTeachingLoadMatrix(await context(f),[change]).can_apply,false);
 });
 for(const change of [up(5,1),up(999,1),up(1,3),up(1,null),up(3,2),up(6,1),up(1,4),up(1,1,3),up(1,1,4),up(1,1,5),up(1,1,7)])
  test(`canonical invalid reference blocked ${JSON.stringify(change)}`,async()=>{

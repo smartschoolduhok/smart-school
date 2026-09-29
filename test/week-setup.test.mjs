@@ -78,6 +78,21 @@ test('legacy class-wide loads do not inflate section or teacher demand after sec
  assert.deepEqual(snapshot(f.db),before);
 });
 
+test('week capacity counts an explicit parallel pair once and retains both teacher demands',async t=>{
+ const f=weekFixture(t),context=await loadWeekSetup(f.d1,1,1),base=context.loads.find(l=>l.class_id===1);
+ const loads=[{...base,id:101,class_id:1,section_id:1,employee_id:1,subject_id:1,weekly_periods:2},
+  {...base,id:102,class_id:1,section_id:1,employee_id:2,subject_id:2,weekly_periods:2,parallel_with_load_id:101}];
+ for(const mode of ['configure_day','replace_selected_days']){
+  const c={...context,loads,entries:[],constraints:[],availability:[]};
+  const p=await planWeekSetup(c,{...evidenceRequest(c,reviewLessons(1)),mode});
+  assert.equal(p.can_apply,true,JSON.stringify(p));
+  assert.ok(!p.blockers.some(b=>b.code==='placement_weekly_capacity_exceeded'));
+  const independent={...c,loads:loads.map(l=>({...l,parallel_with_load_id:null}))};
+  const rejected=await planWeekSetup(independent,{...evidenceRequest(independent,reviewLessons(1)),mode});
+  assert.equal(rejected.can_apply,false);assert.ok(rejected.blockers.some(b=>b.code==='placement_weekly_capacity_exceeded'));
+ }
+});
+
 for(const scheduled of [false,true])test(`archived subject demand is excluded while scheduled invalid references remain visible (scheduled=${scheduled})`,async t=>{
  const f=weekFixture(t);f.db.exec(capacityEvidenceSQL(4));
  f.db.exec(`UPDATE timetable_teaching_loads SET weekly_periods=3 WHERE id=40;

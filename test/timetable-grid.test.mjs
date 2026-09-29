@@ -13,6 +13,10 @@ import {
   validateTimetableEntryInput,
   validateTimetableGridScopeInput,
 } from '../src/lib/timetable.ts';
+import {
+  areParallelTimetableLoads, parallelTimetableLoadGroup, countTimetableSectionPeriods,
+  countTimetableScheduledSectionPeriods, validateTimetableParallelLoads, validateTimetableParallelEntries,
+} from '../src/lib/timetableParallel.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -376,6 +380,132 @@ function pureContext(overrides = {}) {
   };
   return { days, slots, loads: [load], entries: [], teacherAvailability: [], teacherConstraints: [], ...overrides };
 }
+
+function parallelContext() {
+  const context = pureContext();
+  context.loads[0].weekly_periods = 2;
+  context.loads.push({...context.loads[0], id: 2, subject_id: 2, subject_name: 'Other subject', employee_id: 2, employee_name: 'Other teacher', parallel_with_load_id: 1});
+  return context;
+}
+
+test('explicit parallel pair shares section demand without collapsing either teacher load', () => {
+  const context = parallelContext();
+  assert.equal(areParallelTimetableLoads(...context.loads), true);
+  assert.deepEqual(parallelTimetableLoadGroup(context.loads[1], context.loads).map(load => load.id), [1, 2]);
+  assert.deepEqual(validateTimetableParallelLoads(context.loads), []);
+  assert.equal(countTimetableSectionPeriods(context.loads), 2);
+  context.entries = context.loads.map(load => ({id: load.id, school_id: 1, academic_year_id: 1, slot_id: 1, teaching_load_id: load.id}));
+  const summary = buildTimetableReadiness({...context,
+    placements: [{class_id: 1, section_id: 1, class_name: 'Class', section_name: 'A'}],
+    subjects: context.loads.map(load => ({id: load.subject_id, class_id: 1, section_id: null, status: 'active', name: load.subject_name})),
+  });
+  assert.equal(summary.total_required_periods, 2);
+  assert.equal(summary.total_scheduled_periods, 1);
+  assert.equal(summary.total_unscheduled_periods, 1);
+  assert.deepEqual(summary.teacher_workloads.map(load => load.total_weekly_periods), [2, 2]);
+  assert.deepEqual(summary.load_progress.map(load => [load.required_periods, load.scheduled_periods]), [[2, 1], [2, 1]]);
+  assert.equal(summary.placements[0].required_periods, 2);
+  assert.equal(summary.ready, true);
+});
+
+for (const [name, mutate, reason] of [
+  ['missing primary', c => {c.loads[1].parallel_with_load_id = 99;}, 'missing_primary'],
+  ['inactive primary', c => {c.loads[0].status = 'inactive';}, 'inactive_primary'],
+  ['self link', c => {c.loads[1].parallel_with_load_id = 2;}, 'self_link'],
+  ['school mismatch', c => {c.loads[1].school_id = 2;}, 'scope_mismatch'],
+  ['year mismatch', c => {c.loads[1].academic_year_id = 2;}, 'scope_mismatch'],
+  ['class mismatch', c => {c.loads[1].class_id = 2;}, 'scope_mismatch'],
+  ['section mismatch', c => {c.loads[1].section_id = 2;}, 'scope_mismatch'],
+  ['class-wide mismatch', c => {c.loads[1].section_id = null;}, 'scope_mismatch'],
+  ['unequal weekly demand', c => {c.loads[1].weekly_periods = 3;}, 'periods_mismatch'],
+  ['same subject', c => {c.loads[1].subject_id = 1;}, 'same_subject'],
+  ['same teacher', c => {c.loads[1].employee_id = 1;}, 'same_teacher'],
+  ['chains', c => {c.loads.push({...c.loads[1], id: 3, subject_id: 3, employee_id: 3, parallel_with_load_id: 2});}, 'chain'],
+  ['multiple companions', c => {c.loads.push({...c.loads[1], id: 3, subject_id: 3, employee_id: 3});}, 'multiple_companions'],
+]) {
+  test(`invalid parallel ${name} stays explicit and never hides its active demand`, () => {
+    const context = parallelContext(); mutate(context);
+    const issues = validateTimetableParallelLoads(context.loads);
+    assert.ok(issues.some(issue => issue.reason === reason), JSON.stringify(issues));
+    assert.equal(countTimetableSectionPeriods(context.loads), context.loads.filter(load => load.status === 'active').reduce((sum, load) => sum + load.weekly_periods, 0));
+    assert.ok(context.loads.every(load => parallelTimetableLoadGroup(load, context.loads).length === 1));
+  });
+}
+
+test('religious names alone never create a parallel pair', () => {
+  const context = parallelContext();
+  context.loads[0].subject_name = 'التربية الإسلامية';
+  context.loads[1].subject_name = 'التربية المسيحية';
+  context.loads[1].parallel_with_load_id = null;
+  assert.equal(areParallelTimetableLoads(...context.loads), false);
+  assert.equal(countTimetableSectionPeriods(context.loads), 4);
+});
+
+test('individually excluding either member preserves the other subject workload and teacher', () => {
+  for (const excludedId of [1, 2]) {
+    const context = parallelContext();
+    const survivor = context.loads.find(load => load.id !== excludedId);
+    const preserved = {weekly_periods: survivor.weekly_periods, employee_id: survivor.employee_id};
+    context.loads.find(load => load.id === excludedId).status = 'inactive';
+    if (excludedId === 1) survivor.parallel_with_load_id = null;
+    assert.equal(survivor.status, 'active');
+    assert.deepEqual({weekly_periods: survivor.weekly_periods, employee_id: survivor.employee_id}, preserved);
+    assert.deepEqual(validateTimetableParallelLoads(context.loads), []);
+    assert.equal(countTimetableSectionPeriods(context.loads), 2);
+  }
+});
+
+test('pair-only class collision exception cannot allow a third lesson or malformed pair', () => {
+  const context = parallelContext();
+  context.entries = [{id: 1, slot_id: 1, teaching_load_id: 1}];
+  assert.deepEqual(evaluateTimetableEntryPlacement({...context, candidate: {slot_id: 1, teaching_load_id: 2}}).hard_conflicts, []);
+  context.loads.push({...context.loads[0], id: 3, subject_id: 3, employee_id: 3});
+  assert.ok(evaluateTimetableEntryPlacement({...context, candidate: {slot_id: 1, teaching_load_id: 3}}).hard_conflicts.some(issue => issue.code === 'class_section_collision'));
+  context.loads[2].parallel_with_load_id = 1;
+  const invalid = evaluateTimetableEntryPlacement({...context, candidate: {slot_id: 1, teaching_load_id: 2}});
+  assert.ok(invalid.hard_conflicts.some(issue => issue.code === 'invalid_parallel_load'));
+  assert.ok(invalid.hard_conflicts.some(issue => issue.code === 'class_section_collision'));
+});
+
+test('complete-schedule checks reject half or split pairs and preserve actual occupancy counts', () => {
+  const context = parallelContext();
+  const first = {id: 1, slot_id: 1, teaching_load_id: 1};
+  const second = {id: 2, slot_id: 2, teaching_load_id: 2};
+  context.entries = [first, second];
+  assert.equal(countTimetableScheduledSectionPeriods(context.entries, context.loads), 2);
+  assert.equal(validateTimetableParallelEntries(context.entries, context.loads).length, 2);
+  assert.ok(evaluateTimetableEntryPlacement({...context, candidate: first, validateWholeSchedule: true}).hard_conflicts.some(issue => issue.code === 'parallel_lesson_missing'));
+  second.slot_id = 1;
+  assert.equal(countTimetableScheduledSectionPeriods(context.entries, context.loads), 1);
+  assert.deepEqual(validateTimetableParallelEntries(context.entries, context.loads), []);
+  assert.deepEqual(evaluateTimetableEntryPlacement({...context, candidate: first, validateWholeSchedule: true}).hard_conflicts, []);
+  assert.equal(countTimetableScheduledSectionPeriods([first], context.loads), 1);
+  assert.equal(validateTimetableParallelEntries([first], context.loads).length, 1);
+});
+
+test('a partner with an invalid academic reference blocks readiness and the overlap exception', () => {
+  const context = parallelContext(); context.loads[0].subject_status = 'archived';
+  context.entries = [{id: 1, slot_id: 1, teaching_load_id: 1}];
+  const evaluation = evaluateTimetableEntryPlacement({...context, candidate: {slot_id: 1, teaching_load_id: 2}});
+  assert.ok(evaluation.hard_conflicts.some(issue => issue.code === 'invalid_parallel_load'));
+  assert.ok(evaluation.hard_conflicts.some(issue => issue.code === 'class_section_collision'));
+  const summary = buildTimetableReadiness({...context, placements: [{class_id: 1, section_id: 1, class_name: 'Class', section_name: 'A'}], subjects: []});
+  assert.equal(summary.ready, false);
+  assert.equal(summary.invalid_reference_count, 2);
+  assert.ok(summary.parallel_issues.some(issue => issue.load_id === 2));
+  assert.equal(summary.load_progress.find(load => load.teaching_load_id === 2).required_periods, 2);
+});
+
+test('archiving a paired teacher preserves section demand while reporting both affected references', () => {
+  const context = parallelContext(); context.loads[0].employee_status = 'archived';
+  const summary = buildTimetableReadiness({...context, placements: [{class_id: 1, section_id: 1, class_name: 'Class', section_name: 'A'}], subjects: []});
+  assert.equal(summary.total_required_periods, countTimetableSectionPeriods(context.loads));
+  assert.equal(summary.total_required_periods, 2);
+  assert.equal(summary.total_unscheduled_periods, 2);
+  assert.equal(summary.invalid_reference_count, 2);
+  assert.equal(summary.ready, false);
+  assert.equal(summary.load_progress.length, 2);
+});
 
 test('soft avoid and preferred-window warnings never become hard conflicts', () => {
   const context = pureContext({ teacherAvailability: [

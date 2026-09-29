@@ -21,6 +21,8 @@
     "typecheck": "tsc --noEmit",
     "test:week-setup": "node --experimental-strip-types --test --test-concurrency=1 test/week-setup.test.mjs test/week-setup-api.test.mjs test/week-setup-ui.test.mjs test/week-archives-ui.test.mjs",
     "test:week-setup:local": "node scripts/validate-week-setup-local.mjs",
+    "test:timetable-parallel": "node --experimental-strip-types --test --test-concurrency=1 test/timetable-parallel-api.test.mjs test/timetable-parallel-ui.test.mjs",
+    "test:timetable-parallel:local": "node --experimental-strip-types scripts/validate-timetable-parallel-local.mjs",
     "test:teaching-load-matrix": "node --experimental-strip-types --test --test-concurrency=1 test/teaching-load-matrix.test.mjs test/teaching-load-matrix-api.test.mjs test/teaching-load-matrix-ui.test.mjs",
     "test:teaching-load-matrix:local": "node scripts/validate-teaching-load-matrix-local.mjs",
     "test:rbac": "node --experimental-strip-types --test test/rbac.test.mjs test/result-card.test.mjs test/settings-permissions.test.mjs test/tenant-targeting.test.mjs",

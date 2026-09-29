@@ -12,6 +12,8 @@ import {
 } from './timetable.ts';
 import type { TimetableSolverPreview } from './timetableSolver.ts';
 import { timetableLoadMatchesScope, type TimetableScope } from './timetableScope.ts';
+import { countTimetableSectionPeriods, countTimetableScheduledSectionPeriods,
+  parallelTimetableLoadGroup, validateTimetableParallelLoads, validateTimetableParallelEntries } from './timetableParallel.ts';
 
 export const STALE_TIMETABLE_PROPOSAL_CODE = 'stale_timetable_proposal';
 export const STALE_TIMETABLE_PROPOSAL_MESSAGE = 'تغيرت بيانات الجدول بعد إنشاء المقترح. أنشئ المعاينة من جديد.';
@@ -294,27 +296,37 @@ function weeklyDemandDiagnostic(
   entries: TimetableProposalPlacement[],
 ): TimetableWeeklyDemandDiagnostic {
   const activeLoads = context.loads.filter((load) => load.status === 'active');
-  let missingPeriods = 0;
+  const missingByLoad = new Map<number, number>();
   let incompleteLoadCount = 0;
   let hasExcess = false;
   for (const load of activeLoads) {
     const scheduled = entries.filter((entry) => entry.teaching_load_id === Number(load.id)).length;
     const required = Number(load.weekly_periods);
     if (scheduled < required) {
-      missingPeriods += required - scheduled;
+      missingByLoad.set(load.id, required - scheduled);
       incompleteLoadCount += 1;
     } else if (scheduled > required) {
       hasExcess = true;
     }
   }
-  const requiredPeriods = activeLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0);
+  const requiredPeriods = countTimetableSectionPeriods(activeLoads);
+  const visited = new Set<number>();
+  let missingPeriods = 0;
+  for (const load of activeLoads) {
+    if (visited.has(load.id)) continue;
+    const group = parallelTimetableLoadGroup(load, activeLoads);
+    group.forEach(member => visited.add(member.id));
+    missingPeriods += Math.max(...group.map(member => missingByLoad.get(member.id) ?? 0));
+  }
   return {
     current_demand_complete: activeLoads.every((load) => loadIsValid(load, context))
       && missingPeriods === 0
       && !hasExcess
-      && entries.length === requiredPeriods,
+      && entries.length === activeLoads.reduce((sum, load) => sum + Number(load.weekly_periods), 0)
+      && validateTimetableParallelLoads(context.loads).length === 0
+      && validateTimetableParallelEntries(entries, context.loads).length === 0,
     required_periods: requiredPeriods,
-    scheduled_periods: entries.length,
+    scheduled_periods: countTimetableScheduledSectionPeriods(entries, context.loads),
     missing_periods: missingPeriods,
     incomplete_load_count: incompleteLoadCount,
   };
@@ -363,8 +375,13 @@ function validateTimetableScheduleEntries(
       teacherAvailability: context.availability,
       teacherConstraints: context.constraints,
     });
-    blockers.push(...evaluation.hard_conflicts.map((notice) => blockerFromNotice(notice, entry)));
+    blockers.push(...evaluation.hard_conflicts.filter(notice => notice.code !== 'parallel_lesson_missing')
+      .map((notice) => blockerFromNotice(notice, entry)));
   });
+  blockers.push(...validateTimetableParallelLoads(context.loads).map(issue => ({code: issue.code,
+    message: issue.message, teaching_load_id: issue.load_id})));
+  blockers.push(...validateTimetableParallelEntries(entries, context.loads).map(issue => ({code: issue.code,
+    message: issue.message, teaching_load_id: issue.load_id, slot_id: issue.slot_id})));
 
   return {
     entries,
@@ -432,5 +449,5 @@ export function validateScopedTimetableSchedule(context: TimetableValidationCont
       blockers.push({ code: 'incomplete_weekly_demand', message: 'لم تكتمل أنصبة النطاق المختار.', teaching_load_id: load.id });
   }
   return { complete: blockers.length === 0, required_periods: weeklyDemand.required_periods,
-    scheduled_periods: entries.length, weekly_demand: weeklyDemand, blockers };
+    scheduled_periods: weeklyDemand.scheduled_periods, weekly_demand: weeklyDemand, blockers };
 }

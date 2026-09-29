@@ -52,6 +52,8 @@ import { MasterTimetableTab } from './MasterTimetableTab';
 import { TimetableGridTab } from './TimetableGridTab';
 import { TimetableVersionsTab } from './TimetableVersionsTab';
 import { TeachingLoadMatrixTab } from './TeachingLoadMatrixTab';
+import { ParallelLoadField } from './ParallelLoadField';
+import { parallelTimetableLoadGroup } from '../../lib/timetableParallel';
 import { MATRIX_LEAVE_MESSAGE } from '../../lib/teachingLoadMatrix';
 import { WeekSetupTab } from './WeekSetupTab';
 import { WEEK_LEAVE_MESSAGE } from '../../lib/weekSetup';
@@ -97,6 +99,7 @@ interface LoadForm {
   subject_id: string;
   employee_id: string;
   weekly_periods: string;
+  parallel_with_load_id: string;
 }
 
 const EMPTY_SLOT: SlotForm = {
@@ -118,6 +121,7 @@ const EMPTY_LOAD: LoadForm = {
   subject_id: '',
   employee_id: '',
   weekly_periods: '',
+  parallel_with_load_id: '',
 };
 
 function YearValue({ value }: { value: string }) {
@@ -391,7 +395,7 @@ export default function TimetablePage() {
     await reloadYearData();
   }
 
-  function beginLoad(load?: TimetableTeachingLoad) {
+  function beginLoad(load?: TimetableTeachingLoad, cell?: {class_id: number; section_id: number | null; subject_id: number}) {
     if (load) {
       setSelectedClassId(load.class_id);
       setSelectedSectionId(load.section_id);
@@ -402,12 +406,15 @@ export default function TimetablePage() {
         subject_id: String(load.subject_id),
         employee_id: load.employee_id == null ? '' : String(load.employee_id),
         weekly_periods: String(load.weekly_periods),
+        parallel_with_load_id: load.parallel_with_load_id == null ? '' : String(load.parallel_with_load_id),
       });
     } else {
+      if (cell) { setSelectedClassId(cell.class_id); setSelectedSectionId(cell.section_id); }
       setLoadForm({
         ...EMPTY_LOAD,
-        class_id: selectedClassId == null ? '' : String(selectedClassId),
-        section_id: selectedSectionId == null ? '' : String(selectedSectionId),
+        class_id: cell ? String(cell.class_id) : selectedClassId == null ? '' : String(selectedClassId),
+        section_id: cell ? cell.section_id == null ? '' : String(cell.section_id) : selectedSectionId == null ? '' : String(selectedSectionId),
+        subject_id: cell ? String(cell.subject_id) : '',
       });
     }
   }
@@ -415,6 +422,11 @@ export default function TimetablePage() {
   async function submitLoad(event: React.FormEvent) {
     event.preventDefault();
     if (schoolId == null || academicYearId == null) return;
+    const parallelTarget = loads.find(load => String(load.id) === loadForm.parallel_with_load_id);
+    if (parallelTarget?.employee_id != null && String(parallelTarget.employee_id) === loadForm.employee_id) {
+      setError('اختر مدرسًا مختلفًا لكل مادة من المادتين المتزامنتين.');
+      return;
+    }
     const requestSchoolId = schoolId;
     const requestAcademicYearId = academicYearId;
     const payload = {
@@ -425,6 +437,7 @@ export default function TimetablePage() {
       subject_id: Number(loadForm.subject_id),
       employee_id: loadForm.employee_id ? Number(loadForm.employee_id) : null,
       weekly_periods: Number(loadForm.weekly_periods),
+      parallel_with_load_id: loadForm.parallel_with_load_id ? Number(loadForm.parallel_with_load_id) : null,
     };
     setSaving(true);
     const response = loadForm.id == null
@@ -439,14 +452,22 @@ export default function TimetablePage() {
   }
 
   async function removeLoad(load: TimetableTeachingLoad) {
-    if (schoolId == null || academicYearId == null || !window.confirm('سيتم تعطيل هذا النصاب مع الاحتفاظ بسجله. هل تريد المتابعة؟')) return;
+    if (saving || schoolId == null || academicYearId == null || !window.confirm('سيتم استبعاد هذا النصاب وحده من الجدول مع الاحتفاظ بسجله. إذا كان متزامنًا مع مادة أخرى، تبقى الأخرى فعالة ويُفك الربط بينهما. هل تريد المتابعة؟')) return;
     const requestSchoolId = schoolId;
     const requestAcademicYearId = academicYearId;
-    const response = await deactivateTimetableTeachingLoad(load.id, schoolId, academicYearId);
+    setSaving(true);
+    let response = await deactivateTimetableTeachingLoad(load.id, schoolId, academicYearId);
     if (!scopeIsCurrent(requestSchoolId, requestAcademicYearId)) return;
+    if (response.code === 'parallel_load_deactivation_confirmation_required' && Number.isInteger(response.data?.revision)) {
+      const confirmed = window.confirm(`للمادة «${load.subject_name}» ${response.data?.scheduled_count ?? 0} درس محفوظ، منها ${response.data?.locked_count ?? 0} مثبت. سيُحفظ أرشيف ثم تُزال دروس هذه المادة وحدها من الجدول، بما فيها المثبتة. تبقى المادة المتزامنة الأخرى ودروسها كما هي ويُفك الربط عنها. هل تؤكد الاستبعاد؟`);
+      if (!confirmed) { setSaving(false); return; }
+      response = await deactivateTimetableTeachingLoad(load.id, schoolId, academicYearId, {confirm_deactivate_scheduled: true, expected_revision: response.data!.revision!});
+      if (!scopeIsCurrent(requestSchoolId, requestAcademicYearId)) return;
+    }
+    setSaving(false);
     if (response.error) return setError(response.error);
     setLoadForm(EMPTY_LOAD);
-    setSuccess('تم تعطيل النصاب');
+    setSuccess('تم استبعاد النصاب المحدد وحده من الجدول');
     await reloadYearData();
   }
 
@@ -609,7 +630,7 @@ export default function TimetablePage() {
                   schoolId={schoolId} academicYearId={academicYearId} years={years}
                   classes={classes} sections={sections} subjects={subjects} loads={loads}
                   dataVersion={yearDataVersion} onChanged={reloadYearData} onDirtyChange={onMatrixDirty}
-                  onAdvanced={(load) => { setAdvancedLoads(true); beginLoad(load); }} />
+                  onAdvanced={(load, cell) => { setAdvancedLoads(true); beginLoad(load, cell); }} />
               )}
               {!loading && tab === 'loads' && advancedLoads && (
                 <div className="space-y-5">
@@ -624,16 +645,17 @@ export default function TimetablePage() {
                   </div>
 
                   <form onSubmit={submitLoad} className="grid gap-3 rounded-xl border border-gray-200 bg-white p-4 md:grid-cols-6">
-                    <select required value={loadForm.class_id} onChange={(event) => { setSelectedClassId(Number(event.target.value)); setLoadForm({ ...loadForm, class_id: event.target.value, section_id: '', subject_id: '' }); }} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">الصف</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                    <select required={activeSections.length > 0} value={loadForm.section_id} onChange={(event) => { setSelectedSectionId(event.target.value ? Number(event.target.value) : null); setLoadForm({ ...loadForm, section_id: event.target.value, subject_id: '' }); }} disabled={!loadForm.class_id || activeSections.length === 0} className="rounded-lg border border-gray-300 px-3 py-2 disabled:bg-gray-100"><option value="">{activeSections.length ? 'الشعبة' : 'بلا شعبة'}</option>{activeSections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                    <select required value={loadForm.subject_id} onChange={(event) => setLoadForm({ ...loadForm, subject_id: event.target.value })} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">المادة</option>{applicableSubjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                    <select value={loadForm.employee_id} onChange={(event) => setLoadForm({ ...loadForm, employee_id: event.target.value })} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">مدرس غير محدد</option>{teacherCandidates.map((item) => <option key={item.id} value={item.id}>{item.full_name}{item.job_title ? ` — ${item.job_title}` : ''}</option>)}</select>
-                    <input required type="number" min="1" value={loadForm.weekly_periods} onChange={(event) => setLoadForm({ ...loadForm, weekly_periods: event.target.value })} placeholder="عدد الدروس" className="rounded-lg border border-gray-300 px-3 py-2" />
+                    <select aria-label="صف النصاب" required value={loadForm.class_id} onChange={(event) => { setSelectedClassId(Number(event.target.value)); setLoadForm({ ...loadForm, class_id: event.target.value, section_id: '', subject_id: '', parallel_with_load_id: '' }); }} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">الصف</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                    <select aria-label="شعبة النصاب" required={activeSections.length > 0} value={loadForm.section_id} onChange={(event) => { setSelectedSectionId(event.target.value ? Number(event.target.value) : null); setLoadForm({ ...loadForm, section_id: event.target.value, subject_id: '', parallel_with_load_id: '' }); }} disabled={!loadForm.class_id || activeSections.length === 0} className="rounded-lg border border-gray-300 px-3 py-2 disabled:bg-gray-100"><option value="">{activeSections.length ? 'الشعبة' : 'بلا شعبة'}</option>{activeSections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                    <select aria-label="مادة النصاب" required value={loadForm.subject_id} onChange={(event) => setLoadForm({ ...loadForm, subject_id: event.target.value, parallel_with_load_id: '' })} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">المادة</option>{applicableSubjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                    <select aria-label="مدرس النصاب" value={loadForm.employee_id} onChange={(event) => setLoadForm({ ...loadForm, employee_id: event.target.value })} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">مدرس غير محدد</option>{teacherCandidates.map((item) => <option key={item.id} value={item.id}>{item.full_name}{item.job_title ? ` — ${item.job_title}` : ''}</option>)}</select>
+                    <input aria-label="عدد دروس النصاب" required type="number" min="1" readOnly={!!loadForm.parallel_with_load_id} value={loadForm.weekly_periods} onChange={(event) => setLoadForm({ ...loadForm, weekly_periods: event.target.value })} placeholder="عدد الدروس" title={loadForm.parallel_with_load_id ? 'يساوي عدد دروس المادة المرتبطة؛ اختر درسًا مستقلًا لفك التزامن.' : undefined} className="rounded-lg border border-gray-300 px-3 py-2 read-only:bg-gray-100" />
                     <div className="flex gap-2"><button disabled={saving} className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-primary-600 px-3 py-2 font-semibold text-white disabled:opacity-50"><Save size={16} />{loadForm.id == null ? 'إضافة' : 'حفظ'}</button>{loadForm.id != null && <button type="button" onClick={() => beginLoad()} className="rounded-lg border border-gray-300 p-2"><X size={18} /></button>}</div>
+                    <ParallelLoadField loads={loads} schoolId={schoolId} academicYearId={academicYearId} classId={loadForm.class_id ? Number(loadForm.class_id) : null} sectionId={loadForm.section_id ? Number(loadForm.section_id) : null} currentLoadId={loadForm.id} subjectId={loadForm.subject_id ? Number(loadForm.subject_id) : null} employeeId={loadForm.employee_id ? Number(loadForm.employee_id) : null} value={loadForm.parallel_with_load_id} disabled={saving} onChange={value => { const linked = loads.find(load => String(load.id) === value); setLoadForm({...loadForm, parallel_with_load_id: value, weekly_periods: linked ? String(linked.weekly_periods) : loadForm.weekly_periods}); }} />
                   </form>
 
                   <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
-                    <table className="w-full min-w-[760px] text-sm"><thead className="bg-gray-50"><tr className="text-right text-gray-600"><th className="p-3">المادة</th><th className="p-3">الصف</th><th className="p-3">الشعبة</th><th className="p-3">عدد الدروس الأسبوعية</th><th className="p-3">المدرس</th><th className="p-3">إجراء</th></tr></thead><tbody>{filteredLoads.length === 0 ? <tr><td colSpan={6} className="p-8 text-center text-gray-500">لا توجد أنصبة مطابقة.</td></tr> : filteredLoads.map((load) => <tr key={load.id} className="border-t"><td className="p-3 font-medium">{load.subject_name}</td><td className="p-3">{load.class_name}</td><td className="p-3">{load.section_name || '—'}</td><td className="p-3"><bdi dir="ltr">{load.weekly_periods}</bdi></td><td className={`p-3 ${load.employee_id == null ? 'font-semibold text-amber-700' : ''}`}>{load.employee_name || 'مدرس غير محدد'}</td><td className="flex gap-1 p-3"><button onClick={() => beginLoad(load)} className="rounded p-2 text-blue-700 hover:bg-blue-50"><Pencil size={16} /></button><button onClick={() => void removeLoad(load)} className="rounded p-2 text-red-700 hover:bg-red-50"><Trash2 size={16} /></button></td></tr>)}</tbody></table>
+                    <table className="w-full min-w-[760px] text-sm"><thead className="bg-gray-50"><tr className="text-right text-gray-600"><th className="p-3">المادة</th><th className="p-3">الصف</th><th className="p-3">الشعبة</th><th className="p-3">عدد الدروس الأسبوعية</th><th className="p-3">المدرس</th><th className="p-3">إجراء</th></tr></thead><tbody>{filteredLoads.length === 0 ? <tr><td colSpan={6} className="p-8 text-center text-gray-500">لا توجد أنصبة مطابقة.</td></tr> : filteredLoads.map((load) => { const partner = parallelTimetableLoadGroup(load, loads).find(other => other.id !== load.id); return <tr key={load.id} className="border-t"><td className="p-3 font-medium">{load.subject_name}{partner && <small className="block text-blue-800">متزامن مع {partner.subject_name}</small>}</td><td className="p-3">{load.class_name}</td><td className="p-3">{load.section_name || '—'}</td><td className="p-3"><bdi dir="ltr">{load.weekly_periods}</bdi></td><td className={`p-3 ${load.employee_id == null ? 'font-semibold text-amber-700' : ''}`}>{load.employee_name || 'مدرس غير محدد'}</td><td className="flex gap-1 p-3"><button aria-label={`تعديل نصاب ${load.subject_name}`} onClick={() => beginLoad(load)} className="rounded p-2 text-blue-700 hover:bg-blue-50"><Pencil size={16} /></button><button aria-label={`استبعاد نصاب ${load.subject_name} وحده`} onClick={() => void removeLoad(load)} className="rounded p-2 text-red-700 hover:bg-red-50"><Trash2 size={16} /></button></td></tr>; })}</tbody></table>
                   </div>
 
                   <div className="rounded-xl border border-gray-200 bg-white p-4">

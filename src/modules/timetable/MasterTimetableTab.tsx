@@ -4,7 +4,6 @@ import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { getTimetableMasterGrid } from '../../lib/api';
 import {
   TIMETABLE_DAY_NAMES,
-  timetableEntryForPlacement,
   timetablePlacementKey,
   timetableSubjectColorForSubject,
   timetableSubjectVisualKey,
@@ -13,6 +12,7 @@ import {
   type TimetablePlacement,
   type TimetableSlot,
 } from '../../lib/timetable';
+import { timetableEntriesForPlacement } from './timetableViewEntries';
 import './timetablePrint.css';
 import {
   buildTimetablePrintSheets,
@@ -147,7 +147,7 @@ function MasterGrid({ data, placements }: { data: TimetableMasterGridData; place
                   </th>
                   {placements.map((placement) => (
                     <td key={timetablePlacementKey(placement)}>
-                      <SubjectCell entry={timetableEntryForPlacement(data.entries, slot.id, placement)} />
+                      <div className="timetable-teacher-entry-stack">{timetableEntriesForPlacement(data.entries, slot.id, placement).map(entry => <SubjectCell key={entry.id} entry={entry} />)}</div>
                     </td>
                   ))}
                 </tr>
@@ -184,8 +184,7 @@ function WeeklyGrid({ data, placement, teacherId }: { data: TimetableMasterGridD
             <th className="timetable-period-axis"><bdi dir="ltr">{row.index}</bdi></th>
             {row.slots.map((slot, dayIndex) => {
               if (!slot) return <td key={week.days[dayIndex].day_of_week} className="timetable-no-period">لا توجد فترة</td>;
-              const entry = placement ? timetableEntryForPlacement(data.entries, slot.id, placement) : null;
-              const entries = teacherId != null ? entriesBySlot.get(Number(slot.id)) || [] : entry ? [entry] : [];
+              const entries = teacherId != null ? entriesBySlot.get(Number(slot.id)) || [] : placement ? timetableEntriesForPlacement(data.entries, slot.id, placement) : [];
               return <td key={week.days[dayIndex].day_of_week} data-slot-id={slot.id} className={slot.slot_type === 'break' ? 'timetable-week-break' : ''}>
                 <span className="timetable-week-slot-label">{slotLabel(slot)}</span>
                 <bdi dir="ltr" className="timetable-week-time">{slot.start_time}–{slot.end_time}</bdi>
