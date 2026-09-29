@@ -178,6 +178,7 @@ export interface TimetableEntry {
 }
 
 export type TimetableEntryHardConflictCode =
+  | 'section_day_link'
   | 'slot_not_schedulable'
   | 'inactive_day'
   | 'inactive_slot'
@@ -345,22 +346,22 @@ export interface TimetableSubjectColor {
 }
 
 const TIMETABLE_SUBJECT_PALETTE: readonly TimetableSubjectColor[] = [
-  { background: '#dbeafe', border: '#2563eb', foreground: '#172554' },
-  { background: '#d1fae5', border: '#059669', foreground: '#064e3b' },
-  { background: '#fef3c7', border: '#d97706', foreground: '#78350f' },
-  { background: '#fce7f3', border: '#db2777', foreground: '#831843' },
-  { background: '#ede9fe', border: '#7c3aed', foreground: '#4c1d95' },
-  { background: '#cffafe', border: '#0891b2', foreground: '#164e63' },
-  { background: '#ffedd5', border: '#ea580c', foreground: '#7c2d12' },
-  { background: '#e0e7ff', border: '#4f46e5', foreground: '#312e81' },
-  { background: '#ccfbf1', border: '#0d9488', foreground: '#134e4a' },
-  { background: '#fae8ff', border: '#c026d3', foreground: '#701a75' },
-  { background: '#ecfccb', border: '#65a30d', foreground: '#365314' },
-  { background: '#fee2e2', border: '#dc2626', foreground: '#7f1d1d' },
-  { background: '#dcfce7', border: '#16a34a', foreground: '#14532d' },
-  { background: '#e0f2fe', border: '#0284c7', foreground: '#0c4a6e' },
-  { background: '#fef9c3', border: '#ca8a04', foreground: '#713f12' },
-  { background: '#ffe4e6', border: '#e11d48', foreground: '#881337' },
+  { background: '#2563eb', border: '#1e40af', foreground: '#ffffff' },
+  { background: '#34d399', border: '#047857', foreground: '#111827' },
+  { background: '#92400e', border: '#78350f', foreground: '#ffffff' },
+  { background: '#f472b6', border: '#be185d', foreground: '#111827' },
+  { background: '#7e22ce', border: '#581c87', foreground: '#ffffff' },
+  { background: '#22d3ee', border: '#0e7490', foreground: '#111827' },
+  { background: '#fb923c', border: '#c2410c', foreground: '#111827' },
+  { background: '#3730a3', border: '#312e81', foreground: '#ffffff' },
+  { background: '#0f766e', border: '#134e4a', foreground: '#ffffff' },
+  { background: '#e879f9', border: '#a21caf', foreground: '#111827' },
+  { background: '#a3e635', border: '#4d7c0f', foreground: '#111827' },
+  { background: '#b91c1c', border: '#7f1d1d', foreground: '#ffffff' },
+  { background: '#166534', border: '#14532d', foreground: '#ffffff' },
+  { background: '#7dd3fc', border: '#0369a1', foreground: '#111827' },
+  { background: '#facc15', border: '#a16207', foreground: '#111827' },
+  { background: '#fb7185', border: '#be123c', foreground: '#111827' },
 ] as const;
 
 // Keep common school subjects distinct even when their names hash to the same

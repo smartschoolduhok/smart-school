@@ -136,6 +136,7 @@ function proposalEntries(proposal) {
 
 function adoptionBody(proposal, overrides = {}) {
   return {
+    link_same_teacher_section_days: proposal.link_same_teacher_section_days,
     generation_scope: proposal.generation_scope,
     scope_load_ids: proposal.scope_load_ids,
     scope_token: proposal.scope_token,
@@ -151,6 +152,7 @@ function adoptionBody(proposal, overrides = {}) {
 
 async function adoptionPreview(context, proposal, overrides = {}) {
   return call(context, context.tokens.owner, 'POST', '/api/timetable/solver/adoption-preview', {
+    link_same_teacher_section_days: proposal.link_same_teacher_section_days,
     generation_scope: proposal.generation_scope,
     scope_load_ids: proposal.scope_load_ids,
     scope_token: proposal.scope_token,
@@ -243,6 +245,154 @@ test('solver proposal includes authoritative revision and SHA-256 digest', async
   assert.equal(typeof proposal.timetable_revision, 'number');
   assert.match(proposal.proposal_digest, /^[a-f0-9]{64}$/);
   assert.equal(proposal.status, 'complete');
+});
+
+function seedDayLinkedSections(context) {
+  context.database.exec(`
+    INSERT INTO sections (id, school_id, class_id, name, status)
+      VALUES (21,1,1,'A','active'), (22,1,1,'B','active');
+    UPDATE timetable_teaching_loads SET section_id = 21, weekly_periods = 1 WHERE id = 1;
+    INSERT INTO timetable_teaching_loads
+      (id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status)
+      VALUES (5,1,1,1,22,1,1,1,'active');
+  `);
+}
+
+test('a linked same-teacher proposal can be adopted with its option-bound digest', async () => {
+  const context = await fixture(); seedDayLinkedSections(context);
+  const proposal = await generate(context, context.tokens.owner, {link_same_teacher_section_days: true});
+  assert.equal(proposal.status, 'complete');
+  assert.equal(proposal.link_same_teacher_section_days, true);
+  const preview = await adoptionPreview(context, proposal);
+  assert.equal(preview.status, 200);
+  assert.equal((await preview.json()).data.can_apply, true);
+  const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+  assert.equal(response.status, 200, JSON.stringify(await response.json()));
+  const days = context.database.prepare(`
+    SELECT entries.teaching_load_id, slots.day_of_week FROM timetable_entries entries
+    JOIN timetable_slots slots ON slots.id = entries.slot_id
+    WHERE entries.school_id = 1 AND entries.academic_year_id = 1 AND entries.teaching_load_id IN (1,5)
+  `).all();
+  assert.equal(days.length, 2);
+  assert.equal(days[0].day_of_week, days[1].day_of_week);
+});
+
+test('server rejects a day-link violation even when the client recomputes a valid digest', async () => {
+  const context = await fixture(); seedDayLinkedSections(context);
+  const proposal = await generate(context, context.tokens.owner, {link_same_teacher_section_days: true});
+  const entries = proposalEntries(proposal).map(entry => ({...entry,
+    slot_id: entry.teaching_load_id === 1 ? 1 : entry.teaching_load_id === 5 ? 3 : entry.slot_id,
+  }));
+  const digest = await computeTimetableProposalDigest({
+    schoolId: 1, academicYearId: 1, revision: proposal.timetable_revision, entries,
+    linkSameTeacherSectionDays: true, generationScope: proposal.generation_scope,
+  });
+  const before = replacementState(context);
+  const previewResponse = await adoptionPreview(context, proposal, {entries, proposal_digest: digest});
+  assert.equal(previewResponse.status, 200);
+  const preview = (await previewResponse.json()).data;
+  assert.equal(preview.can_apply, false);
+  assert.ok(preview.blockers.some(blocker => blocker.code === 'section_day_link'));
+  assert.equal(preview.blockers.some(blocker => blocker.code === 'proposal_digest_mismatch'), false);
+  const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply',
+    adoptionBody(proposal, {entries, proposal_digest: digest}));
+  assert.equal(response.status, 400);
+  assert.ok((await response.json()).data.blockers.some(blocker => blocker.code === 'section_day_link'));
+  assert.deepEqual(replacementState(context), before);
+});
+
+test('toggling the day-link option without refreshing the proposal digest rejects adoption', async () => {
+  const context = await fixture(); seedDayLinkedSections(context);
+  const proposal = await generate(context, context.tokens.owner, {link_same_teacher_section_days: true});
+  for (const value of [false, undefined]) {
+    const response = await adoptionPreview(context, proposal, {link_same_teacher_section_days: value});
+    assert.equal(response.status, 200);
+    const preview = (await response.json()).data;
+    assert.equal(preview.can_apply, false);
+    assert.ok(preview.blockers.some(blocker => blocker.code === 'proposal_digest_mismatch'));
+  }
+});
+
+test('adoption endpoints reject non-boolean day-link options without writing', async () => {
+  const context = await fixture(); const proposal = await generate(context);
+  const before = replacementState(context);
+  for (const value of [null, 0, 1, 'true', 'false', [], {}]) {
+    const preview = await adoptionPreview(context, proposal, {link_same_teacher_section_days: value});
+    assert.equal(preview.status, 400, JSON.stringify(value));
+    const apply = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply',
+      adoptionBody(proposal, {link_same_teacher_section_days: value}));
+    assert.equal(apply.status, 400, JSON.stringify(value));
+  }
+  assert.deepEqual(replacementState(context), before);
+});
+
+test('linked scoped adoption preserves the outside section lesson byte-for-byte', async () => {
+  const context = await fixture(); seedDayLinkedSections(context);
+  context.database.exec(`
+    INSERT INTO timetable_entries (id,school_id,academic_year_id,slot_id,teaching_load_id,is_locked,created_at,updated_at)
+      VALUES (30,1,1,3,5,0,100,101);
+  `);
+  const outside = context.database.prepare('SELECT * FROM timetable_entries WHERE id = 30').get();
+  const proposal = await generate(context, context.tokens.owner, {
+    link_same_teacher_section_days: true,
+    generation_scope: {kind: 'section', class_id: 1, section_id: 21},
+  });
+  assert.equal(proposal.status, 'complete');
+  assert.ok(proposal.entries.some(entry => entry.teaching_load_id === 5 && entry.slot_id === 3 && entry.is_preserved));
+  assert.equal(proposal.entries.find(entry => entry.teaching_load_id === 1).slot_id, 4);
+  const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+  assert.equal(response.status, 200, JSON.stringify(await response.json()));
+  assert.deepEqual(context.database.prepare('SELECT * FROM timetable_entries WHERE id = 30').get(), outside);
+});
+
+test('linked adoption excludes dormant archived section demand and leaves its load unchanged', async () => {
+  const context = await fixture(); seedDayLinkedSections(context);
+  context.database.exec(`
+    INSERT INTO sections (id,school_id,class_id,name,status) VALUES (23,1,1,'Archived C','active');
+    INSERT INTO timetable_teaching_loads
+      (id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status)
+      VALUES (6,1,1,1,23,1,1,1,'active');
+    UPDATE sections SET status = 'archived' WHERE id = 23;
+  `);
+  const dormantBefore = context.database.prepare('SELECT * FROM timetable_teaching_loads WHERE id = 6').get();
+  const proposal = await generate(context, context.tokens.owner, {link_same_teacher_section_days: true});
+  assert.equal(proposal.status, 'complete');
+  assert.equal(proposal.entries.some(entry => entry.teaching_load_id === 6), false);
+  const preview = await adoptionPreview(context, proposal);
+  assert.equal(preview.status, 200);
+  const validation = (await preview.json()).data;
+  assert.equal(validation.can_apply, true, JSON.stringify(validation.blockers));
+  const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+  assert.equal(response.status, 200, JSON.stringify(await response.json()));
+  assert.deepEqual(context.database.prepare('SELECT * FROM timetable_teaching_loads WHERE id = 6').get(), dormantBefore);
+  assert.equal(officialRows(context.database).some(entry => entry.teaching_load_id === 6), false);
+});
+
+test('linked class adoption preserves unrelated outside section groups on different days', async () => {
+  const context = await fixture(); seedDayLinkedSections(context);
+  context.database.exec(`
+    INSERT INTO sections (id,school_id,class_id,name,status)
+      VALUES (31,1,2,'Outside A','active'), (32,1,2,'Outside B','active');
+    UPDATE timetable_teaching_loads SET section_id = 31, weekly_periods = 1 WHERE id = 2;
+    INSERT INTO timetable_teaching_loads
+      (id,school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status)
+      VALUES (6,1,1,2,32,2,2,1,'active');
+    INSERT INTO timetable_entries (id,school_id,academic_year_id,slot_id,teaching_load_id,is_locked,created_at,updated_at)
+      VALUES (30,1,1,1,2,0,100,101), (31,1,1,3,6,1,200,201);
+  `);
+  const outside = context.database.prepare('SELECT * FROM timetable_entries WHERE id IN (30,31) ORDER BY id').all();
+  const proposal = await generate(context, context.tokens.owner, {
+    link_same_teacher_section_days: true, generation_scope: {kind: 'class', class_id: 1},
+  });
+  assert.equal(proposal.status, 'complete');
+  assert.equal(proposal.link_same_teacher_section_days, true);
+  for (const row of outside) {
+    assert.ok(proposal.entries.some(entry => entry.teaching_load_id === row.teaching_load_id
+      && entry.slot_id === row.slot_id && entry.is_locked === row.is_locked && entry.is_preserved));
+  }
+  const response = await call(context, context.tokens.owner, 'POST', '/api/timetable/solver/apply', adoptionBody(proposal));
+  assert.equal(response.status, 200, JSON.stringify(await response.json()));
+  assert.deepEqual(context.database.prepare('SELECT * FROM timetable_entries WHERE id IN (30,31) ORDER BY id').all(), outside);
 });
 
 test('default generation and explicit preview locks always preserve official locked entries', async () => {

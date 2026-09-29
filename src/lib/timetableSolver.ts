@@ -17,10 +17,12 @@ import {
 } from './timetable.ts';
 import { countTimetableSectionPeriods, countTimetableScheduledSectionPeriods, indexTimetableParallelLoadGroups, parallelTimetableLoadGroup, validateTimetableParallelLoads } from './timetableParallel.ts';
 import { createTimetablePedagogyScorer, type TimetablePedagogyMetrics } from './timetablePedagogy.ts';
+import { missingTimetableSectionDays, timetableSectionDayGroups, validateTimetableSectionDays } from './timetableSectionDays.ts';
 
 export type TimetableSolverStatus = 'complete' | 'partial' | 'impossible' | 'fixed_conflict';
 
 export type TimetableSolverReasonCode =
+  | 'section_day_link'
   | 'no_class_capacity'
   | 'teacher_unavailable'
   | 'teacher_daily_limit'
@@ -71,6 +73,8 @@ export interface TimetableSolverPenaltyBreakdown {
   early_light_subjects?: number;
   consecutive_heavy_subjects?: number;
   missed_section_continuity?: number;
+  late_science_subjects?: number;
+  repeated_first_subjects?: number;
   avoid_slots: number;
   outside_preferred_slots: number;
   teacher_gaps: number;
@@ -115,6 +119,7 @@ export interface TimetableSolverProposalEntry {
 }
 
 export type TimetableFixedEntryConflictCode =
+  | 'fixed_section_day_link'
   | 'fixed_duplicate'
   | 'fixed_invalid_scope'
   | 'fixed_invalid_load'
@@ -150,6 +155,7 @@ export interface TimetableSolverUnscheduledDemand {
 }
 
 export interface TimetableSolverStatistics {
+  search_runs?: number;
   attempts: number;
   backtracks: number;
   local_improvement_attempts: number;
@@ -165,6 +171,7 @@ export interface TimetableSolverStatistics {
 }
 
 export interface TimetableSolverPreview {
+  link_same_teacher_section_days?: boolean;
   status: TimetableSolverStatus;
   quality_score: number;
   required_periods: number;
@@ -190,6 +197,12 @@ export interface TimetableSolverLimits {
 }
 
 export interface TimetableSolverInput {
+  /** Internal bounded multi-start search controls, never accepted from API request bodies. */
+  searchVariant?: number;
+  searchDeadline?: number;
+  searchSeedEntries?: TimetableEntry[];
+  linkSameTeacherSectionDays?: boolean;
+  sectionDayLinkLoadIds?: number[];
   schoolId: number;
   academicYearId: number;
   days: TimetableDay[];
@@ -211,6 +224,7 @@ const DEFAULT_LIMITS: TimetableSolverLimits = {
 };
 
 const REASON_MESSAGES: Record<TimetableSolverReasonCode, string> = {
+  section_day_link: 'لم يتمكن البحث من وضع المادة في اليوم نفسه لجميع شعب الصف التي يدرّسها المدرس نفسه، مع احترام التوفر والدروس المثبتة. راجع القيود أو عطّل خيار الربط.',
   no_class_capacity: 'لا توجد سعة متبقية للصف أو الشعبة ضمن الفترات الصالحة.',
   teacher_unavailable: 'لا توجد فترات متاحة للمدرس ضمن القيود الحالية.',
   teacher_daily_limit: 'الحد الأقصى اليومي لدروس المدرس يمنع توزيع الدروس المتبقية.',
@@ -223,6 +237,7 @@ const REASON_MESSAGES: Record<TimetableSolverReasonCode, string> = {
 };
 
 const REASON_ORDER: TimetableSolverReasonCode[] = [
+  'section_day_link',
   'invalid_teaching_load',
   'no_class_capacity',
   'teacher_unavailable',
@@ -244,6 +259,7 @@ export class TimetableSolverSafetyLimitError extends Error {
 type InternalEntry = TimetableEntry;
 
 interface RankedCandidate {
+  additions?: InternalEntry[];
   slot: TimetableSlot;
   warnings: TimetableEntryNotice[];
   penalty: number;
@@ -815,6 +831,7 @@ export function validateTimetableSolverProposal(
       violations.push({ code: 'weekly_periods_exceeded', message: 'الاقتراح تجاوز عدد الدروس الأسبوعية المطلوبة' });
     }
   }
+  if (input.linkSameTeacherSectionDays) violations.push(...validateTimetableSectionDays(input.loads.filter(load => validLoadIds.has(load.id)), input.slots, entries, input.sectionDayLinkLoadIds));
   return violations;
 }
 
@@ -871,7 +888,8 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   let nextTemporaryId = -1;
 
   const deterministicBudgetExpired = () => {
-    const expired = attempts >= limits.max_attempts || backtracks >= limits.max_backtracks;
+    const expired = attempts >= limits.max_attempts || backtracks >= limits.max_backtracks
+      || (input.searchDeadline != null && Date.now() >= input.searchDeadline);
     if (expired) stoppedByLimit = true;
     return expired;
   };
@@ -882,6 +900,10 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   const groupsByLoad = indexTimetableParallelLoadGroups(validLoads);
   const pedagogyScorer = createTimetablePedagogyScorer(validLoads, scopedSlots);
   const groupFor = (load: TimetableTeachingLoad) => groupsByLoad.get(load.id) ?? [load];
+  const sectionDayGroups = input.linkSameTeacherSectionDays ? timetableSectionDayGroups(validLoads, input.sectionDayLinkLoadIds) : [];
+  const linkedLoadIds = new Set(sectionDayGroups.flatMap(group => group.loads.map(load => load.id)));
+  const missingSectionDays = (entries: InternalEntry[]) => missingTimetableSectionDays(sectionDayGroups, slotsById, entries);
+  const respectsSectionDays = (entries: InternalEntry[]) => sectionDayGroups.length === 0 || missingSectionDays(entries).length === 0;
   const baseDomainSize = (load: TimetableTeachingLoad) => scheduleSlots.filter((slot) => groupFor(load).every(member => (
     member.employee_id == null
     || availabilityByTeacherSlot.get(`${Number(member.employee_id)}:${Number(slot.id)}`) !== 'unavailable'
@@ -894,12 +916,18 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
     const rightConstraintCount = right.employee_id == null ? 0 : Object.values(constraintsByTeacher.get(Number(right.employee_id)) || {})
       .filter((value) => value != null && value !== 0).length;
     return rightConstraintCount - leftConstraintCount
+      || (input.searchVariant ? variantOrder(left.id) - variantOrder(right.id) : 0)
       || Number(right.weekly_periods) - Number(left.weekly_periods)
       || Number(left.class_id) - Number(right.class_id)
       || Number(left.section_id || 0) - Number(right.section_id || 0)
       || Number(left.subject_id) - Number(right.subject_id)
       || Number(left.id) - Number(right.id);
   });
+  function variantOrder(id: number) {
+    let value = Math.imul(id ^ ((input.searchVariant || 0) * 0x9e3779b9), 0x85ebca6b);
+    value = Math.imul(value ^ (value >>> 13), 0xc2b2ae35);
+    return (value ^ (value >>> 16)) >>> 0;
+  }
   const fixedCountByLoad = new Map<number, number>();
   for (const entry of fixedEntries) fixedCountByLoad.set(
     Number(entry.teaching_load_id),
@@ -934,10 +962,11 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   ), 0);
   const desiredCoverage = coverage(fixedEntries) + demandUnits.length;
 
-  function rankCandidates(load: TimetableTeachingLoad, entries: InternalEntry[], attemptCeiling = limits.max_attempts): RankedCandidate[] {
+  function rankRawCandidates(load: TimetableTeachingLoad, entries: InternalEntry[], attemptCeiling = limits.max_attempts, day?: number): RankedCandidate[] {
     const ranked: RankedCandidate[] = [];
     const evaluate = preparePlacementEvaluator(entries);
     for (const slot of scheduleSlots) {
+      if (day != null && slot.day_of_week !== day) continue;
       ensureWithinWallClockSafetyLimit();
       if (attempts >= attemptCeiling || deterministicBudgetExpired()) {
         stoppedByLimit = true;
@@ -957,6 +986,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
     }
     return ranked.sort((left, right) => (
       left.penalty - right.penalty
+      || (input.searchVariant ? variantOrder(left.slot.id) - variantOrder(right.slot.id) : 0)
       || left.slot.day_of_week - right.slot.day_of_week
       || left.slot.start_time.localeCompare(right.slot.start_time)
       || left.slot.slot_index - right.slot.slot_index
@@ -979,26 +1009,60 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
     };
   }
 
+  // Commit a new teaching day atomically across sections. Parallel religious
+  // lessons still share a slot, while same-teacher sections use separate slots.
+  function completeLinkedDays(entries: InternalEntry[], attemptCeiling: number): InternalEntry[] | null {
+    const missing = missingSectionDays(entries);
+    if (missing.length === 0) return entries;
+    if (attempts >= attemptCeiling || deterministicBudgetExpired()) { stoppedByLimit = true; return null; }
+    const counts = new Map<number, number>();
+    for (const entry of entries) counts.set(entry.teaching_load_id, (counts.get(entry.teaching_load_id) || 0) + 1);
+    const availableLoads = (loads: TimetableTeachingLoad[]) => loads.filter(load => groupFor(load).every(member =>
+      (counts.get(member.id) || 0) < Number(member.weekly_periods)));
+    missing.sort((a, b) => availableLoads(a.loads).length - availableLoads(b.loads).length || a.day - b.day);
+    const next = missing[0];
+    for (const load of availableLoads(next.loads)) {
+      for (const candidate of rankRawCandidates(load, entries, attemptCeiling, next.day)) {
+        const extended = [...entries, ...groupFor(load).map(member => makeEntry(member, candidate.slot))];
+        const complete = completeLinkedDays(extended, attemptCeiling);
+        if (complete) return complete;
+        backtracks += 1;
+      }
+    }
+    return null;
+  }
+
+  function rankCandidates(load: TimetableTeachingLoad, entries: InternalEntry[], attemptCeiling = limits.max_attempts): RankedCandidate[] {
+    const candidates = rankRawCandidates(load, entries, attemptCeiling);
+    if (!groupFor(load).some(member => linkedLoadIds.has(member.id))) return candidates;
+    return candidates.flatMap(candidate => {
+      const extended = [...entries, ...groupFor(load).map(member => makeEntry(member, candidate.slot))];
+      const complete = completeLinkedDays(extended, attemptCeiling);
+      return complete ? [{...candidate, additions: complete.slice(entries.length)}] : [];
+    });
+  }
+
   function greedyFill(seed: InternalEntry[]): InternalEntry[] {
     const entries = [...seed];
-    const scheduledByLoad = new Map<number, number>();
-    for (const entry of entries) scheduledByLoad.set(
-      Number(entry.teaching_load_id),
-      (scheduledByLoad.get(Number(entry.teaching_load_id)) || 0) + 1,
-    );
     for (const load of orderedLoads) {
-      let remaining = Number(load.weekly_periods) - (scheduledByLoad.get(Number(load.id)) || 0);
+      let remaining = Number(load.weekly_periods) - entries.filter(entry => entry.teaching_load_id === load.id).length;
       while (remaining > 0 && !deterministicBudgetExpired()) {
         ensureWithinWallClockSafetyLimit();
         const candidate = rankCandidates(load, entries)[0];
         if (!candidate) break;
-        entries.push(...groupFor(load).map(member => makeEntry(member, candidate.slot)));
+        entries.push(...(candidate.additions || groupFor(load).map(member => makeEntry(member, candidate.slot))));
         remaining -= 1;
       }
     }
     return entries;
   }
 
+  const linkedSeed = fixedValidation.conflicts.length === 0 ? completeLinkedDays([...fixedEntries], Math.floor(limits.max_attempts * 0.2)) : null;
+  if (!linkedSeed && fixedValidation.conflicts.length === 0) {
+    fixedValidation.conflicts.push(...validateTimetableSectionDays(validLoads, scopedSlots, fixedEntries, input.sectionDayLinkLoadIds).map(conflict => ({
+      ...conflict, code: 'fixed_section_day_link' as const, slot_id: 0,
+    })));
+  }
   if (fixedValidation.conflicts.length > 0) {
     const penalties = emptyPenaltyBreakdown();
     const unscheduled = activeLoads.map((load) => ({
@@ -1012,18 +1076,19 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       employee_id: load.employee_id == null ? null : Number(load.employee_id),
       employee_name: load.employee_name || null,
       remaining_count: Number(load.weekly_periods),
-      reason_codes: ['insufficient_slot_domain'] as TimetableSolverReasonCode[],
-      reasons: ['الدروس المثبتة تمنع إنشاء جدول صالح.'],
+      reason_codes: [stoppedByLimit ? 'search_budget_exhausted' : 'insufficient_slot_domain'] as TimetableSolverReasonCode[],
+      reasons: [stoppedByLimit ? 'لم يكتمل البحث عن ربط الدروس المثبتة ضمن الوقت والمحاولات المتاحة.' : 'الدروس المثبتة تمنع إنشاء جدول صالح.'],
     }));
     return {
-      status: 'fixed_conflict',
+      link_same_teacher_section_days: input.linkSameTeacherSectionDays === true,
+      status: stoppedByLimit ? 'partial' : 'fixed_conflict',
       quality_score: 0,
       required_periods: readiness.total_required_periods,
       scheduled_periods: 0,
       unscheduled_periods: readiness.total_required_periods,
       entries: [],
       unscheduled,
-      warnings: ['الدروس المثبتة تمنع إنشاء جدول صالح.'],
+      warnings: stoppedByLimit ? ['توقف البحث قبل إكمال ربط الشعب حول الدروس المثبتة؛ هذا لا يثبت استحالة الجدول. أعد المحاولة أو راجع القيود.'] : ['الدروس المثبتة تمنع إنشاء جدول صالح.'],
       scoring: {
         model: 'comparative-v1',
         total_penalty: 0,
@@ -1033,14 +1098,14 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         note: 'تعذر تقييم الجودة قبل إصلاح تعارضات الدروس المثبتة.',
       },
       statistics: {
-        attempts: 0,
-        backtracks: 0,
+        attempts,
+        backtracks,
         local_improvement_attempts: 0,
         elapsed_ms: Date.now() - startedAt,
         time_budget_ms: limits.time_budget_ms,
         attempt_budget: limits.max_attempts,
         backtrack_budget: limits.max_backtracks,
-        stopped_by_limit: false,
+        stopped_by_limit: stoppedByLimit,
         current_valid_entry_count: 0,
         existing_invalid_entry_count: input.currentEntries?.length || 0,
         active_day_count: activeDays.length,
@@ -1050,22 +1115,27 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       days: activeDays,
       slots: scopedSlots.filter((slot) => Number(slot.is_active) === 1),
       placements: input.placements,
-      fixed_conflicts: fixedValidation.conflicts,
+      fixed_conflicts: stoppedByLimit ? [] : fixedValidation.conflicts,
     };
   }
 
-  let bestEntries = greedyFill(fixedEntries);
+  let bestEntries = greedyFill(linkedSeed || fixedEntries);
+  if (input.searchSeedEntries?.length && coverage(input.searchSeedEntries) > coverage(bestEntries)
+    && [...fixedEntryKeys].every(key => input.searchSeedEntries!.some(entry => `${entry.slot_id}:${entry.teaching_load_id}` === key))
+    && validateTimetableSolverProposal(input, input.searchSeedEntries, ensureWithinWallClockSafetyLimit).length === 0) {
+    bestEntries = greedyFill(input.searchSeedEntries);
+  }
   // Repair greedy dead ends by moving a small number of blocking lessons. All
   // partners move together and every replacement uses the normal validator.
   // The deterministic attempt ceiling also bounds this on runtimes whose clock
   // does not advance during synchronous computation.
   const repairAttemptCeiling = Math.floor(limits.max_attempts * 0.7);
-  function repairMissingLesson(load: TimetableTeachingLoad, entries: InternalEntry[], depth: number, ancestors: Set<number>): InternalEntry[] | null {
+  function repairMissingLesson(load: TimetableTeachingLoad, entries: InternalEntry[], depth: number, ancestors: Set<number>, relocationDay?: number): InternalEntry[] | null {
     if (attempts >= repairAttemptCeiling || deterministicBudgetExpired() || ancestors.has(load.id)) return null;
     const group = groupFor(load);
     const teachers = new Set(group.flatMap(member => member.employee_id == null ? [] : [member.employee_id]));
     const nextAncestors = new Set([...ancestors, ...group.map(member => member.id)]);
-    const candidates = scheduleSlots.map(slot => {
+    const candidates = scheduleSlots.filter(slot => relocationDay == null || slot.day_of_week === relocationDay).map(slot => {
       const blockers = entries.filter(entry => {
         if (entry.slot_id !== slot.id) return false;
         const existing = loadsById.get(entry.teaching_load_id);
@@ -1095,11 +1165,31 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       repaired.push(...group.map(member => makeEntry(member, slot)));
       let complete = true;
       for (const blocker of blockerGroups.values()) {
-        const relocated = repairMissingLesson(blocker, repaired, depth - 1, nextAncestors);
+        const relocated = repairMissingLesson(blocker, repaired, depth - 1, nextAncestors,
+          groupFor(blocker).some(member => linkedLoadIds.has(member.id)) ? slot.day_of_week : undefined);
         if (!relocated) { complete = false; break; }
         repaired = relocated;
       }
-      if (complete) return repaired;
+      if (!complete) continue;
+      if (ancestors.size > 0) return repaired;
+      // A previously unplaced linked lesson may require making room for its
+      // counterpart too. Repair the whole bundle before accepting either half.
+      const linkedAncestors = new Set(nextAncestors);
+      while (!respectsSectionDays(repaired) && !deterministicBudgetExpired()) {
+        const missing = missingSectionDays(repaired)[0];
+        let extended: InternalEntry[] | null = null;
+        for (const partner of missing.loads) {
+          if (groupFor(partner).some(member => repaired.filter(entry => entry.teaching_load_id === member.id).length >= member.weekly_periods)) continue;
+          extended = repairMissingLesson(partner, repaired, Math.max(0, depth - 1), linkedAncestors, missing.day);
+          if (extended) {
+            groupFor(partner).forEach(member => linkedAncestors.add(member.id));
+            break;
+          }
+        }
+        if (!extended) break;
+        repaired = extended;
+      }
+      if (respectsSectionDays(repaired)) return repaired;
     }
     return null;
   }
@@ -1127,20 +1217,21 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       || (savedScore.penalties.early_light_subjects || 0) === (generatedScore.penalties.early_light_subjects || 0)
         && savedScore.total_penalty < generatedScore.total_penalty) bestEntries = [...savedEntries];
   }
-  const workingEntries: InternalEntry[] = [...fixedEntries];
+  const workingEntries: InternalEntry[] = [...(linkedSeed || fixedEntries)];
   function searchForMoreCoverage(position: number): boolean {
     ensureWithinWallClockSafetyLimit();
     if (coverage(workingEntries) > coverage(bestEntries)) bestEntries = [...workingEntries];
     if (coverage(bestEntries) === desiredCoverage) return true;
     if (position >= demandUnits.length || deterministicBudgetExpired()) return false;
     const remainingDemand = demandUnits.length - position;
-    if (coverage(workingEntries) + remainingDemand <= coverage(bestEntries)) return false;
+    if (sectionDayGroups.length === 0 && coverage(workingEntries) + remainingDemand <= coverage(bestEntries)) return false;
 
     const { load } = demandUnits[position];
+    if (workingEntries.filter(entry => entry.teaching_load_id === load.id).length >= Number(load.weekly_periods)) return searchForMoreCoverage(position + 1);
     const candidates = rankCandidates(load, workingEntries);
     for (const candidate of candidates) {
       if (deterministicBudgetExpired()) return false;
-      const additions = groupFor(load).map(member => makeEntry(member, candidate.slot));
+      const additions = candidate.additions || groupFor(load).map(member => makeEntry(member, candidate.slot));
       workingEntries.push(...additions);
       if (searchForMoreCoverage(position + 1)) return true;
       workingEntries.splice(workingEntries.length - additions.length, additions.length);
@@ -1233,6 +1324,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
         const evaluate = preparePlacementEvaluator(candidateEntries);
         if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
+        if (!respectsSectionDays(candidateEntries)) continue;
         const candidateScore = scoreEntries(candidateEntries).scoring;
         if (!betterScore(candidateScore, currentScore)) continue;
         proposalEntries = candidateEntries;
@@ -1309,6 +1401,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
           const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
           const evaluate = preparePlacementEvaluator(candidateEntries);
           if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
+          if (!respectsSectionDays(candidateEntries)) continue;
           const candidateScore = scoreEntries(candidateEntries).scoring;
           if (!betterScore(candidateScore, currentScore)) continue;
           proposalEntries = candidateEntries;
@@ -1359,6 +1452,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         const candidateEntries = [...proposalEntries.filter(entry => !movedIds.has(entry.id)), ...moved];
         const evaluate = preparePlacementEvaluator(candidateEntries);
         if (moved.some(entry => evaluate(entry, {validateWholeSchedule: true}).hard_conflicts.length > 0)) continue;
+        if (!respectsSectionDays(candidateEntries)) continue;
         const candidateScore = scoreEntries(candidateEntries).scoring;
         if (!betterScore(candidateScore, currentScore)) continue;
         proposalEntries = candidateEntries;
@@ -1387,6 +1481,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
         localImprovementAttempts += 1;
         const replacements = originalGroup.map(entry => ({...entry, slot_id: Number(candidate.slot.id)}));
         const candidateEntries = [...withoutOriginal, ...replacements];
+        if (!respectsSectionDays(candidateEntries)) continue;
         const candidateScore = scoreEntries(candidateEntries).scoring;
         if (betterScore(candidateScore, currentScore)) {
           proposalEntries = candidateEntries;
@@ -1422,6 +1517,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
     const remaining = Math.max(0, Number(load.weekly_periods) - scheduled);
     if (remaining === 0) return [];
     const reasonCodes = new Set<TimetableSolverReasonCode>();
+    if (linkedLoadIds.has(load.id)) reasonCodes.add('section_day_link');
     if (invalidLoadIds.has(Number(load.id))) {
       reasonCodes.add('invalid_teaching_load');
     } else {
@@ -1544,6 +1640,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
       : 'partial';
   const warnings = [
     'هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.',
+    ...(input.linkSameTeacherSectionDays ? ['ربط الشعب مفعّل: المادة للمدرس نفسه والصف نفسه تقع في الأيام نفسها بين شعبه؛ تتابع الدروس تفضيل. عند اختلاف الأنصبة قد تتكرر المادة في اليوم نفسه لإكمال النصاب الأكبر.'] : []),
     ...(readiness.missing_teacher_count > 0 ? [`توجد ${readiness.missing_teacher_count} أنصبة بلا مدرس، وقد جرى تمثيلها بوضوح في الاقتراح.`] : []),
     ...(stoppedByLimit ? ['توقف البحث عند حد الأمان المحدد؛ راجع الدروس غير المجدولة أو أعد ضبط القيود.'] : []),
     ...readiness.hard_feasibility_blockers.map((blocker) => blocker.message),
@@ -1553,6 +1650,7 @@ export function solveTimetable(input: TimetableSolverInput): TimetableSolverPrev
   if (elapsedMs >= limits.time_budget_ms) throw new TimetableSolverSafetyLimitError();
 
   return {
+    link_same_teacher_section_days: input.linkSameTeacherSectionDays === true,
     status,
     quality_score: comparativeQualityScore,
     required_periods: requiredPeriods,

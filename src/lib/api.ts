@@ -721,6 +721,7 @@ export function previewAutomaticTimetable(
   options?: {
     fixed_entries?: Array<{ slot_id: number; teaching_load_id: number }>;
     use_current_locked_entries?: boolean;
+    link_same_teacher_section_days?: boolean;
     generation_scope?: import('./timetableScope').TimetableScope;
   },
 ) {
@@ -733,6 +734,7 @@ export function previewAutomaticTimetable(
 export function prepareTimetableSolver(schoolId: number, academicYearId: number, options?: {
   fixed_entries?: Array<{slot_id: number; teaching_load_id: number}>;
   use_current_locked_entries?: boolean;
+  link_same_teacher_section_days?: boolean;
   generation_scope?: import('./timetableScope').TimetableScope;
 }, signal?: AbortSignal) {
   return fetchApi<PreparedTimetableSolver>('/api/timetable/solver/prepare', {
@@ -745,6 +747,7 @@ function proposalEntries(entries: TimetableProposalPlacement[]) {
 }
 
 export function previewTimetableAdoption(data: {
+  link_same_teacher_section_days?: boolean;
   generation_scope?: import('./timetableScope').TimetableScope;
   scope_load_ids?: number[];
   scope_token?: string;
@@ -760,6 +763,7 @@ export function previewTimetableAdoption(data: {
 }
 
 export function applyTimetableProposal(data: {
+  link_same_teacher_section_days?: boolean;
   generation_scope?: import('./timetableScope').TimetableScope;
   scope_load_ids?: number[];
   scope_token?: string;

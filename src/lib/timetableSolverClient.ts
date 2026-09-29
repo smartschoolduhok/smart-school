@@ -1,13 +1,15 @@
-import type { PreparedTimetableSolver } from './timetableSolverPrepared.ts';
+import type { PreparedTimetableSolver, TimetableSearchProgress } from './timetableSolverPrepared.ts';
 import type { TimetableSolverProposalWithIntegrity } from './timetableAdoption.ts';
 
-export type TimetableSolverWorkerResponse = {ok: true; data: TimetableSolverProposalWithIntegrity} | {ok: false; error: string};
+export type TimetableSolverWorkerResponse = {ok: true; data: TimetableSolverProposalWithIntegrity} | {ok: false; error: string}
+  | {type: 'progress'; progress: TimetableSearchProgress};
 type SolverWorker = Pick<Worker, 'postMessage' | 'terminate' | 'onmessage' | 'onerror' | 'onmessageerror'>;
 
 /** There is deliberately no synchronous fallback: solving must never block the page. */
 export function solveTimetableInWorker(prepared: PreparedTimetableSolver, options: {
   signal?: AbortSignal;
   timeoutMs?: number;
+  onProgress?: (progress: TimetableSearchProgress) => void;
   createWorker?: () => SolverWorker;
 } = {}): Promise<TimetableSolverProposalWithIntegrity> {
   return new Promise((resolve, reject) => {
@@ -34,14 +36,19 @@ export function solveTimetableInWorker(prepared: PreparedTimetableSolver, option
     const abort = () => finish(undefined, new DOMException('تم إلغاء التوليد', 'AbortError'));
     options.signal?.addEventListener('abort', abort, {once: true});
     worker.onmessage = (event: MessageEvent<TimetableSolverWorkerResponse>) => {
+      if (settled) return;
       const message = event.data;
+      if (!message || typeof message !== 'object') {
+        finish(undefined, new Error('تعذر قراءة نتيجة التوليد. أعد المحاولة.')); return;
+      }
+      if ('type' in message) { options.onProgress?.(message.progress); return; }
       if (message?.ok === true && Array.isArray(message.data?.entries) && typeof message.data?.proposal_digest === 'string') finish(message.data);
       else finish(undefined, new Error(message?.ok === false && typeof message.error === 'string'
         ? message.error : 'تعذر قراءة نتيجة التوليد. أعد المحاولة.'));
     };
     worker.onerror = () => finish(undefined, new Error('تعذر تشغيل التوليد. حدّث الصفحة وأعد المحاولة.'));
     worker.onmessageerror = () => finish(undefined, new Error('تعذر نقل بيانات التوليد. أعد المحاولة.'));
-    timer = setTimeout(() => finish(undefined, new Error('استغرق التوليد وقتًا طويلًا. اختر صفًا أو شعبة لتوليد نطاق أصغر ثم أعد المحاولة.')), options.timeoutMs ?? 30_000);
+    timer = setTimeout(() => finish(undefined, new Error('استغرق التوليد وقتًا طويلًا. اختر صفًا أو شعبة لتوليد نطاق أصغر ثم أعد المحاولة.')), options.timeoutMs ?? 100_000);
     try { worker.postMessage(prepared); }
     catch { finish(undefined, new Error('تعذر إرسال بيانات الجدول للتوليد. أعد المحاولة.')); }
   });

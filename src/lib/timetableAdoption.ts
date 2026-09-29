@@ -178,6 +178,7 @@ export function timetableProposalDigestSource(input: {
   academicYearId: number;
   revision: number;
   entries: TimetableProposalPlacement[];
+  linkSameTeacherSectionDays?: boolean;
   generationScope?: TimetableScope;
   scopeLoadIds?: number[];
 }): string {
@@ -186,6 +187,7 @@ export function timetableProposalDigestSource(input: {
     academic_year_id: Number(input.academicYearId),
     revision: Number(input.revision),
     entries: canonicalTimetableProposalEntries(input.entries),
+    ...(input.linkSameTeacherSectionDays ? {link_same_teacher_section_days: true} : {}),
     ...(input.generationScope && input.generationScope.kind !== 'school' ? {
       generation_scope: input.generationScope,
       scope_load_ids: [...(input.scopeLoadIds || [])].sort((a, b) => a - b),
@@ -198,6 +200,7 @@ export async function computeTimetableProposalDigest(input: {
   academicYearId: number;
   revision: number;
   entries: TimetableProposalPlacement[];
+  linkSameTeacherSectionDays?: boolean;
   generationScope?: TimetableScope;
   scopeLoadIds?: number[];
 }): Promise<string> {
