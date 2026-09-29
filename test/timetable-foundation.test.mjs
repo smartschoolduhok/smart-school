@@ -343,6 +343,78 @@ function readinessFixture({ capacity = 8, loadPeriods = [4, 4], missingTeacher =
   return { days, slots, placements, subjects, loads };
 }
 
+function excludedSubjectReadinessFixture() {
+  const input = readinessFixture({ capacity: 33, loadPeriods: [30] });
+  input.schoolId = 1;
+  input.academicYearId = 1;
+  input.placements = [input.placements[0]];
+  input.subjects = ['Math', 'English', 'Sports', 'Art'].map((name, i) => ({ id: i + 1, class_id: 1, section_id: null, name, status: 'active' }));
+  input.loads = input.subjects.map((subject, i) => ({
+    ...input.loads[0], id: subject.id, academic_year_id: 1, subject_id: subject.id, subject_name: subject.name,
+    weekly_periods: i === 0 ? 30 : i === 1 ? 3 : 1, status: i < 2 ? 'active' : 'inactive',
+  }));
+  return input;
+}
+
+test('explicit inactive section loads exclude sports and art while the 33-lesson active plan is ready', () => {
+  const input = excludedSubjectReadinessFixture();
+  const summary = buildTimetableReadiness(input);
+  assert.equal(summary.ready, true);
+  assert.equal(summary.placements[0].status, 'exact');
+  assert.deepEqual(summary.placements[0].missing_subjects, []);
+  assert.equal(summary.total_required_periods, 33);
+  assert.equal(summary.total_assignments, 2);
+  assert.deepEqual(summary.load_progress.map(load => load.teaching_load_id), [1, 2]);
+  assert.equal(summary.teacher_workloads[0].total_weekly_periods, 33);
+  assert.ok(input.subjects.every(subject => subject.status === 'active'), 'catalog subjects stay active outside this timetable choice');
+});
+
+test('subjects without a section load record still require configuration', () => {
+  const input = excludedSubjectReadinessFixture();
+  input.loads = input.loads.filter(load => load.subject_id !== 4);
+  const summary = buildTimetableReadiness(input);
+  assert.equal(summary.ready, false);
+  assert.deepEqual(summary.placements[0].missing_subjects, [{ id: 4, name: 'Art' }]);
+  assert.equal(summary.total_required_periods, 33);
+});
+
+for (const [name, overrides] of [
+  ['other school', { school_id: 2, class_school_id: 2, section_school_id: 2, subject_school_id: 2, employee_school_id: 2 }],
+  ['other year', { academic_year_id: 2 }],
+  ['other class', { class_id: 2, subject_class_id: 2, section_class_id: 2 }],
+  ['other section', { section_id: 2 }],
+  ['whole class', { section_id: null }],
+  ['invalid academic reference', { subject_class_id: 2 }],
+]) test(`inactive ${name} load cannot exclude a subject for this section`, () => {
+  const input = excludedSubjectReadinessFixture();
+  Object.assign(input.loads.find(load => load.subject_id === 3), overrides);
+  const summary = buildTimetableReadiness(input);
+  assert.equal(summary.ready, false);
+  assert.deepEqual(summary.placements[0].missing_subjects, [{ id: 3, name: 'Sports' }]);
+});
+
+for (const [name, overrides] of [
+  ['valid active replacement', {}],
+  ['active replacement without a teacher', { employee_id: null }],
+  ['active replacement with archived teacher', { employee_status: 'archived' }],
+  ['active replacement with invalid academic reference', { subject_class_id: 2 }],
+]) test(`${name} takes precedence over older inactive exclusions`, () => {
+  const input = excludedSubjectReadinessFixture();
+  input.loads.push({ ...input.loads[2], id: 30, status: 'active', ...overrides });
+  const summary = buildTimetableReadiness(input);
+  assert.equal(summary.ready, false);
+  if (overrides.subject_class_id) {
+    assert.deepEqual(summary.placements[0].missing_subjects, [{ id: 3, name: 'Sports' }]);
+    assert.equal(summary.invalid_reference_count, 1);
+  } else {
+    assert.deepEqual(summary.placements[0].missing_subjects, []);
+    assert.equal(summary.total_required_periods, 34);
+    assert.equal(summary.placements[0].status, 'over_capacity');
+    if (overrides.employee_id === null) assert.deepEqual(summary.placements[0].missing_teacher_load_ids, [30]);
+    if (overrides.employee_status) assert.deepEqual(summary.placements[0].invalid_load_ids, [30]);
+  }
+});
+
 test('readiness distinguishes under, exact, over, empty and missing-teacher states', () => {
   const exactAndUnderFixture = readinessFixture({ capacity: 4, loadPeriods: [4, 3] });
   exactAndUnderFixture.loads[1].employee_id = 2;

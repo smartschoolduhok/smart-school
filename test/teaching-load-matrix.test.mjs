@@ -3,7 +3,7 @@ import test from 'node:test';
 import {
   parseMatrixRequest, parseMatrixCopyRequest, matrixCells, matrixClassCards, matrixKey,
   matrixDraftChanges, applyMatrixRow, planTeachingLoadMatrix, planTeachingLoadCopy, createMatrixRequestGuard,
-  matrixLoadTeacherState, matrixCellPresentation, isMatrixTeacherEligible,
+  matrixLoadTeacherState, matrixCellPresentation, isMatrixTeacherEligible, summarizeMatrix, matrixCellLoads, matrixSectionTotals,
 } from '../src/lib/teachingLoadMatrix.ts';
 import { loadTeachingLoadMatrix, publicTeachingLoadMatrix, buildMatrixApplyStatements } from '../src/lib/teachingLoadMatrixDb.ts';
 import { fixture, entry, revision, snapshot, addConstraints, addAvailability, migrationSQL, invalidateAssignedTeacher } from './helpers/teaching-load-matrix-fixture.mjs';
@@ -40,6 +40,42 @@ test('blank existing/missing cells and omissions are no-op; explicit deactivatio
  const d=publicTeachingLoadMatrix(await context(fixture()));
  assert.deepEqual(matrixDraftChanges(d,{'1:1':{periods:''},'2:1':{periods:''},'2:2':{employeeId:1}}),[]);
  assert.deepEqual(matrixDraftChanges(d,{'1:1':{deactivate:true}}),[{subject_id:1,section_id:1,action:'deactivate'}]);
+});
+test('inactive-only cells are excluded while absent cells remain missing and active history wins',async()=>{
+ const f=fixture();f.db.exec("UPDATE timetable_teaching_loads SET status='inactive' WHERE id=2");
+ const c=await context(f),data=publicTeachingLoadMatrix(c);
+ assert.equal(data.summary.excluded,1);assert.equal(data.summary.expected,4);assert.equal(data.summary.configured,1);assert.equal(data.summary.missing,3);
+ assert.equal(data.summary.weekly_periods,4);assert.equal(matrixCellPresentation(data.loads.find(l=>l.id===2),2,c.teachers,1).state,'excluded');
+ const active=c.loads.find(l=>l.id===1),history={...active,id:999,status:'inactive'};
+ for(const rows of [[active,history],[history,active]]){
+  assert.equal(matrixCellLoads(rows).get('1:1').id,1);
+  const summary=summarizeMatrix(1,c.sections,c.subjects,rows);assert.equal(summary.excluded,0);assert.equal(summary.configured,1);
+ }
+ const recentlyExcluded={...active,status:'inactive',weekly_periods:3,updated_at:200},olderHistory={...history,updated_at:100};
+ assert.equal(matrixCellLoads([recentlyExcluded,olderHistory]).get('1:1').weekly_periods,3);
+ assert.equal(matrixCellLoads([olderHistory,recentlyExcluded]).get('1:1').weekly_periods,3);
+});
+test('projected summary retains prior exclusions and explicit inclusion restores required denominator',async()=>{
+ const f=fixture();f.db.exec("UPDATE timetable_teaching_loads SET status='inactive' WHERE id=2");const c=await context(f);
+ const other=planTeachingLoadMatrix(c,[up(1,1,1)]);assert.equal(other.summary_after.excluded,1);assert.equal(other.summary_after.expected,4);assert.equal(other.summary_after.completion_percent,25);
+ const bothExcluded=planTeachingLoadMatrix(c,[{subject_id:1,section_id:1,action:'deactivate'}]);assert.equal(bothExcluded.summary_after.excluded,2);assert.equal(bothExcluded.summary_after.expected,3);assert.equal(bothExcluded.summary_after.weekly_periods,0);
+ const included=planTeachingLoadMatrix(c,[up(1,2,2,3)]);assert.equal(included.counts.create,1);assert.equal(included.summary_after.excluded,0);assert.equal(included.summary_after.expected,5);assert.equal(included.summary_after.weekly_periods,7);
+ const only=summarizeMatrix(1,[c.sections[1]],[c.subjects[0]],c.loads);assert.equal(only.expected,0);assert.equal(only.excluded,1);assert.equal(only.missing,0);assert.equal(only.completion_percent,100);
+});
+test('section totals use saved capacity and only valid active draft periods, independently per section',async()=>{
+ const f=fixture();f.db.exec("UPDATE timetable_teaching_loads SET status='inactive' WHERE id=2");const data=publicTeachingLoadMatrix(await context(f));
+ assert.equal(data.weekly_capacity,6);
+ const saved=matrixSectionTotals(data);assert.deepEqual(saved.map(s=>[s.id,s.weekly_periods,s.weekly_capacity,s.excluded,s.missing]),[[1,4,6,0,2],[2,0,6,1,1]]);
+ const edited=matrixSectionTotals(data,{'1:1':{periods:'7'},'1:2':{include:true,periods:'3',employeeId:2},'2:1':{periods:'0'},'2:2':{periods:'2'}});
+ assert.deepEqual(edited.map(s=>[s.weekly_periods,s.difference,s.excluded,s.invalid_periods]),[[7,-1,0,1],[5,1,0,0]]);
+ const excluded=matrixSectionTotals(data,{'1:1':{deactivate:true},'1:2':{include:true,periods:''}});assert.equal(excluded[0].weekly_periods,0);assert.equal(excluded[0].excluded,1);assert.equal(excluded[1].excluded,0);assert.equal(excluded[1].missing,2);
+ assert.equal(matrixSectionTotals({...data,weekly_capacity:9})[0].difference,5);
+});
+test('bulk row edits preserve explicit exclusions until the user includes that section',async()=>{
+ const f=fixture();f.db.exec("UPDATE timetable_teaching_loads SET status='inactive' WHERE id=2");const data=publicTeachingLoadMatrix(await context(f));
+ const applied=applyMatrixRow(data,{},1,{periods:'3',employeeId:1});assert.equal(applied['1:2'],undefined);assert.deepEqual(matrixDraftChanges(data,applied),[up(1,1,1,3)]);
+ const excluded={'1:1':{deactivate:true}};assert.deepEqual(applyMatrixRow(data,excluded,1,{periods:'6'}),excluded);
+ const included=applyMatrixRow(data,{'1:2':{include:true,periods:'4',employeeId:2}},1,{periods:'2'});assert.deepEqual(matrixDraftChanges(data,included),[up(1,1,null,2),up(1,2,2,2)]);
 });
 const invalids=[
  null,[],{}, {...body([up()]),extra:1},body([]),body(Array.from({length:501},(_,i)=>up(i+1))),

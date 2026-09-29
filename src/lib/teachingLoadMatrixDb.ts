@@ -1,4 +1,4 @@
-import type { TimetableTeachingLoad } from './timetable.ts';
+import { activeTimetableLessonSlots, type TimetableTeachingLoad } from './timetable.ts';
 import {
   type MatrixContext, type MatrixScope, type MatrixPlan,
   STALE_MATRIX_CODE, STALE_MATRIX_MESSAGE, summarizeMatrix,
@@ -52,9 +52,10 @@ export async function loadTeachingLoadMatrix(db: D1Database, schoolId: number, y
 }
 
 export function publicTeachingLoadMatrix(context: MatrixContext) {
-  const loads = context.loads.filter(l => l.class_id === context.class.id && l.status === 'active');
+  const loads = context.loads.filter(l => l.class_id === context.class.id);
   return { class: context.class, sections: context.sections, subjects: context.subjects,
     teachers: context.teachers, loads, timetable_revision: context.timetable_revision,
+    weekly_capacity: activeTimetableLessonSlots(context.days, context.slots).length,
     summary: summarizeMatrix(context.class.id, context.sections, context.subjects, loads) };
 }
 

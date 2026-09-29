@@ -1,5 +1,5 @@
 import {
-  evaluateTimetableEntryPlacement, calculateTeacherAvailabilitySummary, activeTimetableLessonSlots, occupiedTimetableDays,
+  evaluateTimetableEntryPlacement, calculateTeacherAvailabilitySummary, activeTimetableLessonSlots, occupiedTimetableDays, loadHasInvalidAcademicReference,
   type TimetableDay, type TimetableSlot, type TimetableEntry, type TimetableTeachingLoad,
   type TimetableTeacherAvailabilityOverride, type TimetableTeacherConstraints,
 } from './timetable.ts';
@@ -210,14 +210,17 @@ function scheduleEvidence(c: WeekContext) {
       evidence.set(`entry:${entry.id}:${n.code}`, {notice: {...n, entry_id: entry.id}, severity: metrics[n.code] ?? 1});
   }
   const activeSlots = activeTimetableLessonSlots(c.days, c.slots);
-  const activeLoads = c.loads.filter(l => l.status === 'active');
+  // Match readiness demand: archived academic references and legacy class-wide
+  // loads do not consume current section capacity. Saved entries still pass
+  // through the full reference/conflict validation above.
+  const activeLoads = c.loads.filter(l => l.status === 'active' && !loadHasInvalidAcademicReference(l));
   for (const classId of new Set(activeLoads.map(l => l.class_id))) {
     const classLoads = activeLoads.filter(l => l.class_id === classId);
     const sections = [...new Set(classLoads.filter(l => l.section_id != null).map(l => l.section_id))];
     for (const sectionId of sections.length ? sections : [null]) {
       const className = classLoads[0].class_name || 'المحدد';
       const sectionName = classLoads.find(l => l.section_id === sectionId)?.section_name || 'المحددة';
-      const demand = classLoads.filter(l => l.section_id == null || l.section_id === sectionId).reduce((total, l) => total + l.weekly_periods, 0);
+      const demand = classLoads.filter(l => l.section_id === sectionId).reduce((total, l) => total + l.weekly_periods, 0);
       const shortage = Math.max(0, demand - activeSlots.length);
       if (shortage > 0) evidence.set(`placement:${classId}:${sectionId ?? 'none'}:capacity_deficit`, {severity: shortage, notice: {
         code: 'placement_weekly_capacity_exceeded', class_id: classId, section_id: sectionId,
@@ -230,7 +233,7 @@ function scheduleEvidence(c: WeekContext) {
   for (const employeeId of teacherIds) {
     const constraint = c.constraints.find(item => item.employee_id === employeeId);
     const teacherLoads = c.loads.filter(l => l.employee_id === employeeId);
-    const demand = teacherLoads.filter(l => l.status === 'active').reduce((n, l) => n + l.weekly_periods, 0);
+    const demand = activeLoads.filter(l => l.employee_id === employeeId).reduce((n, l) => n + l.weekly_periods, 0);
     const summary = calculateTeacherAvailabilitySummary({schoolId: c.school_id, academicYearId: c.academic_year_id, employeeId,
       employeeName: '', assignedWeeklyPeriods: demand, days: c.days, slots: c.slots, overrides: c.availability, constraints: constraint});
     const shortage = Math.max(0, summary.assigned_weekly_periods - summary.hard_weekly_capacity);

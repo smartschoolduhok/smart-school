@@ -241,6 +241,42 @@ test('teaching-load API creates, edits and history-safely deactivates one canoni
   assert.equal(fixture.database.prepare('SELECT status FROM timetable_teaching_loads WHERE id = ?').get(loadId).status, 'inactive');
 });
 
+test('authenticated load deactivation excludes only that section while catalog and unconfigured subjects remain visible', async (t) => {
+  const fixture = await createApiFixture();
+  t.after(() => fixture.database.close());
+  fixture.database.exec(`
+    INSERT INTO sections(id,school_id,class_id,name,status) VALUES(3,1,1,'Second section','active');
+    INSERT INTO subjects(id,school_id,class_id,section_id,name,status) VALUES
+      (3,1,1,NULL,'Sports','active'),(4,1,1,NULL,'Art','active'),(5,1,1,NULL,'Music','active');
+    INSERT INTO timetable_days(school_id,academic_year_id,day_of_week,is_active,order_index) VALUES(1,1,0,1,0);
+    INSERT INTO timetable_slots(school_id,academic_year_id,day_of_week,slot_index,slot_type,lesson_number,label,start_time,end_time)
+      VALUES(1,1,0,1,'lesson',1,'First','08:00','08:40'),(1,1,0,2,'lesson',2,'Second','08:40','09:20');
+  `);
+  const catalogBefore = fixture.database.prepare('SELECT * FROM subjects ORDER BY id').all();
+  for (const [subjectId, sectionId, excluded] of [[1, 1, false], [3, 1, true], [4, 3, true]]) {
+    const created = await api(fixture, fixture.tokens.owner, 'POST', '/api/timetable/teaching-loads', {
+      school_id: 1, academic_year_id: 1, class_id: 1, section_id: sectionId,
+      subject_id: subjectId, employee_id: 1, weekly_periods: 1,
+    });
+    assert.equal(created.status, 201);
+    const loadId = (await created.json()).data.id;
+    if (excluded) {
+      const deleted = await api(fixture, fixture.tokens.owner, 'DELETE', `/api/timetable/teaching-loads/${loadId}`, { school_id: 1, academic_year_id: 1 });
+      assert.equal(deleted.status, 200);
+      assert.equal(fixture.database.prepare('SELECT status FROM timetable_teaching_loads WHERE id=?').get(loadId).status, 'inactive');
+    }
+  }
+  const response = await api(fixture, fixture.tokens.owner, 'GET', '/api/timetable/readiness?school_id=1&academic_year_id=1');
+  assert.equal(response.status, 200);
+  const summary = (await response.json()).data;
+  assert.deepEqual(summary.placements.find(row => row.section_id === 1).missing_subjects, [{ id: 4, name: 'Art' }, { id: 5, name: 'Music' }]);
+  assert.deepEqual(summary.placements.find(row => row.section_id === 3).missing_subjects, [{ id: 1, name: 'Math' }, { id: 3, name: 'Sports' }, { id: 5, name: 'Music' }]);
+  assert.equal(summary.total_required_periods, 1);
+  assert.equal(summary.total_assignments, 1);
+  assert.equal(summary.ready, false, 'genuinely unconfigured subjects still block readiness');
+  assert.deepEqual(fixture.database.prepare('SELECT * FROM subjects ORDER BY id').all(), catalogBefore);
+});
+
 test('teaching-load API uses the genuine employee role schema and rejects non-teachers', async () => {
   const fixture = await createApiFixture();
   const employeeColumns = fixture.database.prepare('PRAGMA table_info(employees)').all().map((column) => column.name);
