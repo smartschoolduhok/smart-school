@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { solvePreparedTimetable } from '../src/lib/timetableSolverPrepared.ts';
-import { hasBetterTimetableScore, solveTimetable, validateTimetableSolverProposal } from '../src/lib/timetableSolver.ts';
+import { hasBetterTimetableScore, solveTimetable, validateTimetableSolverProposal, TimetableSolverSafetyLimitError } from '../src/lib/timetableSolver.ts';
 import { createTimetableDailySubjectPolicy } from '../src/lib/timetableDailySubjects.ts';
 import { DEFAULT_TIMETABLE_PREFERENCES, timetableSearchBudget } from '../src/lib/timetablePreferences.ts';
 
@@ -253,6 +253,19 @@ test('a time deadline returns the earlier verified result without spending all r
     assert.ok(result.warnings.some(warning => warning.includes('انتهت مهلة البحث')));
     assert.equal(result.status, 'complete');
     assertValid(source, result);
+  } finally {Date.now = originalNow;}
+});
+
+test('the total deadline stops retries even when no start produced a verified proposal', async () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  const deadline = now + 30000;
+  Date.now = () => now;
+  try {
+    const progress = [];
+    await assert.rejects(solvePreparedTimetable(prepared([load()]), {maxRuns: 50, timeBudgetMs: 30000,
+      onProgress: value => {progress.push(value); now = deadline;}}), TimetableSolverSafetyLimitError);
+    assert.ok(progress.length < 50, 'the deadline ends search before exhausting all requested starts');
   } finally {Date.now = originalNow;}
 });
 

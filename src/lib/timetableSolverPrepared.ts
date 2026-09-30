@@ -66,7 +66,7 @@ export async function solvePreparedTimetable(prepared: PreparedTimetableSolver, 
     options?.onProgress?.({run: run + 1, total_runs: maxRuns, best_scheduled: result?.scheduled_periods || 0,
       best_required: result?.required_periods || 0, elapsed_ms: Date.now() - started});
     const remainingTime = timeBudgetMs - (Date.now() - started);
-    if (remainingTime < 2_000 && result) {deadlineReached = true; break;}
+    if (remainingTime <= 0 || remainingTime < 2_000 && (run > 0 || result)) {deadlineReached = true; break;}
     runs += 1;
     // Search without any daily repeats first. Only an incomplete first phase
     // enables adjacent doubles; a complete strict result never triggers fallback.

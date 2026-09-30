@@ -2,7 +2,7 @@
 
 Base: `d1edc74fede863952a3f3736e51df2190db1b16a` (PR #68).
 
-Generation now offers 90-second / 8-start, 5-minute / 50-start and 15-minute / 1000-start maximum budgets. Wall time, per-start search work and validation limits remain bounded; a perfect complete result ends early. Search continues in a dedicated browser worker, with timeout aligned to the selected duration and cancellation available.
+Generation now offers 90-second / 8-start, 5-minute / 50-start and 15-minute / 1000-start maximum budgets. Wall time, per-start search work and validation limits remain bounded; a perfect complete result ends early. Search continues in a dedicated browser worker, with timeout aligned to the selected duration and cancellation available. The total deadline also stops retries when no start has returned a verified proposal.
 
 Saved-timetable reoptimization and displayed-proposal reoptimization validate and rescore their baseline against the fresh server input. The baseline participates in comparison and seeds alternate search starts. Higher coverage wins, then fewer daily doubles, then light opening penalties, then total weighted penalties. An inferior or tied new result cannot replace a valid better baseline. Stale or invalid baselines are rejected visibly. Cancelling a displayed-proposal reoptimization retains that proposal.
 
@@ -21,7 +21,8 @@ Required STAGING acceptance: owner/principal preferences reads and save, a secon
 The first PR CI attempt stopped at the dependency audit before application checks: the existing `brace-expansion` 2.1.4 lock entry acquired security advisories. The lockfile now uses the compatible 2.1.7 patch; no dependency ranges or audit thresholds were relaxed.
 
 - TypeScript and frontend/Worker production builds passed. The existing Vite large-chunk warning remains non-blocking.
-- Full regression matrix completed; after fixing the route-count assertion for the two new authorized endpoints, affected suites were rerun: timetable **636/636**, parallel and UI **37/37**. All other matrix suites passed.
+- Full regression matrix passed **2102/2102** after the dependency patch. After adding the no-result deadline case, the affected timetable suite passed **637/637**; parallel and UI previously passed **37/37**. No other matrix suite changed.
 - Genuine Wrangler local D1: fresh migration/seed passed; **52 SQL migrations** include 0051. Backup/restore reproduced **97 tables** with an exact application snapshot and clean foreign keys.
-- Tests cover more than eight starts, total search deadline, a 15-minute worker timeout, baseline retention/improvement/rejection, cancellation, weighted scoring, independent school preferences, stale policy writes, and stale proposal adoption.
+- The genuine D1 workflow validator now expects the additional empty school-preferences table and derives reported table counts from the actual snapshot.
+- Tests cover more than eight starts, total search deadline with and without a verified result, a 15-minute worker timeout, baseline retention/improvement/rejection, cancellation, weighted scoring, independent school preferences, stale policy writes, and stale proposal adoption.
 - Remote migration, deployment and authenticated STAGING acceptance remain pending because this session has no authenticated Cloudflare access.
