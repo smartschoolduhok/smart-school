@@ -74,7 +74,7 @@ try{
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-1),content,hash:digest(content)},value,'every prior load column, value and SQLite type is unchanged');
   }else assert.deepEqual(after.tables[name],value,name);
  }
- assert.equal(Object.keys(after.tables).length,96);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
+ assert.equal(Object.keys(after.tables).length,97);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
  const {default:app}=await vite.ssrLoadModule('/src/worker.ts'),f={d1:db};
  const call=async(role,method,path,body,status)=>{const r=await request(app,f,role,method,path,body);assert.equal(r.status,status,JSON.stringify({path,...r}));return r.data;};
  const count=async table=>(await db.prepare(`SELECT count(*) n FROM ${table}`).first()).n;
@@ -124,5 +124,5 @@ try{
  await call('owner','POST','/api/communication',{conversation_key:crypto.randomUUID(),student_id:102,academic_year_id:1,parent_user_id:9,staff_user_id:1,title:'rollback',body:'must not persist'},503);
  assert.deepEqual(await contentSnapshot(async sql=>(await db.prepare(sql).all()).results),rollbackBefore);cases.push('late batch failure rolls back thread/message/audit/notifications');
  assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
- const evidence={local_only:true,migration_count:migrationFiles.length,table_count:96,application_table_count:94,historical_application_tables_unchanged:81,baseline_hash:digest(before),cases,foreign_key_check:[]};writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence,null,2));
+ const evidence={local_only:true,migration_count:migrationFiles.length,table_count:Object.keys(after.tables).length,application_table_count:Object.keys(after.tables).filter(name=>name!=='d1_migrations'&&!name.startsWith('sqlite_')).length,historical_application_tables_unchanged:81,baseline_hash:digest(before),cases,foreign_key_check:[]};writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence,null,2));
 }finally{await vite.close();await proxy.dispose();}

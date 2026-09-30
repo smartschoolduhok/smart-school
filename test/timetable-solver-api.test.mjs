@@ -8,6 +8,7 @@ import { createServer } from 'vite';
 import { signJWT } from '../src/lib/jwtSecurity.ts';
 import { solvePreparedTimetable } from '../src/lib/timetableSolverPrepared.ts';
 import { computeTimetableProposalDigest } from '../src/lib/timetableAdoption.ts';
+import { DEFAULT_TIMETABLE_PREFERENCES } from '../src/lib/timetablePreferences.ts';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -53,6 +54,7 @@ async function fixture() {
     '0016_auth_security.sql', '0023_timetable_foundation.sql',
     '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
     '0026_timetable_adoption_locking.sql',
+    '0051_timetable_school_preferences.sql',
   ]) database.exec(migration(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
@@ -137,7 +139,7 @@ test('solver preview endpoint returns a complete school proposal and performs no
   assert.equal(Object.hasOwn(data.statistics, 'source_query_count'), false);
   const solverSourceQueryCount = context.d1.sqlLog.filter((sql) => /FROM\s+(?:timetable_days|timetable_slots|timetable_teaching_loads|timetable_entries|timetable_teacher_availability|timetable_teacher_constraints|classes\s+class)\b/i.test(sql)).length;
   assert.equal(solverSourceQueryCount, 7);
-  assert.equal(context.d1.prepareCount, 12, `expected 7 solver-source, 1 revision, 2 scope-validation, and 2 authentication queries; got ${context.d1.prepareCount}`);
+  assert.equal(context.d1.prepareCount, 13, `expected 7 solver-source, 1 revision, 2 scope-validation, and 2 authentication queries and 1 school-preferences query; got ${context.d1.prepareCount}`);
 });
 
 test('system admin requires an explicit active target school', async () => {
@@ -186,7 +188,7 @@ test('query count remains constant as teaching-load row count grows', async () =
   larger.d1.prepareCount = 0;
   assert.equal((await api(larger, larger.tokens.owner, { school_id: 1, academic_year_id: 1 })).status, 200);
   assert.equal(larger.d1.prepareCount, baseCount);
-  assert.equal(baseCount, 12);
+  assert.equal(baseCount, 13);
 });
 
 test('existing valid and later-invalid entries are reported separately without blocking proposal generation', async () => {
@@ -220,6 +222,60 @@ async function prepare(context, token, body) {
     body: JSON.stringify(body),
   }, context.env);
 }
+
+async function preferencesRequest(context, token, schoolId, preferences, revision = 0) {
+  return app.request(`http://localhost/api/timetable/preferences?school_id=${schoolId}`, {
+    method: preferences ? 'PUT' : 'GET',
+    headers: {Authorization: `Bearer ${token}`, 'Content-Type': 'application/json'},
+    ...(preferences ? {body: JSON.stringify({school_id: schoolId, preferences, expected_revision: revision})} : {}),
+  }, context.env);
+}
+
+test('school priorities are isolated, authorized, persisted and supplied by the server during preparation', async () => {
+  const context = await fixture();
+  const before = tableCounts(context.database);
+  const defaults = await preferencesRequest(context, context.tokens.owner, 1);
+  assert.equal(defaults.status, 200);
+  assert.deepEqual((await defaults.json()).data, {school_id: 1, revision: 0, preferences: DEFAULT_TIMETABLE_PREFERENCES});
+  const schoolA = {...DEFAULT_TIMETABLE_PREFERENCES, teacher_gaps: 2};
+  const schoolB = {...DEFAULT_TIMETABLE_PREFERENCES, teacher_gaps: 0, early_science: 0};
+  assert.equal((await preferencesRequest(context, context.tokens.owner, 2, schoolB)).status, 403);
+  assert.equal((await preferencesRequest(context, context.tokens.teacher, 1, schoolA)).status, 403);
+  assert.equal((await preferencesRequest(context, context.tokens.accountant, 1)).status, 403);
+  assert.equal((await preferencesRequest(context, context.tokens.owner, 1, schoolA)).status, 200);
+  assert.equal((await preferencesRequest(context, context.tokens.admin, 2, schoolB)).status, 200);
+  for (const [school, year, expected] of [[1, 1, schoolA], [2, 2, schoolB]]) {
+    const response = await prepare(context, context.tokens.admin, {school_id: school, academic_year_id: year});
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).data.input.preferences, expected);
+  }
+  assert.deepEqual(tableCounts(context.database), before);
+});
+
+test('priority updates reject stale writes and invalidate prior proposals in this school only', async () => {
+  const context = await fixture();
+  const prepared = (await (await prepare(context, context.tokens.owner, {school_id: 1, academic_year_id: 1})).json()).data;
+  const proposal = await solvePreparedTimetable(prepared);
+  const otherBefore = context.database.prepare('SELECT revision FROM timetable_revisions WHERE school_id=2 AND academic_year_id=2').get().revision;
+  const prefs = {...DEFAULT_TIMETABLE_PREFERENCES, section_continuity: 2};
+  const saved = await preferencesRequest(context, context.tokens.owner, 1, prefs);
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).data.revision, 1);
+  assert.equal((await adoptionPreview(context, proposal)).status, 409);
+  assert.equal((await preferencesRequest(context, context.tokens.owner, 1, DEFAULT_TIMETABLE_PREFERENCES, 0)).status, 409);
+  assert.equal(context.database.prepare('SELECT revision FROM timetable_revisions WHERE school_id=2 AND academic_year_id=2').get().revision, otherBefore);
+  assert.deepEqual((await (await preferencesRequest(context, context.tokens.owner, 1)).json()).data.preferences, prefs);
+});
+
+test('priority input cannot replace hard constraints or accept malformed levels', async () => {
+  const context = await fixture();
+  for (const preferences of [
+    {...DEFAULT_TIMETABLE_PREFERENCES, teacher_gaps: -1}, {...DEFAULT_TIMETABLE_PREFERENCES, teacher_gaps: 0.5},
+    {...DEFAULT_TIMETABLE_PREFERENCES, teacher_gaps: '2'}, {...DEFAULT_TIMETABLE_PREFERENCES, early_light_subjects: 2},
+    {...DEFAULT_TIMETABLE_PREFERENCES, daily_subject_doubles: 0}, {}, [],
+  ]) assert.equal((await preferencesRequest(context, context.tokens.owner, 1, preferences)).status, 400);
+  assert.equal(context.database.prepare('SELECT count(*) AS count FROM timetable_school_preferences').get().count, 0);
+});
 
 async function adoptionPreview(context, data) {
   return app.request('http://localhost/api/timetable/solver/adoption-preview', {

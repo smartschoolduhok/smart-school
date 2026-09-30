@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { solvePreparedTimetable } from '../src/lib/timetableSolverPrepared.ts';
-import { hasBetterTimetableScore, solveTimetable, validateTimetableSolverProposal } from '../src/lib/timetableSolver.ts';
+import { hasBetterTimetableScore, solveTimetable, validateTimetableSolverProposal, TimetableSolverSafetyLimitError } from '../src/lib/timetableSolver.ts';
 import { createTimetableDailySubjectPolicy } from '../src/lib/timetableDailySubjects.ts';
+import { DEFAULT_TIMETABLE_PREFERENCES, timetableSearchBudget } from '../src/lib/timetablePreferences.ts';
 
 function week(dayCount = 3, lessonCount = 3) {
   const days = [], slots = [];
@@ -224,4 +225,95 @@ test('completing linked sections can move an entire saved subject pair to anothe
   assert.equal(result.scoring.penalties.daily_subject_doubles, 0);
   assert.deepEqual(source, before, 'generation leaves the saved timetable untouched');
   assertValid(source, result, false);
+});
+
+test('extended search can run more than eight diverse starts and reports the chosen budget', async () => {
+  const source = prepared([load()], {fixedEntries: [3, 6, 9].map(slot => ({...entry(1, slot), is_locked: 1}))});
+  const progress = [];
+  const result = await solvePreparedTimetable(source, {maxRuns: 12, timeBudgetMs: 300000, onProgress: value => progress.push(value)});
+  assert.equal(result.statistics.search_runs, 12);
+  assert.equal(progress.length, 12);
+  assert.equal(result.statistics.time_budget_ms, 300000);
+  assert.equal(timetableSearchBudget('deep').maxRuns, 1000);
+  assert.equal(timetableSearchBudget('deep').timeBudgetMs, 900000);
+  assertValid(source, result);
+});
+
+test('a time deadline returns the earlier verified result without spending all requested starts', async () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  const start = now;
+  Date.now = () => now;
+  try {
+    const source = prepared([load()], {fixedEntries: [3, 6, 9].map(slot => ({...entry(1, slot), is_locked: 1}))});
+    const result = await solvePreparedTimetable(source, {maxRuns: 50, timeBudgetMs: 300000,
+      onProgress: progress => {if (progress.run === 2) now = start + 299000;}});
+    assert.equal(result.statistics.search_runs, 1);
+    assert.equal(result.statistics.stopped_by_limit, true);
+    assert.ok(result.warnings.some(warning => warning.includes('انتهت مهلة البحث')));
+    assert.equal(result.status, 'complete');
+    assertValid(source, result);
+  } finally {Date.now = originalNow;}
+});
+
+test('the total deadline stops retries even when no start produced a verified proposal', async () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  const deadline = now + 30000;
+  Date.now = () => now;
+  try {
+    const progress = [];
+    await assert.rejects(solvePreparedTimetable(prepared([load()]), {maxRuns: 50, timeBudgetMs: 30000,
+      onProgress: value => {progress.push(value); now = deadline;}}), TimetableSolverSafetyLimitError);
+    assert.ok(progress.length < 50, 'the deadline ends search before exhausting all requested starts');
+  } finally {Date.now = originalNow;}
+});
+
+test('reoptimization retains an already better proposal, recomputes its score, and produces a fresh valid digest', async () => {
+  const source = prepared([load(1, {weekly_periods: 2})], {dayCount: 2, lessonCount: 2});
+  source.baseline_revision = 7;
+  source.baseline_entries = [2, 4].map(slot_id => ({slot_id, teaching_load_id: 1, is_locked: 0}));
+  const before = structuredClone(source);
+  const result = await solvePreparedTimetable(source, {maxRuns: 4});
+  assert.deepEqual(result.entries.map(item => item.slot_id), [2, 4]);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.quality_score, 100);
+  assert.ok(result.warnings.some(item => item.includes('احتفظنا بالجدول السابق')));
+  assert.ok(result.proposal_digest);
+  assert.deepEqual(source, before);
+  assertValid(source, result);
+});
+
+test('a saved full timetable seeds improvement and can be replaced only by a better valid result', async () => {
+  const source = prepared([load()], {currentEntries: [3, 6, 9].map(slot => entry(1, slot))});
+  source.keep_current = true;
+  const result = await solvePreparedTimetable(source, {maxRuns: 4});
+  assert.equal(result.status, 'complete');
+  assert.equal(result.scoring.penalties.late_science_subjects, 0);
+  assert.equal(result.scoring.penalties.daily_subject_doubles, 0);
+  assert.deepEqual(source.input.currentEntries.map(item => item.slot_id), [3, 6, 9]);
+  assertValid(source, result);
+});
+
+test('invalid or stale baselines never bypass a changed teacher constraint or fresh revision', async () => {
+  for (const stale of [false, true]) {
+    const source = prepared([load(1, {weekly_periods: 2})], {dayCount: 2, lessonCount: 2,
+      teacherAvailability: [{school_id: 1, academic_year_id: 1, employee_id: 1, slot_id: 2, status: 'unavailable'}]});
+    source.baseline_revision = stale ? 6 : 7;
+    source.baseline_entries = [2, 4].map(slot_id => ({slot_id, teaching_load_id: 1, is_locked: 0}));
+    const result = await solvePreparedTimetable(source, {maxRuns: 4});
+    assert.equal(result.status, 'complete');
+    assert.ok(result.entries.every(item => item.slot_id !== 2));
+    assert.ok(result.warnings.some(item => item.includes(stale ? 'تغيرت بيانات الجدول' : 'لا يحقق القيود الحالية')));
+    assertValid(source, result);
+  }
+});
+
+test('disabling every soft preference cannot weaken the teacher limits or daily subject rule', async () => {
+  const source = prepared([load(1, {weekly_periods: 3})], {dayCount: 1, lessonCount: 3,
+    preferences: Object.fromEntries(Object.keys(DEFAULT_TIMETABLE_PREFERENCES).map(key => [key, 0]))});
+  const result = await solvePreparedTimetable(source, {maxRuns: 4});
+  assert.equal(result.scheduled_periods, 2);
+  assert.equal(result.scoring.penalties.daily_subject_doubles, 100);
+  assertValid(source, result);
 });

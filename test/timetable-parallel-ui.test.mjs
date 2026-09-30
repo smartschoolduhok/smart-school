@@ -7,6 +7,7 @@ import {solvePreparedTimetable} from '../src/lib/timetableSolverPrepared.ts';
 import {solveTimetable, validateTimetableSolverProposal} from '../src/lib/timetableSolver.ts';
 import {computeTimetableProposalDigest} from '../src/lib/timetableAdoption.ts';
 import {solveTimetableInWorker} from '../src/lib/timetableSolverClient.ts';
+import {DEFAULT_TIMETABLE_PREFERENCES} from '../src/lib/timetablePreferences.ts';
 
 const window = new Window({url: 'http://localhost'});
 for (const key of ['window', 'document', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'Node', 'Event', 'MouseEvent', 'localStorage', 'sessionStorage']) globalThis[key] = key === 'window' ? window : window[key];
@@ -19,6 +20,7 @@ const {default: TimetablePage, TimetableReadinessStatus} = await vite.ssrLoadMod
 const {AuthProvider} = await vite.ssrLoadModule('/src/hooks/useAuth.tsx');
 const {ParallelLoadField} = await vite.ssrLoadModule('/src/modules/timetable/ParallelLoadField.tsx');
 const {AutomaticTimetableTab} = await vite.ssrLoadModule('/src/modules/timetable/AutomaticTimetableTab.tsx');
+const {TimetablePreferencesPanel} = await vite.ssrLoadModule('/src/modules/timetable/TimetablePreferencesPanel.tsx');
 const {TimetableLoadDiagnostics} = await vite.ssrLoadModule('/src/modules/timetable/TimetableLoadDiagnostics.tsx');
 after(async () => {await vite.close(); await window.happyDOM.close();});
 
@@ -148,6 +150,7 @@ test('automatic proposal renders both parallel cards and lock action includes bo
   const workers = installWorker(t);
   const calls = [], previousFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith('/api/timetable/preferences')) return response({data: {school_id: 1, revision: 0, preferences: DEFAULT_TIMETABLE_PREFERENCES}});
     const body = JSON.parse(init.body);calls.push({url: String(url), body});
     return String(url).endsWith('/solver/prepare') ? response({data: prepared(loads)}) : response({error: 'معاينة الاختبار فقط'}, 400);
   };
@@ -170,7 +173,7 @@ test('automatic proposal renders both parallel cards and lock action includes bo
 
 test('generation explains teaching preferences and separates weighted penalties from remaining lesson counts', async t => {
   const workers = installWorker(t, true), previousFetch = globalThis.fetch;
-  globalThis.fetch = async () => response({data: prepared()});t.after(() => {globalThis.fetch = previousFetch;});
+  globalThis.fetch = async url => String(url).startsWith('/api/timetable/preferences') ? response({data: {school_id: Number(new URL(String(url), 'http://localhost').searchParams.get('school_id')), revision: 0, preferences: DEFAULT_TIMETABLE_PREFERENCES}}) : response({data: prepared()});t.after(() => {globalThis.fetch = previousFetch;});
   const container = await mount(t, createElement(AutomaticTimetableTab, {schoolId: 1, academicYearId: 1, dataVersion: 1, readiness: null, classes, sections, onAdopted: async () => {}}));
   for (const text of ['الأخلاقية والفنية والرياضة والكردية والفرنسية والحاسوب', 'عن أول درسين', 'مثل أ ثم ب', 'أوقات توفر المدرسين ومنع التعارض والدروس المثبتة', 'قد تبقى استثناءات']) assert.ok(container.textContent.includes(text), text);
   for (const text of ['مرة واحدة يوميًا لكل شعبة', 'ضمن البحث والقيود', 'عند الضرورة فقط، في جميع الصفوف', 'لا يسمح بتكرارها في درسين منفصلين أو أكثر من مرتين', 'أولوية لتتابع دروس المدرس']) assert.ok(container.textContent.includes(text), text);
@@ -213,6 +216,7 @@ test('unexplained HTTP 503 offers a smaller scope and manual retry while preserv
   installWorker(t);
   const calls = [], previousFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith('/api/timetable/preferences')) return response({data: {school_id: 1, revision: 0, preferences: DEFAULT_TIMETABLE_PREFERENCES}});
     calls.push({url: String(url), body: JSON.parse(init.body)});
     if (calls.length === 1) return new Response('Service unavailable', {status: 503, headers: {'Content-Type': 'text/plain'}});
     if (calls.length === 2) return response({error: 'تعذر إكمال الحساب ضمن المهلة المحددة', code: 'specific_solver_error'}, 503);
@@ -324,6 +328,20 @@ test('worker default timeout allows the longer search and still terminates a sta
   t.mock.timers.tick(1);await rejection;assert.equal(worker.terminated, true);
 });
 
+test('deep search timeout follows its chosen duration instead of terminating after the quick budget', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const worker = {postMessage() {}, terminate() {this.terminated = true;}, terminated: false};
+  const pending = solveTimetableInWorker({...prepared(), search_duration: 'deep'}, {createWorker: () => worker});
+  const rejection = assert.rejects(pending, /استغرق التوليد وقتًا طويلًا/);
+  t.mock.timers.tick(100000);
+  assert.equal(worker.terminated, false);
+  t.mock.timers.tick(809999);
+  assert.equal(worker.terminated, false);
+  t.mock.timers.tick(1);
+  await rejection;
+  assert.equal(worker.terminated, true);
+});
+
 test('multiple prepared searches retain full coverage and the best teaching preferences, with progress and aggregate statistics', async () => {
   const names = ['رياضيات', 'فيزياء', 'اللغة الفرنسية'], loads = [];
   for (let section = 1; section <= 3; section++) for (let subject = 0; subject < names.length; subject++) {
@@ -349,11 +367,11 @@ test('multiple prepared searches retain full coverage and the best teaching pref
   const preferenceKey = result => [-result.scheduled_periods, result.scoring.penalties.early_light_subjects || 0, result.scoring.total_penalty];
   const compare = (left, right) => {const a = preferenceKey(left), b = preferenceKey(right);return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];};
   const best = [...attempts].sort(compare)[0];
-  assert.deepEqual(preferenceKey(result), preferenceKey(best));
+  assert.ok(compare(result, best) <= 0, 'retained seeds can improve beyond the independent starts');
   assert.ok(compare(best, attempts[0]) < 0, 'A later search improves this fixture beyond the initial proposal');
-  for (const key of ['attempts', 'backtracks', 'local_improvement_attempts']) {
-    assert.equal(result.statistics[key], attempts.reduce((sum, attempt) => sum + attempt.statistics[key], 0), key);
-  }
+  assert.ok(result.statistics.attempts > 0 && result.statistics.attempts <= result.statistics.attempt_budget);
+  assert.ok(result.statistics.backtracks <= result.statistics.backtrack_budget);
+  assert.ok(result.statistics.local_improvement_attempts <= 12000 * result.statistics.search_runs);
   const entries = result.entries.map((entry, index) => ({...entry, id: index + 1, school_id: 1, academic_year_id: 1}));
   assert.deepEqual(validateTimetableSolverProposal(source.input, entries), []);
   for (const load of loads) assert.equal(entries.filter(entry => entry.teaching_load_id === load.id).length, load.weekly_periods);
@@ -402,7 +420,7 @@ test('readiness diagnostics distinguish dormant archived loads from actionable i
 
 test('cancel, changed school and unmount terminate pending solving and ignore late worker output', async t => {
   const workers = installWorker(t, true), previousFetch = globalThis.fetch;
-  globalThis.fetch = async () => response({data: prepared()});t.after(() => {globalThis.fetch = previousFetch;});
+  globalThis.fetch = async url => String(url).startsWith('/api/timetable/preferences') ? response({data: {school_id: Number(new URL(String(url), 'http://localhost').searchParams.get('school_id')), revision: 0, preferences: DEFAULT_TIMETABLE_PREFERENCES}}) : response({data: prepared()});t.after(() => {globalThis.fetch = previousFetch;});
   const container = document.createElement('div');document.body.append(container);const root = createRoot(container);
   let mounted = true;
   t.after(async () => {if (mounted) await act(async () => root.unmount());container.remove();});
@@ -417,4 +435,54 @@ test('cancel, changed school and unmount terminate pending solving and ignore la
   props.schoolId = 2;await render();assert.equal(workers[1].terminated, true);
   props.schoolId = 1;await render();await act(async () => button(container, 'إنشاء جدول تلقائي').click());
   await act(async () => root.unmount());mounted = false;assert.equal(workers[2].terminated, true);
+});
+
+test('duration selection reaches the worker and cancelling reoptimization retains the visible previous proposal', async t => {
+  const workers = installWorker(t, true), previousFetch = globalThis.fetch;
+  globalThis.fetch = async url => String(url).startsWith('/api/timetable/preferences')
+    ? response({data: {school_id: 1, revision: 0, preferences: DEFAULT_TIMETABLE_PREFERENCES}}) : response({data: prepared()});
+  t.after(() => {globalThis.fetch = previousFetch;});
+  const container = await mount(t, createElement(AutomaticTimetableTab, {schoolId: 1, academicYearId: 1, dataVersion: 1,
+    readiness: null, classes, sections, onAdopted: async () => {}}));
+  await select(container, 'مدة البحث', 'deep');
+  await act(async () => button(container, 'إنشاء جدول تلقائي').click());
+  assert.equal(workers[0].input.search_duration, 'deep');
+  const proposal = await solvePreparedTimetable(prepared());
+  await act(async () => workers[0].onmessage({data: {ok: true, data: proposal}}));
+  const before = [...container.querySelectorAll('[data-proposal-entry]')].map(item => item.textContent);
+  await act(async () => button(container, 'إعادة توليد غير المثبت').click());
+  assert.deepEqual(workers[1].input.baseline_entries, proposal.entries.map(({slot_id, teaching_load_id, is_locked}) => ({slot_id, teaching_load_id, is_locked})));
+  assert.equal(workers[1].input.baseline_revision, proposal.timetable_revision);
+  await act(async () => button(container, 'إلغاء التوليد').click());
+  assert.equal(workers[1].terminated, true);
+  assert.deepEqual([...container.querySelectorAll('[data-proposal-entry]')].map(item => item.textContent), before);
+});
+
+test('school priority form saves its own revision and ignores a late response after selecting another school', async t => {
+  const previousFetch = globalThis.fetch, calls = [], busy = [], dirty = [];
+  let resolveSave, saved = 0;
+  const pending = new Promise(resolve => {resolveSave = resolve;});
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url) === '/api/auth/me') return response({data: {id: 1, school_id: 1, role_key: 'school_owner'}, csrf_token: 'a'.repeat(64)});
+    if (init.method === 'PUT') {calls.push(JSON.parse(init.body)); return pending;}
+    const school = Number(new URL(String(url), 'http://localhost').searchParams.get('school_id'));
+    return response({data: {school_id: school, revision: school, preferences: {...DEFAULT_TIMETABLE_PREFERENCES, teacher_gaps: school === 2 ? 0 : 1}}});
+  };
+  t.after(() => {globalThis.fetch = previousFetch;});
+  const onBusy = value => busy.push(value), onDirty = value => dirty.push(value), onSaved = () => {saved++;};
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  t.after(async () => {await act(async () => root.unmount()); container.remove();});
+  const render = async schoolId => act(async () => root.render(createElement(TimetablePreferencesPanel, {schoolId, disabled: false, onBusy, onDirty, onSaved})));
+  await render(1);
+  await select(container, 'تقليل فراغات المدرسين', '2');
+  assert.equal(dirty.at(-1), true);
+  await act(async () => button(container, 'حفظ أولويات المدرسة').click());
+  assert.equal(busy.at(-1), true);
+  assert.deepEqual(calls, [{school_id: 1, expected_revision: 1, preferences: {...DEFAULT_TIMETABLE_PREFERENCES, teacher_gaps: 2}}]);
+  await render(2);
+  assert.equal(container.querySelector('[aria-label="تقليل فراغات المدرسين"]').value, '0');
+  assert.equal(busy.at(-1), false);
+  await act(async () => resolveSave(response({data: {school_id: 1, revision: 2, preferences: calls[0].preferences}})));
+  assert.equal(container.querySelector('[aria-label="تقليل فراغات المدرسين"]').value, '0');
+  assert.equal(saved, 0);
 });

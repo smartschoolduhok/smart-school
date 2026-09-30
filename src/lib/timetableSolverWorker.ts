@@ -1,4 +1,4 @@
-import { solvePreparedTimetable, type PreparedTimetableSolver } from './timetableSolverPrepared.ts';
+import { solvePreparedTimetable, preparedTimetableSearchBudget, type PreparedTimetableSolver } from './timetableSolverPrepared.ts';
 import { TimetableSolverSafetyLimitError } from './timetableSolver.ts';
 import type { TimetableSolverWorkerResponse } from './timetableSolverClient.ts';
 
@@ -8,7 +8,7 @@ const worker = self as unknown as {
 };
 worker.onmessage = async event => {
   try {
-    worker.postMessage({ok: true, data: await solvePreparedTimetable(event.data, {maxRuns: 8,
+    worker.postMessage({ok: true, data: await solvePreparedTimetable(event.data, {...preparedTimetableSearchBudget(event.data),
       onProgress: progress => worker.postMessage({type: 'progress', progress}),
     })});
   } catch (error) {
