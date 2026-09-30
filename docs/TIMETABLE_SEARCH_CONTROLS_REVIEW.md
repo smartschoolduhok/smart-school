@@ -18,6 +18,8 @@ Required STAGING acceptance: owner/principal preferences reads and save, a secon
 
 ## Local validation
 
+The first PR CI attempt stopped at the dependency audit before application checks: the existing `brace-expansion` 2.1.4 lock entry acquired security advisories. The lockfile now uses the compatible 2.1.7 patch; no dependency ranges or audit thresholds were relaxed.
+
 - TypeScript and frontend/Worker production builds passed. The existing Vite large-chunk warning remains non-blocking.
 - Full regression matrix completed; after fixing the route-count assertion for the two new authorized endpoints, affected suites were rerun: timetable **636/636**, parallel and UI **37/37**. All other matrix suites passed.
 - Genuine Wrangler local D1: fresh migration/seed passed; **52 SQL migrations** include 0051. Backup/restore reproduced **97 tables** with an exact application snapshot and clean foreign keys.
