@@ -77,28 +77,30 @@ export function localRestoreChunks(sql, maximumBytes = 180000) {
   return chunks;
 }
 
-// Deliberately fail closed for other oversized SQL. This fallback restores
-// import_jobs rows without rewriting literals or bypassing financial triggers.
+// Fail closed for other oversized SQL. Only import and timetable snapshot rows
+// can use bound inserts, without rewriting literals or financial data.
 export function prepareLocalRestore(sql) {
+  sql = orderRestoreTables(sql);
   const statements = sqlStatements(sql), oversized = statements.filter(s => Buffer.byteLength(sql.slice(s.start, s.end)) > 100000);
-  const baseline = new DatabaseSync(':memory:');
+  const baseline = new DatabaseSync(':memory:', { enableForeignKeyConstraints: false });
   try {
     baseline.exec(sql);
+    assert.deepEqual(baseline.prepare('PRAGMA foreign_key_check').all(), [], 'Export has foreign key violations');
     const inserts = [];
     for (const statement of oversized) {
       const tokens = statement.tokens;
       assert.equal(tokens[0].text.toUpperCase(), 'INSERT', 'Unsupported oversized statement');
       assert.equal(tokens[1].text.toUpperCase(), 'INTO', 'Unsupported INSERT form');
       const table = tokens[2].text.replaceAll('"', '');
-      assert.equal(table, 'import_jobs', 'Unsupported oversized table');
+      assert.ok(['import_jobs', 'timetable_week_archives', 'timetable_schedule_versions'].includes(table), 'Unsupported oversized table');
       const single = new DatabaseSync(':memory:');
       try {
         single.exec('PRAGMA foreign_keys=OFF');
-        single.exec(baseline.prepare("SELECT sql FROM sqlite_schema WHERE type='table' AND name='import_jobs'").get().sql);
+        single.exec(baseline.prepare('SELECT sql FROM sqlite_schema WHERE type=? AND name=?').get('table', table).sql);
         single.exec(sql.slice(statement.start, statement.end));
-        const read = single.prepare('SELECT * FROM import_jobs'); read.setReadBigInts(true);
-        const rows = read.all(); assert.equal(rows.length, 1, 'Expected one oversized import_jobs row');
-        const columns = single.prepare('PRAGMA table_info(import_jobs)').all().map(c => c.name);
+        const read = single.prepare('SELECT * FROM ' + quote(table)); read.setReadBigInts(true);
+        const rows = read.all(); assert.equal(rows.length, 1, 'Expected one oversized snapshot row');
+        const columns = single.prepare('PRAGMA table_info(' + quote(table) + ')').all().map(c => c.name);
         const row = rows[0]; let bytes = 0;
         const values = columns.map(column => {
           const value = row[column];
@@ -119,7 +121,7 @@ export function prepareLocalRestore(sql) {
         });
         assert.ok(columns.length <= 100, 'Too many bound parameters');
         assert.ok(bytes + columns.length * 9 < 2000000, 'Row exceeds D1 limit');
-        inserts.push({ sql: `INSERT INTO import_jobs (${columns.map(quote).join(',')}) VALUES (${columns.map((_,i) => '?'+(i+1)).join(',')})`, values, bytes });
+        inserts.push({ sql: `INSERT INTO ${quote(table)} (${columns.map(quote).join(',')}) VALUES (${columns.map((_,i) => '?'+(i+1)).join(',')})`, values, bytes });
       } finally { single.close(); }
     }
     let offset = 0, baseSql = '';
@@ -133,6 +135,20 @@ export function prepareLocalRestore(sql) {
       baseStatementCount: statements.length - oversized.length,
     };
   } finally { baseline.close(); }
+}
+
+// A rebuilt parent table can appear after its child's data in a D1 export.
+// SQLite needs the referenced table to exist even with deferred foreign keys.
+// Keep every statement intact, creating all tables before loading any rows.
+export function orderRestoreTables(sql) {
+  const statements = sqlStatements(sql);
+  const tables = [], rest = [];
+  for (const statement of statements) {
+    const text = sql.slice(statement.start, statement.end);
+    const words = statement.tokens.slice(0, 3).map(t => t.text.toUpperCase());
+    (words[0] === 'CREATE' && words[1] === 'TABLE' ? tables : rest).push(text);
+  }
+  return tables.join('\n') + '\n' + rest.join('\n');
 }
 
 export async function contentSnapshot(read) {

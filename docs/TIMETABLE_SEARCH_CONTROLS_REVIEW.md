@@ -25,4 +25,4 @@ The first PR CI attempt stopped at the dependency audit before application check
 - Genuine Wrangler local D1: fresh migration/seed passed; **52 SQL migrations** include 0051. Backup/restore reproduced **97 tables** with an exact application snapshot and clean foreign keys.
 - The genuine D1 workflow validator now expects the additional empty school-preferences table and derives reported table counts from the actual snapshot.
 - Tests cover more than eight starts, total search deadline with and without a verified result, a 15-minute worker timeout, baseline retention/improvement/rejection, cancellation, weighted scoring, independent school preferences, stale policy writes, and stale proposal adoption.
-- Remote migration, deployment and authenticated STAGING acceptance remain pending because this session has no authenticated Cloudflare access.
+- Remote migration and authenticated STAGING acceptance passed on 2026-09-30. See [release evidence](TIMETABLE_SEARCH_CONTROLS_STAGING_QA.md). Final-head CI, merge/main CI, deployment verification and fixture retirement are recorded in PR #69's release attestation.
