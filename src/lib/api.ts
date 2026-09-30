@@ -731,6 +731,16 @@ export function previewAutomaticTimetable(
   });
 }
 
+export function getTimetablePreferences(schoolId: number) {
+  return fetchApi<import('./timetablePreferences').TimetableSchoolPreferences>(`/api/timetable/preferences?school_id=${schoolId}`);
+}
+
+export function saveTimetablePreferences(schoolId: number, revision: number, preferences: import('./timetablePreferences').TimetablePreferences) {
+  return fetchApi<import('./timetablePreferences').TimetableSchoolPreferences>('/api/timetable/preferences', {
+    method: 'PUT', body: JSON.stringify({school_id: schoolId, expected_revision: revision, preferences}),
+  });
+}
+
 export function prepareTimetableSolver(schoolId: number, academicYearId: number, options?: {
   fixed_entries?: Array<{slot_id: number; teaching_load_id: number}>;
   use_current_locked_entries?: boolean;

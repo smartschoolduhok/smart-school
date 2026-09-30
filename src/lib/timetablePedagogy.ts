@@ -1,4 +1,5 @@
 import type { TimetableSlot, TimetableTeachingLoad } from './timetable.ts';
+import { DEFAULT_TIMETABLE_PREFERENCES, type TimetablePreferences } from './timetablePreferences.ts';
 
 export type TimetableSubjectEffort = 'light' | 'heavy' | 'neutral';
 export interface TimetablePedagogyMetrics {
@@ -80,7 +81,7 @@ function append<K, V>(map: Map<K, V[]>, key: K, value: V) {
   if (values) values.push(value); else map.set(key, [value]);
 }
 
-export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], slots: TimetableSlot[]) {
+export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], slots: TimetableSlot[], preferences: TimetablePreferences = DEFAULT_TIMETABLE_PREFERENCES) {
   const loadById = new Map(loads.map(load => [load.id, load]));
   const effortByLoad = new Map(loads.map(load => [load.id, classifyTimetableSubject(load.subject_name)]));
   const identityByLoad = new Map(loads.map(load => [load.id, normalizeTimetableSubjectName(load.subject_name || '') || `subject-${load.subject_id}`]));
@@ -100,10 +101,12 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
   }
   const placementKey = (load: TimetableTeachingLoad) => `${load.school_id}:${load.academic_year_id}:${load.class_id}:${load.section_id ?? 'none'}`;
   const continuityKey = (load: TimetableTeachingLoad) => `${load.school_id}:${load.academic_year_id}:${load.class_id}:${load.employee_id}:${identityByLoad.get(load.id)}`;
-  const earlyPenalty = (loadId: number, slotId: number) => effortByLoad.get(loadId) !== 'light' ? 0
+  const earlyBasePenalty = (loadId: number, slotId: number) => effortByLoad.get(loadId) !== 'light' ? 0
     : lessonPositionBySlot.get(slotId) === 0 ? 40 : lessonPositionBySlot.get(slotId) === 1 ? 20 : 0;
-  const scienceLatePenalty = (load: TimetableTeachingLoad, slotId: number) => earlyScienceNames.has(identityByLoad.get(load.id)!)
+  const earlyPenalty = (loadId: number, slotId: number) => earlyBasePenalty(loadId, slotId) * preferences.early_light_subjects;
+  const scienceLateBasePenalty = (load: TimetableTeachingLoad, slotId: number) => earlyScienceNames.has(identityByLoad.get(load.id)!)
     ? Math.max(0, (lessonPositionBySlot.get(slotId) ?? 0) - 1) * (isTimetableTerminalClass(load) ? 10 : 6) : 0;
+  const scienceLatePenalty = (load: TimetableTeachingLoad, slotId: number) => scienceLateBasePenalty(load, slotId) * preferences.early_science;
 
   function score(entries: readonly Entry[]): TimetablePedagogyScore {
     const penalties = {early_light_subjects: 0, consecutive_heavy_subjects: 0, missed_section_continuity: 0, late_science_subjects: 0, repeated_first_subjects: 0};
@@ -116,7 +119,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       if (!load || !slot || slot.slot_type !== 'lesson' || !positionBySlot.has(slot.id)) continue;
       const scienceLate = scienceLatePenalty(load, slot.id);
       penalties.late_science_subjects += scienceLate;
-      if (scienceLate > 0) metrics.late_science_lessons += 1;
+      if (scienceLateBasePenalty(load, slot.id) > 0) metrics.late_science_lessons += 1;
       if (lessonPositionBySlot.get(slot.id) === 0) {
         const firstKey = `${placementKey(load)}:${identityByLoad.get(load.id)}`;
         const days = firstSubjectDays.get(firstKey) || new Set<number>();
@@ -127,7 +130,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       const position = positionBySlot.get(slot.id)!;
       const current = day.get(position) || {heavy: false, early: 0};
       current.heavy ||= effortByLoad.get(load.id) === 'heavy';
-      current.early = Math.max(current.early, earlyPenalty(load.id, slot.id));
+      current.early = Math.max(current.early, earlyBasePenalty(load.id, slot.id));
       day.set(position, current); placementDays.set(dayKey, day);
       if (load.employee_id == null || load.section_id == null) continue;
       const key = continuityKey(load);
@@ -139,7 +142,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
     for (const day of placementDays.values()) {
       let run = 0, previous = -2;
       for (const [position, lesson] of [...day].sort((a, b) => a[0] - b[0])) {
-        if (lesson.early > 0) { penalties.early_light_subjects += lesson.early; metrics.early_light_lessons += 1; }
+        if (lesson.early > 0) { penalties.early_light_subjects += lesson.early * preferences.early_light_subjects; metrics.early_light_lessons += 1; }
         run = lesson.heavy ? (position === previous + 1 ? run + 1 : 1) : 0;
         if (run > 2) metrics.heavy_run_excess += 1;
         previous = position;
@@ -156,10 +159,10 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
     }
     for (const days of firstSubjectDays.values()) {
       metrics.repeated_first_subjects += Math.max(0, days.size - 1);
-      penalties.repeated_first_subjects += days.size * (days.size - 1) / 2 * 14;
+      penalties.repeated_first_subjects += days.size * (days.size - 1) / 2 * 14 * preferences.first_subject_variety;
     }
-    penalties.consecutive_heavy_subjects = metrics.heavy_run_excess * 12;
-    penalties.missed_section_continuity = Math.max(0, metrics.possible_section_pairs - metrics.consecutive_section_pairs) * sectionContinuityWeight;
+    penalties.consecutive_heavy_subjects = metrics.heavy_run_excess * 12 * preferences.heavy_balance;
+    penalties.missed_section_continuity = Math.max(0, metrics.possible_section_pairs - metrics.consecutive_section_pairs) * sectionContinuityWeight * preferences.section_continuity;
     return {penalties, metrics};
   }
 
@@ -186,15 +189,15 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       let before = 0, after = 0;
       while (heavyPositions.has(position - before - 1)) before += 1;
       while (heavyPositions.has(position + after + 1)) after += 1;
-      penalty += Math.max(0, before + after - 1) * 12;
+      penalty += Math.max(0, before + after - 1) * 12 * preferences.heavy_balance;
     }
     if (load.section_id != null && sectionLessons.length > 0) {
       // Reward a new pair only. Merely extending an already paired lesson must
       // not make repeating the subject within its own section look better.
       const newPairs = countSectionPairs([...sectionLessons, {position: lessonPosition, section: load.section_id}]) - countSectionPairs(sectionLessons);
-      penalty -= newPairs * sectionContinuityWeight;
+      penalty -= newPairs * sectionContinuityWeight * preferences.section_continuity;
     }
-    penalty += sameFirstDays.size * 14;
+    penalty += sameFirstDays.size * 14 * preferences.first_subject_variety;
     return penalty;
   }
   return {score, candidatePenalty};

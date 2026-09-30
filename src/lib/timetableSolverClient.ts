@@ -1,5 +1,6 @@
 import type { PreparedTimetableSolver, TimetableSearchProgress } from './timetableSolverPrepared.ts';
 import type { TimetableSolverProposalWithIntegrity } from './timetableAdoption.ts';
+import { timetableSearchBudget } from './timetablePreferences.ts';
 
 export type TimetableSolverWorkerResponse = {ok: true; data: TimetableSolverProposalWithIntegrity} | {ok: false; error: string}
   | {type: 'progress'; progress: TimetableSearchProgress};
@@ -48,7 +49,7 @@ export function solveTimetableInWorker(prepared: PreparedTimetableSolver, option
     };
     worker.onerror = () => finish(undefined, new Error('تعذر تشغيل التوليد. حدّث الصفحة وأعد المحاولة.'));
     worker.onmessageerror = () => finish(undefined, new Error('تعذر نقل بيانات التوليد. أعد المحاولة.'));
-    timer = setTimeout(() => finish(undefined, new Error('استغرق التوليد وقتًا طويلًا. اختر صفًا أو شعبة لتوليد نطاق أصغر ثم أعد المحاولة.')), options.timeoutMs ?? 100_000);
+    timer = setTimeout(() => finish(undefined, new Error('استغرق التوليد وقتًا طويلًا. اختر صفًا أو شعبة لتوليد نطاق أصغر ثم أعد المحاولة.')), options.timeoutMs ?? timetableSearchBudget(prepared.search_duration).timeBudgetMs + 10_000);
     try { worker.postMessage(prepared); }
     catch { finish(undefined, new Error('تعذر إرسال بيانات الجدول للتوليد. أعد المحاولة.')); }
   });

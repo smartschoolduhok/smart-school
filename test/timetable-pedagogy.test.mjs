@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DEFAULT_TIMETABLE_PREFERENCES } from '../src/lib/timetablePreferences.ts';
 import { createTimetablePedagogyScorer } from '../src/lib/timetablePedagogy.ts';
 import { solveTimetable, validateTimetableSolverProposal } from '../src/lib/timetableSolver.ts';
 
@@ -42,6 +43,21 @@ test('teacher section continuity has a substantial preference in both candidate 
   const candidateBenefit = scorer.candidatePenalty(loads[1], slots[2], existing) - scorer.candidatePenalty(loads[1], slots[1], existing);
   assert.equal(separated.penalties.missed_section_continuity - consecutive.penalties.missed_section_continuity, 48);
   assert.equal(candidateBenefit, 48);
+});
+
+test('school preference levels affect candidate ranking and final scoring while keeping actual observations', () => {
+  const loads = [load(1, {subject_name: 'الفنية'}), load(2, {subject_name: 'الفنية'})];
+  const {slots} = week();
+  const normal = createTimetablePedagogyScorer(loads, slots);
+  const high = createTimetablePedagogyScorer(loads, slots, {...DEFAULT_TIMETABLE_PREFERENCES, section_continuity: 2});
+  const off = createTimetablePedagogyScorer(loads, slots, {...DEFAULT_TIMETABLE_PREFERENCES, early_light_subjects: 0, section_continuity: 0});
+  const entries = [entry(1, 1), entry(2, 3)];
+  assert.equal(high.score(entries).penalties.missed_section_continuity, 2 * normal.score(entries).penalties.missed_section_continuity);
+  assert.equal(off.score(entries).penalties.missed_section_continuity, 0);
+  assert.equal(off.score(entries).penalties.early_light_subjects, 0);
+  assert.equal(off.score(entries).metrics.early_light_lessons, 1);
+  assert.equal(off.candidatePenalty(loads[0], slots[0], []), 0);
+  assert.equal(normal.candidatePenalty(loads[0], slots[0], []), 40);
 });
 
 test('continuity priority can outweigh a small early-science preference without changing either teaching load', () => {

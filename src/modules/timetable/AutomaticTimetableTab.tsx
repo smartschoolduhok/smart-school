@@ -8,6 +8,8 @@ import { TimetableLoadDiagnostics } from './TimetableLoadDiagnostics';
 import { timetableEntriesForPlacement } from './timetableViewEntries';
 import { applyTimetableProposal, prepareTimetableSolver, previewTimetableAdoption } from '../../lib/api';
 import { solveTimetableInWorker } from '../../lib/timetableSolverClient';
+import { TimetablePreferencesPanel } from './TimetablePreferencesPanel';
+import { TIMETABLE_SEARCH_BUDGETS, type TimetableSearchDuration } from '../../lib/timetablePreferences';
 import type { TimetableSearchProgress } from '../../lib/timetableSolverPrepared';
 import {
   TIMETABLE_DAY_NAMES,
@@ -206,6 +208,9 @@ export function AutomaticTimetableTab({
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [linkSectionDays, setLinkSectionDays] = useState(false);
+  const [searchDuration, setSearchDuration] = useState<TimetableSearchDuration>('quick');
+  const [savingPreferences, setSavingPreferences] = useState(false);
+  const [preferencesDirty, setPreferencesDirty] = useState(false);
   const [generationScope, setGenerationScope] = useState<TimetableScope>({ kind: 'school' });
   useEffect(() => { setGenerationScope({ kind: 'school' }); setLinkSectionDays(false); }, [schoolId, academicYearId]);
 
@@ -227,7 +232,8 @@ export function AutomaticTimetableTab({
     use_current_locked_entries?: boolean;
     link_same_teacher_section_days?: boolean;
     generation_scope?: TimetableScope;
-  }) {
+  }, baseline?: TimetableSolverProposalWithIntegrity) {
+    if (savingPreferences || preferencesDirty) return;
     const generation = ++requestGenerationRef.current;
     solverAbortRef.current?.abort();
     const controller = new AbortController();
@@ -240,7 +246,7 @@ export function AutomaticTimetableTab({
       && scopeRef.current.dataVersion === expectedScope.dataVersion;
     setLoading(true);
     setSearchProgress(null);
-    setResult(null);
+    if (!baseline) setResult(null);
     setAdoptionPreview(null);
     setError('');
     setSuccess('');
@@ -266,7 +272,11 @@ export function AutomaticTimetableTab({
       return;
     }
     try {
-      const proposal = await solveTimetableInWorker(response.data, {signal: controller.signal,
+      const baselineIsCurrent = baseline?.timetable_revision === response.data.timetable_revision;
+      if (baseline && !baselineIsCurrent) setResult(null);
+      const proposal = await solveTimetableInWorker({...response.data, search_duration: searchDuration,
+        ...(baseline ? {baseline_revision: baseline.timetable_revision, baseline_entries: baseline.entries.map(({slot_id, teaching_load_id, is_locked}) => ({slot_id, teaching_load_id, is_locked}))} : {}),
+      }, {signal: controller.signal,
         onProgress: progress => { if (isCurrent()) setSearchProgress(progress); },
       });
       if (isCurrent()) setResult(proposal);
@@ -322,7 +332,7 @@ export function AutomaticTimetableTab({
         slot_id: entry.slot_id,
         teaching_load_id: entry.teaching_load_id,
       })),
-    });
+    }, result);
   }
 
   async function previewAdoption() {
@@ -393,8 +403,8 @@ export function AutomaticTimetableTab({
             <p className="mt-2 max-w-3xl text-sm text-indigo-800">عند اختيار نطاق محدد تبقى جميع الدروس خارجه كما هي. يمكنك إعداد جزء يدويًا، تثبيته من الجدول الأسبوعي، ثم توليد الباقي.</p>
             <p className="mt-2 max-w-3xl text-sm text-indigo-800">يبدأ التوليد بمحاولة توزيع المادة مرة واحدة يوميًا لكل شعبة. إذا تعذّر إكمال الجدول ضمن البحث والقيود، يسمح بدرسين متتاليين للمادة نفسها عند الضرورة فقط، في جميع الصفوف. لا يسمح بتكرارها في درسين منفصلين أو أكثر من مرتين في اليوم.</p>
             <p className="mt-2 max-w-3xl text-sm text-indigo-800">يعطي أولوية لتتابع دروس المدرس للمادة نفسها بين شعب الصف، مثل درس في أ يليه مباشرة درس في ب، مع مراعاة التوفر ومنع التعارض.</p>
-            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يفضّل التوليد تأخير الأخلاقية والفنية والرياضة والكردية والفرنسية والحاسوب عن أول درسين، ويحاول تفريق الدروس الثقيلة خلال اليوم.</p>
-            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يفضّل الرياضيات والفيزياء والكيمياء في بداية اليوم، بأولوية أكبر للصفوف المنتهية، مع تنويع مادة الدرس الأول بين الأيام.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">من أولويات المدرسة يمكنك تفعيل تأخير الأخلاقية والفنية والرياضة والكردية والفرنسية والحاسوب عن أول درسين، وتفريق الدروس الثقيلة خلال اليوم.</p>
+            <p className="mt-2 max-w-3xl text-sm text-indigo-800">يمكن تقديم الرياضيات والفيزياء والكيمياء في بداية اليوم، بأولوية أكبر للصفوف المنتهية، مع تنويع مادة الدرس الأول بين الأيام.</p>
             <p className="mt-2 max-w-3xl text-xs text-indigo-800">تظل أوقات توفر المدرسين ومنع التعارض والدروس المثبتة مقدّمة على هذه التفضيلات؛ لذلك قد تبقى استثناءات في الترتيب.</p>
             <p className="mt-2 flex items-center gap-2 text-sm font-semibold text-amber-800"><AlertTriangle size={17} />هذا اقتراح جديد ولن يغيّر الجدول الحالي حتى يتم اعتماده.</p>
           </div>
@@ -402,7 +412,7 @@ export function AutomaticTimetableTab({
             {loading && <button type="button" onClick={cancelGeneration} className="rounded-lg border border-indigo-300 bg-white px-4 py-3 font-bold text-indigo-800">إلغاء التوليد</button>}
             <button
               type="button"
-              disabled={loading || applying}
+              disabled={loading || applying || savingPreferences || preferencesDirty}
               onClick={() => void generateProposal()}
               className="flex items-center gap-2 rounded-lg bg-indigo-700 px-5 py-3 font-bold text-white shadow-sm hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -411,7 +421,7 @@ export function AutomaticTimetableTab({
             </button>
             <button
               type="button"
-              disabled={loading || applying}
+              disabled={loading || applying || savingPreferences || preferencesDirty}
               onClick={() => void generateProposal({ use_current_locked_entries: true })}
               className="flex items-center gap-2 rounded-lg border border-indigo-300 bg-white px-4 py-3 font-bold text-indigo-800 disabled:opacity-50"
             >
@@ -419,11 +429,18 @@ export function AutomaticTimetableTab({
             </button>
           </div>
         </div>
-        <div className="mt-4 max-w-xl"><TimetableScopeSelector classes={classes} sections={sections} value={generationScope} disabled={loading || applying} onChange={scope => {
+        <div className="mt-4 max-w-xl"><TimetableScopeSelector classes={classes} sections={sections} value={generationScope} disabled={loading || applying || savingPreferences || preferencesDirty} onChange={scope => {
           requestGenerationRef.current += 1; solverAbortRef.current?.abort(); solverAbortRef.current = null; setGenerationScope(scope); setResult(null); setAdoptionPreview(null); setError(''); setSuccess('');
         }} /></div>
+        <label className="mt-4 block max-w-xl text-sm font-bold text-indigo-950">
+          مدة البحث
+          <select aria-label="مدة البحث" value={searchDuration} disabled={loading || applying || savingPreferences} onChange={event => setSearchDuration(event.target.value as TimetableSearchDuration)} className="mt-1 block w-full rounded-lg border border-indigo-200 bg-white p-3 font-normal">
+            {(Object.entries(TIMETABLE_SEARCH_BUDGETS) as [TimetableSearchDuration, (typeof TIMETABLE_SEARCH_BUDGETS)[TimetableSearchDuration]][]).map(([key, budget]) => <option key={key} value={key}>{budget.label}</option>)}
+          </select>
+          <span className="mt-1 block font-normal">البحث الأطول يجرّب توزيعات أكثر، ويحتفظ بأفضل نتيجة يجدها. يمكنك إلغاؤه.</span>
+        </label>
         <label className="mt-4 flex max-w-3xl items-start gap-3 rounded-lg border border-indigo-200 bg-white p-4">
-          <input type="checkbox" className="mt-1 h-5 w-5 accent-indigo-700" checked={linkSectionDays} disabled={loading || applying} onChange={event => {
+          <input type="checkbox" className="mt-1 h-5 w-5 accent-indigo-700" checked={linkSectionDays} disabled={loading || applying || savingPreferences || preferencesDirty} onChange={event => {
             requestGenerationRef.current += 1; setLinkSectionDays(event.target.checked); setResult(null); setAdoptionPreview(null); setError(''); setSuccess('');
           }} />
           <span><span className="block font-bold text-indigo-950">ربط شعب المدرس للمادة نفسها في اليوم نفسه</span>
@@ -432,6 +449,10 @@ export function AutomaticTimetableTab({
           </span>
         </label>
       </section>
+
+      <TimetablePreferencesPanel key={schoolId} schoolId={schoolId} disabled={loading || applying} onBusy={setSavingPreferences} onDirty={setPreferencesDirty} onSaved={() => {
+        requestGenerationRef.current += 1; setResult(null); setAdoptionPreview(null); setSuccess(''); setError('');
+      }} />
 
       <section className="rounded-xl border border-gray-200 bg-white p-4">
         <h3 className="mb-3 font-bold text-gray-900">ملخص الجاهزية قبل التوليد</h3>
@@ -448,7 +469,7 @@ export function AutomaticTimetableTab({
       {loading && <div role="status" aria-live="polite" className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-950">
         <p className="font-bold">{searchProgress ? `المحاولة ${searchProgress.run} من ${searchProgress.total_runs} — نبحث عن أفضل توزيع` : 'جاري تجهيز بيانات التوليد...'}</p>
         {searchProgress && searchProgress.best_required > 0 && <p className="mt-1">أفضل تغطية حتى الآن: {searchProgress.best_scheduled} من {searchProgress.best_required} درس.</p>}
-        <p className="mt-1">قد يستغرق البحث الموسّع نحو دقيقة ونصف حسب تعقيد الجدول. يمكنك متابعة استخدام الصفحة أو إلغاء التوليد.</p>
+        <p className="mt-1">مدة البحث المختارة: {TIMETABLE_SEARCH_BUDGETS[searchDuration].label}. يمكنك متابعة استخدام الصفحة أو إلغاء التوليد.</p>
       </div>}
       {success && <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800"><CheckCircle2 size={19} />{success}</div>}
 
@@ -512,13 +533,13 @@ export function AutomaticTimetableTab({
             <p className="mt-3 text-xs text-gray-500">جولات البحث: {result.statistics.search_runs || 1} — المحاولات: <bdi dir="ltr">{result.statistics.attempts}</bdi> — الرجوعات: <bdi dir="ltr">{result.statistics.backtracks}</bdi> — الزمن: <bdi dir="ltr">{Math.round(result.statistics.elapsed_ms / 1000)} s</bdi></p>
           </section>
 
-          <ProposalGrid result={result} schoolId={schoolId} disabled={loading || applying} onToggleLock={(proposalId) => void toggleProposalLock(proposalId)} />
+          <ProposalGrid result={result} schoolId={schoolId} disabled={loading || applying || savingPreferences || preferencesDirty} onToggleLock={(proposalId) => void toggleProposalLock(proposalId)} />
 
           {result.status === 'complete' && (
             <section className="rounded-xl border border-indigo-200 bg-white p-4">
               <div className="flex flex-wrap gap-2">
-                <button type="button" disabled={loading || applying} onClick={() => void reSolveUnlocked()} className="flex items-center gap-2 rounded-lg border border-indigo-300 px-4 py-2 font-bold text-indigo-800 disabled:opacity-50"><RefreshCcw size={18} />إعادة توليد غير المثبت</button>
-                <button type="button" disabled={loading || applying} onClick={() => void previewAdoption()} className="flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2 font-bold text-white disabled:opacity-50"><GitCompareArrows size={18} />مقارنة مع الجدول الحالي / معاينة الاعتماد</button>
+                <button type="button" disabled={loading || applying || savingPreferences || preferencesDirty} onClick={() => void reSolveUnlocked()} className="flex items-center gap-2 rounded-lg border border-indigo-300 px-4 py-2 font-bold text-indigo-800 disabled:opacity-50"><RefreshCcw size={18} />إعادة توليد غير المثبت</button>
+                <button type="button" disabled={loading || applying || savingPreferences || preferencesDirty} onClick={() => void previewAdoption()} className="flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2 font-bold text-white disabled:opacity-50"><GitCompareArrows size={18} />مقارنة مع الجدول الحالي / معاينة الاعتماد</button>
               </div>
               <p className="mt-2 text-xs text-gray-500">نسخة البيانات: <bdi dir="ltr">{result.timetable_revision}</bdi> — البصمة: <bdi dir="ltr" className="break-all">{result.proposal_digest}</bdi></p>
             </section>
@@ -538,7 +559,7 @@ export function AutomaticTimetableTab({
               {adoptionPreview.warnings.map((warning) => <p key={warning} className="mt-2 text-sm text-amber-800">{warning}</p>)}
               {adoptionPreview.blockers.length > 0 && <ul className="mt-3 list-inside list-disc text-sm text-red-800">{adoptionPreview.blockers.map((blocker, index) => <li key={`${blocker.code}:${index}`}>{blocker.message}</li>)}</ul>}
               {adoptionPreview.can_apply && (
-                <button type="button" disabled={applying} onClick={() => void applyProposal()} className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-700 px-5 py-3 font-bold text-white disabled:opacity-50">
+                <button type="button" disabled={applying || savingPreferences || preferencesDirty} onClick={() => void applyProposal()} className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-700 px-5 py-3 font-bold text-white disabled:opacity-50">
                   {applying ? <LoaderCircle size={18} className="animate-spin" /> : <CheckCircle2 size={18} />}اعتماد هذا الجدول
                 </button>
               )}

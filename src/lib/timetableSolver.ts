@@ -17,6 +17,7 @@ import {
 } from './timetable.ts';
 import { countTimetableSectionPeriods, countTimetableScheduledSectionPeriods, indexTimetableParallelLoadGroups, parallelTimetableLoadGroup, validateTimetableParallelLoads } from './timetableParallel.ts';
 import { createTimetablePedagogyScorer, type TimetablePedagogyMetrics } from './timetablePedagogy.ts';
+import { DEFAULT_TIMETABLE_PREFERENCES, type TimetablePreferences } from './timetablePreferences.ts';
 import { missingTimetableSectionDays, timetableSectionDayGroups, validateTimetableSectionDays } from './timetableSectionDays.ts';
 import { createTimetableDailySubjectPolicy } from './timetableDailySubjects.ts';
 
@@ -201,6 +202,7 @@ export interface TimetableSolverLimits {
 }
 
 export interface TimetableSolverInput {
+  preferences?: TimetablePreferences;
   /** Internal bounded multi-start search controls, never accepted from API request bodies. */
   searchVariant?: number;
   searchDeadline?: number;
@@ -599,13 +601,13 @@ function buildSolverReadiness(
   };
 }
 
-function warningPenalty(warnings: TimetableEntryNotice[]): number {
+function warningPenalty(warnings: TimetableEntryNotice[], preferences: TimetablePreferences = DEFAULT_TIMETABLE_PREFERENCES): number {
   return warnings.reduce((sum, warning) => {
-    if (warning.code === 'preferred_slot') return sum - 5;
-    if (warning.code === 'avoid_slot') return sum + 10;
-    if (warning.code === 'outside_preferred_slots') return sum + 4;
-    if (warning.code === 'first_period_preference' || warning.code === 'last_period_preference') return sum + 3;
-    if (warning.code === 'non_compact_schedule') return sum + 3;
+    if (warning.code === 'preferred_slot') return sum - 5 * preferences.teacher_preferences;
+    if (warning.code === 'avoid_slot') return sum + 10 * preferences.teacher_preferences;
+    if (warning.code === 'outside_preferred_slots') return sum + 4 * preferences.teacher_preferences;
+    if (warning.code === 'first_period_preference' || warning.code === 'last_period_preference') return sum + 3 * preferences.teacher_preferences;
+    if (warning.code === 'non_compact_schedule') return sum + 3 * preferences.teacher_gaps;
     return sum;
   }, 0);
 }
@@ -617,6 +619,7 @@ function candidatePenalty(
   loadsById: Map<number, TimetableTeachingLoad>,
   slotsById: Map<number, TimetableSlot>,
   warnings: TimetableEntryNotice[],
+  preferences: TimetablePreferences = DEFAULT_TIMETABLE_PREFERENCES,
 ): number {
   const sameDayEntries = entries.filter((entry) => Number(slotsById.get(Number(entry.slot_id))?.day_of_week) === Number(slot.day_of_week));
   const sameLoadDayCount = sameDayEntries.filter((entry) => Number(entry.teaching_load_id) === Number(load.id)).length;
@@ -627,7 +630,7 @@ function candidatePenalty(
       && sameNullableId(otherLoad.section_id, load.section_id);
   }).map(entry => entry.slot_id)).size;
   // The fallback phase can use an adjacent double, but separate days win.
-  let penalty = warningPenalty(warnings) + sameLoadDayCount * 114 + samePlacementDayCount;
+  let penalty = warningPenalty(warnings, preferences) + sameLoadDayCount * (100 + 14 * preferences.subject_spread) + samePlacementDayCount * preferences.daily_balance;
 
   const orderedDaySlots = [...slotsById.values()]
     .filter((item) => Number(item.day_of_week) === Number(slot.day_of_week) && item.slot_type === 'lesson' && Number(item.is_active) === 1)
@@ -639,7 +642,7 @@ function candidatePenalty(
     .filter((position) => position >= 0);
   if (new Set([...slotsById.values()].filter(item => item.slot_type === 'lesson' && Number(item.is_active) === 1)
     .map(item => Number(item.day_of_week))).size > 1
-    && sameLoadPositions.some((position) => Math.abs(position - candidatePosition) === 1)) penalty += 10;
+    && sameLoadPositions.some((position) => Math.abs(position - candidatePosition) === 1)) penalty += 10 * preferences.subject_spread;
   return penalty;
 }
 
@@ -669,8 +672,10 @@ function scoreProposal(input: {
   constraints: TimetableTeacherConstraints[];
   pedagogyScorer?: ReturnType<typeof createTimetablePedagogyScorer>;
   dailySubjectPolicy?: ReturnType<typeof createTimetableDailySubjectPolicy>;
+  preferences?: TimetablePreferences;
 }, safetyCheck?: () => void): { qualityScore: number; scoring: TimetableSolverScoring } {
   const penalties = emptyPenaltyBreakdown();
+  const preferences = input.preferences || DEFAULT_TIMETABLE_PREFERENCES;
   const loadsById = new Map(input.loads.map((load) => [Number(load.id), load]));
   const slotsById = new Map(input.slots.map((slot) => [Number(slot.id), slot]));
   const availabilityByTeacherSlot = new Map(input.availability.map((item) => [`${Number(item.employee_id)}:${Number(item.slot_id)}`, item.status]));
@@ -787,7 +792,12 @@ function scoreProposal(input: {
     if (dailyCounts.length > 0) penalties.class_daily_imbalance += Math.max(...dailyCounts) - Math.min(...dailyCounts);
   }
 
-  const pedagogy = (input.pedagogyScorer || createTimetablePedagogyScorer(input.loads, input.slots)).score(input.entries);
+  for (const key of ['avoid_slots', 'outside_preferred_slots', 'first_period_preferences', 'last_period_preferences'] as const) penalties[key] *= preferences.teacher_preferences;
+  penalties.teacher_gaps *= preferences.teacher_gaps;
+  penalties.subject_clustering *= preferences.subject_spread;
+  penalties.consecutive_same_subject *= preferences.subject_spread;
+  penalties.class_daily_imbalance *= preferences.daily_balance;
+  const pedagogy = (input.pedagogyScorer || createTimetablePedagogyScorer(input.loads, input.slots, preferences)).score(input.entries);
   Object.assign(penalties, pedagogy.penalties);
   penalties.daily_subject_doubles = (input.dailySubjectPolicy || createTimetableDailySubjectPolicy(input.loads, input.slots))
     .countDoubles(input.entries) * 100;
@@ -959,7 +969,8 @@ function solveTimetableOnce(input: TimetableSolverInput): TimetableSolverPreview
     ...input, teacherAvailability: availability, teacherConstraints: constraints,
   });
   const groupsByLoad = indexTimetableParallelLoadGroups(validLoads);
-  const pedagogyScorer = createTimetablePedagogyScorer(validLoads, scopedSlots);
+  const preferences = input.preferences || DEFAULT_TIMETABLE_PREFERENCES;
+  const pedagogyScorer = createTimetablePedagogyScorer(validLoads, scopedSlots, preferences);
   const dailySubjectPolicy = createTimetableDailySubjectPolicy(validLoads, scopedSlots, input.dailySubjectLoadIds);
   const allowDouble = input.allowConsecutiveSubjectDouble === true;
   const respectsDailySubjects = (entries: InternalEntry[]) => dailySubjectPolicy.validate(entries, allowDouble).length === 0;
@@ -1045,7 +1056,7 @@ function solveTimetableOnce(input: TimetableSolverInput): TimetableSolverPreview
       ranked.push({
         slot,
         warnings: evaluations.flatMap(item => item.evaluation.warnings),
-        penalty: evaluations.reduce((sum, item) => sum + candidatePenalty(item.member, slot, entries, loadsById, slotsById, item.evaluation.warnings)
+        penalty: evaluations.reduce((sum, item) => sum + candidatePenalty(item.member, slot, entries, loadsById, slotsById, item.evaluation.warnings, preferences)
           + pedagogyScorer.candidatePenalty(item.member, slot, entries), 0),
       });
     }
@@ -1122,7 +1133,12 @@ function solveTimetableOnce(input: TimetableSolverInput): TimetableSolverPreview
     return entries;
   }
 
-  const linkedSeed = fixedValidation.conflicts.length === 0 ? completeLinkedDays([...fixedEntries], Math.floor(limits.max_attempts * 0.2)) : null;
+  const validatedSeed = input.searchSeedEntries?.length
+    && [...fixedEntryKeys].every(key => input.searchSeedEntries!.some(entry => `${entry.slot_id}:${entry.teaching_load_id}` === key))
+    && validateTimetableSolverProposal(input, input.searchSeedEntries, ensureWithinWallClockSafetyLimit).length === 0
+    ? input.searchSeedEntries : null;
+  const linkedSeed = fixedValidation.conflicts.length === 0
+    ? validatedSeed || completeLinkedDays([...fixedEntries], Math.floor(limits.max_attempts * 0.2)) : null;
   if (!linkedSeed && fixedValidation.conflicts.length === 0) {
     fixedValidation.conflicts.push(...validateTimetableSectionDays(validLoads, scopedSlots, fixedEntries, input.sectionDayLinkLoadIds).map(conflict => ({
       ...conflict, code: 'fixed_section_day_link' as const, slot_id: 0,
@@ -1185,11 +1201,6 @@ function solveTimetableOnce(input: TimetableSolverInput): TimetableSolverPreview
   }
 
   let bestEntries = greedyFill(linkedSeed || fixedEntries);
-  if (input.searchSeedEntries?.length && coverage(input.searchSeedEntries) > coverage(bestEntries)
-    && [...fixedEntryKeys].every(key => input.searchSeedEntries!.some(entry => `${entry.slot_id}:${entry.teaching_load_id}` === key))
-    && validateTimetableSolverProposal(input, input.searchSeedEntries, ensureWithinWallClockSafetyLimit).length === 0) {
-    bestEntries = greedyFill(input.searchSeedEntries);
-  }
   // Repair greedy dead ends by moving a small number of blocking lessons. All
   // partners move together and every replacement uses the normal validator.
   // The deterministic attempt ceiling also bounds this on runtimes whose clock
@@ -1377,7 +1388,7 @@ function solveTimetableOnce(input: TimetableSolverInput): TimetableSolverPreview
   let proposalEntries = [...bestEntries];
 
   const scoreEntries = (entries: InternalEntry[]) => scoreProposal({entries, loads: validLoads, slots: scopedSlots,
-    days: scopedDays, availability, constraints, pedagogyScorer, dailySubjectPolicy}, ensureWithinWallClockSafetyLimit);
+    days: scopedDays, availability, constraints, pedagogyScorer, dailySubjectPolicy, preferences}, ensureWithinWallClockSafetyLimit);
   const betterScore = hasBetterTimetableScore;
   // Leave time for validation/formatting, even when the browser is slower than
   // the test machine. The count limit remains authoritative with a frozen clock.
@@ -1756,7 +1767,7 @@ function solveTimetableOnce(input: TimetableSolverInput): TimetableSolverPreview
       start_time: slot.start_time,
       end_time: slot.end_time,
       soft_warnings: evaluation.warnings,
-      score_contribution: Math.max(0, 10 - warningPenalty(evaluation.warnings)),
+      score_contribution: Math.max(0, 10 - warningPenalty(evaluation.warnings, preferences)),
       is_locked: fixedEntries.find(fixed => fixed.slot_id === entry.slot_id && fixed.teaching_load_id === entry.teaching_load_id)?.is_locked ?? 0,
     };
   });

@@ -5,6 +5,7 @@
 // ===========================================
 
 import { Hono } from 'hono'
+import { parseTimetablePreferences, storedTimetablePreferences, type TimetableSchoolPreferences } from './lib/timetablePreferences'
 import { ParallelTimetableError, parallelLoads, parallelEntryGroup, newParallelEntry, validateParallelEntryProjection, parallelEntryStatements, parallelLockStatements, parallelLoadDeactivationStatements, linkedScheduleProjection, assertParallelLoads } from './lib/timetableParallelDb'
 import { parseTimetableScope, timetableLoadMatchesScope, scopedTimetableSolverLoads, collectTimetableFixedEntries, type TimetableScope } from './lib/timetableScope'
 import { signTimetableScope, verifyTimetableScope } from './lib/timetableScopeIntegrity'
@@ -3493,6 +3494,46 @@ app.get('/api/timetable/teacher-workloads', requireSameSchoolOrAdmin(), requireR
   }
 })
 
+async function loadTimetableSchoolPreferences(db: D1Database, schoolId: number): Promise<TimetableSchoolPreferences> {
+  const row = await db.prepare('SELECT preferences_json, revision FROM timetable_school_preferences WHERE school_id = ?')
+    .bind(schoolId).first<{preferences_json: string; revision: number}>()
+  return {school_id: schoolId, revision: row?.revision || 0, preferences: storedTimetablePreferences(row?.preferences_json)}
+}
+
+app.get('/api/timetable/preferences', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId = c.get('resolvedSchoolId') as number | null
+  if (!schoolId) return c.json({error: 'يجب تحديد مدرسة لعرض أولويات الجدول'}, 400)
+  try { return c.json({data: await loadTimetableSchoolPreferences(c.env.DB, schoolId)}) }
+  catch { return c.json({error: 'تعذر تحميل أولويات الجدول'}, 500) }
+})
+
+app.put('/api/timetable/preferences', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const body = await readJsonObject(c)
+  if (!body || !hasOnlyObjectKeys(body, ['school_id', 'expected_revision', 'preferences'])) return c.json({error: 'بيانات أولويات الجدول غير صالحة'}, 400)
+  const preferences = parseTimetablePreferences(body.preferences)
+  const expectedRevision = body.expected_revision
+  if (!preferences || typeof expectedRevision !== 'number' || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+    return c.json({error: 'أولويات الجدول أو نسخة الإعدادات غير صالحة'}, 400)
+  const user = c.get('user') as UserContext
+  const targetSchool = await resolveActiveWriteSchool(c.env.DB, user, body.school_id)
+  if (!targetSchool.ok) return c.json({error: targetSchool.error}, targetSchool.status)
+  try {
+    const changed = await c.env.DB.prepare(`
+      INSERT INTO timetable_school_preferences (school_id, preferences_json, revision, updated_by_user_id)
+      SELECT ?, ?, 1, ? WHERE ? = 0 OR EXISTS (
+        SELECT 1 FROM timetable_school_preferences WHERE school_id = ? AND revision = ?
+      )
+      ON CONFLICT(school_id) DO UPDATE SET preferences_json = excluded.preferences_json,
+        revision = timetable_school_preferences.revision + 1, updated_by_user_id = excluded.updated_by_user_id,
+        updated_at = unixepoch()
+      WHERE timetable_school_preferences.revision = ?
+    `).bind(targetSchool.schoolId, JSON.stringify(preferences), user.id, expectedRevision,
+      targetSchool.schoolId, expectedRevision, expectedRevision).run()
+    if (!changed.meta.changes) return c.json({error: 'تغيرت أولويات المدرسة. حدّث الإعدادات قبل الحفظ.', code: 'stale_timetable_preferences'}, 409)
+    return c.json({data: await loadTimetableSchoolPreferences(c.env.DB, targetSchool.schoolId)})
+  } catch { return c.json({error: 'تعذر حفظ أولويات الجدول'}, 500) }
+})
+
 app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'], requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const body = await readJsonObject(c)
   if (!body) return c.json({ error: 'بيانات طلب التوليد غير صالحة' }, 400)
@@ -3520,7 +3561,7 @@ app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'
   if (!generationScope) return c.json({ error: 'نطاق توليد الجدول غير صالح' }, 400)
 
   try {
-    const [context, placementsResult, timetableRevision] = await Promise.all([
+    const [context, placementsResult, timetableRevision, schoolPreferences] = await Promise.all([
       loadTimetableSchedulingContext(c.env.DB, targetSchool.schoolId, academicYearId),
       c.env.DB.prepare(`
         SELECT class.id AS class_id, class.name AS class_name,
@@ -3534,6 +3575,7 @@ app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'
         ORDER BY class.order_index, class.id, section.id
       `).bind(targetSchool.schoolId).all<TimetablePlacement>(),
       loadCurrentTimetableRevision(c.env.DB, targetSchool.schoolId, academicYearId),
+      loadTimetableSchoolPreferences(c.env.DB, targetSchool.schoolId),
     ])
     if (generationScope.kind !== 'school' && !context.loads.some(load => load.status === 'active' && timetableLoadMatchesScope(load, generationScope))) {
       return c.json({ error: 'لا توجد أنصبة فعالة ضمن النطاق المختار في هذه المدرسة والسنة.', code: 'empty_timetable_scope' }, 400)
@@ -3543,6 +3585,7 @@ app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'
     const scopeLoadIds = generationScope.kind === 'school' ? undefined
       : context.loads.filter(load => timetableLoadMatchesScope(load, generationScope)).map(load => load.id).sort((a, b) => a - b)
     const solverInput: TimetableSolverInput = {
+      preferences: schoolPreferences.preferences,
       linkSameTeacherSectionDays: body.link_same_teacher_section_days === true,
       sectionDayLinkLoadIds: scopeLoadIds,
       dailySubjectLoadIds: scopeLoadIds,
@@ -3561,6 +3604,7 @@ app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare'
     if (c.req.path.endsWith('/prepare')) {
       return c.json({ data: {
         input: solverInput,
+        keep_current: body.use_current_locked_entries === true,
         timetable_revision: timetableRevision,
         generation_scope: generationScope,
         ...(scopeLoadIds ? { scope_load_ids: scopeLoadIds, scope_token: await signTimetableScope({
