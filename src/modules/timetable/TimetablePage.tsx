@@ -53,6 +53,7 @@ import { MasterTimetableTab } from './MasterTimetableTab';
 import { TimetableGridTab } from './TimetableGridTab';
 import { TimetableVersionsTab } from './TimetableVersionsTab';
 import { ClearTimetableButton } from './ClearTimetableButton';
+import { TeacherWorkloadPrintButton } from './TeacherWorkloadPrintButton';
 import { TeachingLoadMatrixTab } from './TeachingLoadMatrixTab';
 import { ParallelLoadField } from './ParallelLoadField';
 import { TimetableLoadDiagnostics } from './TimetableLoadDiagnostics';
@@ -544,6 +545,9 @@ export default function TimetablePage() {
               <option value="">اختر سنة دراسية</option>
               {years.map((year) => <option key={year.id} value={year.id}>{year.name}{Number(year.is_active) === 1 ? ' — الحالية' : ''}</option>)}
             </select>
+            <div className="mt-3">
+              <TeacherWorkloadPrintButton schoolId={schoolId} academicYearId={academicYearId} enabled={academicYearMatchesSchool} />
+            </div>
             {academicYearId != null && <p className="mt-2 text-xs text-gray-500">السنة المحددة: <YearValue value={years.find((year) => year.id === academicYearId)?.name || ''} /></p>}
           </div>
 
