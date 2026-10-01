@@ -91,12 +91,16 @@ function PrintHeader({ data, title }: { data: TimetableMasterGridData; title: st
   );
 }
 
-function PrintFooter({ principalName }: { principalName: string | null }) {
+function PrintFooter({ principalName, columnCount }: { principalName: string | null; columnCount: number }) {
   return (
-    <footer className="timetable-print-footer" aria-label="مدير المدرسة">
-      <strong>مدير المدرسة</strong>
-      {principalName?.trim() && <span>{principalName.trim()}</span>}
-    </footer>
+    <tfoot className="timetable-principal-group">
+      <tr className="timetable-principal-row"><td colSpan={columnCount}>
+        <footer className="timetable-print-footer" aria-label="مدير المدرسة">
+          <strong>مدير المدرسة</strong>
+          {principalName?.trim() && <span>{principalName.trim()}</span>}
+        </footer>
+      </td></tr>
+    </tfoot>
   );
 }
 
@@ -171,6 +175,7 @@ function MasterGrid({ data, placements }: { data: TimetableMasterGridData; place
             <tr><td colSpan={Math.max(1, placements.length + 1)} className="timetable-empty">لا توجد فترات فعالة لعرضها في الجدول.</td></tr>
           )}
         </tbody>
+        <PrintFooter principalName={data.school.principal_name} columnCount={placements.length + 1} />
       </table>
     </div>
   );
@@ -207,6 +212,7 @@ function WeeklyGrid({ data, placement, teacherId }: { data: TimetableMasterGridD
           </tr>)}
           {week.rows.length === 0 && <tr><td colSpan={week.days.length + 1} className="timetable-empty">لا توجد فترات فعالة لعرضها.</td></tr>}
         </tbody>
+        <PrintFooter principalName={data.school.principal_name} columnCount={week.days.length + 1} />
       </table>
     </div>
   );
@@ -388,7 +394,6 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
           {sheet.kind === 'master' ? <MasterGrid data={data} placements={sheet.placements} />
             : <WeeklyGrid data={data} placement={sheet.placements[0]} teacherId={sheet.teacherId} />}
           <SubjectLegend entries={timetablePrintSheetEntries(data.entries, sheet)} />
-          <PrintFooter principalName={data.school.principal_name} />
         </section>)}
         {sheets.length === 0 && <div className="timetable-empty"><BookOpen size={24} />{mode === 'teacher' ? 'اختر مدرسًا لعرض جدوله وطباعته.' : mode === 'placement' ? 'اختر صفًا أو شعبة لعرض جدولها وطباعته.' : 'لا توجد صفوف فعالة ضمن النطاق المختار.'}</div>}
       </div>
