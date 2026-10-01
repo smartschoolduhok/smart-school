@@ -20,7 +20,6 @@
 .section-advisors-table thead th { background: #e2e8f0; font-weight: 800; padding-block: 1.8mm; text-align: center; }
 .section-advisors-table tbody th { text-align: right; font-weight: 600; }
 .section-advisors-table td { text-align: center; }
-.section-advisors-table small { margin-inline-start: 1mm; font-size: 8pt; }
 .section-advisors-responsibilities { margin: 4mm 0 0; font-size: 10pt; line-height: 1.8; text-align: justify; }
 .section-advisors-page-end { margin-top: auto; padding-top: 5mm; break-inside: avoid; page-break-inside: avoid; }
 .section-advisors-signature { width: 58mm; margin-right: auto; margin-left: 0; padding: 2mm 0 7mm; text-align: center; }

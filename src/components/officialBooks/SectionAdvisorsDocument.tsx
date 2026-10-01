@@ -61,7 +61,7 @@ export function SectionAdvisorsDocument({ summary, issuedAt, documentNumber = ''
         <thead><tr><th scope="col">ت</th><th scope="col">الصف</th><th scope="col">الشعبة</th><th scope="col">اسم المرشد</th></tr></thead>
         <tbody>{rows.map((placement, index) => <tr key={`${placement.class_id}:${placement.section_id ?? 'class'}`}>
           <td><bdi dir="ltr">{digits(pageIndex * ADVISORS_PER_PAGE + index + 1)}</bdi></td>
-          <td>{placement.class_name}{placement.stage_name && <small>{placement.stage_name}</small>}</td>
+          <td>{placement.class_name}</td>
           <td>{placement.section_name || '—'}</td>
           <th scope="row">{placement.assignment?.employee_name || '—'}</th>
         </tr>)}</tbody>
