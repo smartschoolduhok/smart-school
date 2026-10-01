@@ -666,6 +666,7 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.delete('/api/timetable/teaching-loads/:id'",
     "app.get('/api/timetable/readiness'",
     "app.get('/api/timetable/teacher-workloads'",
+    "app.get('/api/timetable/teacher-workload-summary'",
     "app.get('/api/timetable/preferences'",
     "app.put('/api/timetable/preferences'",
     "app.on('POST', ['/api/timetable/solver/preview', '/api/timetable/solver/prepare']",
@@ -684,7 +685,7 @@ test('worker exposes scoped CRUD and summary routes behind academic management R
     "app.post('/api/timetable/clear'",
   ]) assert.ok(workerSource.includes(route), route);
   const routeGuards = timetableWorkerSource.match(/app\.(?:(?:get|post|put|delete)\(|on\('POST',\s*)\[?'\/api\/timetable[^\n]*requireRoles\(ACADEMIC_MANAGEMENT_ROLES\)/g) || [];
-  assert.equal(routeGuards.length, 42);
+  assert.equal(routeGuards.length, 43);
   assert.match(timetableWorkerSource, /for \(const operation of \['preview', 'apply'\] as const\)/);
   assert.ok(timetableWorkerSource.includes("app.post(`/api/timetable/teaching-load-matrix/${operation}`, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES)"));
   assert.ok(timetableWorkerSource.includes("app.post(`/api/timetable/week-setup/${operation}`, requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES)"));
