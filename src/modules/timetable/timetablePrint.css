@@ -36,6 +36,22 @@
 .timetable-print-school h2 { margin-top: 0.2rem; font-size: 0.95rem; }
 .timetable-print-year { font-weight: 700; }
 
+.timetable-print-footer {
+  width: max-content;
+  max-width: 100%;
+  margin: 1.25rem auto 0 0;
+  padding: 0.35rem 0;
+  direction: rtl;
+  text-align: center;
+  line-height: 1.6;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.timetable-print-footer strong,
+.timetable-print-footer span { display: block; }
+.timetable-print-footer strong { font-weight: 800; }
+
 .timetable-master-scroll {
   max-width: 100%;
   overflow: auto;
@@ -211,6 +227,13 @@
   body.timetable-print-mode .timetable-print-root,
   body.timetable-print-mode .timetable-print-root * { visibility: visible !important; }
   body.timetable-print-mode .no-print { display: none !important; }
+  .timetable-subject-legend { display: none !important; }
+  .timetable-print-footer {
+    margin-top: 2mm;
+    padding: 0;
+    font-size: 10pt;
+    line-height: 1.3;
+  }
   body.timetable-print-mode .timetable-print-root {
     position: absolute;
     inset: 0;
@@ -253,7 +276,7 @@
   .timetable-fit-one-page .timetable-subject-card { min-height: 0; padding: 0.7mm; }
   .timetable-fit-one-page .timetable-week-table { font-size: 8pt; }
   .timetable-fit-one-page .timetable-week-table th,
-  .timetable-fit-one-page .timetable-week-table td { padding: 0.8mm; }
+  .timetable-fit-one-page .timetable-week-table td { padding: 0.6mm 0.8mm; }
   .timetable-fit-one-page .timetable-week-slot-label,
   .timetable-fit-one-page .timetable-week-time { font-size: 6.5pt; }
   .timetable-fit-one-page .timetable-week-time { margin: 0.3mm 0 0.4mm; }

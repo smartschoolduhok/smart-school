@@ -91,6 +91,15 @@ function PrintHeader({ data, title }: { data: TimetableMasterGridData; title: st
   );
 }
 
+function PrintFooter({ principalName }: { principalName: string | null }) {
+  return (
+    <footer className="timetable-print-footer" aria-label="مدير المدرسة">
+      <strong>مدير المدرسة</strong>
+      {principalName?.trim() && <span>{principalName.trim()}</span>}
+    </footer>
+  );
+}
+
 function SubjectLegend({ entries }: { entries: TimetableGridEntry[] }) {
   const subjects = useMemo(() => {
     const seen = new Set<string>();
@@ -103,7 +112,7 @@ function SubjectLegend({ entries }: { entries: TimetableGridEntry[] }) {
   }, [entries]);
   if (subjects.length === 0) return null;
   return (
-    <section className="timetable-subject-legend" aria-label="دليل ألوان المواد">
+    <section className="timetable-subject-legend no-print" aria-label="دليل ألوان المواد">
       <strong>مفتاح الألوان:</strong>
       {subjects.map((entry) => {
         const subjectVisualKey = timetableSubjectVisualKey(entry.school_id, entry.subject_name);
@@ -379,6 +388,7 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
           {sheet.kind === 'master' ? <MasterGrid data={data} placements={sheet.placements} />
             : <WeeklyGrid data={data} placement={sheet.placements[0]} teacherId={sheet.teacherId} />}
           <SubjectLegend entries={timetablePrintSheetEntries(data.entries, sheet)} />
+          <PrintFooter principalName={data.school.principal_name} />
         </section>)}
         {sheets.length === 0 && <div className="timetable-empty"><BookOpen size={24} />{mode === 'teacher' ? 'اختر مدرسًا لعرض جدوله وطباعته.' : mode === 'placement' ? 'اختر صفًا أو شعبة لعرض جدولها وطباعته.' : 'لا توجد صفوف فعالة ضمن النطاق المختار.'}</div>}
       </div>

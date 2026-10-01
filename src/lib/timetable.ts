@@ -279,6 +279,7 @@ export interface TimetableMasterGridData {
     id: number;
     name: string;
     logo_url: string | null;
+    principal_name: string | null;
   };
   academic_year: {
     id: number;
