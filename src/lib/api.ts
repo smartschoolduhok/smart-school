@@ -150,6 +150,10 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
     if (res.status === 403) {
       const body = await res.json().catch(() => ({}));
       const error = body.error || 'غير مسموح: لا تملك صلاحية الوصول';
+      if (body.code === 'password_change_required') {
+        if (window.location.pathname !== '/change-password') window.location.href = '/change-password';
+        return { error, code: body.code, status: 403 };
+      }
       showError(error);
       return { error, code: body.code, status: 403 };
     }
@@ -528,20 +532,30 @@ export function getUser(id: number | string) {
   return fetchApi<Record<string, any>>(`/api/users/${id}`);
 }
 
-export function createUser(data: Record<string, any>) {
-  return fetchApi<Record<string, any>>('/api/users', { method: 'POST', body: JSON.stringify(data) });
+export interface TemporaryUserPassword {
+  id: number;
+  temporary_password: string;
+  temporary_password_expires_at: number;
 }
 
-export function updateUser(id: number | string, data: Record<string, any>) {
+export function createUser(data: { full_name: string; email: string; role_key: string; phone: string; school_id?: number | null }) {
+  return fetchApi<TemporaryUserPassword>('/api/users', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export function updateUser(id: number | string, data: { full_name: string; email: string; role_key: string; phone: string; expected_revision: number }) {
   return fetchApi<Record<string, any>>(`/api/users/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 }
 
-export function updateUserStatus(id: number | string, status: 'active' | 'inactive') {
-  return fetchApi<Record<string, any>>(`/api/users/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) });
+export function updateUserStatus(id: number | string, status: 'active' | 'inactive', expectedRevision: number) {
+  return fetchApi<Record<string, any>>(`/api/users/${id}/status`, { method: 'PUT', body: JSON.stringify({ status, expected_revision: expectedRevision }) });
 }
 
-export function resetUserPassword(id: number | string, password: string) {
-  return fetchApi<Record<string, any>>(`/api/users/${id}/reset-password`, { method: 'PUT', body: JSON.stringify({ password }) });
+export function resetUserPassword(id: number | string, expectedRevision: number) {
+  return fetchApi<TemporaryUserPassword>(`/api/users/${id}/reset-password`, { method: 'PUT', body: JSON.stringify({ expected_revision: expectedRevision }) });
+}
+
+export function changePassword(data: { current_password: string; new_password: string }) {
+  return fetchApi<{ success: boolean; requires_login: boolean }>('/api/auth/change-password', { method: 'POST', body: JSON.stringify(data) });
 }
 
 // Resource-scoped access links for parents and teacher accounts.

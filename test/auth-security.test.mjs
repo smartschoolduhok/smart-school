@@ -291,7 +291,8 @@ test('migration and worker store revoked jti values instead of raw JWTs', async 
   assert.match(migration, /bucket_type\s+TEXT NOT NULL/);
   assert.equal(worker.includes('INSERT OR IGNORE INTO revoked_sessions (jti, user_id, expires_at, revoked_at)'), true);
   assert.match(worker, /payload\.auth_version !== authenticated\.authVersion/);
-  assert.match(worker, /auth_version = auth_version \+ 1/);
+  const accounts = await readFile(new URL('../src/lib/userAccounts.ts', import.meta.url), 'utf8');
+  assert.match(accounts, /auth_version\s*=\s*auth_version\s*\+\s*1/);
   assert.doesNotMatch(worker, /token_blacklist/);
   assert.doesNotMatch(worker, /default-dev-secret-change-me/);
 });

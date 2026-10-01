@@ -77,8 +77,11 @@ async function createFixture(hooks = {}) {
     '0001_initial_schema.sql',
     '0002_phase2_academic_tables.sql',
     '0003_student_subjects.sql',
+    '0010_employees.sql',
     '0016_auth_security.sql',
     '0022_subject_religious_track.sql',
+    '0029_resource_access_links.sql',
+    '0052_school_user_accounts.sql',
   ]) database.exec(migration(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES

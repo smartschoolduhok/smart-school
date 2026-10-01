@@ -64,8 +64,10 @@ async function fixture() {
     '0016_auth_security.sql', '0023_timetable_foundation.sql',
     '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
     '0026_timetable_adoption_locking.sql',
+    '0029_resource_access_links.sql',
     '0037_timetable_teacher_collision_visibility.sql',
     '0047_timetable_edit_saved_lesson_times.sql',
+    '0052_school_user_accounts.sql',
   ]) database.exec(migration(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES

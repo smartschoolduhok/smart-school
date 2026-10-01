@@ -239,17 +239,23 @@ test('daily closing blocks later salary and fee postings for the closed period',
 
 test('daily and monthly reports use Baghdad business dates and expose matching shapes', async (t) => {
   const fixture = financeFixture(t);
-  await call(fixture, 'POST', 'treasury/transactions', manualDraft({ business_date: businessDate(-1), amount: 80_000 }));
-  await call(fixture, 'POST', 'treasury/transactions', manualDraft({
+  // A completed month keeps both fixture days together even on the first day
+  // of a new month, without changing the auth clock or using future postings.
+  const month = businessDate(-32).slice(0, 7);
+  const reportDate = `${month}-16`;
+  const income = await call(fixture, 'POST', 'treasury/transactions', manualDraft({ business_date: `${month}-15`, amount: 80_000 }));
+  assert.equal(income.status, 201, JSON.stringify(income));
+  const expense = await call(fixture, 'POST', 'treasury/transactions', manualDraft({
     transaction_type: 'expense', category: 'bills', amount: 30_000,
+    business_date: reportDate,
   }));
-  const daily = await call(fixture, 'GET', `treasury/reports/daily?school_id=1&date=${businessDate()}`);
+  assert.equal(expense.status, 201, JSON.stringify(expense));
+  const daily = await call(fixture, 'GET', `treasury/reports/daily?school_id=1&date=${reportDate}`);
   assert.equal(daily.status, 200, JSON.stringify(daily));
   assert.equal(daily.body.data.business_timezone, 'Asia/Baghdad');
   assert.deepEqual(daily.body.data.summary, { total_income: 0, total_expense: 30_000, net: -30_000, transaction_count: 1 });
   assert.deepEqual(daily.body.data.by_category[0], { category: 'bills', transaction_type: 'expense', total: 30_000, count: 1 });
 
-  const month = businessDate().slice(0, 7);
   const monthly = await call(fixture, 'GET', `treasury/reports/monthly?school_id=1&month=${month}`);
   assert.equal(monthly.status, 200, JSON.stringify(monthly));
   assert.equal(monthly.body.data.month_key, month);
@@ -258,10 +264,10 @@ test('daily and monthly reports use Baghdad business dates and expose matching s
   assert.equal(monthly.body.data.summary.net, 50_000);
   assert.ok(monthly.body.data.daily_breakdown.every((row) => typeof row.day === 'string' && typeof row.net === 'number'));
 
-  const filtered = await call(fixture, 'GET', `treasury/transactions?school_id=1&from=${businessDate()}&to=${businessDate()}`);
+  const filtered = await call(fixture, 'GET', `treasury/transactions?school_id=1&from=${reportDate}&to=${reportDate}`);
   assert.equal(filtered.status, 200, JSON.stringify(filtered));
   assert.equal(filtered.body.data.length, 1);
-  assert.equal(filtered.body.data[0].business_date, businessDate());
+  assert.equal(filtered.body.data[0].business_date, reportDate);
 });
 
 test('treasury and payroll routes retain role, tenant, and category isolation', async (t) => {

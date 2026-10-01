@@ -1,541 +1,217 @@
-import { useState, useEffect } from 'react';
-import { Users, Plus, Search, Mail, Building2, Shield, Loader2, AlertCircle, Pencil, Lock, ToggleLeft, ToggleRight, X, Save } from 'lucide-react';
-import { toArabicDigits } from '../../lib/arabicDigits';
-import { getUsers, getSchools, getRoles, createUser, updateUser, updateUserStatus, resetUserPassword } from '../../lib/api';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Plus, Search, Loader2, Pencil, Lock, X, Copy, RefreshCw } from 'lucide-react';
+import { getUsers, getSchools, getRoles, createUser, updateUser, updateUserStatus, resetUserPassword, type TemporaryUserPassword } from '../../lib/api';
 import { useAuth } from '../../hooks/useAuth';
-import type { UserWithSchoolAndRole } from '../../types';
+import type { AuthUser, UserWithSchoolAndRole } from '../../types';
 
-interface RoleOption {
-  id: number;
-  key: string;
-  name: string;
+const SCHOOL_ROLES = ['principal', 'vice_principal', 'teacher', 'accountant', 'registrar', 'parent'];
+const ROLE_LABELS: Record<string, string> = {
+  system_admin: 'مدير النظام', school_owner: 'مالك المدرسة', principal: 'مدير المدرسة',
+  vice_principal: 'نائب المدير', teacher: 'معلم', accountant: 'محاسب', registrar: 'مسجل', parent: 'ولي أمر',
+};
+interface RoleOption { id: number; key: string; name: string }
+interface SchoolOption { id: number; name: string }
+interface AccountForm { full_name: string; email: string; role_key: string; school_id: string; phone: string }
+const emptyForm: AccountForm = { full_name: '', email: '', role_key: '', school_id: '', phone: '' };
+const fieldClass = 'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500';
+const actionClass = 'rounded-lg border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-50';
+const primaryClass = 'rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50';
+
+function AccountDialog({ title, children, busy, onClose }: { title: string; children: ReactNode; busy: boolean; onClose: () => void }) {
+  const dialog = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  const pending = useRef(busy);
+  close.current = onClose;
+  pending.current = busy;
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialog.current?.focus();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !pending.current) close.current();
+      if (event.key !== 'Tab') return;
+      const controls = [...(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]') || [])].filter(element => !element.closest('fieldset:disabled'));
+      const first = controls[0], last = controls[controls.length - 1];
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => { document.body.style.overflow = previousOverflow; document.removeEventListener('keydown', handleKey); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3" dir="rtl">
+    <div ref={dialog} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-xl bg-white shadow-xl focus:outline-none">
+      <div className="flex items-center justify-between gap-3 border-b p-4"><h2 className="text-lg font-bold">{title}</h2><button type="button" aria-label="إغلاق النافذة" disabled={busy} onClick={onClose} className="rounded-lg p-2 hover:bg-gray-100 disabled:opacity-50"><X size={20} /></button></div>
+      <div className="p-4">{children}</div>
+    </div>
+  </div>;
 }
 
-interface SchoolOption {
-  id: number;
-  name: string;
-}
-
-const emptyForm = {
-  full_name: '',
-  email: '',
-  password: '',
-  role_id: '',
-  role_key: '',
-  school_id: '',
-  phone: '',
-  status: 'active',
-};
-
-const ROLE_KEY_LABELS: Record<string, string> = {
-  system_admin: 'مدير النظام',
-  school_owner: 'مالك المدرسة',
-  principal: 'مدير المدرسة',
-  vice_principal: 'نائب المدير',
-  teacher: 'معلم',
-  accountant: 'محاسب',
-  registrar: 'مسجل',
-  parent: 'ولي أمر',
-};
-
+// Remount the whole account workspace when its authenticated scope changes.
 export default function UsersPage() {
   const { user } = useAuth();
+  return user ? <UserAccounts key={`${user.id}:${user.school_id}:${user.role_key}`} actor={user} /> : null;
+}
+
+function UserAccounts({ actor }: { actor: AuthUser }) {
   const [users, setUsers] = useState<UserWithSchoolAndRole[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [schools, setSchools] = useState<SchoolOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState<Record<string, any>>(emptyForm);
-  const [formLoading, setFormLoading] = useState(false);
+  const [form, setForm] = useState<AccountForm>(emptyForm);
+  const [editing, setEditing] = useState<UserWithSchoolAndRole | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-
-  const [resetModalOpen, setResetModalOpen] = useState(false);
-  const [resetUserId, setResetUserId] = useState<number | null>(null);
-  const [resetPassword, setResetPassword] = useState('');
-  const [resetLoading, setResetLoading] = useState(false);
+  const [formStale, setFormStale] = useState(false);
+  const [resetTarget, setResetTarget] = useState<UserWithSchoolAndRole | null>(null);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [resetStale, setResetStale] = useState(false);
+  const [secret, setSecret] = useState<(TemporaryUserPassword & { name: string }) | null>(null);
+  const [copyMessage, setCopyMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const alive = useRef(true);
+  const listGeneration = useRef(0);
+  const isAdmin = actor.role_key === 'system_admin';
+  const canManage = isAdmin || (actor.role_key === 'school_owner' && actor.school_id != null);
+  const schoolId = isAdmin ? null : actor.school_id;
 
-  const canManage = user?.role_key === 'system_admin';
-  const schoolId = user?.school_id ?? null;
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      setError(null);
-      const [{ data: usersData, error: usersErr }, { data: rolesData, error: rolesErr }, { data: schoolsData, error: schoolsErr }] = await Promise.all([
-        getUsers(schoolId),
-        getRoles(),
-        getSchools(),
-      ]);
-      if (!cancelled) {
-        if (usersErr) setError(usersErr);
-        else if (usersData) setUsers(usersData.map((u: any) => ({
-          ...u,
-          role_name: u.role_name || ROLE_KEY_LABELS[u.role_key] || '---',
-          school_name: u.school_name || (u.school_id ? `مدرسة #${u.school_id}` : '---'),
-          created_at: u.created_at ? new Date(u.created_at * 1000).toISOString().split('T')[0] : '',
-        })) as UserWithSchoolAndRole[]);
-        if (rolesData) setRoles(rolesData.map((r: any) => ({ id: r.id, key: r.key, name: r.name })));
-        if (schoolsData) setSchools(schoolsData.map((s: any) => ({ id: s.id, name: s.name })));
-        setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
+  const reloadUsers = useCallback(async () => {
+    const generation = ++listGeneration.current;
+    setLoading(true);
+    const result = await getUsers(schoolId);
+    if (!alive.current || generation !== listGeneration.current) return;
+    if (result.error) setError(result.error);
+    else { setUsers((result.data || []) as UserWithSchoolAndRole[]); setError(null); }
+    setLoading(false);
   }, [schoolId]);
 
-  const filtered = users.filter(u =>
-    u.full_name.toLowerCase().includes(search.toLowerCase()) ||
-    u.email.toLowerCase().includes(search.toLowerCase()) ||
-    (u.role_name || '').toLowerCase().includes(search.toLowerCase())
-  );
+  useEffect(() => {
+    alive.current = true;
+    void reloadUsers();
+    if (canManage) {
+      void Promise.all([getRoles(), isAdmin ? getSchools() : Promise.resolve({ data: [] })]).then(([roleResult, schoolResult]) => {
+        if (!alive.current) return;
+        const schoolError = 'error' in schoolResult ? schoolResult.error : undefined;
+        if (roleResult.error || schoolError) setError(roleResult.error || String(schoolError));
+        setRoles((roleResult.data || []).filter(role => isAdmin || SCHOOL_ROLES.includes(role.key)) as RoleOption[]);
+        setSchools((schoolResult.data || []) as SchoolOption[]);
+      });
+    }
+    return () => { alive.current = false; listGeneration.current++; };
+  }, [reloadUsers, canManage, isAdmin]);
 
-  function openCreate() {
-    setEditingId(null);
-    setForm({ ...emptyForm, password: '' });
-    setFormError(null);
-    setModalOpen(true);
+  const mayManage = (target: UserWithSchoolAndRole) => canManage && target.can_manage === true && target.id !== actor.id
+    && Number.isInteger(target.account_revision) && (target.account_revision ?? -1) >= 0
+    && (isAdmin || (target.school_id === actor.school_id && SCHOOL_ROLES.includes(target.role_key || '')));
+  const beginWrite = () => { if (busyRef.current) return false; busyRef.current = true; setBusy(true); return true; };
+  const endWrite = () => { if (alive.current) { busyRef.current = false; setBusy(false); } };
+  const rememberSecret = (data: TemporaryUserPassword, name: string) => { setCopyMessage(''); setSecret({ ...data, name }); };
+
+  function openCreate() { if (busyRef.current) return; setEditing(null); setForm(emptyForm); setFormError(null); setFormStale(false); setFormOpen(true); }
+  function openEdit(target: UserWithSchoolAndRole) {
+    if (!mayManage(target) || busyRef.current) return;
+    setEditing(target); setForm({ full_name: target.full_name, email: target.email, role_key: target.role_key || '', school_id: target.school_id == null ? '' : String(target.school_id), phone: target.phone || '' });
+    setFormError(null); setFormStale(false); setFormOpen(true);
   }
 
-  function openEdit(u: UserWithSchoolAndRole) {
-    setEditingId(u.id);
-    const role = roles.find(r => r.key === u.role_key);
-    setForm({
-      full_name: u.full_name || '',
-      email: u.email || '',
-      password: '',
-      role_id: role?.id ? String(role.id) : '',
-      role_key: u.role_key || '',
-      school_id: u.school_id ? String(u.school_id) : '',
-      phone: u.phone || '',
-      status: u.status || 'active',
-    });
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canManage || formStale || (editing && !mayManage(editing)) || !beginWrite()) return;
     setFormError(null);
-    setModalOpen(true);
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setFormLoading(true);
-    setFormError(null);
+    const payload = { full_name: form.full_name.trim(), email: form.email.trim(), role_key: form.role_key, phone: form.phone.trim() };
     try {
-      const payload: Record<string, any> = {
-        ...form,
-        role_id: form.role_id ? Number(form.role_id) : undefined,
-        school_id: form.school_id ? Number(form.school_id) : null,
-      };
-      if (editingId) {
-        // Remove password from update payload if empty
-        const updatePayload = { ...payload };
-        if (!updatePayload.password) delete updatePayload.password;
-        const { error: err } = await updateUser(editingId, updatePayload);
-        if (err) setFormError(err);
-        else {
-          setModalOpen(false);
-          reloadUsers();
-        }
-      } else {
-        if (!payload.password) {
-          setFormError('كلمة المرور مطلوبة عند الإنشاء');
-          setFormLoading(false);
-          return;
-        }
-        const { error: err } = await createUser(payload);
-        if (err) setFormError(err);
-        else {
-          setModalOpen(false);
-          reloadUsers();
-        }
+      const result = editing
+        ? await updateUser(editing.id, { ...payload, expected_revision: editing.account_revision! })
+        : await createUser({ ...payload, ...(isAdmin ? { school_id: form.role_key === 'system_admin' ? null : Number(form.school_id) } : {}) });
+      if (!alive.current) return;
+      if (result.error) { setFormError(result.error); setFormStale(result.status === 409 && result.code === 'account_stale'); return; }
+      setFormOpen(false);
+      if (!editing) {
+        const issued = result.data as TemporaryUserPassword | undefined;
+        if (issued?.temporary_password) rememberSecret(issued, payload.full_name);
+        else setError('أُنشئ الحساب، لكن لم تصل كلمة المرور المؤقتة. حدّث القائمة وأعد تعيينها.');
       }
-    } catch (e: any) {
-      setFormError(e?.message || 'حدث خطأ');
-    } finally {
-      setFormLoading(false);
-    }
+      void reloadUsers();
+    } finally { endWrite(); }
   }
 
-  async function reloadUsers() {
-    const { data } = await getUsers(schoolId);
-    if (data) setUsers(data.map((u: any) => ({
-      ...u,
-      role_name: u.role_name || ROLE_KEY_LABELS[u.role_key] || '---',
-      school_name: u.school_name || (u.school_id ? `مدرسة #${u.school_id}` : '---'),
-      created_at: u.created_at ? new Date(u.created_at * 1000).toISOString().split('T')[0] : '',
-    })) as UserWithSchoolAndRole[]);
+  async function handleStatus(target: UserWithSchoolAndRole) {
+    if (!mayManage(target) || busyRef.current) return;
+    const next = target.status === 'active' ? 'inactive' : 'active';
+    if (!window.confirm(`هل تريد ${next === 'active' ? 'تفعيل' : 'تعطيل'} حساب ${target.full_name}؟ ستُنهى جلساته الحالية.`) || !beginWrite()) return;
+    try {
+      const result = await updateUserStatus(target.id, next, target.account_revision!);
+      if (!alive.current) return;
+      if (result.error) setError(result.status === 409 ? `${result.error} حدّث القائمة وراجع الحساب قبل المحاولة مجددًا.` : result.error);
+      else void reloadUsers();
+    } finally { endWrite(); }
   }
 
-  async function handleToggleStatus(u: UserWithSchoolAndRole) {
-    const newStatus = u.status === 'active' ? 'inactive' : 'active';
-    if (!window.confirm(`هل أنت متأكد من ${newStatus === 'active' ? 'تفعيل' : 'تعطيل'} هذا المستخدم؟`)) return;
-    setLoading(true);
-    const { error: err } = await updateUserStatus(u.id, newStatus as 'active' | 'inactive');
-    if (err) setError(err);
-    else reloadUsers();
-    setLoading(false);
-  }
-
-  function openResetPassword(userId: number) {
-    setResetUserId(userId);
-    setResetPassword('');
+  async function handleReset(event: React.FormEvent) {
+    event.preventDefault();
+    if (!resetTarget || resetStale || !mayManage(resetTarget) || !beginWrite()) return;
     setResetError(null);
-    setResetModalOpen(true);
+    try {
+      const result = await resetUserPassword(resetTarget.id, resetTarget.account_revision!);
+      if (!alive.current) return;
+      if (result.error) { setResetError(result.error); setResetStale(result.status === 409 && result.code === 'account_stale'); return; }
+      if (result.data?.temporary_password) { rememberSecret(result.data, resetTarget.full_name); setResetTarget(null); void reloadUsers(); }
+      else setResetError('لم تصل كلمة المرور المؤقتة. حدّث القائمة قبل محاولة إعادة التعيين مجددًا.');
+    } finally { endWrite(); }
   }
 
-  async function handleResetPassword(e: React.FormEvent) {
-    e.preventDefault();
-    if (!resetPassword || resetPassword.length < 6) {
-      setResetError('كلمة المرور يجب أن تكون 6 أحرف على الأقل');
-      return;
-    }
-    setResetLoading(true);
-    setResetError(null);
-    if (resetUserId) {
-      const { error: err } = await resetUserPassword(resetUserId, resetPassword);
-      if (err) setResetError(err);
-      else {
-        setResetModalOpen(false);
-        setResetUserId(null);
-        setResetPassword('');
-      }
-    }
-    setResetLoading(false);
+  async function copySecret() {
+    if (!secret) return;
+    try { await navigator.clipboard.writeText(secret.temporary_password); if (alive.current) setCopyMessage('تم نسخ كلمة المرور. شاركها مع صاحب الحساب بطريقة خاصة.'); }
+    catch { if (alive.current) setCopyMessage('تعذر النسخ التلقائي؛ يمكنك تحديد كلمة المرور ونسخها يدويًا.'); }
   }
 
-  const selectedRoleKey = roles.find(r => String(r.id) === String(form.role_id))?.key || '';
-  const requiresSchool = ['school_owner', 'principal', 'vice_principal', 'teacher', 'accountant', 'registrar', 'parent'].includes(selectedRoleKey);
+  const query = search.trim().toLocaleLowerCase();
+  const filtered = users.filter(target => [target.full_name, target.email, ROLE_LABELS[target.role_key || '']].some(value => (value || '').toLocaleLowerCase().includes(query)));
+  const selectableRoles = roles.filter(role => !editing || (editing.school_id == null ? role.key === 'system_admin' : role.key !== 'system_admin'));
+  const closeForm = () => { if (!busyRef.current) setFormOpen(false); };
+  const staleNotice = <div className="space-y-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900"><p>تغيّر الحساب بعد فتحه. احتفظنا بالمدخلات للمراجعة. حدّث القائمة ثم أغلق النافذة وافتح الحساب مجددًا قبل الحفظ.</p><button type="button" className={actionClass} disabled={loading || busy} onClick={() => void reloadUsers()}>تحديث القائمة</button></div>;
 
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">المستخدمون</h1>
-          <p className="text-sm text-gray-500 mt-1">إدارة مستخدمي النظام والموظفين</p>
-        </div>
-        {canManage && (
-          <button
-            onClick={openCreate}
-            className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors"
-          >
-            <Plus size={18} />
-            <span>إضافة مستخدم</span>
-          </button>
-        )}
-      </div>
+  return <div className="min-w-0 space-y-5" dir="rtl">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-2xl font-bold text-gray-900">المستخدمون</h1><p className="mt-1 text-sm text-gray-500">{isAdmin ? 'إدارة حسابات النظام والمدارس' : 'حسابات المدرسة وصلاحيات الدخول'}</p></div>{canManage && <button type="button" onClick={openCreate} disabled={busy || loading || roles.length === 0} className={`${primaryClass} flex items-center gap-2`}><Plus size={18} />إضافة مستخدم</button>}</div>
+    <div className="flex flex-wrap gap-3"><label className="relative min-w-0 flex-1"><span className="sr-only">بحث في المستخدمين</span><Search size={18} className="absolute right-3 top-2.5 text-gray-400" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="بحث في المستخدمين..." className={`${fieldClass} pr-10`} /></label><button type="button" className={`${actionClass} flex items-center gap-2`} onClick={() => void reloadUsers()} disabled={loading || busy}><RefreshCw size={16} />تحديث القائمة</button></div>
+    {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+    {loading ? <div role="status" className="flex items-center justify-center gap-2 p-10 text-gray-500"><Loader2 className="animate-spin" size={22} />جاري تحميل المستخدمين...</div> : <div className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {filtered.map(target => <article key={target.id} aria-label={`حساب ${target.full_name}`} className="min-w-0 space-y-3 rounded-xl border border-gray-200 bg-white p-4">
+        <div className="flex items-start justify-between gap-2"><h2 className="break-words font-bold text-gray-900">{target.full_name}</h2><span className={`shrink-0 rounded-full px-2 py-1 text-xs ${target.status === 'active' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>{target.status === 'active' ? 'نشط' : 'غير نشط'}</span></div>
+        <p className="break-all text-sm text-gray-600" dir="ltr">{target.email}</p><p className="text-sm text-primary-700">{target.role_name || ROLE_LABELS[target.role_key || ''] || '—'}</p>
+        {isAdmin && <p className="break-words text-sm text-gray-500">{target.school_name || (target.school_id ? `مدرسة #${target.school_id}` : 'إدارة النظام')}</p>}
+        {target.must_change_password && <p className="text-sm text-amber-800">يتطلب تغيير كلمة المرور عند الدخول{target.temporary_password_expires_at && target.temporary_password_expires_at * 1000 < Date.now() ? ' — انتهت صلاحية كلمة المرور المؤقتة' : ''}</p>}
+        {mayManage(target) ? <div className="flex flex-wrap gap-2 border-t pt-3"><button type="button" disabled={busy} onClick={() => openEdit(target)} className={`${actionClass} flex items-center gap-1`}><Pencil size={14} />تعديل</button><button type="button" disabled={busy} onClick={() => { setResetTarget(target); setResetError(null); setResetStale(false); }} className={`${actionClass} flex items-center gap-1`}><Lock size={14} />إعادة تعيين كلمة المرور</button><button type="button" disabled={busy} onClick={() => void handleStatus(target)} className={actionClass}>{target.status === 'active' ? 'تعطيل' : 'تفعيل'}</button></div> : canManage && <p className="border-t pt-3 text-xs text-gray-500">{target.id === actor.id ? 'حسابك الحالي — إدارة الحسابات هنا للمستخدمين الآخرين' : 'هذا الحساب خارج صلاحيات الإدارة المتاحة لك'}</p>}
+      </article>)}
+      {!filtered.length && <p className="p-8 text-center text-sm text-gray-500">{search ? 'لا توجد نتائج للبحث' : 'لا يوجد مستخدمون'}</p>}
+    </div>}
 
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="p-4 border-b border-gray-200 flex items-center gap-3">
-          <div className="relative flex-1 max-w-sm">
-            <Search size={18} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              type="text"
-              placeholder="بحث في المستخدمين..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-full pr-10 pl-4 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-            />
-          </div>
-        </div>
+    {formOpen && <AccountDialog title={editing ? 'تعديل مستخدم' : 'إضافة مستخدم'} busy={busy} onClose={closeForm}>
+      <form aria-label={editing ? 'تعديل مستخدم' : 'إضافة مستخدم'} onSubmit={handleSubmit} className="space-y-4">
+        {formError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{formError}</p>}{formStale && staleNotice}
+        <fieldset disabled={busy} className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="space-y-1 text-sm">الاسم الكامل<input aria-label="الاسم الكامل" required maxLength={200} value={form.full_name} onChange={event => setForm(previous => ({ ...previous, full_name: event.target.value }))} className={fieldClass} autoComplete="name" /></label>
+          <label className="space-y-1 text-sm">البريد الإلكتروني<input aria-label="البريد الإلكتروني" required type="email" maxLength={254} value={form.email} onChange={event => setForm(previous => ({ ...previous, email: event.target.value }))} className={fieldClass} dir="ltr" autoComplete="email" /></label>
+          <label className="space-y-1 text-sm">الدور<select aria-label="الدور" required value={form.role_key} onChange={event => setForm(previous => ({ ...previous, role_key: event.target.value }))} className={fieldClass}><option value="">اختر الدور</option>{selectableRoles.map(role => <option key={role.id} value={role.key}>{role.name || ROLE_LABELS[role.key]}</option>)}</select></label>
+          <label className="space-y-1 text-sm">رقم الهاتف<input aria-label="رقم الهاتف" type="tel" maxLength={40} value={form.phone} onChange={event => setForm(previous => ({ ...previous, phone: event.target.value }))} className={fieldClass} dir="ltr" autoComplete="tel" /></label>
+          {isAdmin && !editing && form.role_key !== 'system_admin' && <label className="space-y-1 text-sm sm:col-span-2">المدرسة<select aria-label="المدرسة" required value={form.school_id} onChange={event => setForm(previous => ({ ...previous, school_id: event.target.value }))} className={fieldClass}><option value="">اختر المدرسة</option>{schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}</select></label>}
+        </fieldset>
+        {editing ? <p className="text-sm text-gray-500">مدرسة الحساب ثابتة. لتغيير كلمة المرور استخدم إجراء إعادة التعيين.</p> : <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">سيولّد النظام كلمة مرور مؤقتة تظهر مرة واحدة وتصلح لمدة 24 ساعة. يجب تغييرها عند أول دخول.</p>}
+        <div className="flex flex-wrap justify-end gap-2"><button type="button" className={actionClass} disabled={busy} onClick={closeForm}>إلغاء</button><button type="submit" disabled={busy || formStale} className={primaryClass}>{busy ? 'جاري الحفظ...' : editing ? 'حفظ التعديلات' : 'إنشاء الحساب'}</button></div>
+      </form>
+    </AccountDialog>}
 
-        {loading && (
-          <div className="p-12 flex flex-col items-center justify-center gap-3 text-gray-500">
-            <Loader2 size={28} className="animate-spin text-primary-600" />
-            <p className="text-sm">جاري تحميل المستخدمين...</p>
-          </div>
-        )}
+    {resetTarget && <AccountDialog title="إعادة تعيين كلمة المرور" busy={busy} onClose={() => { if (!busyRef.current) setResetTarget(null); }}>
+      <form aria-label="تأكيد إعادة تعيين كلمة المرور" onSubmit={handleReset} className="space-y-4"><p className="break-words text-sm">سيُعاد تعيين كلمة المرور لحساب <strong>{resetTarget.full_name}</strong> وتُنهى جلساته الحالية. تظهر كلمة المرور الجديدة مرة واحدة، وتصلح لمدة 24 ساعة، ويجب تغييرها عند الدخول.</p>{resetError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{resetError}</p>}{resetStale && staleNotice}<div className="flex flex-wrap justify-end gap-2"><button type="button" disabled={busy} onClick={() => setResetTarget(null)} className={actionClass}>إلغاء</button><button type="submit" disabled={busy || resetStale} className={primaryClass}>{busy ? 'جاري إعادة التعيين...' : 'تأكيد إعادة التعيين'}</button></div></form>
+    </AccountDialog>}
 
-        {error && !loading && (
-          <div className="p-8 flex flex-col items-center justify-center gap-3 text-red-600">
-            <AlertCircle size={28} />
-            <p className="text-sm">{error}</p>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-sm font-medium transition-colors"
-            >
-              إعادة المحاولة
-            </button>
-          </div>
-        )}
-
-        {!loading && !error && filtered.length === 0 && (
-          <div className="p-12 text-center text-gray-500 text-sm">
-            {search ? 'لا توجد نتائج للبحث' : 'لا يوجد مستخدمون'}
-          </div>
-        )}
-
-        {!loading && !error && filtered.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-gray-600">
-                <tr>
-                  <th className="px-6 py-3 text-right font-semibold">الاسم</th>
-                  <th className="px-6 py-3 text-right font-semibold">البريد الإلكتروني</th>
-                  <th className="px-6 py-3 text-right font-semibold">الدور</th>
-                  <th className="px-6 py-3 text-right font-semibold">المدرسة</th>
-                  <th className="px-6 py-3 text-right font-semibold">الحالة</th>
-                  {canManage && <th className="px-6 py-3 text-right font-semibold">إجراءات</th>}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filtered.map((u) => (
-                  <tr key={u.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 bg-primary-100 text-primary-700 rounded-full flex items-center justify-center font-bold text-sm">
-                          {u.full_name.charAt(0)}
-                        </div>
-                        <span className="font-medium text-gray-900">{u.full_name}</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-1 text-gray-600">
-                        <Mail size={14} />
-                        <span>{u.email}</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-600 rounded-full text-xs font-medium">
-                        <Shield size={12} />
-                        {u.role_name}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-1 text-gray-600">
-                        <Building2 size={14} />
-                        <span>{u.school_name || '---'}</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
-                        u.status === 'active'
-                          ? 'bg-emerald-50 text-emerald-600'
-                          : 'bg-gray-100 text-gray-500'
-                      }`}>
-                        {u.status === 'active' ? 'نشط' : 'غير نشط'}
-                      </span>
-                    </td>
-                    {canManage && (
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => openEdit(u)}
-                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                            title="تعديل"
-                          >
-                            <Pencil size={16} />
-                          </button>
-                          <button
-                            onClick={() => openResetPassword(u.id)}
-                            className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                            title="إعادة تعيين كلمة المرور"
-                          >
-                            <Lock size={16} />
-                          </button>
-                          <button
-                            onClick={() => handleToggleStatus(u)}
-                            className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                            title={u.status === 'active' ? 'تعطيل' : 'تفعيل'}
-                          >
-                            {u.status === 'active' ? <ToggleRight size={20} className="text-emerald-600" /> : <ToggleLeft size={20} className="text-gray-400" />}
-                          </button>
-                        </div>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Create/Edit Modal */}
-      {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-gray-900">
-                {editingId ? 'تعديل مستخدم' : 'إضافة مستخدم'}
-              </h2>
-              <button onClick={() => setModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
-                <X size={20} className="text-gray-500" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              {formError && (
-                <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm flex items-center gap-2">
-                  <AlertCircle size={16} />
-                  {formError}
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-gray-700">الاسم الكامل *</label>
-                  <input
-                    required
-                    value={form.full_name || ''}
-                    onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                    placeholder="الاسم الثلاثي"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-gray-700">البريد الإلكتروني *</label>
-                  <input
-                    type="email"
-                    required
-                    value={form.email || ''}
-                    onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                    placeholder="example@school.com"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-gray-700">{editingId ? 'كلمة المرور (اتركها فارغة للإبقاء على الحالية)' : 'كلمة المرور *'}</label>
-                  <input
-                    type="password"
-                    required={!editingId}
-                    value={form.password || ''}
-                    onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                    placeholder="••••••"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-gray-700">الدور *</label>
-                  <select
-                    required
-                    value={form.role_id || ''}
-                    onChange={e => {
-                      const roleId = e.target.value;
-                      const role = roles.find(r => String(r.id) === roleId);
-                      setForm(f => ({ ...f, role_id: roleId, role_key: role?.key || '' }));
-                    }}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                  >
-                    <option value="">اختر الدور</option>
-                    {roles.map(r => (
-                      <option key={r.id} value={r.id}>{r.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-gray-700">المدرسة {requiresSchool && '*'}</label>
-                  <select
-                    required={requiresSchool}
-                    value={form.school_id || ''}
-                    onChange={e => setForm(f => ({ ...f, school_id: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                  >
-                    <option value="">{requiresSchool ? 'اختر المدرسة' : 'بدون مدرسة'}</option>
-                    {schools.map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                  {selectedRoleKey === 'system_admin' && (
-                    <p className="text-xs text-gray-400">يمكن ترك المدرسة فارغة لمدير النظام</p>
-                  )}
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-gray-700">الهاتف</label>
-                  <input
-                    value={form.phone || ''}
-                    onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                    placeholder="0750 123 4567"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-gray-700">الحالة</label>
-                  <select
-                    value={form.status || 'active'}
-                    onChange={e => setForm(f => ({ ...f, status: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                  >
-                    <option value="active">نشط</option>
-                    <option value="inactive">غير نشط</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => setModalOpen(false)}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  disabled={formLoading}
-                  className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                >
-                  {formLoading ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                  <span>{editingId ? 'حفظ التعديلات' : 'إنشاء'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Reset Password Modal */}
-      {resetModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
-            <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-gray-900">إعادة تعيين كلمة المرور</h2>
-              <button onClick={() => setResetModalOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
-                <X size={20} className="text-gray-500" />
-              </button>
-            </div>
-
-            <form onSubmit={handleResetPassword} className="p-6 space-y-4">
-              {resetError && (
-                <div className="p-3 bg-red-50 text-red-700 rounded-lg text-sm flex items-center gap-2">
-                  <AlertCircle size={16} />
-                  {resetError}
-                </div>
-              )}
-              <div className="space-y-1">
-                <label className="text-sm font-medium text-gray-700">كلمة المرور الجديدة</label>
-                <input
-                  type="password"
-                  required
-                  value={resetPassword}
-                  onChange={e => setResetPassword(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-                  placeholder="••••••"
-                />
-              </div>
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => setResetModalOpen(false)}
-                  className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  disabled={resetLoading}
-                  className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                >
-                  {resetLoading ? <Loader2 size={16} className="animate-spin" /> : <Lock size={16} />}
-                  <span>تحديث</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+    {secret && <AccountDialog title="كلمة المرور المؤقتة" busy={false} onClose={() => { setSecret(null); setCopyMessage(''); }}>
+      <div className="space-y-4"><p className="break-words text-sm">حساب <strong>{secret.name}</strong>. انسخ كلمة المرور وسلّمها لصاحب الحساب بطريقة خاصة؛ لن تظهر مرة أخرى بعد إغلاق هذه النافذة.</p><label className="block space-y-2 text-sm">كلمة المرور المؤقتة<input aria-label="كلمة المرور المؤقتة" readOnly value={secret.temporary_password} autoComplete="off" spellCheck={false} dir="ltr" className={`${fieldClass} font-mono`} onFocus={event => event.target.select()} /></label><p className="text-sm text-amber-800">صالحة لمدة 24 ساعة، حتى {new Date(secret.temporary_password_expires_at * 1000).toLocaleString('ar-IQ')}. يجب تغييرها عند أول دخول.</p><p aria-live="polite" className="text-sm text-gray-600">{copyMessage}</p><div className="flex flex-wrap gap-2"><button type="button" onClick={() => void copySecret()} className={`${primaryClass} flex items-center gap-2`}><Copy size={16} />نسخ كلمة المرور</button><button type="button" className={actionClass} onClick={() => { setSecret(null); setCopyMessage(''); }}>تم، إغلاق</button></div></div>
+    </AccountDialog>}
+  </div>;
 }
