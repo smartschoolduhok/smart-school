@@ -74,14 +74,31 @@ UPDATE treasury_accounts SET current_balance=80000 WHERE school_id=1;
 INSERT INTO treasury_accounts(school_id,current_balance) VALUES(2,20001);
 `;
 const upgrade=setup('upgrade','0027');run(upgrade,['migrations','apply']);fixtures(upgrade,financeFixtureSQL+legacyFinanceSQL+driftSQL);
-let proxy=await open(upgrade),before;try{before=await snap(proxy.env.DB);}finally{await proxy.dispose();}
+let proxy=await open(upgrade),before,upgradedFinanceSnapshot;try{before=await snap(proxy.env.DB);}finally{await proxy.dispose();}
 copyFileSync(join(root,'migrations/0028_finance_fee_payment_integrity.sql'),join(upgrade.path,'migrations/0028_finance_fee_payment_integrity.sql'));
 run(upgrade,['migrations','apply']);proxy=await open(upgrade);
-try{const db=proxy.env.DB,after=await snap(db);preserve(before,after);assert.equal(after.fee_payments[0].status,'active');assert.equal(after.fee_receipt_payments.length,2);assert.equal((await db.prepare('PRAGMA foreign_keys').first()).foreign_keys,1);assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);checks++;evidence.push({case:'populated-0027-to-0028',old_tables_compared:Object.keys(before).length-1,all_old_columns_and_rows_equal:true,legacy_usd_preserved:true});}finally{await proxy.dispose();}
+try{const db=proxy.env.DB,after=await snap(db);preserve(before,after);assert.equal(after.fee_payments[0].status,'active');assert.equal(after.fee_receipt_payments.length,2);assert.equal((await db.prepare('PRAGMA foreign_keys').first()).foreign_keys,1);assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);upgradedFinanceSnapshot=after;checks++;evidence.push({case:'populated-0027-to-0028',old_tables_compared:Object.keys(before).length-1,all_old_columns_and_rows_equal:true,legacy_usd_preserved:true});}finally{await proxy.dispose();}
 console.log('LOCAL populated upgrade preserved every original column and row.');
-// Runtime/API checks must use the complete current schema. The isolated
-// adversarial blocks above intentionally remain scoped to the historical
-// 0027 -> 0028 upgrade contract.
+// Only after proving the historical finance upgrade, add the genuine current
+// authentication migration and its resource-link dependency. Later finance
+// migrations must not rewrite the deliberately inconsistent legacy fixtures.
+const authMigrations=['0029_resource_access_links.sql','0052_school_user_accounts.sql'];
+for(const file of authMigrations)copyFileSync(join(root,'migrations',file),join(upgrade.path,'migrations',file));
+run(upgrade,['migrations','apply']);proxy=await open(upgrade);
+try{
+ const db=proxy.env.DB,after=await snap(db);preserve(upgradedFinanceSnapshot,after);
+ const existingNames=new Set(upgradedFinanceSnapshot.d1_migrations.map(row=>row.name));
+ assert.deepEqual(after.d1_migrations.filter(row=>existingNames.has(row.name)),upgradedFinanceSnapshot.d1_migrations);
+ assert.deepEqual(after.d1_migrations.filter(row=>!existingNames.has(row.name)).map(row=>row.name).sort(),authMigrations);
+ assert.ok(after.users.every(user=>user.must_change_password===0&&user.temporary_password_expires_at===null&&user.account_revision===1));
+ for(const name of ['parent_student_links','teacher_employee_links','user_account_audit','user_account_write_guards'])assert.deepEqual(after[name],[],name);
+ assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
+ checks++;evidence.push({case:'legacy-finance-current-auth',auth_migrations:authMigrations,all_prior_columns_and_rows_equal:true,prior_migration_history_preserved:true,account_defaults_verified:true,fk_clean:true});
+}finally{await proxy.dispose();}
+console.log('LOCAL legacy finance fixtures now support current authentication without changing financial data.');
+// Fresh runtime/API checks use the complete current schema. Legacy drift
+// checks retain their historical finance schema plus current authentication;
+// the adversarial upgrade blocks remain scoped to the 0027 -> 0028 contract.
 const fresh=setup('fresh','9999');run(fresh,['migrations','apply']);fixtures(fresh,financeFixtureSQL);proxy=await open(fresh);
 const vite=await createServer({root,appType:'custom',server:{middlewareMode:true,hmr:false}});
 try{
