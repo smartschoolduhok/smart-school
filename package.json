@@ -16,6 +16,8 @@
     "test:finance-seed:local": "node --experimental-strip-types scripts/validate-finance-seed-local.mjs",
     "test:finance-fees:local": "node --experimental-strip-types scripts/validate-finance-fees-local.mjs",
     "test:backup-restore:local": "node --experimental-strip-types scripts/validate-backup-restore-local.mjs",
+    "test:backup-verification": "node --experimental-strip-types --test --test-concurrency=1 test/backup-verification.test.mjs",
+    "backup:tools": "node scripts/backup-tools.mjs",
     "test:regressions": "node --experimental-strip-types scripts/run-finance-regressions.mjs",
     "dev": "vite",
     "typecheck": "tsc --noEmit",

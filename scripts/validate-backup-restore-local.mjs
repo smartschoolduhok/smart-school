@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { prepareLocalRestore, contentSnapshot, assertSameContent, digest } from './lib/local-d1-restore.mjs';
+import { createManifest, verifyBackup } from './lib/backup-verification.mjs';
+import { restoreLocalD1 } from './lib/backup-local-d1.mjs';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -154,6 +156,14 @@ try {
     finance,
     commands: commandLogs,
   };
+  // Exercise the operator's generic verifier against the entire current schema.
+  const target = { environment: 'local', account_id: '0'.repeat(32),
+    database_id: '00000000-0000-0000-0000-000000000032', database_name: source.databaseName };
+  const manifest = await createManifest({ backupPath, target, capturedAt: new Date().toISOString(), codeSha: '0'.repeat(40), kind: 'manual' });
+  const receipt = await verifyBackup({ backupPath, manifest, target,
+    restore: plan => restoreLocalD1(plan, join(drillRoot, 'verification-local.json')) });
+  assert.equal(receipt.exact_restore, true);
+  evidence.generic_verifier_exact_restore = receipt.exact_restore;
   writeFileSync(join(drillRoot, 'evidence.json'), JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify(evidence));
 } finally {
