@@ -37,6 +37,7 @@ const StudentProfilePage = lazy(() => import('./modules/students/StudentProfileP
 const StudentFinancePage = lazy(() => import('./modules/students/StudentFinancePage'));
 const StudentPromotionPage = lazy(() => import('./modules/studentPromotion/StudentPromotionPage'));
 const TimetablePage = lazy(() => import('./modules/timetable/TimetablePage'));
+const SectionAdvisorsPage = lazy(() => import('./modules/advisors/SectionAdvisorsPage'));
 const AttendancePage = lazy(() => import('./modules/attendance/AttendancePage'));
 const GateAttendancePage = lazy(() => import('./modules/attendance/GateAttendancePage'));
 const StaffAttendancePage = lazy(() => import('./modules/attendance/StaffAttendancePage'));
@@ -65,6 +66,7 @@ const PrintResultCardsPage = lazy(() => import('./modules/print/PrintResultCards
 const PrintReceiptPage = lazy(() => import('./modules/print/PrintReceiptPage'));
 const PrintOfficialBookPage = lazy(() => import('./modules/print/PrintOfficialBookPage'));
 const PrintTeacherWorkloadsPage = lazy(() => import('./modules/print/PrintTeacherWorkloadsPage'));
+const PrintSectionAdvisorsPage = lazy(() => import('./modules/print/PrintSectionAdvisorsPage'));
 const ImportExportPage = lazy(() => import('./modules/importExport/ImportExportPage'));
 const SettingsPage = lazy(() => import('./modules/settings/SettingsPage'));
 
@@ -193,6 +195,8 @@ export default function App() {
           <Route path="/students/:id/finance" element={<Layout><FinanceRoute><StudentFinancePage /></FinanceRoute></Layout>} />
           <Route path="/student-promotion" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><StudentPromotionPage /></RoleGuard></Layout>} />
           <Route path="/timetable" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><TimetablePage /></RoleGuard></Layout>} />
+          <Route path="/section-advisors" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><SectionAdvisorsPage /></RoleGuard></Layout>} />
+          <Route path="/print/section-advisors" element={<RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><PrintSectionAdvisorsPage /></RoleGuard>} />
           <Route path="/print/teacher-workloads" element={<RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><PrintTeacherWorkloadsPage /></RoleGuard>} />
           <Route path="/attendance" element={<Layout><RoleGuard allowedRoles={ATTENDANCE_VIEW_ROLES}><AttendancePage /></RoleGuard></Layout>} />
           <Route path="/gate-attendance" element={<Layout><RoleGuard allowedRoles={GATE_ATTENDANCE_VIEW_ROLES}><GateAttendancePage /></RoleGuard></Layout>} />

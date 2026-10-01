@@ -7,6 +7,8 @@
 import type { AcademicYearRecord } from './academicYears';
 import type { TeacherWorkloadSummary } from './teacherWorkloadSummary';
 export type { TeacherWorkloadSummary } from './teacherWorkloadSummary';
+import type { SectionAdvisorsResponse, SectionAdvisorSaveRequest, SectionAdvisorSaveResponse } from './sectionAdvisors';
+export type { SectionAdvisorsResponse, SectionAdvisorAssignment, SectionAdvisorCandidate, SectionAdvisorPlacement, SectionAdvisorSaveRequest, SectionAdvisorSaveResponse } from './sectionAdvisors';
 import { clearAuthentication, getSessionCsrfToken } from './authStorage';
 import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan, WeekArchiveSummary, WeekArchiveDetail } from './weekSetup';
 import type {
@@ -733,6 +735,14 @@ export function getTimetableMasterGrid(schoolId: number, academicYearId: number)
 
 export function getTimetableTeacherWorkloadSummary(schoolId: number, academicYearId: number) {
   return fetchApi<TeacherWorkloadSummary>(`/api/timetable/teacher-workload-summary?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function getSectionAdvisors(schoolId: number, academicYearId: number) {
+  return fetchApi<SectionAdvisorsResponse>(`/api/section-advisors?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function saveSectionAdvisor(body: SectionAdvisorSaveRequest) {
+  return fetchApi<SectionAdvisorSaveResponse>('/api/section-advisors', { method: 'PUT', body: JSON.stringify(body) });
 }
 
 export function previewAutomaticTimetable(

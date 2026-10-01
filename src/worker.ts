@@ -1,6 +1,7 @@
 import { registerUserAccountRoutes, canManageAccount, updateOwnPassword, accountErrorResponse } from './lib/userAccounts'
 import { temporarySessionSecret } from './lib/authSecurity'
 import { aggregateTeacherWorkloadSummary, type TeacherWorkloadSummary } from './lib/teacherWorkloadSummary'
+import { buildSectionAdvisorPlacements, parseSectionAdvisorSaveRequest, sectionAdvisorAssignment, type SectionAdvisorsResponse, type SectionAdvisorClass, type SectionAdvisorSection, type StoredSectionAdvisor } from './lib/sectionAdvisors'
 // ===========================================
 // Hono Backend - Phase 2.6 (Auth Hardening)
 // Cloudflare Pages Worker with D1 Database
@@ -3883,6 +3884,119 @@ app.post('/api/timetable/versions/:id/restore', requireSameSchoolOrAdmin(), requ
   }
 })
 
+async function loadSectionAdvisors(db: D1Database, schoolId: number, academicYearId: number): Promise<SectionAdvisorsResponse | null> {
+  const [school, year, context, classes, sections, teachers, assignments, settings] = await Promise.all([
+    db.prepare('SELECT id, name, name_en, province, logo_url, principal_name FROM schools WHERE id=? AND status=\'active\'').bind(schoolId).first<SectionAdvisorsResponse['school']>(),
+    db.prepare('SELECT id, name FROM academic_years WHERE id=? AND school_id=?').bind(academicYearId, schoolId).first<SectionAdvisorsResponse['academic_year']>(),
+    loadTimetableSchedulingContext(db, schoolId, academicYearId),
+    db.prepare('SELECT id, school_id, name, stage, order_index, status FROM classes WHERE school_id=?').bind(schoolId).all<SectionAdvisorClass>(),
+    db.prepare('SELECT id, school_id, class_id, name, status FROM sections WHERE school_id=?').bind(schoolId).all<SectionAdvisorSection>(),
+    db.prepare("SELECT id, school_id, full_name, role, status FROM employees WHERE school_id=? AND status='active' AND role='teacher'").bind(schoolId).all<TimetableMasterTeacher>(),
+    db.prepare(`SELECT a.*, e.full_name AS employee_name FROM section_advisors a
+      LEFT JOIN employees e ON e.id=a.employee_id AND e.school_id=a.school_id
+      WHERE a.school_id=? AND a.academic_year_id=?`).bind(schoolId, academicYearId).all<StoredSectionAdvisor>(),
+    db.prepare(`SELECT official_book_layout_settings_json, use_arabic_indic_digits, official_book_header_text, official_book_footer_text
+      FROM school_settings WHERE school_id=?`).bind(schoolId).first<{
+        official_book_layout_settings_json: string | null; use_arabic_indic_digits: number | null;
+        official_book_header_text: string | null; official_book_footer_text: string | null;
+      }>(),
+  ])
+  if (!school || !year) return null
+  return {
+    school, academic_year: year,
+    document_settings: { official_book_layout: resolvedOfficialBookLayout(settings?.official_book_layout_settings_json, school),
+      use_arabic_indic_digits: (settings?.use_arabic_indic_digits ?? 1) === 1,
+      header_text: settings?.official_book_header_text || '', footer_text: settings?.official_book_footer_text || '' },
+    ...buildSectionAdvisorPlacements({ schoolId, academicYearId, classes: classes.results || [], sections: sections.results || [],
+      teachers: teachers.results || [], assignments: assignments.results || [], ...context }),
+  }
+}
+
+app.get('/api/section-advisors', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const academicYearId = Number(c.req.query('academic_year_id'))
+  if (schoolId == null) return c.json({ error: 'يجب تحديد المدرسة لعرض مرشدي الصفوف', code: 'invalid_tenant_scope' }, 400)
+  if (Object.entries(c.req.queries()).some(([key, values]) => !['school_id', 'academic_year_id'].includes(key) || values.length !== 1 || !/^[1-9]\d*$/.test(values[0]))
+    || !Number.isSafeInteger(academicYearId) || academicYearId <= 0) return c.json({ error: 'حدد المدرسة والسنة الدراسية بمعرّفات صحيحة' }, 400)
+  const validation = await validateTimetableAcademicYear(c.env.DB, schoolId, academicYearId)
+  if (!validation.ok) return c.json({ error: validation.error, code: validation.code }, validation.status)
+  try {
+    const data = await loadSectionAdvisors(c.env.DB, schoolId, academicYearId)
+    if (!data) return c.json({ error: 'المدرسة أو السنة الدراسية غير موجودة' }, 404)
+    return c.json({ data })
+  } catch {
+    return c.json({ error: 'تعذر تحميل مرشدي الصفوف' }, 500)
+  }
+})
+
+app.put('/api/section-advisors', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  try {
+    const text = await c.req.text()
+    if (text.length > 16000) return c.json({ error: 'طلب مرشد الصف غير صالح' }, 400)
+    let raw: unknown
+    try { raw = JSON.parse(text) } catch { return c.json({ error: 'طلب مرشد الصف غير صالح' }, 400) }
+    const input = parseSectionAdvisorSaveRequest(raw)
+    if (!input) return c.json({ error: 'راجع الشعبة والمدرس وتأكيد الدوام والملاحظات', code: 'invalid_section_advisor' }, 400)
+    const user = c.get('user') as UserContext
+    const target = await resolveActiveWriteSchool(c.env.DB, user, input.school_id)
+    if (!target.ok) return c.json({ error: target.error }, target.status)
+    const year = await validateTimetableAcademicYear(c.env.DB, target.schoolId, input.academic_year_id)
+    if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+    const data = await loadSectionAdvisors(c.env.DB, target.schoolId, input.academic_year_id)
+    const placement = data?.placements.find(row => row.class_id === input.class_id && row.section_id === input.section_id)
+    if (!placement) return c.json({ error: 'الشعبة غير موجودة أو غير نشطة في المدرسة المختارة', code: 'invalid_advisor_placement' }, 400)
+    if ((placement.assignment?.version ?? 0) !== input.expected_version)
+      return c.json({ error: 'تغيّر تكليف المرشد. حدّث الصفحة قبل إعادة الحفظ.', code: 'stale_section_advisor' }, 409)
+    if (input.employee_id !== null && !placement.candidates.some(row => row.employee_id === input.employee_id))
+      return c.json({ error: 'اختر مدرساً لديه حصص محفوظة فعلياً في هذه الشعبة', code: 'advisor_not_teaching_placement' }, 400)
+
+    // Eligibility and revision are rechecked in the write statement: a lesson
+    // removed between the read and write cannot create a now-invalid assignment.
+    // They are not permanent insert triggers, so historical stale rows restore.
+    const saved = await c.env.DB.prepare(`
+      WITH desired AS (SELECT ? AS school_id, ? AS academic_year_id, ? AS class_id, ? AS section_id,
+        ? AS employee_id, ? AS attendance_confirmed, ? AS notes, ? AS expected_version, ? AS actor)
+      INSERT INTO section_advisors (school_id, academic_year_id, class_id, section_id, employee_id,
+        attendance_confirmed, notes, version, created_by_user_id, updated_by_user_id)
+      SELECT school_id, academic_year_id, class_id, section_id, employee_id, attendance_confirmed, notes, 1, actor, actor
+      FROM desired d WHERE
+        (d.expected_version=0 OR EXISTS (SELECT 1 FROM section_advisors old WHERE old.school_id=d.school_id
+          AND old.academic_year_id=d.academic_year_id AND old.class_id=d.class_id AND old.section_id IS d.section_id AND old.version=d.expected_version))
+        AND EXISTS (SELECT 1 FROM schools WHERE id=d.school_id AND status='active')
+        AND EXISTS (SELECT 1 FROM classes c WHERE c.id=d.class_id AND c.school_id=d.school_id AND c.status='active')
+        AND ((d.section_id IS NULL AND NOT EXISTS (SELECT 1 FROM sections s WHERE s.school_id=d.school_id AND s.class_id=d.class_id AND s.status='active'))
+          OR EXISTS (SELECT 1 FROM sections s WHERE s.id=d.section_id AND s.school_id=d.school_id AND s.class_id=d.class_id AND s.status='active'))
+        AND (d.employee_id IS NULL OR EXISTS (
+          SELECT 1 FROM timetable_entries entry
+          JOIN timetable_teaching_loads load ON load.id=entry.teaching_load_id AND load.school_id=entry.school_id AND load.academic_year_id=entry.academic_year_id
+          JOIN timetable_slots slot ON slot.id=entry.slot_id AND slot.school_id=entry.school_id AND slot.academic_year_id=entry.academic_year_id
+          JOIN timetable_days day ON day.school_id=slot.school_id AND day.academic_year_id=slot.academic_year_id AND day.day_of_week=slot.day_of_week
+          JOIN employees employee ON employee.id=load.employee_id AND employee.school_id=load.school_id
+          JOIN subjects subject ON subject.id=load.subject_id AND subject.school_id=load.school_id AND subject.class_id=load.class_id
+          WHERE entry.school_id=d.school_id AND entry.academic_year_id=d.academic_year_id
+            AND load.class_id=d.class_id AND load.section_id IS d.section_id AND load.employee_id=d.employee_id AND load.status='active'
+            AND employee.status='active' AND employee.role='teacher' AND subject.status='active'
+            AND (subject.section_id IS NULL OR subject.section_id IS d.section_id)
+            AND slot.is_active=1 AND slot.slot_type='lesson' AND day.is_active=1
+        ))
+      ON CONFLICT DO UPDATE SET employee_id=excluded.employee_id, attendance_confirmed=excluded.attendance_confirmed,
+        notes=excluded.notes, version=section_advisors.version+1, updated_by_user_id=excluded.updated_by_user_id, updated_at=unixepoch()
+      WHERE section_advisors.version=(SELECT expected_version FROM desired)
+      RETURNING school_id, academic_year_id, class_id, section_id, employee_id, attendance_confirmed, notes, version
+    `).bind(target.schoolId, input.academic_year_id, input.class_id, input.section_id, input.employee_id,
+      input.attendance_confirmed ? 1 : 0, input.notes, input.expected_version, user.id).first<StoredSectionAdvisor>()
+    if (!saved) return c.json({ error: 'تغيّر التكليف أو الجدول أثناء الحفظ. حدّث الصفحة ثم حاول مجدداً.', code: 'stale_section_advisor' }, 409)
+    const teacher = saved.employee_id === null ? null : await c.env.DB.prepare('SELECT full_name FROM employees WHERE id=? AND school_id=?')
+      .bind(saved.employee_id, target.schoolId).first<{ full_name: string }>()
+    return c.json({ data: { school_id: target.schoolId, academic_year_id: input.academic_year_id, class_id: input.class_id,
+      section_id: input.section_id, assignment: sectionAdvisorAssignment({ ...saved, employee_name: teacher?.full_name ?? null }) } })
+  } catch (error) {
+    if (/section_advisor_(invalid_scope|invalid_version|immutable_identity)/.test(String(error)))
+      return c.json({ error: 'تغيرت بيانات المرشد أو الشعبة. حدّث الصفحة ثم حاول مجدداً.', code: 'stale_section_advisor' }, 409)
+    return c.json({ error: 'تعذر حفظ مرشد الصف' }, 500)
+  }
+})
+
 app.get('/api/timetable/teacher-workload-summary', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const schoolId: number | null = c.get('resolvedSchoolId')
   const academicYearId = Number(c.req.query('academic_year_id'))
@@ -5076,6 +5190,8 @@ app.put('/api/sections/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     }
     return c.json({ data: { id, class_id, name, capacity, status } })
   } catch (err: any) {
+    if (/section_advisor_referenced_placement/.test(String(err)))
+      return c.json({ error: 'لا يمكن نقل شعبة مرتبطة بسجل مرشد إلى صف آخر؛ أنشئ شعبة جديدة لحفظ السجل السابق', code: 'section_has_references' }, 409)
     return c.json({ error: 'فشل في تحديث الشعبة', detail: err.message }, 500)
   }
 })

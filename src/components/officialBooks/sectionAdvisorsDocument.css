@@ -1,0 +1,36 @@
+.section-advisors-document { color: #0f172a; font-family: "Cairo", "Tajawal", "Arial", "Tahoma", sans-serif; font-size: 10.5pt; line-height: 1.5; }
+.section-advisors-page { display: flex; flex-direction: column; min-height: 260mm; background: #fff; }
+.section-advisors-page + .section-advisors-page { margin-top: 10mm; border-top: 1px dashed #cbd5e1; padding-top: 5mm; }
+.section-advisors-header { border-bottom: 2px solid #0f172a; padding-bottom: 2mm; break-inside: avoid; page-break-inside: avoid; }
+.section-advisors-header-grid { display: grid; grid-template-columns: minmax(0, 1fr) 32mm minmax(0, 1fr); align-items: start; gap: 3mm; }
+.section-advisors-header-ar, .section-advisors-header-en { font-size: 9pt; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.section-advisors-header-ar { text-align: right; }
+.section-advisors-header-en { text-align: left; }
+.section-advisors-header-ar > :first-child, .section-advisors-header-en > :first-child { font-weight: 800; }
+.section-advisors-logo, .section-advisors-logo-space { display: block; width: 32mm; height: 32mm; object-fit: contain; }
+.section-advisors-header-note { margin: 1mm 0 0; text-align: center; font-size: 8.5pt; white-space: pre-line; }
+.section-advisors-document-meta { display: flex; justify-content: space-between; gap: 5mm; margin-top: 3mm; font-weight: 600; overflow-wrap: anywhere; }
+.section-advisors-document h1 { align-self: center; margin: 4mm 0 3mm; padding-bottom: 1mm; border-bottom: 1px solid #0f172a; font-size: 14pt; font-weight: 800; line-height: 1.5; text-align: center; break-after: avoid; page-break-after: avoid; }
+.section-advisors-intro { margin: 0 0 4mm; line-height: 1.8; text-align: justify; break-after: avoid; page-break-after: avoid; }
+.section-advisors-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 10.5pt; line-height: 1.2; }
+.section-advisors-index-column { width: 11mm; }
+.section-advisors-class-column { width: 43mm; }
+.section-advisors-section-column { width: 20mm; }
+.section-advisors-table th, .section-advisors-table td { border: 1px solid #64748b; padding: 0.8mm 2mm; vertical-align: middle; overflow-wrap: anywhere; }
+.section-advisors-table thead th { background: #e2e8f0; font-weight: 800; padding-block: 1.8mm; text-align: center; }
+.section-advisors-table tbody th { text-align: right; font-weight: 600; }
+.section-advisors-table td { text-align: center; }
+.section-advisors-table small { margin-inline-start: 1mm; font-size: 8pt; }
+.section-advisors-responsibilities { margin: 4mm 0 0; font-size: 10pt; line-height: 1.8; text-align: justify; }
+.section-advisors-page-end { margin-top: auto; padding-top: 5mm; break-inside: avoid; page-break-inside: avoid; }
+.section-advisors-signature { width: 58mm; margin-right: auto; margin-left: 0; padding: 2mm 0 7mm; text-align: center; }
+.section-advisors-signature strong, .section-advisors-signature span { display: block; }
+.section-advisors-signature span { margin-top: 1mm; font-weight: 600; }
+.section-advisors-footer { border-top: 1px solid #94a3b8; padding-top: 1mm; font-size: 8pt; text-align: center; line-height: 1.4; }
+.section-advisors-footer p { margin: 0; white-space: pre-line; }
+@media print {
+  .print-a4.section-advisors-print-sheet { width: 180mm !important; min-height: 0 !important; margin: 0 auto !important; padding: 0 !important; overflow: visible !important; box-shadow: none !important; }
+  .section-advisors-page + .section-advisors-page { break-before: page; page-break-before: always; margin-top: 0; border-top: 0; padding-top: 0; }
+  .section-advisors-table thead { display: table-header-group; }
+  .section-advisors-table tr { break-inside: avoid; page-break-inside: avoid; }
+}
