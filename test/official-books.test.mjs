@@ -75,7 +75,9 @@ async function createFixture() {
     '0013_official_books.sql',
     '0016_auth_security.sql',
     '0019_result_card_display_settings.sql',
+    '0029_resource_access_links.sql',
     '0036_official_book_layout.sql',
+    '0052_school_user_accounts.sql',
   ]) database.exec(migration(name));
 
   database.exec(`

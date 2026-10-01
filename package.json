@@ -70,7 +70,9 @@
     "test:school-workflow-ui": "node --experimental-strip-types --test --test-concurrency=1 test/school-workflow-ui.test.mjs",
     "test:school-workflows:local": "node --experimental-strip-types scripts/validate-school-workflows-local.mjs",
     "readiness:staging": "node scripts/run-operational-readiness.mjs",
-    "test:operational-readiness": "node --experimental-strip-types --test test/operational-readiness.test.mjs"
+    "test:operational-readiness": "node --experimental-strip-types --test test/operational-readiness.test.mjs",
+    "test:user-accounts": "node --experimental-strip-types --test --test-concurrency=1 test/user-accounts.test.mjs test/user-accounts-ui.test.mjs",
+    "test:user-accounts:local": "node --experimental-strip-types scripts/validate-user-accounts-local.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

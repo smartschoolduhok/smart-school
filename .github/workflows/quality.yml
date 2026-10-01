@@ -46,6 +46,7 @@ jobs:
           npm run test:timetable-parallel:local
           npm run test:timetable-clear:local
           npm run test:school-workflows:local
+          npm run test:user-accounts:local
 
       - name: Validate fresh local D1 seed
         run: npm run test:finance-seed:local

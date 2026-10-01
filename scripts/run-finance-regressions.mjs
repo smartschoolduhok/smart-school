@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 const root=fileURLToPath(new URL('..',import.meta.url)),pkg=JSON.parse(readFileSync(join(root,'package.json'),'utf8'));
-const names=['finance-fees','treasury-payroll','security','rbac','resource-access','ui-foundations','settings','academic-years','student-enrollments','student-promotion','student-profile','subject-management','subject-order','religious-subjects','subject-applicability','flexible-grades','grade-policies','academic-analytics','grade-presentation','result-cards','result-card-ui','result-publication','official-promotion','official-books','excel-import','timetable','attendance','homework','communication','grade-progress','admissions','school-workflow-ui','operational-readiness','teaching-load-matrix','week-setup','timetable-parallel'];
+const names=['user-accounts','finance-fees','treasury-payroll','security','rbac','resource-access','ui-foundations','settings','academic-years','student-enrollments','student-promotion','student-profile','subject-management','subject-order','religious-subjects','subject-applicability','flexible-grades','grade-policies','academic-analytics','grade-presentation','result-cards','result-card-ui','result-publication','official-promotion','official-books','excel-import','timetable','attendance','homework','communication','grade-progress','admissions','school-workflow-ui','operational-readiness','teaching-load-matrix','week-setup','timetable-parallel'];
 const listedFiles=new Set(names.flatMap(name=>{
  const command=pkg.scripts['test:'+name];
  if(!command)throw new Error('Missing regression suite: '+name);

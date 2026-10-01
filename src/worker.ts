@@ -1,3 +1,5 @@
+import { registerUserAccountRoutes, canManageAccount, updateOwnPassword, accountErrorResponse } from './lib/userAccounts'
+import { temporarySessionSecret } from './lib/authSecurity'
 // ===========================================
 // Hono Backend - Phase 2.6 (Auth Hardening)
 // Cloudflare Pages Worker with D1 Database
@@ -338,6 +340,8 @@ interface UserContext {
   school_id: number | null;
   school_name: string | null;
   status: string;
+  must_change_password: boolean;
+  temporary_password_expires_at: number | null;
 }
 
 interface AuthenticatedUserContext {
@@ -362,6 +366,7 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 async function getCurrentUserContext(db: D1Database, userId: number, email: string): Promise<AuthenticatedUserContext | null> {
   const row = await db.prepare(`
     SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status, u.auth_version,
+           u.must_change_password, u.temporary_password_expires_at,
            r.key AS role_key, r.name AS role_name,
            s.name AS school_name
     FROM users u
@@ -376,6 +381,8 @@ async function getCurrentUserContext(db: D1Database, userId: number, email: stri
     school_id: number | null;
     status: string;
     auth_version: number;
+    must_change_password: number;
+    temporary_password_expires_at: number | null;
     role_key: string;
     role_name: string;
     school_name: string | null;
@@ -398,6 +405,8 @@ async function getCurrentUserContext(db: D1Database, userId: number, email: stri
       school_id: row.school_id,
       school_name: row.school_name || null,
       status: row.status,
+      must_change_password: Boolean(row.must_change_password),
+      temporary_password_expires_at: row.temporary_password_expires_at,
     },
   };
 }
@@ -1497,7 +1506,12 @@ app.use('/api/*', async (c, next) => {
 
   try {
     const secret = getValidatedJwtSecret(c.env.JWT_SECRET);
-    const payload = await verifyJWT(token, secret);
+    let payload = await verifyJWT(token, secret);
+    let restrictedPasswordSession = false;
+    if (!payload) {
+      payload = await verifyJWT(token, await temporarySessionSecret(secret));
+      restrictedPasswordSession = Boolean(payload);
+    }
     if (!payload) {
       if (cookie) clearSessionCookie(c);
       return c.json({ error: 'غير مصرح: رمز غير صالح أو منتهي الصلاحية' }, 401);
@@ -1530,10 +1544,23 @@ app.use('/api/*', async (c, next) => {
       if (cookie) clearSessionCookie(c);
       return c.json({ error: 'غير مصرح: انتهت الجلسة' }, 401);
     }
+    if (restrictedPasswordSession && !authenticated.user.must_change_password) {
+      if (cookie) clearSessionCookie(c);
+      return c.json({ error: 'غير مصرح: انتهت الجلسة المؤقتة' }, 401);
+    }
 
     c.set('user', authenticated.user);
     c.set('session', payload);
     c.set('sessionTransport', cookie ? 'cookie' : 'bearer');
+    if (authenticated.user.must_change_password) {
+      if (!authenticated.user.temporary_password_expires_at || authenticated.user.temporary_password_expires_at <= nowSeconds) {
+        if (cookie) clearSessionCookie(c);
+        return c.json({ error: 'انتهت صلاحية كلمة المرور المؤقتة؛ اطلب إعادة تعيينها', code: 'temporary_password_expired' }, 401);
+      }
+      const allowed = (c.req.method === 'GET' && c.req.path === '/api/auth/me')
+        || (c.req.method === 'POST' && ['/api/auth/logout', '/api/auth/change-password'].includes(c.req.path));
+      if (!allowed) return c.json({ error: 'يجب تغيير كلمة المرور المؤقتة أولًا', code: 'password_change_required' }, 403);
+    }
     await next();
   } catch {
     return c.json({ error: 'خدمة المصادقة غير متاحة' }, 503);
@@ -1602,7 +1629,7 @@ app.post('/api/auth/login', async (c) => {
     }
 
     const row = await db.prepare(
-      'SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.password_hash, u.status, u.auth_version, '
+      'SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.password_hash, u.status, u.auth_version, u.must_change_password, u.temporary_password_expires_at, '
       + 'r.key AS role_key, r.name AS role_name, s.name AS school_name '
       + 'FROM users u LEFT JOIN roles r ON u.role_id = r.id '
       + 'LEFT JOIN schools s ON s.id = u.school_id WHERE LOWER(u.email) = ?',
@@ -1615,6 +1642,8 @@ app.post('/api/auth/login', async (c) => {
       password_hash: string | null;
       status: string;
       auth_version: number;
+      must_change_password: number;
+      temporary_password_expires_at: number | null;
       role_key: string;
       role_name: string;
       school_name: string | null;
@@ -1635,7 +1664,8 @@ app.post('/api/auth/login', async (c) => {
       await hashPassword(password);
     }
 
-    if (!row || row.status !== 'active' || !passwordValid) {
+    if (!row || row.status !== 'active' || !passwordValid
+        || (row.must_change_password && (!row.temporary_password_expires_at || row.temporary_password_expires_at <= nowSeconds))) {
       let failureRetryAfter = 0;
       for (const bucket of throttleBuckets) {
         const failure = await saveLoginFailure(
@@ -1671,7 +1701,7 @@ app.post('/api/auth/login', async (c) => {
         auth_version: row.auth_version,
         session_transport: sessionMode,
       },
-      secret,
+      row.must_change_password ? await temporarySessionSecret(secret) : secret,
       { expiresInSeconds: JWT_SESSION_TTL_SECONDS, jti, nowSeconds },
     );
 
@@ -1694,6 +1724,7 @@ app.post('/api/auth/login', async (c) => {
           role_name: row.role_name,
           school_id: row.school_id,
           school_name: row.school_name,
+          must_change_password: Boolean(row.must_change_password),
         },
       },
     });
@@ -1715,6 +1746,26 @@ app.get('/api/auth/me', async (c) => {
     ? await createSessionCsrfToken(c.get('session'), getValidatedJwtSecret(c.env.JWT_SECRET)) : undefined;
   return c.json({ data: user, csrf_token: csrfToken })
 })
+
+app.post('/api/auth/change-password', async (c) => {
+  const now = Math.floor(Date.now() / 1000);
+  const bucketKey = await createLoginThrottleKey('account', `password-change:${c.get('user').id}`);
+  const policy = LOGIN_THROTTLE_POLICIES.account;
+  const throttle = inspectLoginThrottle(await getLoginThrottleRecord(c.env.DB, bucketKey), now, policy);
+  if (throttle.limited) return rateLimitedResponse(c, throttle.retryAfter);
+  let input: unknown;
+  try { input = await c.req.json(); } catch { return c.json({ error: 'طلب غير صالح' }, 400); }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return c.json({ error: 'طلب غير صالح' }, 400);
+  try {
+    await updateOwnPassword(c, input as Record<string, unknown>);
+    if (c.get('sessionTransport') === 'cookie') clearSessionCookie(c);
+    return c.json({ data: { success: true, requires_login: true } });
+  } catch (error) {
+    const response = accountErrorResponse(c, error);
+    if (response.status === 400) await saveLoginFailure(c.env.DB, bucketKey, 'account', policy, now);
+    return response;
+  }
+});
 
 app.post('/api/auth/logout', async (c) => {
   const user: UserContext | null = c.get('user') || null;
@@ -1902,7 +1953,8 @@ app.get('/api/users', requireSameSchoolOrAdmin(), requireRoles(USER_DIRECTORY_RO
 
   try {
     let query = `
-      SELECT u.id, u.school_id, u.full_name, u.email, u.role_id, u.status,
+      SELECT u.id, u.school_id, u.full_name, u.email, u.role_id, u.status, u.phone,
+             u.account_revision, u.must_change_password, u.temporary_password_expires_at,
              u.created_at, u.updated_at,
              r.name as role_name, r.key as role_key,
              s.name as school_name
@@ -1926,7 +1978,7 @@ app.get('/api/users', requireSameSchoolOrAdmin(), requireRoles(USER_DIRECTORY_RO
     }
 
     const { results } = await db.prepare(query).bind(...binds).all()
-    return c.json({ data: results || [] })
+    return c.json({ data: (results || []).map((row: any) => ({ ...row, must_change_password: Boolean(row.must_change_password), can_manage: canManageAccount(c.get('user'), row) })) })
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب المستخدمين', detail: err.message }, 500)
   }
@@ -1939,7 +1991,7 @@ app.get('/api/users/:id', requireRoles(USER_DIRECTORY_ROLES), async (c) => {
   try {
     const row = await db.prepare(`
       SELECT u.id, u.school_id, u.full_name, u.email, u.role_id, u.phone,
-             u.status, u.created_at, u.updated_at,
+             u.status, u.created_at, u.updated_at, u.account_revision, u.must_change_password, u.temporary_password_expires_at,
              r.name as role_name, r.key as role_key, s.name as school_name
       FROM users u
       LEFT JOIN roles r ON u.role_id = r.id
@@ -1954,182 +2006,13 @@ app.get('/api/users/:id', requireRoles(USER_DIRECTORY_ROLES), async (c) => {
       }
     }
 
-    return c.json({ data: row })
+    return c.json({ data: { ...row, must_change_password: Boolean(row.must_change_password), can_manage: canManageAccount(c.get('user'), row) } })
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب المستخدم', detail: err.message }, 500)
   }
 })
 
-app.post('/api/users', requireAdmin(), async (c) => {
-  const db = c.env.DB
-  try {
-    const body = await c.req.json()
-    const { full_name, email, password, role_id, role_key, school_id, phone } = body
-    const normalizedEmail = typeof email === 'string' ? normalizeLoginEmail(email) : ''
-
-    if (!full_name || !normalizedEmail || !password) {
-      return c.json({ error: 'الاسم والبريد الإلكتروني وكلمة المرور مطلوبة' }, 400)
-    }
-    if (normalizedEmail.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      return c.json({ error: 'البريد الإلكتروني غير صحيح' }, 400)
-    }
-    if (!role_id && !role_key) {
-      return c.json({ error: 'الدور مطلوب' }, 400)
-    }
-
-    // Determine role_id from role_key if needed
-    let finalRoleId = role_id
-    if (!finalRoleId && role_key) {
-      const roleRow = await db.prepare(`SELECT id FROM roles WHERE key = ?`).bind(role_key).first<{ id: number }>()
-      if (!roleRow) return c.json({ error: 'الدور غير موجود' }, 400)
-      finalRoleId = roleRow.id
-    }
-
-    // Get role key for validation
-    const roleRow = await db.prepare(`SELECT key FROM roles WHERE id = ?`).bind(finalRoleId).first<{ key: string }>()
-    if (!roleRow) return c.json({ error: 'الدور غير موجود' }, 400)
-    const finalRoleKey = roleRow.key
-
-    // School roles require school_id
-    const schoolRoles = ['school_owner', 'principal', 'vice_principal', 'teacher', 'accountant', 'registrar', 'parent']
-    if (schoolRoles.includes(finalRoleKey) && !school_id) {
-      return c.json({ error: 'معرف المدرسة مطلوب لهذا الدور' }, 400)
-    }
-    // system_admin can have null school_id
-    if (finalRoleKey === 'system_admin' && school_id) {
-      // allowed but optional
-    }
-
-    // Check duplicate email
-    const existing = await db.prepare(`SELECT id FROM users WHERE LOWER(TRIM(email)) = ?`).bind(normalizedEmail).first<{ id: number }>()
-    if (existing) {
-      return c.json({ error: 'البريد الإلكتروني مستخدم مسبقاً' }, 409)
-    }
-
-    const passwordHash = await hashPassword(password)
-
-    const result = await db.prepare(`
-      INSERT INTO users (school_id, full_name, email, password_hash, role_id, phone, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
-    `).bind(
-      school_id || null, full_name, normalizedEmail, passwordHash, finalRoleId, phone || null
-    ).run()
-
-    return c.json({ data: { id: result.meta.last_row_id, full_name, email: normalizedEmail, role_id: finalRoleId, school_id: school_id || null, status: 'active' } }, 201)
-  } catch {
-    return c.json({ error: 'فشل في إنشاء المستخدم' }, 500)
-  }
-})
-
-app.put('/api/users/:id', requireAdmin(), async (c) => {
-  const db = c.env.DB
-  const id = c.req.param('id')
-  try {
-    const body = await c.req.json()
-    const { full_name, email, role_id, role_key, school_id, phone } = body
-
-    const existing = await db.prepare(`SELECT * FROM users WHERE id = ?`).bind(id).first<{
-      id: number; school_id: number | null; full_name: string; email: string; role_id: number; phone: string | null; status: string
-    }>()
-    if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
-
-    // Determine role_id
-    let finalRoleId = role_id || existing.role_id
-    if (role_key && !role_id) {
-      const roleRow = await db.prepare(`SELECT id FROM roles WHERE key = ?`).bind(role_key).first<{ id: number }>()
-      if (!roleRow) return c.json({ error: 'الدور غير موجود' }, 400)
-      finalRoleId = roleRow.id
-    }
-
-    const roleRow = await db.prepare(`SELECT key FROM roles WHERE id = ?`).bind(finalRoleId).first<{ key: string }>()
-    if (!roleRow) return c.json({ error: 'الدور غير موجود' }, 400)
-    const finalRoleKey = roleRow.key
-
-    const schoolRoles = ['school_owner', 'principal', 'vice_principal', 'teacher', 'accountant', 'registrar', 'parent']
-    if (schoolRoles.includes(finalRoleKey) && !school_id) {
-      return c.json({ error: 'معرف المدرسة مطلوب لهذا الدور' }, 400)
-    }
-
-    const normalizedEmail = email === undefined ? existing.email : typeof email === 'string' ? normalizeLoginEmail(email) : ''
-    if (!normalizedEmail || normalizedEmail.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      return c.json({ error: 'البريد الإلكتروني غير صحيح' }, 400)
-    }
-    // Login and account writes must agree on a single canonical email identity.
-    if (normalizedEmail !== existing.email) {
-      const dup = await db.prepare(`SELECT id FROM users WHERE LOWER(TRIM(email)) = ? AND id <> ?`).bind(normalizedEmail, id).first<{ id: number }>()
-      if (dup) {
-        return c.json({ error: 'البريد الإلكتروني مستخدم مسبقاً' }, 409)
-      }
-    }
-
-    await db.prepare(`
-      UPDATE users SET
-        school_id = ?, full_name = ?, email = ?, role_id = ?, phone = ?,
-        auth_version = auth_version + CASE WHEN email <> ? THEN 1 ELSE 0 END, updated_at = unixepoch()
-      WHERE id = ?
-    `).bind(
-      school_id !== undefined ? (school_id || null) : existing.school_id,
-      full_name || existing.full_name,
-      normalizedEmail,
-      finalRoleId,
-      phone !== undefined ? (phone || null) : existing.phone,
-      normalizedEmail,
-      id
-    ).run()
-
-    return c.json({ data: { id, full_name: full_name || existing.full_name, email: normalizedEmail, role_id: finalRoleId, school_id: school_id !== undefined ? (school_id || null) : existing.school_id } })
-  } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث المستخدم', detail: err.message }, 500)
-  }
-})
-
-app.put('/api/users/:id/status', requireAdmin(), async (c) => {
-  const db = c.env.DB
-  const id = c.req.param('id')
-  try {
-    const body = await c.req.json()
-    const { status } = body
-
-    if (!status || !['active', 'inactive'].includes(status)) {
-      return c.json({ error: 'الحالة يجب أن تكون active أو inactive' }, 400)
-    }
-
-    const existing = await db.prepare(`SELECT id FROM users WHERE id = ?`).bind(id).first<{ id: number }>()
-    if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
-
-    await db.prepare(`UPDATE users SET status = ?, auth_version = auth_version + CASE WHEN status <> ? THEN 1 ELSE 0 END, updated_at = unixepoch() WHERE id = ?`).bind(status, status, id).run()
-    return c.json({ data: { id, status } })
-  } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث حالة المستخدم', detail: err.message }, 500)
-  }
-})
-
-app.put('/api/users/:id/reset-password', requireAdmin(), async (c) => {
-  const db = c.env.DB
-  const id = c.req.param('id')
-  try {
-    const body = await c.req.json()
-    const { password } = body
-
-    if (!password) {
-      return c.json({ error: 'كلمة المرور مطلوبة' }, 400)
-    }
-
-    const existing = await db.prepare(`SELECT email FROM users WHERE id = ?`).bind(id).first<{ email: string }>()
-    if (!existing) return c.json({ error: 'المستخدم غير موجود' }, 404)
-
-    const passwordHash = await hashPassword(password)
-    await db.prepare(`
-      UPDATE users
-      SET password_hash = ?, auth_version = auth_version + 1, updated_at = unixepoch()
-      WHERE id = ?
-    `).bind(passwordHash, id).run()
-
-    return c.json({ data: { id, success: true } })
-  } catch {
-    return c.json({ error: 'فشل في إعادة تعيين كلمة المرور' }, 500)
-  }
-})
+registerUserAccountRoutes(app);
 
 // ===========================================
 // API ROUTES: Resource access links

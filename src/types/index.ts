@@ -85,7 +85,10 @@ export interface UserWithSchoolAndRole extends User {
   role_name?: string;
   role_key?: RoleKey;
   phone?: string;
-  password?: string;
+  account_revision?: number;
+  must_change_password?: boolean;
+  temporary_password_expires_at?: number | null;
+  can_manage?: boolean;
 }
 
 export interface RoleWithPermissions extends Role {
@@ -106,6 +109,7 @@ export interface AuthUser {
   role_name: string;
   school_id: number | null;
   school_name: string | null;
+  must_change_password?: boolean;
 }
 
 export interface AuthState {

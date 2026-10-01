@@ -98,8 +98,8 @@ test('an existing session cannot assume another account after its email is reass
  const f=fixture(t),owner=await login(f);
  f.db.prepare('UPDATE users SET password_hash=? WHERE id=2').run(hash);
  const admin=await login(f,{email:'admin@matrix.test'});
- assert.equal((await req(f,'/api/users/1',{method:'PUT',headers:auth(admin),body:{school_id:1,email:'former-owner@matrix.test'}})).res.status,200);
- assert.equal((await req(f,'/api/users',{method:'POST',headers:auth(admin),body:{full_name:'Replacement Admin',role_key:'system_admin',email:'owner@matrix.test',password}})).res.status,201);
+ assert.equal((await req(f,'/api/users/1',{method:'PUT',headers:auth(admin),body:{school_id:1,email:'former-owner@matrix.test',expected_revision:1}})).res.status,200);
+ assert.equal((await req(f,'/api/users',{method:'POST',headers:auth(admin),body:{full_name:'Replacement Admin',role_key:'system_admin',email:'owner@matrix.test'}})).res.status,201);
  const stale=await req(f,'/api/auth/me',{headers:auth(owner)});
  assert.equal(stale.res.status,401,JSON.stringify(stale.json));
  assert.equal(stale.json.data,undefined);
@@ -121,7 +121,7 @@ test('disabling then re-enabling an account does not revive its previous session
  const f=fixture(t),owner=await login(f);
  f.db.prepare('UPDATE users SET password_hash=? WHERE id=2').run(hash);
  const admin=await login(f,{email:'admin@matrix.test'});
- for(const status of ['inactive','active']) assert.equal((await req(f,'/api/users/1/status',{method:'PUT',headers:auth(admin),body:{status}})).res.status,200);
+ for(const status of ['inactive','active']) assert.equal((await req(f,'/api/users/1/status',{method:'PUT',headers:auth(admin),body:{status,expected_revision:f.db.prepare('SELECT account_revision FROM users WHERE id=1').get().account_revision}})).res.status,200);
  assert.equal((await req(f,'/api/auth/me',{headers:auth(owner)})).res.status,401);
  assert.equal((await login(f)).res.status,200);
 });
@@ -129,10 +129,10 @@ test('disabling then re-enabling an account does not revive its previous session
 test('editing email uses the same canonical identity and duplicate check as login',async t=>{
  const f=fixture(t);f.db.prepare('UPDATE users SET password_hash=? WHERE id=2').run(hash);
  const admin=await login(f,{email:'admin@matrix.test'}),before=snapshot(f.db);
- const duplicate=await req(f,'/api/users/2',{method:'PUT',headers:auth(admin),body:{school_id:null,email:'  OWNER@matrix.test  '}});
+ const duplicate=await req(f,'/api/users/1',{method:'PUT',headers:auth(admin),body:{school_id:1,email:'  ADMIN@matrix.test  ',expected_revision:1}});
  assert.equal(duplicate.res.status,409);
  assert.deepEqual(snapshot(f.db),before);
- const changed=await req(f,'/api/users/1',{method:'PUT',headers:auth(admin),body:{school_id:1,email:'  NEW-OWNER@matrix.test  '}});
+ const changed=await req(f,'/api/users/1',{method:'PUT',headers:auth(admin),body:{school_id:1,email:'  NEW-OWNER@matrix.test  ',expected_revision:1}});
  assert.equal(changed.res.status,200);
  assert.equal(changed.json.data.email,'new-owner@matrix.test');
  assert.equal((await login(f,{email:'new-owner@matrix.test'})).res.status,200);
