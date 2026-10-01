@@ -555,7 +555,7 @@ export function resetUserPassword(id: number | string, expectedRevision: number)
 }
 
 export function changePassword(data: { current_password: string; new_password: string }) {
-  return fetchApi<{ changed: boolean }>('/api/auth/change-password', { method: 'POST', body: JSON.stringify(data) });
+  return fetchApi<{ success: boolean; requires_login: boolean }>('/api/auth/change-password', { method: 'POST', body: JSON.stringify(data) });
 }
 
 // Resource-scoped access links for parents and teacher accounts.
