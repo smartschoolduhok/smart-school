@@ -95,6 +95,7 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
       { label: 'تواصل ولي الأمر', path: '/communication', icon: <Users size={18} />, allowedRoles: COMMUNICATION_ROLES },
       { label: 'بوابة المدرسة', path: '/gate-attendance', icon: <DoorOpen size={18} />, allowedRoles: GATE_ATTENDANCE_VIEW_ROLES },
       { label: 'الجدول الدراسي', path: '/timetable', icon: <CalendarDays size={18} />, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
+      { label: 'مرشدو الصفوف', path: '/section-advisors', icon: <UserCheck size={18} />, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
       { label: 'الصفوف والشعب', path: '/classes', icon: <Layers size={18} />, allowedRoles: ACADEMIC_ACCESS_ROLES },
       { label: 'المواد', path: '/subjects', icon: <BookOpen size={18} />, allowedRoles: ACADEMIC_ACCESS_ROLES },
       { label: 'مواد الطالب', path: '/student-subjects', icon: <BookMarked size={18} />, allowedRoles: ACADEMIC_ACCESS_ROLES },

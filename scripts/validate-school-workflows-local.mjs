@@ -98,7 +98,7 @@ try{
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-1),content,hash:digest(content)},value,'every prior load column, value and SQLite type is unchanged');
   }else assert.deepEqual(after.tables[name],value,name);
  }
- assert.equal(Object.keys(after.tables).length,99);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
+ assert.equal(Object.keys(after.tables).length,100);assert.equal(after.tables.section_advisors.count,0);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
  const {default:app}=await vite.ssrLoadModule('/src/worker.ts'),f={d1:db};
  const call=async(role,method,path,body,status)=>{const r=await request(app,f,role,method,path,body);assert.equal(r.status,status,JSON.stringify({path,...r}));return r.data;};
  const count=async table=>(await db.prepare(`SELECT count(*) n FROM ${table}`).first()).n;
@@ -147,6 +147,18 @@ try{
  f.d1={prepare:sql=>db.prepare(sql),batch:statements=>db.batch([...statements,db.prepare('SELECT * FROM intentional_local_missing_table')])};
  await call('owner','POST','/api/communication',{conversation_key:crypto.randomUUID(),student_id:102,academic_year_id:1,parent_user_id:9,staff_user_id:1,title:'rollback',body:'must not persist'},503);
  assert.deepEqual(await contentSnapshot(async sql=>(await db.prepare(sql).all()).results),rollbackBefore);cases.push('late batch failure rolls back thread/message/audit/notifications');
+ f.d1=db;
+ await db.prepare('INSERT INTO timetable_entries(school_id,academic_year_id,slot_id,teaching_load_id,created_by_user_id,updated_by_user_id) VALUES(1,1,1,2,1,1)').run();
+ const adviserBody={school_id:1,academic_year_id:1,class_id:1,section_id:2,employee_id:2,attendance_confirmed:false,notes:'LOCAL adviser test',expected_version:0};
+ const adviser=await call('owner','PUT','/api/section-advisors',adviserBody,200);
+ assert.equal(adviser.assignment.version,1);assert.equal(adviser.assignment.attendance_confirmed,false);
+ const adviserRead=await call('owner','GET','/api/section-advisors?school_id=1&academic_year_id=1',undefined,200);
+ assert.equal(adviserRead.placements.find(p=>p.section_id===2).candidates[0].section_weekly_periods,1);
+ await call('owner','PUT','/api/section-advisors',adviserBody,409);
+ const clearedAdviser=await call('owner','PUT','/api/section-advisors',{...adviserBody,employee_id:null,expected_version:1},200);
+ assert.equal(clearedAdviser.assignment.version,2);assert.equal(clearedAdviser.assignment.employee_id,null);
+ await call('teacher','PUT','/api/section-advisors',{...adviserBody,expected_version:2},403);
+ cases.push('advisers use genuine saved lessons; workerd conditional UPSERT preserves unknown attendance, rejects stale writes and versions cleared assignments');
  assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
  const evidence={local_only:true,migration_count:migrationFiles.length,table_count:Object.keys(after.tables).length,application_table_count:Object.keys(after.tables).filter(name=>name!=='d1_migrations'&&!name.startsWith('sqlite_')).length,historical_application_tables_unchanged:81,baseline_hash:digest(before),cases,foreign_key_check:[]};writeFileSync(join(directory,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence,null,2));
 }finally{await vite.close();await proxy.dispose();}

@@ -98,6 +98,19 @@ try {
   await largeSource.env.DB.prepare(
     'INSERT INTO import_jobs(school_id,import_type,file_name,status,summary_json,completed_at) VALUES(?,?,?,?,?,?)',
   ).bind(1, 'students', new Uint8Array([0, 39, 44, 255]), 'completed', largeText, 1788000000.25).run();
+  // Exercise adviser history independently of today's eligibility: one teacher
+  // is now archived and a second placement has a cleared, versioned assignment.
+  const adviserClass = await largeSource.env.DB.prepare("INSERT INTO classes(school_id,name,stage,status) VALUES(1,'Generated adviser restore class','ابتدائي','active') RETURNING id").first();
+  const clearedClass = await largeSource.env.DB.prepare("INSERT INTO classes(school_id,name,stage,status) VALUES(1,'Generated cleared adviser class','ابتدائي','active') RETURNING id").first();
+  const archivedTeacher = await largeSource.env.DB.prepare("INSERT INTO employees(school_id,full_name,role,status) VALUES(1,'Generated historical adviser','teacher','archived') RETURNING id").first();
+  const adviserYear = await largeSource.env.DB.prepare('SELECT id FROM academic_years WHERE school_id=1 ORDER BY id LIMIT 1').first();
+  const adviserCreator = await largeSource.env.DB.prepare("SELECT id FROM users WHERE school_id=1 AND status='active' ORDER BY id LIMIT 1").first();
+  await largeSource.env.DB.batch([
+    largeSource.env.DB.prepare(`INSERT INTO section_advisors(school_id,academic_year_id,class_id,employee_id,attendance_confirmed,notes,version,created_by_user_id,updated_by_user_id)
+      VALUES(1,?,?,?,1,'Generated historic assignment',4,?,?)`).bind(adviserYear.id,adviserClass.id,archivedTeacher.id,adviserCreator.id,adviserCreator.id),
+    largeSource.env.DB.prepare(`INSERT INTO section_advisors(school_id,academic_year_id,class_id,employee_id,version,created_by_user_id,updated_by_user_id)
+      VALUES(1,?,?,NULL,5,?,?)`).bind(adviserYear.id,clearedClass.id,adviserCreator.id,adviserCreator.id),
+  ]);
 } finally { await largeSource.dispose(); }
 runLocal(source, ['export', source.databaseName, '--local', '--output', backupPath], 'source-export');
 assert.ok(readFileSync(backupPath, 'utf8').length > 1_000, 'backup export is unexpectedly empty');
@@ -138,6 +151,10 @@ try {
   const largeRow = await restoredProxy.env.DB.prepare('SELECT summary_json FROM import_jobs WHERE summary_json = ?').bind(largeText).first();
   assert.ok(largeRow?.summary_json === largeText, 'Large row must round-trip byte-for-byte');
   const finance = await assertFinanceSeed(restoredProxy.env.DB);
+  assert.equal(after.tables.section_advisors.count, 2);
+  const adviserHistory = (await restoredProxy.env.DB.prepare('SELECT employee_id,attendance_confirmed,notes,version FROM section_advisors ORDER BY id').all()).results;
+  assert.equal(adviserHistory[0].version,4);assert.equal(adviserHistory[0].attendance_confirmed,1);
+  assert.deepEqual(adviserHistory[1],{employee_id:null,attendance_confirmed:0,notes:'',version:5});
   const evidence = {
     local_only: true,
     migration_count: migrationFiles.length,
@@ -146,6 +163,7 @@ try {
     tables: Object.fromEntries(Object.entries(after.tables).map(([name, t]) => [name, { rows: t.count, hash: t.hash }])),
     oversized_single_row_restored: true,
     installment_plan_rows_restored: after.tables.fee_installment_plans.count === 1 && after.tables.fee_installment_items.count === 2,
+    historical_and_cleared_advisors_restored: true,
     large_row_bytes: Buffer.byteLength(largeText),
     large_row_hash: digest(largeText),
     statements_before: plan.statementCount,

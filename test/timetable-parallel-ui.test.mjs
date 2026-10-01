@@ -63,12 +63,12 @@ const select = async (container, label, value) => {
   const element = container.querySelector(`[aria-label="${label}"]`);assert.ok(element, label);
   await act(async () => {element.value = value; element.dispatchEvent(new Event('change', {bubbles: true}));});
 };
-async function waitFor(check) {
+async function waitFor(check, message = 'Timed out waiting for the worker result') {
   for (let attempt = 0; attempt < 80; attempt++) {
     if (check()) return;
     await act(async () => new Promise(resolve => setTimeout(resolve, 5)));
   }
-  assert.fail('Timed out waiting for the worker result');
+  assert.fail(message);
 }
 async function mount(t, element) {
   const container = document.createElement('div');document.body.append(container);const root = createRoot(container);
@@ -163,6 +163,10 @@ test('automatic proposal renders both parallel cards and lock action includes bo
   const cell = cards[0].closest('td');assert.equal(cell.querySelectorAll('[data-proposal-entry]').length, 2);
   for (const text of ['التربية الإسلامية', 'التربية المسيحية', 'أحمد', 'مريم']) assert.ok(cell.textContent.includes(text), text);
   await act(async () => cards[0].querySelector('button').click());
+  // Locking awaits Web Crypto before committing the new proposal. A DOM click
+  // does not return that promise, so wait for the actual paired-lock state.
+  await waitFor(() => cell.querySelectorAll('button[aria-label="إلغاء تثبيت الدرس"]').length === 2,
+    'Timed out waiting for the parallel proposal lock and digest update');
   assert.equal(cell.querySelectorAll('button[aria-label="إلغاء تثبيت الدرس"]').length, 2);
   await act(async () => button(container, 'مقارنة مع الجدول الحالي / معاينة الاعتماد').click());
   const preview = calls.at(-1).body;

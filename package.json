@@ -11,6 +11,7 @@
     }
   },
   "scripts": {
+    "test:section-advisors": "node --experimental-strip-types --test --test-concurrency=1 test/section-advisors.test.mjs test/section-advisors-api.test.mjs test/section-advisors-ui.test.mjs",
     "test:finance-fees": "node --experimental-strip-types --test --test-concurrency=1 test/finance-fees.test.mjs test/finance-fees-api.test.mjs test/finance-installments-parent.test.mjs test/finance-fees-ui.test.mjs test/finance-review.test.mjs",
     "test:treasury-payroll": "node --experimental-strip-types --test --test-concurrency=1 test/treasury-payroll-integrity.test.mjs test/treasury-payroll-ui.test.mjs",
     "test:finance-seed:local": "node --experimental-strip-types scripts/validate-finance-seed-local.mjs",
