@@ -91,6 +91,19 @@ function PrintHeader({ data, title }: { data: TimetableMasterGridData; title: st
   );
 }
 
+function PrintFooter({ principalName, columnCount }: { principalName: string | null; columnCount: number }) {
+  return (
+    <tfoot className="timetable-principal-group">
+      <tr className="timetable-principal-row"><td colSpan={columnCount}>
+        <footer className="timetable-print-footer" aria-label="مدير المدرسة">
+          <strong>مدير المدرسة</strong>
+          {principalName?.trim() && <span>{principalName.trim()}</span>}
+        </footer>
+      </td></tr>
+    </tfoot>
+  );
+}
+
 function SubjectLegend({ entries }: { entries: TimetableGridEntry[] }) {
   const subjects = useMemo(() => {
     const seen = new Set<string>();
@@ -103,7 +116,7 @@ function SubjectLegend({ entries }: { entries: TimetableGridEntry[] }) {
   }, [entries]);
   if (subjects.length === 0) return null;
   return (
-    <section className="timetable-subject-legend" aria-label="دليل ألوان المواد">
+    <section className="timetable-subject-legend no-print" aria-label="دليل ألوان المواد">
       <strong>مفتاح الألوان:</strong>
       {subjects.map((entry) => {
         const subjectVisualKey = timetableSubjectVisualKey(entry.school_id, entry.subject_name);
@@ -162,6 +175,7 @@ function MasterGrid({ data, placements }: { data: TimetableMasterGridData; place
             <tr><td colSpan={Math.max(1, placements.length + 1)} className="timetable-empty">لا توجد فترات فعالة لعرضها في الجدول.</td></tr>
           )}
         </tbody>
+        <PrintFooter principalName={data.school.principal_name} columnCount={placements.length + 1} />
       </table>
     </div>
   );
@@ -198,6 +212,7 @@ function WeeklyGrid({ data, placement, teacherId }: { data: TimetableMasterGridD
           </tr>)}
           {week.rows.length === 0 && <tr><td colSpan={week.days.length + 1} className="timetable-empty">لا توجد فترات فعالة لعرضها.</td></tr>}
         </tbody>
+        <PrintFooter principalName={data.school.principal_name} columnCount={week.days.length + 1} />
       </table>
     </div>
   );

@@ -3898,9 +3898,9 @@ app.get('/api/timetable/master-grid', requireSameSchoolOrAdmin(), requireRoles(A
   try {
     const [school, academicYear, context, classesResult, sectionsResult, subjectsResult, teachersResult] = await Promise.all([
       c.env.DB.prepare(`
-        SELECT id, name, logo_url FROM schools
+        SELECT id, name, logo_url, principal_name FROM schools
         WHERE id = ? AND status = 'active'
-      `).bind(schoolId).first<{ id: number; name: string; logo_url: string | null }>(),
+      `).bind(schoolId).first<TimetableMasterGridData['school']>(),
       c.env.DB.prepare(`
         SELECT id, name FROM academic_years
         WHERE id = ? AND school_id = ?

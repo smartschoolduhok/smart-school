@@ -53,6 +53,7 @@ async function fixture() {
   database.exec('PRAGMA foreign_keys = ON');
   for (const name of [
     '0001_initial_schema.sql', '0002_phase2_academic_tables.sql', '0010_employees.sql',
+    '0011_settings_school_profile.sql',
     '0016_auth_security.sql', '0023_timetable_foundation.sql',
     '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
     '0026_timetable_adoption_locking.sql',
