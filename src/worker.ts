@@ -1,5 +1,6 @@
 import { registerUserAccountRoutes, canManageAccount, updateOwnPassword, accountErrorResponse } from './lib/userAccounts'
 import { temporarySessionSecret } from './lib/authSecurity'
+import { aggregateTeacherWorkloadSummary, type TeacherWorkloadSummary } from './lib/teacherWorkloadSummary'
 // ===========================================
 // Hono Backend - Phase 2.6 (Auth Hardening)
 // Cloudflare Pages Worker with D1 Database
@@ -3879,6 +3880,57 @@ app.post('/api/timetable/versions/:id/restore', requireSameSchoolOrAdmin(), requ
       return c.json({ error: STALE_TIMETABLE_PROPOSAL_MESSAGE, code: STALE_TIMETABLE_PROPOSAL_CODE }, 409)
     }
     return c.json({ error: 'فشل في استعادة الإصدار ولم يتم تغيير الجدول الحالي' }, 500)
+  }
+})
+
+app.get('/api/timetable/teacher-workload-summary', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const academicYearId = Number(c.req.query('academic_year_id'))
+  if (schoolId == null) return c.json({ error: 'يجب تحديد مدرسة لعرض كشف حصص المدرسين', code: 'invalid_tenant_scope' }, 400)
+  if (!Number.isSafeInteger(academicYearId) || academicYearId <= 0) return c.json({ error: 'السنة الدراسية مطلوبة' }, 400)
+  const yearValidation = await validateTimetableAcademicYear(c.env.DB, schoolId, academicYearId)
+  if (!yearValidation.ok) return c.json({ error: yearValidation.error, code: yearValidation.code }, yearValidation.status)
+  try {
+    const [school, academicYear, context, teachers, settings] = await Promise.all([
+      c.env.DB.prepare(`
+        SELECT id, name, name_en, province, logo_url, principal_name FROM schools
+        WHERE id = ? AND status = 'active'
+      `).bind(schoolId).first<TeacherWorkloadSummary['school']>(),
+      c.env.DB.prepare('SELECT id, name FROM academic_years WHERE id = ? AND school_id = ?')
+        .bind(academicYearId, schoolId).first<TeacherWorkloadSummary['academic_year']>(),
+      loadTimetableSchedulingContext(c.env.DB, schoolId, academicYearId),
+      c.env.DB.prepare(`
+        SELECT id, school_id, full_name, role, status FROM employees
+        WHERE school_id = ? AND status = 'active' AND role = 'teacher'
+        ORDER BY full_name, id
+      `).bind(schoolId).all<TimetableMasterTeacher>(),
+      c.env.DB.prepare(`
+        SELECT official_book_layout_settings_json, use_arabic_indic_digits,
+               official_book_header_text, official_book_footer_text
+        FROM school_settings WHERE school_id = ?
+      `).bind(schoolId).first<{
+        official_book_layout_settings_json: string | null;
+        use_arabic_indic_digits: number | null;
+        official_book_header_text: string | null;
+        official_book_footer_text: string | null;
+      }>(),
+    ])
+    if (!school) return c.json({ error: 'المدرسة غير موجودة أو غير نشطة' }, 404)
+    if (!academicYear) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404)
+    const data: TeacherWorkloadSummary = {
+      school,
+      academic_year: academicYear,
+      document_settings: {
+        official_book_layout: resolvedOfficialBookLayout(settings?.official_book_layout_settings_json, school),
+        use_arabic_indic_digits: (settings?.use_arabic_indic_digits ?? 1) === 1,
+        header_text: settings?.official_book_header_text || '',
+        footer_text: settings?.official_book_footer_text || '',
+      },
+      ...aggregateTeacherWorkloadSummary({ schoolId, academicYearId, teachers: teachers.results || [], ...context }),
+    }
+    return c.json({ data })
+  } catch {
+    return c.json({ error: 'فشل في تحميل كشف حصص المدرسين' }, 500)
   }
 })
 

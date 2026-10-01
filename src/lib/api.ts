@@ -5,6 +5,8 @@
 // ===========================================
 
 import type { AcademicYearRecord } from './academicYears';
+import type { TeacherWorkloadSummary } from './teacherWorkloadSummary';
+export type { TeacherWorkloadSummary } from './teacherWorkloadSummary';
 import { clearAuthentication, getSessionCsrfToken } from './authStorage';
 import type { WeekScope, WeekSnapshot, WeekRequest, WeekPlan, WeekArchiveSummary, WeekArchiveDetail } from './weekSetup';
 import type {
@@ -727,6 +729,10 @@ export function getTimetableGrid(
 
 export function getTimetableMasterGrid(schoolId: number, academicYearId: number) {
   return fetchApi<TimetableMasterGridData>(`/api/timetable/master-grid?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function getTimetableTeacherWorkloadSummary(schoolId: number, academicYearId: number) {
+  return fetchApi<TeacherWorkloadSummary>(`/api/timetable/teacher-workload-summary?${timetableQuery(schoolId, academicYearId)}`);
 }
 
 export function previewAutomaticTimetable(

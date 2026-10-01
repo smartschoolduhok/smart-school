@@ -1,0 +1,174 @@
+.teacher-workload-document {
+  color: #0f172a;
+  font-family: "Cairo", "Tajawal", "Arial", "Tahoma", sans-serif;
+  font-size: 10pt;
+  line-height: 1.35;
+}
+
+.teacher-workload-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 260mm;
+  background: #fff;
+}
+
+.teacher-workload-page + .teacher-workload-page {
+  margin-top: 10mm;
+  border-top: 1px dashed #cbd5e1;
+  padding-top: 5mm;
+}
+
+.teacher-workload-header {
+  border-bottom: 2px solid #0f172a;
+  padding-bottom: 2mm;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.teacher-workload-header-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30mm minmax(0, 1fr);
+  align-items: start;
+  gap: 3mm;
+}
+
+.teacher-workload-header-ar,
+.teacher-workload-header-en {
+  font-size: 9pt;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.teacher-workload-header-ar { text-align: right; }
+.teacher-workload-header-en { text-align: left; }
+.teacher-workload-header-ar > :first-child,
+.teacher-workload-header-en > :first-child { font-weight: 800; }
+
+.teacher-workload-logo,
+.teacher-workload-logo-space {
+  display: block;
+  width: 30mm;
+  height: 30mm;
+  object-fit: contain;
+}
+
+.teacher-workload-header-note {
+  margin: 1mm 0 0;
+  text-align: center;
+  font-size: 8.5pt;
+  white-space: pre-line;
+}
+
+.teacher-workload-document-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 5mm;
+  margin-top: 3mm;
+  font-weight: 600;
+}
+
+.teacher-workload-blank-number { font-weight: 400; }
+
+.teacher-workload-document h1 {
+  align-self: center;
+  margin: 3mm 0 2mm;
+  padding-bottom: 1mm;
+  border-bottom: 1px solid #0f172a;
+  font-size: 13pt;
+  font-weight: 800;
+  line-height: 1.5;
+  text-align: center;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
+.teacher-workload-intro {
+  margin: 0 0 3mm;
+  line-height: 1.6;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
+.teacher-workload-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 10pt;
+  line-height: 1.15;
+}
+
+.teacher-workload-index-column { width: 12mm; }
+.teacher-workload-count-column { width: 42mm; }
+
+.teacher-workload-table th,
+.teacher-workload-table td {
+  border: 1px solid #64748b;
+  padding: 0.8mm 2mm;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+
+.teacher-workload-table thead th {
+  background: #e2e8f0;
+  font-weight: 800;
+  padding-block: 1.3mm;
+  text-align: center;
+}
+
+.teacher-workload-table tbody th { text-align: right; font-weight: 500; }
+.teacher-workload-table td { text-align: center; }
+.teacher-workload-table .teacher-workload-total th,
+.teacher-workload-table .teacher-workload-total td { font-weight: 800; background: #f1f5f9; }
+
+.teacher-workload-page-end {
+  margin-top: auto;
+  padding-top: 4mm;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.teacher-workload-signature {
+  width: 58mm;
+  margin-right: auto;
+  margin-left: 0;
+  padding: 2mm 0 7mm;
+  text-align: center;
+}
+
+.teacher-workload-signature strong,
+.teacher-workload-signature span { display: block; }
+.teacher-workload-signature span { margin-top: 1mm; font-weight: 600; }
+
+.teacher-workload-footer {
+  border-top: 1px solid #94a3b8;
+  padding-top: 1mm;
+  font-size: 8pt;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.teacher-workload-footer p { margin: 0; white-space: pre-line; }
+
+@media print {
+  .print-a4.teacher-workload-print-sheet {
+    width: 180mm !important;
+    min-height: 0 !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+  }
+
+  .teacher-workload-page + .teacher-workload-page {
+    break-before: page;
+    page-break-before: always;
+    margin-top: 0;
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .teacher-workload-table thead { display: table-header-group; }
+  .teacher-workload-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .teacher-workload-table .teacher-workload-total { break-before: avoid; page-break-before: avoid; }
+}
