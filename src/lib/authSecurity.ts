@@ -69,6 +69,17 @@ export async function hashPassword(password: string): Promise<string> {
   ].join('$');
 }
 
+// Pre-upgrade deployments cannot validate temporary credentials as permanent ones.
+export async function hashTemporaryPassword(password: string): Promise<string> {
+  return `temporary$${await hashPassword(password)}`;
+}
+
+// Temporary sessions also remain unusable by a deployment without the forced-change gate.
+export async function temporarySessionSecret(secret: string): Promise<string> {
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(`smart-school-password-change-v1:${secret}`))));
+}
+
 export function isLegacyPasswordHash(storedHash: string | null | undefined): boolean {
   return typeof storedHash === 'string' && LEGACY_HASH_PATTERN.test(storedHash);
 }
@@ -84,6 +95,10 @@ export async function verifyPassword(
   legacyEmail?: string,
 ): Promise<PasswordVerificationResult> {
   if (!storedHash) return { valid: false, needsUpgrade: false, scheme: 'unknown' };
+  if (storedHash.startsWith(`temporary$${PASSWORD_HASH_SCHEME}$`)) {
+    const verified = await verifyPassword(password, storedHash.slice('temporary$'.length), legacyEmail);
+    return { ...verified, needsUpgrade: false };
+  }
 
   if (isLegacyPasswordHash(storedHash)) {
     if (!legacyEmail) return { valid: false, needsUpgrade: false, scheme: 'legacy_sha256' };

@@ -11,6 +11,10 @@ const tokens=Object.fromEntries(await Promise.all(['owner','admin','teacher','ac
 
 test('legacy non-IQD fees preserved but payments/edits blocked after migration',async t=>{
  const f=financeFixture(t,{through:'0027',legacy:legacyFinanceSQL});f.db.exec(migrationSQL('0028_finance_fee_payment_integrity.sql'));
+ // Keep the historical finance upgrade at 0028; the current HTTP worker also
+ // requires the real account/auth migrations and their access-link dependency.
+ f.db.exec(migrationSQL('0029_resource_access_links.sql'));
+ f.db.exec(migrationSQL('0052_school_user_accounts.sql'));
  const before=snapshot(f.db),p=await call(f,'POST','fee-payments',paymentDraft(2,{amount:10}));assert.equal(p.body.code,'unsupported_finance_currency');
  const edit=await call(f,'PUT','student-fees/2',{school_id:1,currency:'IQD'});assert.equal(edit.body.code,'unsupported_finance_currency');assert.deepEqual(snapshot(f.db),before);
 });

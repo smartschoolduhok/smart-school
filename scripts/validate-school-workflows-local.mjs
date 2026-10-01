@@ -24,6 +24,12 @@ const cases=[];
 try{
  const db=proxy.env.DB,after=await contentSnapshot(async sql=>(await db.prepare(sql).all()).results);
  const parallelMigration=readFileSync(join(root,'migrations/0049_timetable_parallel_lessons.sql'),'utf8');
+ const accountsMigration=readFileSync(join(root,'migrations/0052_school_user_accounts.sql'),'utf8');
+ const accountColumns=[
+  'must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))',
+  'temporary_password_expires_at INTEGER',
+  'account_revision INTEGER NOT NULL DEFAULT 1 CHECK (account_revision > 0)',
+ ];
  const parallelColumn='parallel_with_load_id INTEGER REFERENCES timetable_teaching_loads(id) ON DELETE RESTRICT';
  assert.match(parallelMigration,new RegExp('ALTER TABLE timetable_teaching_loads ADD COLUMN '+parallelColumn.replace(/[()]/g,'\\$&')+';'));
  const replacedEntryTriggers=new Set(['trg_timetable_entries_validate_insert','trg_timetable_entries_validate_update']);
@@ -39,6 +45,15 @@ try{
    const expected=sqlTokens(migration.slice(migration.indexOf('CREATE TRIGGER')).trim().replace(/;$/,'')).map(t=>[t.kind,t.text]);
    assert.deepEqual(actual.sql,expected);
    assert.deepEqual({...actual,sql:old.sql},old);
+  }else if(old.type==='table'&&old.name==='users'){
+   for(const column of accountColumns)assert.ok(accountsMigration.includes('ALTER TABLE users ADD COLUMN '+column+';'));
+   const expected=[...old.sql.slice(0,-1),...accountColumns.flatMap(column=>[['symbol',','],...sqlTokens(column).map(t=>[t.kind,t.text])]),old.sql.at(-1)];
+   assert.deepEqual(actual,{...old,sql:expected},'only the three declared account lifecycle columns are appended');
+  }else if(old.type==='trigger'&&['trg_parent_student_links_validate_update','trg_teacher_employee_links_validate_update'].includes(old.name)){
+   const statement=sqlStatements(accountsMigration).find(s=>s.tokens[0]?.text==='CREATE'&&s.tokens[1]?.text==='TRIGGER'&&s.tokens.some(t=>t.text===old.name));
+   assert.ok(statement,'replacement revocation trigger is declared');
+   const sql=accountsMigration.slice(statement.start,statement.end).trim().replace(/;$/,'');
+   assert.deepEqual(actual,{...old,sql:sqlTokens(sql).map(t=>[t.kind,t.text])},old.name);
   }else if(old.type==='table'&&old.name==='timetable_teaching_loads'){
    assert.deepEqual(old.sql.at(-1),['symbol',')']);
    const expected=[...old.sql.slice(0,-1),['symbol',','],...sqlTokens(parallelColumn).map(t=>[t.kind,t.text]),old.sql.at(-1)];
@@ -64,7 +79,16 @@ try{
   }else assert.deepEqual(actual,old,old.name);
  }
  for(const [name,value] of Object.entries(before.tables))if(!['d1_migrations','sqlite_sequence'].includes(name)){
-  if(name==='timetable_teaching_loads'){
+  if(name==='users'){
+   const actual=after.tables[name];
+   assert.deepEqual(actual.columns.slice(-3),[
+    {cid:value.columns.length,name:'must_change_password',type:'INTEGER',notnull:1,dflt_value:'0',pk:0,hidden:0},
+    {cid:value.columns.length+1,name:'temporary_password_expires_at',type:'INTEGER',notnull:0,dflt_value:null,pk:0,hidden:0},
+    {cid:value.columns.length+2,name:'account_revision',type:'INTEGER',notnull:1,dflt_value:'1',pk:0,hidden:0},
+   ]);
+   const content=actual.content.map(encoded=>{const row=JSON.parse(encoded);assert.deepEqual(row.splice(-3),[['integer','0'],['null',null],['integer','1']]);return JSON.stringify(row);}).sort();
+   assert.deepEqual({...actual,columns:actual.columns.slice(0,-3),content,hash:digest(content)},value,'every previous account value and SQLite type is unchanged');
+  }else if(name==='timetable_teaching_loads'){
    const actual=after.tables[name],newColumn=actual.columns.at(-1);
    assert.deepEqual(newColumn,{cid:value.columns.length,name:'parallel_with_load_id',type:'INTEGER',notnull:0,dflt_value:null,pk:0,hidden:0});
    const content=actual.content.map(encoded=>{
@@ -74,7 +98,7 @@ try{
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-1),content,hash:digest(content)},value,'every prior load column, value and SQLite type is unchanged');
   }else assert.deepEqual(after.tables[name],value,name);
  }
- assert.equal(Object.keys(after.tables).length,97);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
+ assert.equal(Object.keys(after.tables).length,99);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
  const {default:app}=await vite.ssrLoadModule('/src/worker.ts'),f={d1:db};
  const call=async(role,method,path,body,status)=>{const r=await request(app,f,role,method,path,body);assert.equal(r.status,status,JSON.stringify({path,...r}));return r.data;};
  const count=async table=>(await db.prepare(`SELECT count(*) n FROM ${table}`).first()).n;

@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import Layout from './components/Layout';
 import type { RoleKey } from './types';
@@ -27,6 +27,7 @@ import {
 } from './lib/rbac';
 
 const LoginPage = lazy(() => import('./modules/auth/LoginPage'));
+const ChangePasswordPage = lazy(() => import('./modules/auth/ChangePasswordPage'));
 const DashboardPage = lazy(() => import('./modules/dashboard/DashboardPage'));
 const SchoolsPage = lazy(() => import('./modules/schools/SchoolsPage'));
 const UsersPage = lazy(() => import('./modules/users/UsersPage'));
@@ -158,13 +159,26 @@ function RouteLoading() {
   );
 }
 
+export function SessionGate({ children }: { children: React.ReactNode }) {
+  const { user, isAuthenticated, isLoading } = useAuth();
+  const { pathname } = useLocation();
+  const isPublic = pathname === '/login' || /^\/verify\/(result-card|receipt|official-book)\/[^/]+\/?$/.test(pathname);
+  if (isPublic) return <>{children}</>;
+  if (isLoading) return <RouteLoading />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (user?.must_change_password && pathname !== '/change-password') return <Navigate to="/change-password" replace />;
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Suspense fallback={<RouteLoading />}>
+          <SessionGate>
           <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route path="/" element={<Layout><DashboardPage /></Layout>} />
 
           {/* Admin-only routes */}
@@ -226,6 +240,7 @@ export default function App() {
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </SessionGate>
         </Suspense>
       </BrowserRouter>
     </AuthProvider>
