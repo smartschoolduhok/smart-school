@@ -16,7 +16,7 @@ After migration, require 53 unique migration records, an unchanged historical pr
 - Genuine workerd D1: 0051→0052 preserves typed historical data and the declared schema contract; 27 API requests passed, including native batch rollback. Foreign-key violations and residual write guards: zero.
 - Genuine school workflows: upgrade from the historical 0041 baseline to all 53 migrations preserves prior business values and types; existing communication, grade-progress and admissions/transfer scenarios passed.
 - Fresh local export/restore: exact application snapshot across 99 tables, including oversized rows, with clean foreign keys.
-- Full regression matrix, final build, remote migration, authenticated QA, final-head CI and post-merge deployment remain release gates until their evidence is recorded below.
+- Full local regression matrix: **2175/2175**, zero failures or skips. TypeScript, frontend/Worker build and dependency audit passed (zero vulnerabilities). Authenticated QA, final-head CI and post-merge deployment remain release gates until their evidence is recorded below.
 
 ## Remote QA and cleanup contract
 
