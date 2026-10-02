@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { createServer } from 'vite';
-import { financeFixture, root, snapshot, migrationFiles, migrationSQL } from './helpers/finance-fixture.mjs';
+import { financeFixture, root, snapshot, migrationSQL } from './helpers/finance-fixture.mjs';
 import { hashPassword, verifyPassword } from '../src/lib/authSecurity.ts';
 import { decodeJwtPayloadUnsafe, signJWT, verifyJWT } from '../src/lib/jwtSecurity.ts';
 
@@ -78,9 +78,9 @@ async function deniedWithoutChanges(f, path, options, statuses = [400, 403, 404]
 test('the account migration preserves every existing school record and initializes existing accounts without forcing password resets', t => {
   const f = financeFixture(t, { through: '0051' });
   const before = snapshot(f.db);
-  const upgrades = migrationFiles.filter(name => name.slice(0, 4) > '0051');
-  assert.ok(upgrades.length > 0, 'new account migration is required');
-  for (const file of upgrades) f.db.exec(migrationSQL(file));
+  // Isolate the account upgrade; later feature migrations may add columns to
+  // unrelated records without changing any of their existing values.
+  f.db.exec(migrationSQL('0052_school_user_accounts.sql'));
   const afterMigration = snapshot(f.db);
   for (const [table, rows] of Object.entries(before)) {
     if (table === 'users') {

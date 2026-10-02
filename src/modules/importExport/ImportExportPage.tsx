@@ -4,6 +4,7 @@ import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { IMPORT_EXPORT_ROLES, hasRole } from '../../lib/rbac';
+import { EMPLOYEE_QUALIFICATION_COLUMNS, employeeSpreadsheetMappedDates } from '../../lib/employeeSpreadsheet';
 import { previewImport, confirmImport, getExportData, getImportJobs, getClasses, getSections, getSubjects } from '../../lib/api';
 import {
   analysisRowsToRecords,
@@ -48,6 +49,7 @@ type GradeSubjectSource = 'fixed' | 'column' | 'inferred';
 
 interface SheetInfo {
   name: string;
+  date1904: boolean;
   type: WorksheetCategory;
   columnNames: string[];
   headerRowIndex: number | null;
@@ -167,6 +169,8 @@ const SYSTEM_FIELDS: Record<ImportType, { key: string; label: string; required?:
   ],
   employees: [
     { key: 'full_name', label: 'اسم الموظف', required: true },
+    { key: 'employee_number', label: 'الرقم الوظيفي' },
+    { key: 'role', label: 'صفة الموظف', hint: 'مدرس أو موظف أو مدير أو معاون أو محاسب أو مسجل؛ اتركه دون ربط للحفاظ على الصفة الحالية.' },
     { key: 'gender', label: 'الجنس' },
     { key: 'phone', label: 'الهاتف' },
     { key: 'email', label: 'البريد الإلكتروني' },
@@ -174,10 +178,12 @@ const SYSTEM_FIELDS: Record<ImportType, { key: string; label: string; required?:
     { key: 'job_title', label: 'المسمى الوظيفي' },
     { key: 'employee_type', label: 'نوع الموظف' },
     { key: 'hire_date', label: 'تاريخ التعيين' },
+    { key: 'commencement_date', label: 'تاريخ المباشرة' },
     { key: 'salary_amount', label: 'الراتب' },
     { key: 'salary_type', label: 'نوع الراتب' },
     { key: 'status', label: 'الحالة' },
     { key: 'notes', label: 'ملاحظات' },
+    ...EMPLOYEE_QUALIFICATION_COLUMNS,
   ],
   grades: [
     { key: 'student_number', label: 'رقم الطالب / القيد' },
@@ -284,13 +290,13 @@ function autoMapColumns(excelColumns: ColumnProfile[], importType: ImportType): 
   const used = new Set<string>();
   const fields = SYSTEM_FIELDS[importType];
   for (const field of fields) {
-    const candidates = AUTO_MAP_RULES[field.key] || [];
+    const candidates = [field.key, field.label, ...(AUTO_MAP_RULES[field.key] || [])];
     for (const col of excelColumns) {
       const colLower = normalizeHeader(col.headerText || col.displayName);
       if (used.has(col.key)) continue;
       if (candidates.some(c => {
         const candidate = normalizeHeader(c);
-        return colLower === candidate || (candidate.length > 2 && colLower.includes(candidate));
+        return colLower === candidate || (!field.key.startsWith('qualification_') && candidate.length > 2 && colLower.includes(candidate));
       })) {
         map[field.key] = col.key;
         used.add(col.key);
@@ -463,6 +469,7 @@ export default function ImportExportPage() {
         const analysis = analyzeWorksheet(name, rows, { fileName: f.name, subjects });
         return {
           name,
+          date1904: !!workbook.Workbook?.WBProps?.date1904,
           type: analysis.category,
           columnNames: analysis.columnNames,
           headerRowIndex: analysis.headerRowIndex,
@@ -847,6 +854,9 @@ export default function ImportExportPage() {
           effectiveClassId = sections.find(section => section.id === selectedSectionId)?.class_id || null;
         } else effectiveClassId = null;
       }
+      if (selectedType === 'employees') {
+        rowsForPreview = rowsForPreview.map(row => employeeSpreadsheetMappedDates(row, effectiveMapping, info.date1904));
+      }
       const payload: any = { school_id: schoolId, rows: rowsForPreview, mode, mapping: effectiveMapping };
       if (selectedType === 'students') {
         payload.class_assignment_mode = effectiveClassMode;
@@ -933,11 +943,13 @@ export default function ImportExportPage() {
       const res = await getExportData(type, schoolId);
       if (!isCurrent()) return;
       if (res.data?.rows) {
+        const exportedRows = res.data.rows;
         const XLSX = await loadXlsx();
         if (!isCurrent()) return;
-        const headers = SYSTEM_FIELDS[type].map(f => f.label);
-        const keys = SYSTEM_FIELDS[type].map(f => f.key);
-        const dataRows = res.data.rows.map((r: any) => keys.map(k => (
+        const exportFields = SYSTEM_FIELDS[type].filter(field => !field.key.startsWith('qualification_') || exportedRows.some((row: Record<string, unknown>) => row[field.key] != null && row[field.key] !== ''));
+        const headers = exportFields.map(f => f.label);
+        const keys = exportFields.map(f => f.key);
+        const dataRows = exportedRows.map((r: any) => keys.map(k => (
           type === 'students' && k === 'religion'
             ? (studentReligionLabel(r[k]) || '')
             : type === 'subjects' && k === 'religious_track'
@@ -970,7 +982,7 @@ export default function ImportExportPage() {
     setLoading(true);
     try {
       const XLSX = await loadXlsx();
-      const headers = SYSTEM_FIELDS[type].map(f => f.label);
+      const headers = SYSTEM_FIELDS[type].filter(field => !field.key.startsWith('qualification_') || /^qualification_[12]_/.test(field.key)).map(f => f.label);
       const ws = XLSX.utils.aoa_to_sheet([headers, []]);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Template');
@@ -1493,7 +1505,7 @@ export default function ImportExportPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {SYSTEM_FIELDS[selectedType].filter(field => selectedType !== 'students' || !STUDENT_SEMANTIC_FIELDS.includes(field.key as StudentSemanticField)).map(field => (
+                    {SYSTEM_FIELDS[selectedType].filter(field => (selectedType !== 'students' || !STUDENT_SEMANTIC_FIELDS.includes(field.key as StudentSemanticField)) && (!field.key.startsWith('qualification_') || /^qualification_[12]_/.test(field.key) || mapping[field.key])).map(field => (
                       <tr key={field.key} className="border-t border-gray-100">
                         <td className="px-4 py-2">
                           <span className={field.required ? 'font-bold text-red-600' : 'text-gray-800'}>{field.label}</span>

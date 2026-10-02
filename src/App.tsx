@@ -56,6 +56,11 @@ const ResultCardsPage = lazy(() => import('./modules/resultCards/ResultCardsPage
 const FeesPage = lazy(() => import('./modules/fees/FeesPage'));
 const TreasuryPage = lazy(() => import('./modules/treasury/TreasuryPage'));
 const EmployeesPage = lazy(() => import('./modules/employees/EmployeesPage'));
+const EmployeeProfilePage = lazy(() => import('./modules/employees/EmployeeProfilePage'));
+const StaffRegisterPage = lazy(() => import('./modules/employees/StaffRegisterPage'));
+const SalaryReceiptsPage = lazy(() => import('./modules/employees/SalaryReceiptsPage'));
+const PrintStaffRegisterPage = lazy(() => import('./modules/print/PrintStaffRegisterPage'));
+const PrintSalaryReceiptsPage = lazy(() => import('./modules/print/PrintSalaryReceiptsPage'));
 const ResultCardVerificationPage = lazy(() => import('./modules/verification/ResultCardVerificationPage'));
 const ReceiptVerificationPage = lazy(() => import('./modules/verification/ReceiptVerificationPage'));
 const OfficialBookVerificationPage = lazy(() => import('./modules/verification/OfficialBookVerificationPage'));
@@ -222,6 +227,11 @@ export default function App() {
 
           {/* HR routes */}
           <Route path="/employees" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><EmployeesPage /></RoleGuard></Layout>} />
+          <Route path="/employees/:id" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><EmployeeProfilePage /></RoleGuard></Layout>} />
+          <Route path="/staff-register" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><StaffRegisterPage /></RoleGuard></Layout>} />
+          <Route path="/salary-receipts" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><SalaryReceiptsPage /></RoleGuard></Layout>} />
+          <Route path="/print/staff-register" element={<RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><PrintStaffRegisterPage /></RoleGuard>} />
+          <Route path="/print/salary-receipts" element={<RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><PrintSalaryReceiptsPage /></RoleGuard>} />
 
           {/* Official books - admin + registrar */}
           <Route path="/official-books" element={<Layout><RoleGuard allowedRoles={OFFICIAL_BOOK_ACCESS_ROLES}><OfficialBooksPage /></RoleGuard></Layout>} />
