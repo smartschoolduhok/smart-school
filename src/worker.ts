@@ -28,6 +28,8 @@ import { registerAdmissionRegulationRoutes } from './lib/admissionRegulationsDb'
 import { registerStudentAgeRoutes } from './lib/studentAgeDb'
 import { validateStudentBirthDate } from './lib/admissionDates'
 import { registerGradeProgressRoutes } from './lib/gradeProgressDb'
+import { registerStudentStudyStatusRoutes } from './lib/studentStudyStatusDb'
+import { studentGradesVisibleSql, studentGradesAreVisible, savedStudentGradesVisibleSql, savedStudentGradesAreVisible, hiddenGradeStudentIds, studentGradeVisibilityWriteGuard, redactHiddenGradeImportJobs, STUDENT_GRADES_HIDDEN } from './lib/studentGradeVisibility'
 import { registerParentCommunicationRoutes } from './lib/parentCommunicationDb'
 import type { HomeworkObjectStore } from './lib/homework'
 import { parseWeekRequest, planWeekSetup, publicWeekSnapshot, WeekSetupError } from './lib/weekSetup'
@@ -6977,9 +6979,10 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SETTINGS
         .first<RawGradeMaxConflict>();
       const conflictingGradeRows = Number(rawMaxConflict?.conflicting_grade_rows || 0);
       if (conflictingGradeRows > 0) {
+        const hasHiddenGrades = (await hiddenGradeStudentIds(db, targetSchoolId)).size > 0;
         return c.json({
           error: 'لا يمكن تخفيض الدرجة العظمى لأن هناك درجات محفوظة تتجاوز الحد الجديد',
-          meta: {
+          meta: hasHiddenGrades ? undefined : {
             conflicting_grade_rows: conflictingGradeRows,
             highest_raw_grade: rawMaxConflict?.highest_raw_grade == null
               ? null
@@ -7503,6 +7506,7 @@ app.get('/api/grade-policies/:id/students/:student_id/decision-points', requireA
     const studentId = Number(c.req.param('student_id'));
     if (!policy) return c.json({ error: 'سياسة الدرجات غير موجودة' }, 404);
     if (!user || !await canAccessStudentResource(db, user, studentId)) return c.json({ error: 'غير مسموح' }, 403);
+    if (!await studentGradesAreVisible(db, policy.school_id, studentId, policy.academic_year_id)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
     const rows = await db.prepare(`
       SELECT decision_set.*, user.full_name AS created_by_name
       FROM academic_grade_decision_sets decision_set
@@ -7532,6 +7536,7 @@ app.put('/api/grade-policies/:id/students/:student_id/decision-points', requireR
     const target = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!target.ok) return c.json({ error: target.error }, target.status);
     if (policy.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
+    if (!await studentGradesAreVisible(db, policy.school_id, studentId, policy.academic_year_id)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
     if (policy.is_current !== 1 || !['approved', 'locked'].includes(policy.status) || policy.decision_allocation_mode !== 'manual') {
       return c.json({ error: 'التوزيع اليدوي يتطلب سياسة حالية معتمدة مهيأة للتوزيع اليدوي' }, 409);
     }
@@ -7573,7 +7578,9 @@ app.put('/api/grade-policies/:id/students/:student_id/decision-points', requireR
     const requestId = crypto.randomUUID();
     const nextVersion = currentVersion + 1;
     const allocationJson = JSON.stringify(allocations);
+    const visibilityGuard = studentGradeVisibilityWriteGuard(db, target.schoolId, [studentId], policy.academic_year_id);
     await db.batch([
+      visibilityGuard.before,
       db.prepare(`
         INSERT INTO academic_grade_decision_write_assertions(
           request_id,policy_id,student_id,expected_version,validated
@@ -7593,6 +7600,7 @@ app.put('/api/grade-policies/:id/students/:student_id/decision-points', requireR
         ) VALUES(?,?,?,?,1,?,?,?)
       `).bind(target.schoolId, id, studentId, nextVersion, allocationJson, reason, user?.id),
       db.prepare('DELETE FROM academic_grade_decision_write_assertions WHERE request_id=?').bind(requestId),
+      visibilityGuard.after,
     ]);
     const storedResult = await loadAcademicPolicyOutcomes(db, settings, {
       schoolId: target.schoolId,
@@ -7661,6 +7669,7 @@ app.get('/api/academic-outcomes/students/:id', requireAuthEnforced(), requireRol
       c.req.query('academic_year_id') ? Number(c.req.query('academic_year_id')) : null,
     );
     if (!academicYearId) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404);
+    if (!await studentGradesAreVisible(db, student.school_id, studentId, academicYearId) || !await studentGradesAreVisible(db, student.school_id, studentId)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
     const settings = await getGradeSettings(db, student.school_id);
     const result = await loadAcademicPolicyOutcomes(db, settings, {
       schoolId: student.school_id,
@@ -7709,6 +7718,7 @@ async function loadPublishedAcademicOutcomeSummary(
       AND rc.academic_year_id=?
       AND rc.status='active'
       AND rc.publication_status='published'
+      AND ${savedStudentGradesVisibleSql('rc.school_id', 'rc.student_id', 'rc.academic_year_id')}
   `;
   const params: Array<number> = [schoolId, academicYearId];
   if (classId != null) {
@@ -7917,7 +7927,7 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_
       JOIN subjects s ON ss.subject_id = s.id
       LEFT JOIN classes c ON st.class_id = c.id
       LEFT JOIN sections sec ON st.section_id = sec.id
-      WHERE 1=1
+      WHERE ${studentGradesVisibleSql('g.school_id', 'ss.student_id')}
     `;
     const params: any[] = [];
 
@@ -7986,6 +7996,9 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(ACADEMIC
     }
 
     const resolution = await getActiveGradePolicyResolution(db, student.school_id);
+    if (!await studentGradesAreVisible(db, student.school_id, studentId, resolution.academicYearId)) {
+      return c.json({data: {student_name: student.full_name, grades_visible: false, grades: [], settings: null, academic_policy: null, academic_outcome: null}});
+    }
 
     const rows = await db.prepare(`
       SELECT g.*, ss.student_id, ss.class_id as assignment_class_id,
@@ -8027,6 +8040,7 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(ACADEMIC
 
     return c.json({ data: {
       student_name: student.full_name,
+      grades_visible: true,
       settings: effectiveSettings,
       academic_policy: policy,
       academic_outcome: academicOutcome,
@@ -8058,6 +8072,7 @@ app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(
     }
 
     const activeAssignments = await getActiveStudentSubjects(db, studentId, student.school_id);
+    if (!await studentGradesAreVisible(db, student.school_id, studentId)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
     let created = 0;
     let skipped = 0;
 
@@ -8067,11 +8082,11 @@ app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(
         skipped++;
         continue;
       }
-      await db.prepare(`
+      const inserted = await db.prepare(`
         INSERT INTO grades (school_id, student_subject_id, is_active, created_at, updated_at, updated_by_user_id)
-        VALUES (?, ?, 1, unixepoch(), unixepoch(), ?)
-      `).bind(student.school_id, assignment.student_subject_id, user?.id || null).run();
-      created++;
+        SELECT ?, ?, 1, unixepoch(), unixepoch(), ? WHERE ${studentGradesVisibleSql('?', '?')}
+      `).bind(student.school_id, assignment.student_subject_id, user?.id || null, student.school_id, studentId, student.school_id).run();
+      created += Number(inserted.meta.changes || 0);
     }
 
     return c.json({ data: { created, skipped, total: activeAssignments.length } });
@@ -8112,6 +8127,7 @@ app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRo
     let skipped = 0;
 
     for (const st of students) {
+      if (!await studentGradesAreVisible(db, section.school_id, st.id)) { skipped += subject_ids.length; continue; }
       for (const suId of subject_ids) {
         const ss = await db.prepare(`
           SELECT ss.id
@@ -8128,11 +8144,11 @@ app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRo
         const existing = await db.prepare('SELECT id FROM grades WHERE student_subject_id = ? AND is_active = 1').bind(ss.id).first<any>();
         if (existing) { skipped++; continue; }
 
-        await db.prepare(`
+        const inserted = await db.prepare(`
           INSERT INTO grades (school_id, student_subject_id, is_active, created_at, updated_at, updated_by_user_id)
-          VALUES (?, ?, 1, unixepoch(), unixepoch(), ?)
-        `).bind(section.school_id, ss.id, user?.id || null).run();
-        created++;
+          SELECT ?, ?, 1, unixepoch(), unixepoch(), ? WHERE ${studentGradesVisibleSql('?', '?')}
+        `).bind(section.school_id, ss.id, user?.id || null, section.school_id, st.id, section.school_id).run();
+        created += Number(inserted.meta.changes || 0);
       }
     }
 
@@ -8172,6 +8188,7 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     if (gradeRow.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
     }
+    if (!await studentGradesAreVisible(db, gradeRow.school_id, gradeRow.student_id)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
     if (user?.role_key === 'teacher' && !await canAccessGradeResource(db, user, gradeId)) {
       return c.json({ error: 'غير مسموح: هذه الدرجة خارج موادك أو شعبك المكلف بها' }, 403);
     }
@@ -8254,14 +8271,16 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
       WHERE id = ? AND school_id = ? AND revision = ? AND is_active = 1
       RETURNING *
     `).bind(...bindVals);
-    const results = await db.batch<any>([...auditStatements, updateStatement]);
-    const updatedRows = results[results.length - 1]?.results || [];
+    const visibilityGuard = studentGradeVisibilityWriteGuard(db, gradeRow.school_id, [gradeRow.student_id]);
+    const results = await db.batch<any>([visibilityGuard.before, ...auditStatements, updateStatement, visibilityGuard.after]);
+    const updatedRows = results[results.length - 2]?.results || [];
     if (updatedRows.length !== 1) {
       return c.json({ error: 'تغيرت الدرجة بواسطة مستخدم آخر؛ أعد تحميلها ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
     }
     const updated = updatedRows[0];
     return c.json({ data: policyAwareGradeRow({ ...gradeRow, ...updated }, policyResolution) });
   } catch (err: any) {
+    if (/workflow_write_guard|CHECK constraint failed: valid\s*=\s*1/i.test(String(err?.message || ''))) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 409);
     return c.json({ error: 'فشل في تحديث الدرجة', detail: err.message }, 500);
   }
 });
@@ -8313,6 +8332,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       if (gradeRow.school_id !== targetSchool.schoolId) {
         return c.json({ error: `غير مسموح بالدرجة ${gradeId}` }, 403);
       }
+      if (!await studentGradesAreVisible(db, gradeRow.school_id, gradeRow.student_id)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
       if (gradeRow.is_active !== 1 || gradeRow.ss_active !== 1 || gradeRow.subject_status !== 'active') {
         return c.json({ error: `المادة المرتبطة بالدرجة ${gradeId} غير مفعلة` }, 403);
       }
@@ -8370,7 +8390,9 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       revision: plan.expectedRevision,
     })));
     const requestId = crypto.randomUUID();
+    const visibilityGuard = studentGradeVisibilityWriteGuard(db, targetSchool.schoolId, plans.map(plan => Number(plan.gradeRow.student_id)));
     const statements: D1PreparedStatement[] = [
+      visibilityGuard.before,
       db.prepare(`
         INSERT INTO grade_write_assertions(request_id, validated)
         SELECT ?, CASE WHEN (
@@ -8421,6 +8443,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
       `).bind(...bindValues));
     }
     statements.push(db.prepare('DELETE FROM grade_write_assertions WHERE request_id = ?').bind(requestId));
+    statements.push(visibilityGuard.after);
 
     const batchResults = await db.batch<any>(statements);
     if (updateIndexes.some(index => (batchResults[index]?.results || []).length !== 1)) {
@@ -8428,7 +8451,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
     }
     return c.json({ data: { updated: plans.length } });
   } catch (err: any) {
-    if (/grade_write_assertions|CHECK constraint failed/i.test(String(err?.message || ''))) {
+    if (/grade_write_assertions|workflow_write_guard|CHECK constraint failed/i.test(String(err?.message || ''))) {
       return c.json({ error: 'تغيرت إحدى الدرجات بواسطة مستخدم آخر؛ أعد تحميل القائمة ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
     }
     return c.json({ error: 'فشل في الإدخال المجمّع', detail: err.message }, 500);
@@ -8444,12 +8467,15 @@ app.get('/api/grades/:id/history', requireAuthEnforced(), requireRoles(GRADE_MAN
   const user: UserContext | null = c.get('user') || null;
   const gradeId = Number(c.req.param('id'));
   try {
-    const gradeRow = await db.prepare('SELECT school_id FROM grades WHERE id = ?').bind(gradeId).first<{ school_id: number }>();
+    const gradeRow = await db.prepare('SELECT g.school_id, ss.student_id FROM grades g JOIN student_subjects ss ON ss.id=g.student_subject_id AND ss.school_id=g.school_id WHERE g.id = ?').bind(gradeId).first<{ school_id: number; student_id: number }>();
     if (!gradeRow) return c.json({ error: 'الدرجة غير موجودة' }, 404);
 
     if (!user || !await canAccessGradeResource(db, user, gradeId)) {
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى سجل هذه الدرجة' }, 403);
     }
+    // Audit values have no academic-year column; protect any hidden year rather
+    // than exposing old/new values from an unscoped historical change.
+    if (!await savedStudentGradesAreVisible(db, gradeRow.school_id, gradeRow.student_id, null)) return c.json({error: 'يتضمن سجل هذه الدرجة سنة دراسية مخفية؛ لا يمكن عرض قيم التعديلات.', code: 'student_grades_hidden'}, 403);
 
     const rows = await db.prepare(`
       SELECT l.*, u.full_name as changed_by_name
@@ -8925,6 +8951,7 @@ app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), req
     if (!user || !await canAccessStudentResource(db, user, studentId)) {
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى تحليل هذا الطالب' }, 403);
     }
+    if (!await studentGradesAreVisible(db, student.school_id, studentId)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
 
     let passingGrade = 50;
     let exemptionGrade = 90;
@@ -9482,6 +9509,7 @@ async function buildResultCardSnapshot(
   options: ResultCardIssueOptions,
   identity: { cardNumber: string | null; token: string | null },
 ): Promise<ResultCardSnapshotBuild> {
+  if (!await studentGradesAreVisible(db, student.school_id, student.id)) return {ok: false, status: 403, code: 'student_grades_hidden', error: STUDENT_GRADES_HIDDEN};
   // With an active academic year, effective placement intentionally resolves to
   // null when the student has no enrollment. Never issue an official card from
   // legacy placement (or from an empty placement) in that state.
@@ -9703,7 +9731,7 @@ async function createResultCardForStudent(
   }
 
   const tokenHash = await hashToken(token);
-  await db.prepare(`
+  const inserted = await db.prepare(`
     INSERT INTO result_cards (
       school_id, student_id, class_id, section_id, academic_year_id,
       card_number, verification_token, verification_hash,
@@ -9713,7 +9741,8 @@ async function createResultCardForStudent(
       overall_result_status, card_data_json,
       generated_by_user_id, generated_at, status,
       publication_status, publication_revision, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'draft', 0, unixepoch(), unixepoch())
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'draft', 0, unixepoch(), unixepoch()
+      WHERE ${studentGradesVisibleSql('?', '?', '?')}
   `).bind(
     student.school_id,
     student.id,
@@ -9735,7 +9764,9 @@ async function createResultCardForStudent(
     JSON.stringify(cardData),
     user.id,
     generatedAt,
+    student.school_id, student.id, evaluation.academicYear.id, student.school_id,
   ).run();
+  if (!inserted.meta.changes) return {ok: false, status: 403, code: 'student_grades_hidden', error: STUDENT_GRADES_HIDDEN};
 
   const card = await db.prepare(`
     SELECT * FROM result_cards WHERE verification_token = ? AND school_id = ?
@@ -9771,7 +9802,7 @@ app.get(
       return c.json({ error: 'حالة نشر النتيجة غير صالحة' }, 400);
     }
 
-    let sql = `SELECT rc.id, rc.school_id, rc.card_number, rc.student_name_snapshot, rc.class_name_snapshot, rc.section_name_snapshot, rc.school_name_snapshot, rc.academic_year_snapshot, rc.general_exemption_status, rc.overall_result_status, rc.generated_at, rc.printed_at, rc.status, rc.verification_token, rc.publication_status, rc.publication_revision, rc.published_at, rc.withdrawn_at, rc.withdrawal_reason FROM result_cards rc WHERE rc.school_id = ?`;
+    let sql = `SELECT rc.id, rc.school_id, rc.card_number, rc.student_name_snapshot, rc.class_name_snapshot, rc.section_name_snapshot, rc.school_name_snapshot, rc.academic_year_snapshot, rc.general_exemption_status, rc.overall_result_status, rc.generated_at, rc.printed_at, rc.status, rc.verification_token, rc.publication_status, rc.publication_revision, rc.published_at, rc.withdrawn_at, rc.withdrawal_reason FROM result_cards rc WHERE rc.school_id = ? AND ${savedStudentGradesVisibleSql('rc.school_id', 'rc.student_id', 'rc.academic_year_id')}`;
     const params: any[] = [resolvedSchoolId];
 
     if (classId) { sql += ` AND rc.class_id = ?`; params.push(classId); }
@@ -9815,6 +9846,7 @@ app.get(
     if (row.school_id !== resolvedSchoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى هذا الكارت' }, 403);
     }
+    if (!await savedStudentGradesAreVisible(db, row.school_id, row.student_id, row.academic_year_id)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
     let data = row;
     try {
       data = { ...row, card_data_parsed: JSON.parse(row.card_data_json) };
@@ -10120,11 +10152,12 @@ app.put(
       const note = normalizeResultCardPublicationReason(body.note, false);
       if (note == null) return c.json({ error: 'ملاحظة النشر يجب ألا تتجاوز 1000 حرف' }, 400);
       const card = await db.prepare(`
-        SELECT id, school_id, status, publication_status, publication_revision, card_data_json
+        SELECT id, school_id, student_id, academic_year_id, status, publication_status, publication_revision, card_data_json
         FROM result_cards WHERE id=?
       `).bind(id).first<any>();
       if (!card) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
       if (card.school_id !== target.schoolId) return c.json({ error: 'غير مسموح' }, 403);
+      if (!await savedStudentGradesAreVisible(db, card.school_id, card.student_id, card.academic_year_id)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
       if (card.status !== 'active' || card.publication_status !== 'draft') {
         return c.json({ error: 'يمكن إرسال كارت فعال غير مرسل إلى ولي الأمر فقط', code: 'result_card_publication_invalid_transition' }, 409);
       }
@@ -10153,6 +10186,7 @@ app.put(
             SELECT 1 FROM result_cards
             WHERE id=? AND school_id=? AND status='active'
               AND publication_status='draft' AND publication_revision=?
+              AND ${savedStudentGradesVisibleSql('result_cards.school_id', 'result_cards.student_id', 'result_cards.academic_year_id')}
           ) THEN 1 ELSE 0 END
         `).bind(requestId, id, expectedRevision, id, target.schoolId, expectedRevision),
         db.prepare(`
@@ -10269,7 +10303,7 @@ app.put(
     const body = await c.req.json().catch(() => ({}));
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const row = await db.prepare(`SELECT school_id, status, publication_status FROM result_cards WHERE id = ?`).bind(id).first<any>();
+    const row = await db.prepare(`SELECT school_id, student_id, academic_year_id, status, publication_status FROM result_cards WHERE id = ?`).bind(id).first<any>();
     if (!row) return c.json({ error: 'كارت النتيجة غير موجود' }, 404);
     if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح' }, 403);
@@ -10280,6 +10314,7 @@ app.put(
     ) {
       return c.json({ error: 'لا يمكن تعليم كارت ملغى أو مسحوب كمطبوع' }, 400);
     }
+    if (!await savedStudentGradesAreVisible(db, row.school_id, row.student_id, row.academic_year_id)) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 403);
     await db.prepare(`UPDATE result_cards SET printed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, printed_at: Math.floor(Date.now() / 1000) }, message: 'تم تعليم الكارت كمطبوع' });
   } catch (err: any) {
@@ -10345,7 +10380,7 @@ app.get('/api/verify/result-card/:token', async (c) => {
              school_name_snapshot, academic_year_snapshot, generated_at, status,
              overall_result_status, general_exemption_status, publication_status,
              card_data_json
-      FROM result_cards WHERE verification_token = ?
+      FROM result_cards WHERE verification_token = ? AND ${savedStudentGradesVisibleSql('result_cards.school_id', 'result_cards.student_id', 'result_cards.academic_year_id')}
     `).bind(token).first<any>();
 
     if (!row) {
@@ -10430,6 +10465,7 @@ app.get('/api/parent/students/:id/result-cards', async (c) => {
       LEFT JOIN academic_years year ON year.id=card.academic_year_id AND year.school_id=card.school_id
       WHERE card.school_id=? AND card.student_id=?
         AND card.status='active' AND card.publication_status='published'
+        AND ${savedStudentGradesVisibleSql('card.school_id', 'card.student_id', 'card.academic_year_id')}
       ORDER BY COALESCE(year.starts_at,'') DESC,card.published_at DESC,card.id DESC
     `).bind(user.school_id, studentId).all<any>();
     return c.json({
@@ -10590,6 +10626,7 @@ registerStaffAttendanceRoutes(app);
 registerHomeworkRoutes(app);
 registerParentCommunicationRoutes(app);
 registerGradeProgressRoutes(app);
+registerStudentStudyStatusRoutes(app);
 registerAdmissionRegulationRoutes(app);
 registerStudentAgeRoutes(app);
 registerAdmissionsRoutes(app);
@@ -13271,8 +13308,10 @@ function parseGradeImportPayload(body: any): { ok: true; payload: GradeImportPay
 }
 
 async function loadGradeImportContext(db: D1Database, schoolId: number): Promise<GradeImportContext> {
+  const hiddenStudents = await hiddenGradeStudentIds(db, schoolId);
   const students = (await listStudentsWithEffectivePlacement(db, { schoolId }))
-    .filter((student) => student.status !== 'archived');
+    .filter((student) => student.status !== 'archived')
+    .map(student => ({...student, grades_visible: !hiddenStudents.has(student.id)}));
   const [settingsResult, subjectsResult, assignmentsResult, gradesResult, classesResult, sectionsResult] = await db.batch<any>([
     db.prepare(`SELECT max_grade, passing_grade, exemption_grade, general_exemption_average_grade, general_exemption_min_subject_grade,
                        first_term_input_mode, second_term_input_mode, mid_year_exam_enabled, final_exam_enabled, completion_exam_enabled
@@ -13307,7 +13346,7 @@ async function loadGradeImportContext(db: D1Database, schoolId: number): Promise
     students,
     subjects: subjectsResult.results || [],
     assignments: assignmentsResult.results || [],
-    grades: gradesResult.results || [],
+    grades: (gradesResult.results || []).filter((grade: any) => !(assignmentsResult.results || []).some((assignment: any) => Number(assignment.id) === Number(grade.student_subject_id) && hiddenStudents.has(Number(assignment.student_id)))),
     classes: classesResult.results || [],
     sections: sectionsResult.results || [],
   };
@@ -13355,7 +13394,9 @@ async function executeGradeImportPlan(
   fileName: string,
   plan: ReturnType<typeof buildGradeImportPlan>,
 ): Promise<number> {
-  const statements: D1PreparedStatement[] = [];
+  const academicYearId = await resolveAcademicYearId(db, schoolId, null);
+  const visibilityGuard = studentGradeVisibilityWriteGuard(db, schoolId, plan.records.map(record => record.student_id), academicYearId);
+  const statements: D1PreparedStatement[] = [visibilityGuard.before];
   const assignmentCreates = plan.records.filter(record => record.assignment_action === 'create').map(gradeWritePayload);
   const assignmentReactivations = plan.records
     .filter(record => record.assignment_action === 'reactivate' && record.assignment_id != null)
@@ -13452,7 +13493,8 @@ async function executeGradeImportPlan(
     `).bind(schoolId, userId, JSON.stringify(auditRows)));
   }
 
-  const summary = gradeImportPreviewData(plan);
+  const summary = {...gradeImportPreviewData(plan), visibility_scope_version: 1, academic_year_id: academicYearId};
+  statements.push(visibilityGuard.after);
   statements.push(db.prepare(`
     INSERT INTO import_jobs (
       school_id, import_type, file_name, mode, status, total_rows, valid_rows, error_rows,
@@ -14429,6 +14471,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
 
     return c.json({ data: { job_id: jobId, ...summary } });
   } catch (err: any) {
+    if (/workflow_write_guard/i.test(String(err?.message || ''))) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 409);
     return c.json({ error: 'فشل في تأكيد الاستيراد', detail: err.message }, 500);
   }
 });
@@ -14510,6 +14553,7 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
         LEFT JOIN classes c ON st.class_id = c.id
         LEFT JOIN sections sec ON st.section_id = sec.id
         WHERE g.school_id = ? AND g.is_active = 1 AND st.status != 'archived'
+          AND ${studentGradesVisibleSql('g.school_id', 'ss.student_id')}
         ORDER BY st.id, s.order_index, s.id
       `).bind(schoolId).all<any>();
       rows = res.results || [];
@@ -14555,7 +14599,7 @@ app.get('/api/import-export/jobs', requireSameSchoolOrAdmin(), async (c) => {
     }
     sql += ` ORDER BY created_at DESC`;
     const res = await db.prepare(sql).bind(...params).all<any>();
-    return c.json({ data: res.results || [] });
+    return c.json({ data: await redactHiddenGradeImportJobs(db, res.results || []) });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب سجل الاستيراد', detail: err.message }, 500);
   }
@@ -14581,7 +14625,7 @@ app.get('/api/import-export/jobs/:id', requireSameSchoolOrAdmin(), async (c) => 
     if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
       return c.json({ error: 'غير مسموح: السجل تابع لمدرسة أخرى' }, 403);
     }
-    return c.json({ data: row });
+    return c.json({ data: (await redactHiddenGradeImportJobs(db, [row]))[0] });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب تفاصيل السجل', detail: err.message }, 500);
   }

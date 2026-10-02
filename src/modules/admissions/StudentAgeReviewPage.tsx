@@ -9,7 +9,7 @@ import { useSchoolOptions, workflowInput as input, workflowButton as button } fr
 import { AgeRuleSummary } from './AgeRuleSummary';
 import { DateText } from './DateText';
 
-const needsAttention = (row: StudentAgeReviewRow) => !['within_limits', 'not_applicable'].includes(row.age_check.status);
+const needsAttention = (row: StudentAgeReviewRow) => !['within_limits', 'not_applicable', 'documented_exception'].includes(row.age_check.status);
 export default function StudentAgeReviewPage() {
   const scope = useTenantSchool(), { schoolId } = scope, options = useSchoolOptions(schoolId, false);
   const [year, setYear] = useState(''), [classId, setClass] = useState(''), [section, setSection] = useState('');

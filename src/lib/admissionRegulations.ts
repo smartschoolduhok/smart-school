@@ -1,6 +1,7 @@
 import {ensure,boundedText} from './schoolWorkflow.ts';
 import {checkStudentAge, type BirthDateBounds} from './studentAge.ts';
 import {ageInMonths,baghdadDate,validDate} from './admissionDates.ts';
+import type {StudentAgeException} from './studentStudyStatus.ts';
 export {ageInMonths,baghdadDate,validDate} from './admissionDates.ts';
 export type AdmissionProcess='admission'|'transfer_in'|'transfer_out';
 export const ADMISSION_PROCESSES:Record<AdmissionProcess,string>={admission:'قبول جديد',transfer_in:'نقل وارد',transfer_out:'نقل صادر'};
@@ -37,17 +38,13 @@ export function parseAdmissionRules(raw:unknown):AdmissionRules {
  return {age_reference_date:validDate(r.age_reference_date),age_rule:r.age_rule,min_age_months:min,max_age_months:max,repeat_rule:r.repeat_rule,max_previous_repeats:repeats,acceleration:r.acceleration,required_documents:docs,...extra};
 }
 export interface EligibilityResult {decision:'eligible'|'ineligible'|'review';issues:string[];age_months:number|null;}
-export function evaluateAdmission(rules:AdmissionRules|null,input:{birth_date:string|null;gender?:string|null;today?:string;previous_repeats:number|null;accelerated:boolean|null;documents:string[]}):EligibilityResult {
+export function evaluateAdmission(rules:AdmissionRules|null,input:{birth_date:string|null;gender?:string|null;today?:string;class_id?:number|null;age_exception?:StudentAgeException|null;previous_repeats:number|null;accelerated:boolean|null;documents:string[]}):EligibilityResult {
  if(!rules)return {decision:'review',issues:['لا توجد لائحة معتمدة وسارية لهذا الصف والسنة ونوع الطلب'],age_months:null};
  const review:string[]=[],blocked:string[]=[];let age:number|null=null;
  if(rules.age_rule==='review')review.push('شرط العمر يحتاج مراجعة');
- if(rules.age_rule==='bounded'){
-  if(!input.birth_date)review.push('تاريخ الميلاد غير مثبت');
-  else {try{age=ageInMonths(input.birth_date,rules.age_reference_date);if(age<0)review.push('تاريخ الميلاد بعد تاريخ احتساب العمر');else if((rules.min_age_months!=null&&age<rules.min_age_months)||(rules.max_age_months!=null&&age>rules.max_age_months))blocked.push('العمر خارج الحدود الموثقة');}catch{review.push('تاريخ الميلاد غير صالح');}}
- }
- if(rules.age_rule==='birth_date'){
-  const check=checkStudentAge(rules,{birth_date:input.birth_date,gender:input.gender,today:input.today??baghdadDate()});age=check.age_months;
-  if(check.status==='outside_limits')blocked.push(...check.issues);else if(check.status!=='within_limits')review.push(...check.issues);
+ if(rules.age_rule==='bounded'||rules.age_rule==='birth_date'){
+  const check=checkStudentAge(rules,{birth_date:input.birth_date,gender:input.gender,today:input.today??baghdadDate(),class_id:input.class_id,age_exception:input.age_exception});age=check.age_months;
+  if(check.status==='outside_limits')blocked.push(...check.issues);else if(check.status!=='within_limits'&&check.status!=='documented_exception')review.push(...check.issues);
  }
  if(rules.repeat_rule==='review')review.push('سنوات الإعادة تحتاج مراجعة');
  if(rules.repeat_rule==='bounded'){if(input.previous_repeats==null)review.push('عدد سنوات الإعادة غير مثبت');else if(input.previous_repeats>rules.max_previous_repeats!)blocked.push('سنوات الإعادة تتجاوز الحد الموثق');}

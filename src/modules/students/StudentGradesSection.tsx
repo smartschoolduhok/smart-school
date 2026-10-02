@@ -9,7 +9,7 @@ function gradeValue(value: unknown): string {
   return value == null || value === '' ? '—' : toArabicDigits(String(value));
 }
 
-export default function StudentGradesSection({ studentId }: { studentId: number }) {
+export default function StudentGradesSection({ studentId, refreshKey = 0 }: { studentId: number; refreshKey?: number }) {
   const [data, setData] = useState<Record<string, any> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -26,7 +26,7 @@ export default function StudentGradesSection({ studentId }: { studentId: number 
       setLoading(false);
     });
     return () => { active = false; };
-  }, [studentId]);
+  }, [studentId, refreshKey]);
 
   const columns = useMemo(() => gradeInputColumns(data?.settings), [data?.settings]);
   const grades = Array.isArray(data?.grades) ? data.grades : [];
@@ -42,6 +42,7 @@ export default function StudentGradesSection({ studentId }: { studentId: number 
       </div>
       {loading ? <p className="p-6 text-center text-sm text-gray-500">جاري تحميل الدرجات...</p>
         : error ? <p role="alert" className="flex items-center gap-2 p-5 text-sm text-red-700"><AlertTriangle size={18} />{error}</p>
+          : data?.grades_visible === false ? <p role="status" className="p-6 text-sm text-amber-800">درجات الطالب مخفية لهذه السنة الدراسية. يبقى الطالب في قوائم الطلاب والطباعة، وتُحفظ درجاته السابقة دون حذف.</p>
           : grades.length === 0 ? <p className="p-6 text-center text-sm text-gray-500">لا توجد درجات نشطة مسجلة لهذا الطالب.</p>
             : <div className="overflow-x-auto">
               <table className="w-full min-w-max text-sm">

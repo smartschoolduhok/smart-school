@@ -65,6 +65,7 @@ export interface GradeImportStudent {
   full_name: string;
   class_id: number | null;
   section_id: number | null;
+  grades_visible?: boolean;
 }
 
 export interface GradeImportSubject {
@@ -711,6 +712,11 @@ export function buildGradeImportPlan(payload: GradeImportPayload, context: Grade
         return;
       }
       const student = studentResolution.student;
+      if (student.grades_visible === false) {
+        errors.push(issue(sheet, rowNumber, 'student', 'درجات هذا الطالب مخفية لهذه السنة الدراسية؛ لا يمكن استيرادها'));
+        summary.error_rows += 1;
+        return;
+      }
       const placementError = validateResolvedStudentPlacement(student, context);
       if (placementError) {
         errors.push(issue(sheet, rowNumber, 'student_placement', placementError));

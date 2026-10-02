@@ -107,3 +107,55 @@ test('student dossier displays active subject grades using the configured scheme
   assert.match(host.textContent, /٥١/);
   assert.match(host.textContent, /السعي السنوي/);
 });
+
+test('student dossier reloads visibility after an annual setting save without exposing cached scores', async t => {
+  const previousFetch = globalThis.fetch;
+  const { default: StudentGradesSection } = await vite.ssrLoadModule('/src/modules/students/StudentGradesSection.tsx');
+  let visible = true;
+  globalThis.fetch = async () => new Response(JSON.stringify({ data: { grades_visible: visible, settings, grades: visible ? grades : [] } }), { headers: { 'content-type': 'application/json' } });
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host);
+  t.after(async () => { await act(async () => root.unmount()); host.remove(); globalThis.fetch = previousFetch; });
+  await act(async () => root.render(createElement(StudentGradesSection, { studentId: 50, refreshKey: 0 })));
+  assert.ok(host.querySelector('table'));
+  visible = false;
+  await act(async () => root.render(createElement(StudentGradesSection, { studentId: 50, refreshKey: 1 })));
+  assert.equal(host.querySelector('table'), null);
+  assert.match(host.textContent, /درجات الطالب مخفية/);
+  assert.doesNotMatch(host.textContent, /لا توجد درجات نشطة/);
+});
+
+test('hidden student stays selectable but cannot initialize grades and a late visible response cannot replace it', async t => {
+  const previousFetch = globalThis.fetch;
+  const json = data => new Response(JSON.stringify({ data }), { headers: { 'content-type': 'application/json' } });
+  let resolveVisible;
+  const visibleResponse = new Promise(resolve => { resolveVisible = resolve; });
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    const path = String(url); requests.push([path, options?.method || 'GET']);
+    if (path === '/api/auth/me') return json({ ...user, role_key: 'school_owner', role_id: 2 });
+    if (path.startsWith('/api/students?')) return json([{ id: 50, full_name: 'Visible student', student_number: '50' }, { id: 51, full_name: 'Hidden hosted student', student_number: '51' }]);
+    if (path === '/api/students/50/grades') return visibleResponse;
+    if (path === '/api/students/51/grades') return json({ student_name: 'Hidden hosted student', grades_visible: false, grades: [], academic_outcome: null });
+    throw Error('Unexpected request ' + path);
+  };
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host);
+  t.after(async () => { await act(async () => root.unmount()); host.remove(); globalThis.fetch = previousFetch; });
+  await act(async () => root.render(createElement(MemoryRouter, null, createElement(AuthProvider, null, createElement(GradesPage)))));
+  const select = host.querySelector('select');
+  await act(async () => change(select, '50'));
+  await act(async () => change(select, '51'));
+  const initialize = [...host.querySelectorAll('button')].find(item => item.textContent.includes('تهيئة درجات الطالب'));
+  assert.equal(initialize.disabled, true);
+  assert.match(host.textContent, /درجات الطالب مخفية/);
+  assert.ok([...select.options].some(option => option.value === '51'));
+  await act(async () => resolveVisible(json({ student_name: 'Visible student', settings, grades })));
+  assert.equal(select.value, '51');
+  assert.equal(host.querySelector('tbody'), null);
+  assert.match(host.textContent, /درجات الطالب مخفية/);
+  await act(async () => initialize.click());
+  assert.equal(requests.some(([,method]) => method === 'POST'), false);
+  await act(async () => change(select, ''));
+  assert.equal(host.querySelector('[role="status"]'), null);
+});

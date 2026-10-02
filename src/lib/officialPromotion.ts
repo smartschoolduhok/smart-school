@@ -1,3 +1,4 @@
+import {studentGradesVisibleSql, STUDENT_GRADES_HIDDEN} from './studentGradeVisibility.ts';
 import {
   executeStudentPromotion,
   previewStudentPromotion,
@@ -30,6 +31,7 @@ export interface OfficialPromotionDecision {
 }
 
 interface OfficialPromotionLookupRow {
+  grades_visible: number;
   request_index: number;
   requested_source_enrollment_id: number;
   source_enrollment_id: number | null;
@@ -151,6 +153,7 @@ function evaluateLookup(
   if (!row?.source_enrollment_id || row.source_school_id !== schoolId) {
     return invalidDecision(sourceId, 'invalid', 'source_not_found', 'تسجيل الطالب المصدر غير موجود في المدرسة المستهدفة');
   }
+  if (Number(row.grades_visible) === 0) return invalidDecision(sourceId, 'invalid', 'student_grades_hidden', STUDENT_GRADES_HIDDEN);
 
   if (row.applied_result_card_id != null) {
     const evidence = evidenceFromApplied(row);
@@ -286,6 +289,7 @@ export async function loadOfficialPromotionDecisions(
       source.id AS source_enrollment_id,
       source.school_id AS source_school_id,
       source.student_id,
+      ${studentGradesVisibleSql('source.school_id', 'source.student_id', 'source.academic_year_id')} AS grades_visible,
       source.academic_year_id,
       source.class_id,
       source.section_id,

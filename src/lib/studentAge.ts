@@ -1,22 +1,30 @@
 import type { AdmissionRules } from './admissionRegulations.ts';
 import { ageInMonths, validDate } from './admissionDates.ts';
+import { isAgeExceptionApplicable, type StudentAgeException } from './studentStudyStatus.ts';
 
 export interface BirthDateBounds { earliest: string | null; latest: string | null; }
-export type AgeStatus = 'within_limits' | 'outside_limits' | 'review' | 'not_applicable' | 'missing_birth_date' | 'invalid_birth_date' | 'future_birth_date';
+export type AgeStatus = 'within_limits' | 'outside_limits' | 'documented_exception' | 'review' | 'not_applicable' | 'missing_birth_date' | 'invalid_birth_date' | 'future_birth_date';
 export const AGE_STATUS_LABELS: Record<AgeStatus, string> = {
   within_limits: 'ضمن حدود العمر الموثقة', outside_limits: 'خارج حدود العمر — للمراجعة',
   review: 'تحتاج مراجعة', not_applicable: 'لا ينطبق شرط العمر',
   missing_birth_date: 'تاريخ الميلاد ناقص', invalid_birth_date: 'تاريخ الميلاد غير صحيح',
   future_birth_date: 'تاريخ الميلاد في المستقبل',
+  documented_exception: 'استثناء عمر موثق للسنة والصف',
 };
 export interface AgeCheck { status: AgeStatus; age_months: number | null; reference_date: string | null; issues: string[]; }
-export interface AgeInput { birth_date: string | null; gender?: string | null; today: string; }
+export interface AgeInput { birth_date: string | null; gender?: string | null; today: string; class_id?: number | null; age_exception?: StudentAgeException | null; }
 
 /** An age comparison only: it never decides enrollment, repeats, acceleration or expulsion. */
 export function checkStudentAge(rules: AdmissionRules | null, input: AgeInput): AgeCheck {
-  const result = (status: AgeStatus, issues: string[], age: number | null = null): AgeCheck => ({
-    status, issues, age_months: age, reference_date: rules?.age_reference_date ?? input.today,
-  });
+  const result = (status: AgeStatus, issues: string[], age: number | null = null): AgeCheck => {
+    // A verified annual exception relaxes only a numerical bound. Invalid
+    // identities, missing sources and non-age conditions remain unresolved.
+    if (status === 'outside_limits' && isAgeExceptionApplicable(input.age_exception, input)) {
+      return { status: 'documented_exception', issues: [...issues, `استثناء موثق: ${input.age_exception!.reference} — ${input.age_exception!.authority}`],
+        age_months: age, reference_date: rules?.age_reference_date ?? input.today };
+    }
+    return { status, issues, age_months: age, reference_date: rules?.age_reference_date ?? input.today };
+  };
   if (!input.birth_date?.trim()) return result('missing_birth_date', ['أكمل تاريخ الميلاد من وثيقة الطالب']);
   let birth: string;
   try { birth = validDate(input.birth_date); } catch { return result('invalid_birth_date', ['راجع تاريخ الميلاد؛ التاريخ المسجل غير صالح']); }

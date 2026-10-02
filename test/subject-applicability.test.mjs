@@ -9,6 +9,9 @@ function analyticsFixture() {
   const database = new DatabaseSync(':memory:');
   database.exec(`
     PRAGMA foreign_keys = ON;
+    CREATE TABLE academic_years (id INTEGER PRIMARY KEY, school_id INTEGER, is_active INTEGER);
+    CREATE TABLE student_study_status (school_id INTEGER, student_id INTEGER, academic_year_id INTEGER, grades_visible INTEGER);
+    INSERT INTO academic_years VALUES (1,1,1),(2,1,0);
     CREATE TABLE students (
       id INTEGER PRIMARY KEY,
       school_id INTEGER NOT NULL,
@@ -102,6 +105,18 @@ test('analytics attribution follows assignment placement and personal religion h
   assert.equal(rows.length, 1);
   assert.equal(rows[0].subject_id, 10);
   assert.equal(rows[0].religious_track, 'islamic');
+});
+
+test('hidden current-year grades leave analytics without being counted as zero or missing', () => {
+  const database = analyticsFixture();
+  database.exec('INSERT INTO student_study_status VALUES(1,1,2,0)');
+  assert.equal(applicableAnalyticsRows(database).length,1,'another year does not hide live grades');
+  database.exec('INSERT INTO student_study_status VALUES(1,1,1,0)');
+  assert.deepEqual(applicableAnalyticsRows(database),[]);
+  assert.equal(database.prepare('SELECT effective_grade FROM grades WHERE id=1000').get().effective_grade,90);
+  database.exec('UPDATE student_study_status SET grades_visible=1 WHERE academic_year_id=1');
+  assert.equal(applicableAnalyticsRows(database).length,1);
+  database.close();
 });
 
 test('worker keeps applicability in assignments for Result Cards, analytics and grade initialization', async () => {

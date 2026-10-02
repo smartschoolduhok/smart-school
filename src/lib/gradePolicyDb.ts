@@ -1,4 +1,5 @@
 import { calculateGrades, type GradeCalculationSettings, type RawGradeValues } from './gradeCalculations';
+import {studentGradesVisibleSql} from './studentGradeVisibility';
 import {
   evaluateStudentAcademicPolicy,
   type AcademicGradePolicy,
@@ -163,6 +164,10 @@ async function loadContexts(
     'enrollment.academic_year_id=?',
     "enrollment.status IN ('active','completed')",
     "student.status='active'",
+    studentGradesVisibleSql('student.school_id', 'student.id', 'enrollment.academic_year_id'),
+    // These outcomes read live yearless grades, even when viewing an older
+    // enrollment. Do not let a year selector bypass the live grade restriction.
+    studentGradesVisibleSql('student.school_id', 'student.id'),
   ];
   const params: any[] = [schoolId, academicYearId];
   if (studentId != null) { conditions.push('student.id=?'); params.push(studentId); }

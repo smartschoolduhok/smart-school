@@ -5,6 +5,7 @@ import {teacherAssignmentAccessSql} from './resourceAccess';
 import {RAW_GRADE_FIELDS} from './gradeScheme';
 import {PROGRESS_PERIODS,progressSnapshot,progressPeriodEnabled,type ProgressPeriod} from './gradeProgress';
 import {sha256Hex} from './homework';
+import {studentGradesVisibleSql} from './studentGradeVisibility';
 import {boundedText,ensure,positiveId,uuid,workflowBody,workflowSchool,workflowResponse,type WorkflowContext as C} from './schoolWorkflow';
 type Row=Record<string,any>;
 function sourceQuery(c:C,school:number,student:number) {
@@ -26,6 +27,7 @@ function sourceQuery(c:C,school:number,student:number) {
  JOIN classes cl ON cl.id=e.class_id AND cl.school_id=s.school_id AND cl.status='active'
  LEFT JOIN sections sec ON sec.id=e.section_id AND sec.school_id=s.school_id AND sec.status='active'
  WHERE s.id=(SELECT student FROM request) AND s.school_id=(SELECT school FROM request) AND s.status='active'
+ AND ${studentGradesVisibleSql('s.school_id','s.id','y.id')}
  AND EXISTS(SELECT 1 FROM users actor JOIN roles r ON r.id=actor.role_id WHERE actor.id=(SELECT actor FROM request) AND actor.status='active'
  AND (r.key='system_admin' OR (actor.school_id=s.school_id AND r.key IN ('school_owner','principal','vice_principal','registrar','teacher'))))`;
  return {sql,args:[school,student,u.id]};
@@ -42,7 +44,7 @@ async function preview(c:C,school:number,b:Row) {
  return {student,period,q,source,sourceJson:row.source,snapshot,digest};
 }
 function reportDto(r:Row){return {report_key:r.report_key,status:r.status,revision:Number(r.revision),created_at:Number(r.created_at),snapshot:JSON.parse(r.snapshot_json)};}
-function reportAccess(c:C){const u=c.get('user');return u.role_key==='parent'?{sql:"r.status='published' AND EXISTS(SELECT 1 FROM parent_student_links l WHERE l.school_id=r.school_id AND l.student_id=r.student_id AND l.parent_user_id=? AND l.status='active')",args:[u.id]}:u.role_key==='teacher'?{sql:`r.created_by_user_id=? AND NOT EXISTS(SELECT 1 FROM json_each(r.source_json,'$.grades') j WHERE NOT EXISTS(SELECT 1 FROM student_subjects ss WHERE ss.id=json_extract(j.value,'$.assignment_id') AND ss.student_id=r.student_id AND ss.subject_id=json_extract(j.value,'$.subject_id') AND ss.school_id=r.school_id AND ${teacherAssignmentAccessSql('ss')}))`,args:[u.id,u.id]}:{sql:'1=1',args:[]};}
+function reportAccess(c:C){const u=c.get('user');const access=u.role_key==='parent'?{sql:"r.status='published' AND EXISTS(SELECT 1 FROM parent_student_links l WHERE l.school_id=r.school_id AND l.student_id=r.student_id AND l.parent_user_id=? AND l.status='active')",args:[u.id]}:u.role_key==='teacher'?{sql:`r.created_by_user_id=? AND NOT EXISTS(SELECT 1 FROM json_each(r.source_json,'$.grades') j WHERE NOT EXISTS(SELECT 1 FROM student_subjects ss WHERE ss.id=json_extract(j.value,'$.assignment_id') AND ss.student_id=r.student_id AND ss.subject_id=json_extract(j.value,'$.subject_id') AND ss.school_id=r.school_id AND ${teacherAssignmentAccessSql('ss')}))`,args:[u.id,u.id]}:{sql:'1=1',args:[]};return {...access,sql:`(${access.sql}) AND ${studentGradesVisibleSql('r.school_id','r.student_id','r.academic_year_id')}`};}
 export function registerGradeProgressRoutes(app:Hono<{Bindings:Bindings;Variables:Variables}>) {
  const route=(method:string,path:string,fn:(c:C)=>Promise<Response>)=>app.on(method,`/api/grade-progress${path}`,c=>workflowResponse(c,()=>fn(c)));
  route('GET','',async c=>{

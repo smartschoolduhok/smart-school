@@ -1,3 +1,4 @@
+import {studentGradesVisibleSql} from './studentGradeVisibility.ts';
 /**
  * Canonical analytics scope: a grade is academically applicable only through
  * an active same-school student_subject assignment to an active subject.
@@ -13,6 +14,7 @@ export const ANALYTICS_APPLICABLE_GRADE_JOINS = `
     ON ss.student_id = st.id
    AND st.school_id = ss.school_id
    AND st.status = 'active'
+   AND ${studentGradesVisibleSql('st.school_id', 'st.id')}
   INNER JOIN subjects su
     ON ss.subject_id = su.id
    AND su.school_id = ss.school_id

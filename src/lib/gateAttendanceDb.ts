@@ -1,4 +1,5 @@
 import { communicationNotificationAccessSql } from './parentCommunicationDb';
+import { gradeProgressNotificationAccessSql } from './studentGradeVisibility';
 import type { Context, Hono } from 'hono';
 import type { Bindings, Variables } from '../worker';
 import { businessDate } from './businessTime';
@@ -620,6 +621,7 @@ export function registerGateAttendanceRoutes(app: Hono<GateEnv>): void {
            AND notification.school_id = recipient.school_id
            AND notification.status = 'active'
             AND ${communicationNotificationAccessSql}
+            AND ${gradeProgressNotificationAccessSql}
           WHERE recipient.user_id = ? AND recipient.school_id = ?
             AND (
               notification.student_id IS NULL
@@ -647,6 +649,7 @@ export function registerGateAttendanceRoutes(app: Hono<GateEnv>): void {
            AND notification.school_id = recipient.school_id
            AND notification.status = 'active'
             AND ${communicationNotificationAccessSql}
+            AND ${gradeProgressNotificationAccessSql}
           WHERE recipient.user_id = ? AND recipient.school_id = ? AND recipient.read_at IS NULL
             AND (
               notification.student_id IS NULL
@@ -703,6 +706,7 @@ export function registerGateAttendanceRoutes(app: Hono<GateEnv>): void {
               AND notification.school_id = notification_recipients.school_id
               AND notification.status = 'active'
               AND ${communicationNotificationAccessSql.replace(/recipient\.user_id/g, 'notification_recipients.user_id')}
+              AND ${gradeProgressNotificationAccessSql}
               AND (
                 notification.student_id IS NULL
                 OR EXISTS (
