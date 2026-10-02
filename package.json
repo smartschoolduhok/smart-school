@@ -11,6 +11,8 @@
     }
   },
   "scripts": {
+    "test:student-study-status": "node --experimental-strip-types --test --test-concurrency=1 test/student-study-status.test.mjs test/student-grade-visibility.test.mjs test/student-study-status-ui.test.mjs",
+    "test:student-study-status:local": "node --experimental-strip-types scripts/validate-student-study-status-local.mjs",
     "test:employee-records": "node --experimental-strip-types --test --test-concurrency=1 test/employee-records-api.test.mjs test/employee-records-import.test.mjs test/employee-records-ui.test.mjs test/employee-records-print.test.mjs",
     "test:employee-records:local": "node --experimental-strip-types scripts/validate-employee-records-local.mjs",
     "test:section-advisors": "node --experimental-strip-types --test --test-concurrency=1 test/section-advisors.test.mjs test/section-advisors-api.test.mjs test/section-advisors-ui.test.mjs",

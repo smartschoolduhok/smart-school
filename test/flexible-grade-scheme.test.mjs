@@ -816,7 +816,7 @@ test('single-grade PUT recalculates and returns the complete tenant-scoped row w
   assert.match(route, /revision = revision \+ 1/);
   assert.match(route, /WHERE id = \? AND school_id = \? AND revision = \?/);
   assert.match(route, /RETURNING \*/);
-  assert.match(route, /db\.batch<any>\(\[\.\.\.auditStatements, updateStatement\]\)/);
+  assert.match(route, /db\.batch<any>\(\[visibilityGuard\.before, \.\.\.auditStatements, updateStatement, visibilityGuard\.after\]\)/);
   assert.match(route, /return c\.json\(\{ data: policyAwareGradeRow\(\{ \.\.\.gradeRow, \.\.\.updated \}, policyResolution\) \}\)/);
 });
 

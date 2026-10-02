@@ -1,6 +1,6 @@
 import GradeProgressPage from '../gradeProgress/GradeProgressPage';
 import { Link } from 'react-router-dom';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
@@ -235,6 +235,9 @@ export default function GradesPage() {
    ═══════════════════════════════════════ */
 function StudentGradesTab({ schoolId, canEdit, canInitialize, canManagePolicies }: { schoolId: number | null; canEdit: boolean; canInitialize: boolean; canManagePolicies: boolean }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
+  const gradeRequestId = useRef(0);
+  const [gradesVisible, setGradesVisible] = useState(true);
+  const [gradesLoaded, setGradesLoaded] = useState(false);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [grades, setGrades] = useState<GradeRecord[]>([]);
@@ -251,6 +254,9 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize, canManagePolicies 
   const inputColumns = useMemo(() => settings ? gradeInputColumns(settings) : [], [settings]);
 
   useEffect(() => {
+    gradeRequestId.current++;
+    setGradesVisible(true);
+    setGradesLoaded(false);
     setStudents([]);
     setSelectedStudentId('');
     setGrades([]);
@@ -274,25 +280,39 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize, canManagePolicies 
   }
 
   async function loadStudentGrades(studentId: string) {
-    if (!studentId) return;
+    const requestId = ++gradeRequestId.current;
+    setGrades([]);
+    setSettings(null);
+    setAcademicOutcome(null);
+    setDecisionAllocations({});
+    setDecisionReason('');
+    setStudentName('');
+    setMessage(null);
+    setGradesVisible(true);
+    setGradesLoaded(false);
+    if (!studentId) { setLoading(false); return; }
     const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getStudentGrades(studentId);
-    if (!isCurrent()) return;
+    if (!isCurrent() || requestId !== gradeRequestId.current) return;
     if (res.data) {
-      setGrades((res.data.grades || []) as GradeRecord[]);
+      setGradesVisible(res.data.grades_visible !== false);
+      setGrades(res.data.grades_visible === false ? [] : (res.data.grades || []) as GradeRecord[]);
       setSettings((res.data.settings || null) as GradeSettings | null);
       setAcademicOutcome(res.data.academic_outcome || null);
       setDecisionAllocations(res.data.academic_outcome?.decision_set?.allocations || {});
       setDecisionReason(res.data.academic_outcome?.decision_set?.reason || '');
       setStudentName(res.data.student_name || '');
+      setGradesLoaded(true);
+    } else if (res.error) {
+      setMessage({ text: res.error, type: 'error' });
     }
     setLoading(false);
   }
 
   async function handleInit() {
     if (!selectedStudentId) { setMessage({ text: 'يرجى اختيار طالب أولاً', type: 'error' }); return; }
-    if (schoolId == null) return;
+    if (schoolId == null || !gradesVisible || !gradesLoaded || loading) return;
     const isCurrent = captureSchoolRequest();
     setInitLoading(true);
     const res = await initializeStudentGrades(selectedStudentId, schoolId);
@@ -414,7 +434,7 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize, canManagePolicies 
         {canInitialize && (
           <button
             onClick={handleInit}
-            disabled={initLoading || !selectedStudentId}
+            disabled={initLoading || loading || !gradesLoaded || !gradesVisible || !selectedStudentId}
             className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {initLoading ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
@@ -430,7 +450,14 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize, canManagePolicies 
         </div>
       )}
 
-      {!loading && selectedStudentId && grades.length === 0 && (
+      {!loading && selectedStudentId && !gradesVisible && (
+        <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+          <p>درجات الطالب مخفية لهذه السنة الدراسية. يبقى الطالب في قوائم الطلاب والطباعة، وتُحفظ درجاته السابقة دون حذف.</p>
+          {canInitialize && <Link className="mt-2 inline-block underline" to={`/students/${selectedStudentId}`}>تعديل إظهار الدرجات من ملف الطالب</Link>}
+        </div>
+      )}
+
+      {!loading && gradesLoaded && gradesVisible && selectedStudentId && grades.length === 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center">
           <BookOpen size={40} className="mx-auto text-gray-300 mb-3" />
           <p className="text-sm text-gray-500">لا توجد درجات لهذا الطالب</p>
@@ -438,7 +465,7 @@ function StudentGradesTab({ schoolId, canEdit, canInitialize, canManagePolicies 
         </div>
       )}
 
-      {!loading && grades.length > 0 && (
+      {!loading && gradesVisible && grades.length > 0 && (
         <div className="space-y-3">
           {academicOutcome?.outcome && (
             <div className="grid gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -1123,6 +1150,8 @@ function SettingsTab({ schoolId }: { schoolId: number | null }) {
    ═══════════════════════════════════════ */
 function HistoryTab({ schoolId }: { schoolId: number | null }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
+  const requestSequence = useRef(0);
+  const [gradesVisible, setGradesVisible] = useState(true);
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [grades, setGrades] = useState<GradeRecord[]>([]);
@@ -1131,6 +1160,8 @@ function HistoryTab({ schoolId }: { schoolId: number | null }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    requestSequence.current++;
+    setGradesVisible(true);
     setStudents([]);
     setSelectedStudentId('');
     setGrades([]);
@@ -1149,20 +1180,29 @@ function HistoryTab({ schoolId }: { schoolId: number | null }) {
   }
 
   async function loadGrades(studentId: string) {
-    if (!studentId) return;
+    const sequence = ++requestSequence.current;
+    setGradesVisible(true);
+    setGrades([]);
+    setHistory([]);
+    setSelectedGradeId(null);
+    if (!studentId) { setLoading(false); return; }
     const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getStudentGrades(studentId);
-    if (!isCurrent()) return;
-    if (res.data) setGrades((res.data.grades || []) as GradeRecord[]);
+    if (!isCurrent() || sequence !== requestSequence.current) return;
+    if (res.data) {
+      setGradesVisible(res.data.grades_visible !== false);
+      setGrades(res.data.grades_visible === false ? [] : (res.data.grades || []) as GradeRecord[]);
+    }
     setLoading(false);
   }
 
   async function loadHistory(gradeId: number) {
+    const sequence = ++requestSequence.current;
     const isCurrent = captureSchoolRequest();
     setLoading(true);
     const res = await getGradeHistory(gradeId);
-    if (!isCurrent()) return;
+    if (!isCurrent() || sequence !== requestSequence.current) return;
     if (res.data) setHistory((res.data || []) as AuditRecord[]);
     setLoading(false);
   }
@@ -1187,7 +1227,9 @@ function HistoryTab({ schoolId }: { schoolId: number | null }) {
         </div>
       </div>
 
-      {grades.length > 0 && (
+      {!loading && !gradesVisible && <p role="status" className="rounded-lg bg-amber-50 p-4 text-sm text-amber-900">درجات الطالب وسجلها مخفيان لهذه السنة الدراسية.</p>}
+
+      {gradesVisible && grades.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {grades.map((g) => (
             <button

@@ -44,6 +44,7 @@ import {
 import ParentFinanceSection from './ParentFinanceSection';
 import ParentResultsSection from './ParentResultsSection';
 import StudentGradesSection from './StudentGradesSection';
+import StudentStudyStatusPanel from './StudentStudyStatusPanel';
 
 function InformationItem({ label, value, icon }: { label: string; value: ReactNode; icon?: ReactNode }) {
   return (
@@ -65,6 +66,7 @@ function studentStatusClasses(status: string): string {
 
 export default function StudentProfilePage() {
   const { user } = useAuth();
+  const [studyStatusRefreshKey, setStudyStatusRefreshKey] = useState(0);
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
   const parsedStudentId = id && /^\d+$/.test(id) && Number(id) > 0 ? Number(id) : null;
@@ -335,7 +337,8 @@ export default function StudentProfilePage() {
             </>
           )}
 
-          {user?.role_key !== 'parent' && <StudentGradesSection studentId={student.id} />}
+          <StudentStudyStatusPanel key={`${schoolId}:${student.id}`} student={student} schoolId={schoolId} role={user?.role_key} history={history} onSaved={() => setStudyStatusRefreshKey(value => value + 1)} />
+          {user?.role_key !== 'parent' && <StudentGradesSection studentId={student.id} refreshKey={studyStatusRefreshKey} />}
           {hasRole(user?.role_key, FINANCE_ACCESS_ROLES) && schoolId != null && (
             <ParentFinanceSection studentId={student.id} schoolId={schoolId} />
           )}

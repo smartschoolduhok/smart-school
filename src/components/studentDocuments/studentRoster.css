@@ -1,0 +1,15 @@
+.student-roster-school { text-align: center; font-size: 15pt; font-weight: 800; overflow-wrap: anywhere; }
+.student-roster-scope, .student-roster-caption { margin: 2mm 0; text-align: center; overflow-wrap: anywhere; }
+.student-roster-caption { font-size: 8.5pt; color: #475569; }
+.student-roster-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10pt; line-height: 1.6; margin-bottom: 4mm; }
+.student-roster-table th, .student-roster-table td { padding: 2mm 1.5mm; border: 1px solid #64748b; overflow-wrap: anywhere; text-align: center; vertical-align: middle; }
+.student-roster-table tbody th { text-align: right; font-weight: 600; }
+.student-roster-table thead { background: #edf2f7; }
+.student-roster-preview { max-width: 100%; overflow-x: auto; }
+.student-roster-preview .print-controls { flex-wrap: wrap; gap: 1rem; }
+.student-roster-preview .print-controls > div { flex-wrap: wrap; }
+@media print {
+  .student-roster-preview { overflow: visible; }
+  .student-roster-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .student-roster-table thead { display: table-header-group; }
+}

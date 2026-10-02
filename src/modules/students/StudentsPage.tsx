@@ -8,6 +8,8 @@ import { getStudents, getClasses, getSections, createStudent, updateStudent, arc
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_ACCESS_ROLES, ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import type { StudentReligion } from '../../lib/studentReligion';
+import { STUDY_STATUS_LABELS, type StudyStatus } from '../../lib/studentStudyStatus';
+import { useCurrentStudentStudyRoster } from './useCurrentStudentStudyRoster';
 import {
   FINALIZED_STUDENT_PLACEMENT_MESSAGE,
   isStudentPlacementFinalized,
@@ -86,6 +88,7 @@ export default function StudentsPage() {
   const [filterSection, setFilterSection] = useState<string>('');
   const [filterGender, setFilterGender] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<string>('active');
+  const [filterStudyStatus, setFilterStudyStatus] = useState<StudyStatus | ''>('');
   const [showFilters, setShowFilters] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -101,6 +104,12 @@ export default function StudentsPage() {
   const canBrowseAcademicCatalog = hasRole(user?.role_key, ACADEMIC_ACCESS_ROLES);
   const isParent = user?.role_key === 'parent';
   const isFinanceDirectory = user?.role_key === 'accountant';
+  const studyRoster = useCurrentStudentStudyRoster(schoolId, canManage);
+  const studyStatuses = useMemo(() => new Map(studyRoster.data?.rows.map(row => [row.student_id, row]) || []), [studyRoster.data]);
+  const rosterQuery = new URLSearchParams({school_id: String(schoolId), academic_year_id: String(studyRoster.data?.academic_year.id || '')});
+  if (filterClass) rosterQuery.set('class_id', filterClass);
+  if (filterSection) rosterQuery.set('section_id', filterSection);
+  if (filterStudyStatus) rosterQuery.set('study_status', filterStudyStatus);
 
   useEffect(() => {
     setStudents([]);
@@ -108,6 +117,7 @@ export default function StudentsPage() {
     setSections([]);
     setFilterClass('');
     setFilterSection('');
+    setFilterStudyStatus('');
     setModalOpen(false);
     setEditingId(null);
     setForm(emptyForm);
@@ -149,6 +159,7 @@ export default function StudentsPage() {
     if (filterStatus) list = list.filter((s) => s.status === filterStatus);
     if (filterClass) list = list.filter((s) => String(s.class_id) === filterClass);
     if (filterSection) list = list.filter((s) => String(s.section_id) === filterSection);
+    if (canManage && filterStudyStatus) list = studyRoster.data ? list.filter(s => (studyStatuses.get(s.id)?.study_status || 'regular') === filterStudyStatus) : [];
     if (!isFinanceDirectory && filterGender) list = list.filter((s) => s.gender === filterGender);
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -163,7 +174,7 @@ export default function StudentsPage() {
       );
     }
     return list;
-  }, [students, search, filterClass, filterSection, filterGender, filterStatus, isFinanceDirectory]);
+  }, [students, search, filterClass, filterSection, filterGender, filterStatus, isFinanceDirectory, canManage, filterStudyStatus, studyStatuses, studyRoster.data]);
 
   const availableClasses = useMemo(() => {
     if (!isFinanceDirectory) return classes;
@@ -318,6 +329,10 @@ export default function StudentsPage() {
       <div className="mb-6">
         <SystemAdminSchoolSelector {...schoolScope} />
       </div>
+      {canManageSelectedSchool && <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm">
+        <div><p className="font-semibold text-blue-900">نوع الدراسة في السنة الحالية {studyRoster.data && <bdi>{studyRoster.data.academic_year.name}</bdi>}</p><p className="mt-1 text-xs text-blue-800">قائمة التوزيع تشمل التسجيلات السنوية النشطة والدرجات المخفية، حسب الصف والشعبة ونوع الدراسة. يمكن اختيار سنة أخرى من المعاينة.</p>{studyRoster.loading && <p role="status" className="mt-2">جاري تحميل الوضع الدراسي…</p>}{studyRoster.error && <p role="alert" className="mt-2 text-red-700">{studyRoster.error} <button onClick={studyRoster.reload} className="underline">إعادة المحاولة</button></p>}</div>
+        {studyRoster.data && <Link to={`/print/student-roster?${rosterQuery}`} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-semibold text-blue-800">معاينة قائمة التوزيع</Link>}
+      </div>}
 
       {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
@@ -342,6 +357,7 @@ export default function StudentsPage() {
             <Filter size={18} />
             <span>التصفية</span>
           </button>
+          {canManage && <label className="text-sm text-gray-700">نوع الدراسة<select aria-label="تصفية نوع الدراسة" className="mr-2 rounded-lg border border-gray-200 p-2 text-sm" disabled={!studyRoster.data} value={filterStudyStatus} onChange={event => setFilterStudyStatus(event.target.value as StudyStatus | '')}><option value="">الكل</option>{Object.entries(STUDY_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
         </div>
         {showFilters && (
           <div className={`grid grid-cols-1 sm:grid-cols-2 ${isFinanceDirectory ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-3 mt-3 pt-3 border-t border-gray-100`}>
@@ -465,6 +481,7 @@ export default function StudentsPage() {
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الشعبة</th>
                   {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">ولي الأمر</th>}
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الحالة</th>
+                  {canManage && <th className="px-4 py-3 text-xs font-semibold text-gray-600">نوع الدراسة — السنة الحالية</th>}
                   {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">الإجراءات</th>}
                 </tr>
               </thead>
@@ -499,6 +516,7 @@ export default function StudentsPage() {
                         {s.status === 'active' ? 'نشط' : s.status === 'archived' ? 'مؤرشف' : 'غير نشط'}
                       </span>
                     </td>
+                    {canManage && <td className="px-4 py-3 text-sm"><span className="inline-flex rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-800">{studyRoster.data ? STUDY_STATUS_LABELS[studyStatuses.get(s.id)?.study_status || 'regular'] : 'غير متاح'}</span>{studyRoster.data && studyStatuses.get(s.id)?.grades_visible === false && <span className="mt-1 block text-xs text-gray-500">الدرجات مخفية</span>}</td>}
                     {!isFinanceDirectory && <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <Link

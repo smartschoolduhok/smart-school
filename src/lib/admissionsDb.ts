@@ -11,7 +11,8 @@ function dto(r:Row){return {application_key:r.application_key,student_id:r.stude
 async function application(c:C,school:number,key:string){const r=await c.env.DB.prepare('SELECT a.*,s.full_name AS student_name FROM admission_applications a LEFT JOIN students s ON s.id=a.student_id AND s.school_id=a.school_id WHERE a.school_id=? AND a.application_key=?').bind(school,key).first<Row>();ensure(r,'application_not_found','الطلب غير موجود',404);return r;}
 function contextQuery(school:number,key:string){
  const sql=`SELECT json_object('application_id',a.id,'school_id',a.school_id,'student_id',a.student_id,'year_id',a.academic_year_id,'class_id',a.class_id,'section_id',a.section_id,'process',a.process,'applicant',json(a.applicant_json),'facts',json(a.facts_json),'external_school',a.external_school,'document_reference',a.document_reference,
- 'student',json((SELECT json_object('id',s.id,'name',s.full_name,'birth_date',s.birth_date,'gender',s.gender,'status',s.status,'class_id',s.class_id,'section_id',s.section_id) FROM students s WHERE s.id=a.student_id AND s.school_id=a.school_id)),
+  'student',json((SELECT json_object('id',s.id,'name',s.full_name,'birth_date',s.birth_date,'gender',s.gender,'status',s.status,'class_id',s.class_id,'section_id',s.section_id) FROM students s WHERE s.id=a.student_id AND s.school_id=a.school_id)),
+  'study_status',json((SELECT json_object('revision',ss.revision,'age_exception',json(ss.age_exception_json)) FROM student_study_status ss WHERE ss.school_id=a.school_id AND ss.student_id=a.student_id AND ss.academic_year_id=a.academic_year_id)),
  'enrollment',json((SELECT json_object('id',e.id,'class_id',e.class_id,'section_id',e.section_id,'status',e.status,'promotion_status',e.promotion_status,'completed_at',e.completed_at) FROM student_enrollments e WHERE e.student_id=a.student_id AND e.school_id=a.school_id AND e.academic_year_id=a.academic_year_id)),
  'year_active',(SELECT is_active FROM academic_years WHERE id=a.academic_year_id AND school_id=a.school_id),
  'class_active',(SELECT status='active' FROM classes WHERE id=a.class_id AND school_id=a.school_id),
@@ -29,8 +30,8 @@ function contextQuery(school:number,key:string){
 async function inspect(c:C,school:number,key:string){
  const q=contextQuery(school,key),row=await c.env.DB.prepare(q.sql).bind(...q.args).first<{source:string}>();ensure(row,'application_not_found','الطلب غير موجود',404);
  const source=JSON.parse(row.source),rules=source.regulation?parseAdmissionRules(source.regulation.rules):null;
- const facts=parseAdmissionFacts(source.facts),eligibility=evaluateAdmission(rules,{birth_date:source.student?.birth_date??source.applicant?.birth_date??null,gender:source.student?.gender??source.applicant?.gender??null,today:source.business_date,...facts}),issues:string[]=[];
- if(source.student_id==null){const birthDate=validateStudentBirthDate(source.applicant?.birth_date,source.business_date);if(!birthDate.ok)issues.push(birthDate.error);}
+  const facts=parseAdmissionFacts(source.facts),eligibility=evaluateAdmission(rules,{birth_date:source.student?.birth_date??source.applicant?.birth_date??null,gender:source.student?.gender??source.applicant?.gender??null,today:source.business_date,class_id:source.class_id,age_exception:source.study_status?.age_exception??null,...facts}),issues:string[]=[];
+  const birthDate=validateStudentBirthDate(source.student?.birth_date??source.applicant?.birth_date,source.business_date);if(!birthDate.ok)issues.push(birthDate.error);
  if(source.year_active!==1)issues.push('السنة الدراسية غير فعالة');
  if(source.class_active!==1)issues.push('الصف غير فعال');
  if(source.section_id!=null&&(!source.section||source.section.status!=='active'||source.section.class_id!==source.class_id))issues.push('الشعبة غير متاحة');

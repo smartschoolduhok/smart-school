@@ -48,6 +48,7 @@ jobs:
           npm run test:school-workflows:local
           npm run test:user-accounts:local
           npm run test:employee-records:local
+          npm run test:student-study-status:local
 
       - name: Validate fresh local D1 seed
         run: npm run test:finance-seed:local

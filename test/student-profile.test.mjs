@@ -143,7 +143,7 @@ test('Student Profile introduces no grades or student-subject history assumption
 });
 
 test('student name opens a role-scoped dossier with grades and authoritative finance totals', () => {
-  assert.match(profileSource, /<StudentGradesSection studentId=\{student\.id\} \/>/);
+  assert.match(profileSource, /<StudentGradesSection studentId=\{student\.id\} refreshKey=\{studyStatusRefreshKey\} \/>/);
   assert.match(profileSource, /hasRole\(user\?\.role_key, FINANCE_ACCESS_ROLES\)/);
   assert.match(profileSource, /<ParentFinanceSection studentId=\{student\.id\} schoolId=\{schoolId\} \/>/);
   assert.match(source('src/modules/students/StudentGradesSection.tsx'), /getStudentGrades\(studentId\)/);
