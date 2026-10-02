@@ -30,6 +30,7 @@ export interface HomeworkObjectStore {
   get(key: string): Promise<HomeworkObjectBody | null>;
   delete(key: string): Promise<unknown>;
   list(options?: {
+    prefix?: string;
     cursor?: string;
     limit?: number;
     include?: Array<'httpMetadata' | 'customMetadata'>;

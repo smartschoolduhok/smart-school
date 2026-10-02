@@ -82,7 +82,7 @@ class MemoryHomeworkFiles {
     }
     const start = Number(options.cursor || 0);
     const limit = Math.max(1, Math.min(Number(options.limit || 1000), 1000));
-    const entries = [...this.objects.entries()].sort(([left], [right]) => left.localeCompare(right));
+    const entries = [...this.objects.entries()].filter(([key]) => key.startsWith(options.prefix || '')).sort(([left], [right]) => left.localeCompare(right));
     const page = entries.slice(start, start + limit).map(([key, object]) => ({
       key,
       size: object.bytes.byteLength,
@@ -139,6 +139,7 @@ async function request(fixture, role, method, path, body, headers = {}) {
   };
   if (body !== undefined) {
     if (body instanceof FormData) options.body = body;
+    else if (body instanceof Uint8Array) options.body = body;
     else {
       options.headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(body);
@@ -438,6 +439,41 @@ test('protected attachments round-trip locally and reject spoofing with cleanup'
     fixture.database.prepare('SELECT status FROM homework_attachments WHERE homework_id=(SELECT id FROM homework_assignments WHERE homework_key=?)').get(third.body.data.homework_key).status,
     'removed',
   );
+});
+
+test('employee photos share storage without blocking homework uploads or exposing either private namespace', async t => {
+  const fixture = createFixture(t);
+  const created = await createDraft(fixture);
+  const homework = created.body.data;
+  const photo = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5v8AAAAASUVORK5CYII=', 'base64'));
+  const photoPath = '/api/employees/2/photo?school_id=1';
+  const photoUpload = await request(fixture, 'owner', 'POST', photoPath, photo, { 'Content-Type': 'image/png' });
+  assert.equal(photoUpload.status, 200, JSON.stringify(photoUpload.body));
+  const photoKey = fixture.database.prepare('SELECT photo_object_key FROM employees WHERE id=2').get().photo_object_key;
+  assert.match(photoKey, /^schools\/1\/employees\/2\//);
+  for (const role of ['teacher', 'accountant', 'parent1']) assert.equal((await request(fixture, role, 'GET', photoPath)).status, 403);
+
+  const pdf = new TextEncoder().encode('%PDF-');
+  const upload = await request(fixture, 'teacher', 'POST', `/api/homework/${homework.homework_key}/attachments`, attachmentForm(homework, pdf));
+  assert.equal(upload.status, 201, JSON.stringify(upload.body));
+  assert.equal(fixture.files.objects.size, 2);
+  const attachmentPath = `/api/homework/attachments/${upload.body.data.attachment_key}`;
+  assert.equal((await request(fixture, 'teacher', 'GET', attachmentPath + '?school_id=1')).status, 200);
+  assert.equal((await request(fixture, 'parent2', 'GET', attachmentPath)).status, 404);
+  assert.deepEqual((await request(fixture, 'owner', 'GET', photoPath)).body, photo);
+
+  // A missing active homework object must still prevent another upload, even
+  // though the unrelated employee photo remains valid in the same bucket.
+  const attachmentKey = fixture.database.prepare('SELECT object_key FROM homework_attachments WHERE attachment_key=?').get(upload.body.data.attachment_key).object_key;
+  assert.match(attachmentKey, /^homework\/1\//);
+  fixture.files.objects.delete(attachmentKey);
+  const before = snapshot(fixture.database);
+  const missing = await request(fixture, 'teacher', 'POST', `/api/homework/${homework.homework_key}/attachments`, attachmentForm(homework, pdf, 'missing.pdf'));
+  assert.equal(missing.status, 503, JSON.stringify(missing.body));
+  assert.equal(missing.body.code, 'homework_storage_reconciliation_failed');
+  assert.deepEqual(snapshot(fixture.database), before);
+  assert.equal(fixture.files.objects.size, 1);
+  assert.ok(fixture.files.objects.has(photoKey));
 });
 
 test('storage reconciliation fails closed on an orphan R2 object', async t => {

@@ -456,7 +456,9 @@ async function reconcileHomeworkStorage(db: D1Database, store: NonNullable<Bindi
   do {
     let page;
     try {
-      page = await store.list({ cursor, limit: 1000, include: ['customMetadata'] });
+      // This bucket also holds private employee photos. Reconcile the complete
+      // homework namespace while leaving other applications' objects separate.
+      page = await store.list({ prefix: 'homework/', cursor, limit: 1000, include: ['customMetadata'] });
     } catch {
       throw new HomeworkError('homework_storage_reconciliation_failed', 503);
     }

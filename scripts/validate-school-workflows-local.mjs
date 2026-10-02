@@ -25,11 +25,13 @@ try{
  const db=proxy.env.DB,after=await contentSnapshot(async sql=>(await db.prepare(sql).all()).results);
  const parallelMigration=readFileSync(join(root,'migrations/0049_timetable_parallel_lessons.sql'),'utf8');
  const accountsMigration=readFileSync(join(root,'migrations/0052_school_user_accounts.sql'),'utf8');
+ const employeeMigration=readFileSync(join(root,'migrations/0054_employee_records.sql'),'utf8');
  const accountColumns=[
   'must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))',
   'temporary_password_expires_at INTEGER',
   'account_revision INTEGER NOT NULL DEFAULT 1 CHECK (account_revision > 0)',
  ];
+ const employeeColumns=['commencement_date TEXT','photo_object_key TEXT','photo_content_type TEXT','photo_updated_at INTEGER'];
  const parallelColumn='parallel_with_load_id INTEGER REFERENCES timetable_teaching_loads(id) ON DELETE RESTRICT';
  assert.match(parallelMigration,new RegExp('ALTER TABLE timetable_teaching_loads ADD COLUMN '+parallelColumn.replace(/[()]/g,'\\$&')+';'));
  const replacedEntryTriggers=new Set(['trg_timetable_entries_validate_insert','trg_timetable_entries_validate_update']);
@@ -49,6 +51,13 @@ try{
    for(const column of accountColumns)assert.ok(accountsMigration.includes('ALTER TABLE users ADD COLUMN '+column+';'));
    const expected=[...old.sql.slice(0,-1),...accountColumns.flatMap(column=>[['symbol',','],...sqlTokens(column).map(t=>[t.kind,t.text])]),old.sql.at(-1)];
    assert.deepEqual(actual,{...old,sql:expected},'only the three declared account lifecycle columns are appended');
+  }else if(old.type==='table'&&old.name==='employees'){
+   for(const column of employeeColumns)assert.ok(employeeMigration.includes('ALTER TABLE employees ADD COLUMN '+column+';'));
+   // SQLite appends columns before the existing table-level foreign key.
+   const constraint=old.sql.findIndex(([kind,text])=>kind==='word'&&text==='FOREIGN');
+   assert.ok(constraint>0);assert.deepEqual(old.sql[constraint-1],['symbol',',']);
+   const expected=[...old.sql.slice(0,constraint-1),...employeeColumns.flatMap(column=>[['symbol',','],...sqlTokens(column).map(t=>[t.kind,t.text])]),...old.sql.slice(constraint-1)];
+   assert.deepEqual(actual,{...old,sql:expected},'only the four declared nullable employee record columns are appended');
   }else if(old.type==='trigger'&&['trg_parent_student_links_validate_update','trg_teacher_employee_links_validate_update'].includes(old.name)){
    const statement=sqlStatements(accountsMigration).find(s=>s.tokens[0]?.text==='CREATE'&&s.tokens[1]?.text==='TRIGGER'&&s.tokens.some(t=>t.text===old.name));
    assert.ok(statement,'replacement revocation trigger is declared');
@@ -88,6 +97,17 @@ try{
    ]);
    const content=actual.content.map(encoded=>{const row=JSON.parse(encoded);assert.deepEqual(row.splice(-3),[['integer','0'],['null',null],['integer','1']]);return JSON.stringify(row);}).sort();
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-3),content,hash:digest(content)},value,'every previous account value and SQLite type is unchanged');
+  }else if(name==='employees'){
+   const actual=after.tables[name];
+   assert.deepEqual(actual.columns.slice(-4),employeeColumns.map((declaration,index)=>{
+    const [name,type]=declaration.split(' ');
+    return {cid:value.columns.length+index,name,type,notnull:0,dflt_value:null,pk:0,hidden:0};
+   }),'employee additions have exactly the declared types and nullable NULL defaults');
+   const content=actual.content.map(encoded=>{
+    const row=JSON.parse(encoded);assert.deepEqual(row.splice(-4),Array.from({length:4},()=>['null',null]),'existing employees receive no inferred service dates or photos');
+    return JSON.stringify(row);
+   }).sort();
+   assert.deepEqual({...actual,columns:actual.columns.slice(0,-4),content,hash:digest(content)},value,'every previous employee column, value, row count, SQLite type and content hash is unchanged');
   }else if(name==='timetable_teaching_loads'){
    const actual=after.tables[name],newColumn=actual.columns.at(-1);
    assert.deepEqual(newColumn,{cid:value.columns.length,name:'parallel_with_load_id',type:'INTEGER',notnull:0,dflt_value:null,pk:0,hidden:0});
@@ -98,7 +118,15 @@ try{
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-1),content,hash:digest(content)},value,'every prior load column, value and SQLite type is unchanged');
   }else assert.deepEqual(after.tables[name],value,name);
  }
- assert.equal(Object.keys(after.tables).length,100);assert.equal(after.tables.section_advisors.count,0);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
+ for(const name of ['employee_qualifications','employee_record_audit']){
+  assert.equal(before.tables[name],undefined,'employee record tables are new');
+  const statement=sqlStatements(employeeMigration).find(s=>s.tokens[0]?.text==='CREATE'&&s.tokens[1]?.text==='TABLE'&&s.tokens[2]?.text===name);
+  assert.ok(statement,'new employee record table is declared');
+  const expected=sqlTokens(employeeMigration.slice(statement.start,statement.end).trim().replace(/;$/,'')).map(t=>[t.kind,t.text]);
+  assert.deepEqual(after.schema.find(item=>item.type==='table'&&item.name===name),{type:'table',name,tbl_name:name,sql:expected},name+' schema exactly matches migration 0054');
+  assert.equal(after.tables[name].count,0);assert.deepEqual(after.tables[name].content,[]);assert.equal(after.tables[name].hash,digest([]));
+ }
+ assert.equal(Object.keys(after.tables).length,102);assert.equal(after.tables.section_advisors.count,0);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
  const {default:app}=await vite.ssrLoadModule('/src/worker.ts'),f={d1:db};
  const call=async(role,method,path,body,status)=>{const r=await request(app,f,role,method,path,body);assert.equal(r.status,status,JSON.stringify({path,...r}));return r.data;};
  const count=async table=>(await db.prepare(`SELECT count(*) n FROM ${table}`).first()).n;

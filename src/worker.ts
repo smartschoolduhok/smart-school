@@ -1,4 +1,7 @@
 import { registerUserAccountRoutes, canManageAccount, updateOwnPassword, accountErrorResponse } from './lib/userAccounts'
+import { employeeSpreadsheetQualifications, employeeQualificationCells, employeeSpreadsheetRole, employeeSpreadsheetDate, employeeSpreadsheetMatch } from './lib/employeeSpreadsheet'
+import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualifications, qualificationRows, createEmployeeAuditStatement, publicEmployee, employeeQualifications, readEmployeePhotoBody, detectEmployeePhoto } from './lib/employeeRecords'
+import type { EmployeeProfile, EmployeeSalary, EmployeeTeachingAssignment, EmployeeAdvisoryAssignment, StaffDocumentMetadata, SalaryReceiptsResponse } from './types/employees'
 import { temporarySessionSecret } from './lib/authSecurity'
 import { aggregateTeacherWorkloadSummary, type TeacherWorkloadSummary } from './lib/teacherWorkloadSummary'
 import { buildSectionAdvisorPlacements, parseSectionAdvisorSaveRequest, sectionAdvisorAssignment, type SectionAdvisorsResponse, type SectionAdvisorClass, type SectionAdvisorSection, type StoredSectionAdvisor } from './lib/sectionAdvisors'
@@ -10661,206 +10664,181 @@ app.use('/static/*', serveStatic({ root: './', manifest: {} as any }))
 
 // GET /api/employees
 // ===========================================
-app.get('/api/employees', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
+async function staffDocumentMetadata(db: D1Database, schoolId: number): Promise<StaffDocumentMetadata | null> {
+  const [school,settings] = await Promise.all([
+    db.prepare('SELECT id,name,name_en,province,logo_url,principal_name FROM schools WHERE id=?').bind(schoolId).first<StaffDocumentMetadata['school']>(),
+    db.prepare('SELECT official_book_layout_settings_json,use_arabic_indic_digits,official_book_header_text,official_book_footer_text,date_format FROM school_settings WHERE school_id=?').bind(schoolId).first<{official_book_layout_settings_json:string|null;use_arabic_indic_digits:number|null;official_book_header_text:string|null;official_book_footer_text:string|null;date_format:string|null}>(),
+  ]);
+  if(!school) return null;
+  return {school,prepared_at:Math.floor(Date.now()/1000),document_settings:{official_book_layout:resolvedOfficialBookLayout(settings?.official_book_layout_settings_json,school),use_arabic_indic_digits:(settings?.use_arabic_indic_digits??1)===1,header_text:settings?.official_book_header_text||'',footer_text:settings?.official_book_footer_text||'',currency:'IQD',date_format:settings?.date_format||'dd/MM/yyyy'}};
+}
+function validEmployeeReadSchool(c:any): number | null {
+  const query=c.req.query('school_id');
+  if(query!==undefined && (!/^[1-9]\d*$/.test(query) || !Number.isSafeInteger(Number(query)))) return null;
+  return c.get('resolvedSchoolId') || null;
+}
 
-  if (!user || !canViewEmployees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
-  }
-
-  try {
-    const query = c.req.query();
-    const status = query.status || null;
-
-    let sql = `SELECT e.*, sch.name as school_name FROM employees e LEFT JOIN schools sch ON e.school_id = sch.id WHERE 1=1`;
-    const params: any[] = [];
-
-    if (scope === 'single' && resolvedSchoolId) {
-      sql += ` AND e.school_id = ?`;
-      params.push(resolvedSchoolId);
-    }
-    if (status) {
-      sql += ` AND e.status = ?`;
-      params.push(status);
-    }
-    sql += ` ORDER BY e.created_at DESC`;
-
-    const rows = await db.prepare(sql).bind(...params).all<any>();
-    return c.json({ data: rows.results || [] });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الموظفين', detail: err.message }, 500);
-  }
+app.get('/api/employees', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_ACCESS_ROLES), async (c) => {
+  const schoolId=validEmployeeReadSchool(c); if(!schoolId) return c.json({error:'حدد المدرسة المطلوبة'},400);
+  const user=c.get('user') as UserContext;
+  const status=c.req.query('status'); if(status && !['active','archived','all'].includes(status)) return c.json({error:'حالة الموظف غير صالحة'},400);
+  const rows=await c.env.DB.prepare(`SELECT * FROM employees WHERE school_id=? ${status&&status!=='all'?'AND status=?':''} ORDER BY created_at DESC,id DESC`).bind(schoolId,...(status&&status!=='all'?[status]:[])).all<Record<string,unknown>>();
+  return c.json({data:(rows.results||[]).map(row=>publicEmployee(row,canManageEmployees(user.role_key)))});
 });
 
-// GET /api/employees/:id
-// ===========================================
-app.get('/api/employees/:id', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  if (!user || !canViewEmployees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
-  }
-
-  try {
-    const id = parseInt(c.req.param('id'), 10);
-    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
-
-    const row = await db.prepare(`
-      SELECT e.*, sch.name as school_name FROM employees e
-      LEFT JOIN schools sch ON e.school_id = sch.id
-      WHERE e.id = ?
-    `).bind(id).first<any>();
-
-    if (!row) return c.json({ error: 'الموظف غير موجود' }, 404);
-
-    if (scope === 'single' && resolvedSchoolId && row.school_id !== resolvedSchoolId) {
-      return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
-    }
-
-    return c.json({ data: row });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الموظف', detail: err.message }, 500);
-  }
+app.get('/api/employees/:id', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_ACCESS_ROLES), async (c) => {
+  const schoolId=validEmployeeReadSchool(c),id=Number(c.req.param('id')); if(!schoolId || !Number.isSafeInteger(id) || id<=0) return c.json({error:'حدد المدرسة والموظف بمعرفات صحيحة'},400);
+  const row=await c.env.DB.prepare('SELECT * FROM employees WHERE id=? AND school_id=?').bind(id,schoolId).first<Record<string,unknown>>();
+  if(!row) return c.json({error:'الموظف غير موجود'},404);
+  const privateView=canManageEmployees((c.get('user') as UserContext).role_key);
+  const data=publicEmployee(row,privateView);
+  if(privateView) data.qualifications=await employeeQualifications(c.env.DB,schoolId,id);
+  return c.json({data});
 });
 
-// POST /api/employees
-// ===========================================
-app.post('/api/employees', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  if (!user || !canManageEmployees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
-  }
-
+const EMPLOYEE_WRITE_FIELDS=['full_name','employee_number','phone','email','role','job_title','salary_amount','hire_date','notes','gender','address','employee_type','salary_type','commencement_date'] as const;
+app.post('/api/employees', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_MANAGEMENT_ROLES), async (c) => {
+  const user=c.get('user') as UserContext, db=c.env.DB;
   try {
-    const body = await c.req.json();
-    const { full_name, school_id, employee_number, phone, email, role, job_title, salary_amount, hire_date, notes } = body;
-
-    if (!full_name) {
-      return c.json({ error: 'اسم الموظف مطلوب' }, 400);
-    }
-
-    const targetSchool = await resolveActiveWriteSchool(db, user, school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-    const targetSchoolId = targetSchool.schoolId;
-
-    const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseWholeFinanceAmount(salary_amount, true) : 0;
-    if (salaryNum == null) {
-      return c.json({ error: 'راتب الموظف يجب أن يكون عدداً صحيحاً آمناً، صفر أو أكبر' }, 400);
-    }
-
-    const result = await db.prepare(`
-      INSERT INTO employees (school_id, full_name, employee_number, phone, email, role, job_title, salary_amount, hire_date, notes, created_by_user_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-    `).bind(targetSchoolId, full_name, employee_number || null, phone || null, email || null, role || 'staff', job_title || null, salaryNum, hire_date || null, notes || null, user.id).run();
-
-    const newId = result.meta.last_row_id;
-    return c.json({ data: { id: newId, full_name, salary_amount: salaryNum, status: 'active' } }, 201);
-  } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء الموظف', detail: err.message }, 500);
-  }
+    const body=await readJsonObject(c);if(!body)return c.json({error:'بيانات الموظف غير صالحة'},400);
+    const target=await resolveActiveWriteSchool(db,user,body.school_id);if(!target.ok)return c.json({error:target.error},target.status);
+    const fields=validateEmployeeFields(body),qualifications=validateEmployeeQualifications(body.qualifications??[]);
+    const result=await db.batch([
+      db.prepare(`INSERT INTO employees(school_id,${EMPLOYEE_WRITE_FIELDS.join(',')},created_by_user_id,created_at,updated_at) VALUES(?,${EMPLOYEE_WRITE_FIELDS.map(()=>'?').join(',')},?,unixepoch(),unixepoch())`).bind(target.schoolId,...EMPLOYEE_WRITE_FIELDS.map(field=>fields[field]),user.id),
+      createEmployeeAuditStatement(db,{schoolId:target.schoolId,userId:user.id,action:'created',before:null,after:{...fields,qualifications}}),
+      qualificationRows(db,target.schoolId,undefined,qualifications),
+    ]);
+    const id=result[0].meta.last_row_id;
+    return c.json({data:{id,full_name:fields.full_name,salary_amount:fields.salary_amount,status:'active'}},201);
+  } catch(error) {return c.json({error:error instanceof EmployeeRecordError?error.message:'فشل حفظ الموظف، لم تتغير البيانات'},error instanceof EmployeeRecordError?400:500);}
 });
 
-// PUT /api/employees/:id
-// ===========================================
-app.put('/api/employees/:id', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  if (!user || !canManageEmployees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
-  }
-
+app.put('/api/employees/:id', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_MANAGEMENT_ROLES), async (c) => {
+  const user=c.get('user') as UserContext,db=c.env.DB,id=Number(c.req.param('id'));
+  if(!Number.isSafeInteger(id)||id<=0)return c.json({error:'معرف غير صالح'},400);
   try {
-    const id = parseInt(c.req.param('id'), 10);
-    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
-
-    const body = await c.req.json();
-    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-
-    const existing = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(id).first<any>();
-    if (!existing) return c.json({ error: 'الموظف غير موجود' }, 404);
-
-    if (existing.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
-    }
-
-    const { full_name, employee_number, phone, email, role, job_title, salary_amount, hire_date, notes } = body;
-
-    const salaryNum = salary_amount !== undefined && salary_amount !== '' ? parseWholeFinanceAmount(salary_amount, true) : existing.salary_amount;
-    if (salaryNum == null) {
-      return c.json({ error: 'راتب الموظف يجب أن يكون عدداً صحيحاً آمناً، صفر أو أكبر' }, 400);
-    }
-
-    await db.prepare(`
-      UPDATE employees SET
-        full_name = COALESCE(?, full_name),
-        employee_number = COALESCE(?, employee_number),
-        phone = COALESCE(?, phone),
-        email = COALESCE(?, email),
-        role = COALESCE(?, role),
-        job_title = COALESCE(?, job_title),
-        salary_amount = ?,
-        hire_date = COALESCE(?, hire_date),
-        notes = COALESCE(?, notes),
-        updated_at = unixepoch()
-      WHERE id = ? AND school_id = ?
-    `).bind(
-      full_name || null, employee_number || null, phone || null, email || null,
-      role || null, job_title || null, salaryNum, hire_date || null, notes || null, id, targetSchool.schoolId
-    ).run();
-
-    return c.json({ data: { id, updated: true } });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث الموظف', detail: err.message }, 500);
-  }
+    const body=await readJsonObject(c);if(!body)return c.json({error:'بيانات الموظف غير صالحة'},400);
+    const target=await resolveActiveWriteSchool(db,user,body.school_id);if(!target.ok)return c.json({error:target.error},target.status);
+    const existing=await db.prepare('SELECT * FROM employees WHERE id=? AND school_id=?').bind(id,target.schoolId).first<Record<string,unknown>>();
+    if(!existing)return c.json({error:'الموظف غير موجود'},404);
+    const fields=validateEmployeeFields(body,existing),beforeQualifications=await employeeQualifications(db,target.schoolId,id);
+    const qualifications=body.qualifications===undefined?beforeQualifications:validateEmployeeQualifications(body.qualifications);
+    // Reject a write if another request changed the snapshot while it was being read.
+    // Qualification replacements get new IDs, including a clear followed by a refill.
+    const comparedFields=[...EMPLOYEE_WRITE_FIELDS,'status','updated_at','photo_object_key','photo_content_type','photo_updated_at'];
+    const qualificationIds=JSON.stringify(beforeQualifications.map(q=>q.id).sort((a,b)=>a-b)),operationId=crypto.randomUUID();
+    const statements=[db.prepare(`UPDATE employees SET ${EMPLOYEE_WRITE_FIELDS.map(field=>field+'=?').join(',')},updated_at=unixepoch() WHERE id=? AND school_id=? AND ${comparedFields.map(field=>field+' IS ?').join(' AND ')}
+      AND (SELECT json_group_array(id) FROM (SELECT id FROM employee_qualifications WHERE employee_id=? AND school_id=? ORDER BY id))=?`).bind(...EMPLOYEE_WRITE_FIELDS.map(field=>fields[field]),id,target.schoolId,...comparedFields.map(field=>existing[field]),id,target.schoolId,qualificationIds),
+      createEmployeeAuditStatement(db,{schoolId:target.schoolId,employeeId:id,userId:user.id,action:'updated',before:{...publicEmployee(existing,true),qualifications:beforeQualifications},after:{...publicEmployee(fields,true),qualifications,operation_id:operationId},onlyIfPreviousChanged:true})];
+    // The audit token keeps insertion conditional even when the preceding DELETE
+    // removed zero qualifications; a rejected update must not write any child rows.
+    if(body.qualifications!==undefined)statements.push(db.prepare('DELETE FROM employee_qualifications WHERE employee_id=? AND school_id=? AND changes()>0').bind(id,target.schoolId),qualificationRows(db,target.schoolId,id,qualifications,operationId));
+    const result=await db.batch(statements);
+    if(!result[0].meta.changes)return c.json({error:'تغيرت بيانات الموظف، حدّث الصفحة وأعد المحاولة'},409);
+    return c.json({data:{id,updated:true}});
+  } catch(error) {return c.json({error:error instanceof EmployeeRecordError?error.message:'فشل تحديث الموظف، لم تتغير البيانات'},error instanceof EmployeeRecordError?400:500);}
 });
 
-// PUT /api/employees/:id/archive
-// ===========================================
-app.put('/api/employees/:id/archive', requireSameSchoolOrAdmin(), async (c) => {
-  const db = c.env.DB;
-  const user = c.get('user') as UserContext | null;
-  const scope = c.get('scope') as 'all' | 'single';
-  const resolvedSchoolId = c.get('resolvedSchoolId') as number | null;
-
-  if (!user || !canManageEmployees(user.role_key)) {
-    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الموظفين والرواتب' }, 403);
-  }
-
+app.put('/api/employees/:id/archive', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_MANAGEMENT_ROLES), async (c) => {
+  const user=c.get('user') as UserContext,db=c.env.DB,id=Number(c.req.param('id'));
+  if(!Number.isSafeInteger(id)||id<=0)return c.json({error:'معرف غير صالح'},400);
   try {
-    const id = parseInt(c.req.param('id'), 10);
-    if (isNaN(id)) return c.json({ error: 'معرف غير صالح' }, 400);
-    const body = await c.req.json().catch(() => ({}));
-    const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id);
-    if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
-
-    const existing = await db.prepare(`SELECT * FROM employees WHERE id = ?`).bind(id).first<any>();
-    if (!existing) return c.json({ error: 'الموظف غير موجود' }, 404);
-
-    if (existing.school_id !== targetSchool.schoolId) {
-      return c.json({ error: 'غير مسموح: الموظف لا ينتمي إلى مدرستك' }, 403);
-    }
-
-    await db.prepare(`UPDATE employees SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
-    return c.json({ data: { id, status: 'archived' } });
-  } catch (err: any) {
-    return c.json({ error: 'فشل في أرشفة الموظف', detail: err.message }, 500);
-  }
+    const body=await readJsonObject(c)||{};const target=await resolveActiveWriteSchool(db,user,body.school_id);if(!target.ok)return c.json({error:target.error},target.status);
+    const existing=await db.prepare('SELECT * FROM employees WHERE id=? AND school_id=?').bind(id,target.schoolId).first<Record<string,unknown>>();if(!existing)return c.json({error:'الموظف غير موجود'},404);
+    if(existing.status!=='archived')await db.batch([db.prepare("UPDATE employees SET status='archived',updated_at=unixepoch() WHERE id=? AND school_id=? AND status IS ?").bind(id,target.schoolId,existing.status),createEmployeeAuditStatement(db,{schoolId:target.schoolId,employeeId:id,userId:user.id,action:'archived',before:{status:existing.status},after:{status:'archived'},onlyIfPreviousChanged:true})]);
+    return c.json({data:{id,status:'archived'}});
+  }catch{return c.json({error:'فشلت أرشفة الموظف'},500);}
 });
 
+app.get('/api/employees/:id/profile', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_ACCESS_ROLES), async (c) => {
+  const db=c.env.DB,schoolId=validEmployeeReadSchool(c),id=Number(c.req.param('id')),user=c.get('user') as UserContext;
+  if(!schoolId||!Number.isSafeInteger(id)||id<=0)return c.json({error:'حدد المدرسة والموظف بمعرفات صحيحة'},400);
+  const row=await db.prepare('SELECT * FROM employees WHERE id=? AND school_id=?').bind(id,schoolId).first<Record<string,unknown>>();if(!row)return c.json({error:'الموظف غير موجود'},404);
+  const canViewPrivate=canManageEmployees(user.role_key),metadata=await staffDocumentMetadata(db,schoolId);
+  const years=canViewPrivate?(await db.prepare('SELECT id,name,is_active FROM academic_years WHERE school_id=? ORDER BY is_active DESC,id DESC').bind(schoolId).all<{id:number;name:string;is_active:number}>()).results||[]:[];
+  const requestedYear=c.req.query('academic_year_id');
+  if(requestedYear!==undefined && (!/^[1-9]\d*$/.test(requestedYear)||!Number.isSafeInteger(Number(requestedYear))))return c.json({error:'السنة الدراسية غير صالحة'},400);
+  const year=canViewPrivate?(requestedYear?years.find(y=>y.id===Number(requestedYear)):years.find(y=>y.is_active===1)||null):null;
+  if(requestedYear && canViewPrivate && !year)return c.json({error:'السنة الدراسية لا تنتمي إلى المدرسة'},403);
+  const qualifications=canViewPrivate?await employeeQualifications(db,schoolId,id):[];
+  const teaching:EmployeeTeachingAssignment[]=[];let advisory:EmployeeAdvisoryAssignment[]=[];
+  if(canViewPrivate&&year&&row.role==='teacher') {
+    const context=await loadTimetableSchedulingContext(db,schoolId,year.id);
+    const activeDays=new Set(context.days.filter(d=>d.is_active===1).map(d=>d.day_of_week));
+    const activeSlots=new Set(context.slots.filter(s=>s.is_active===1&&s.slot_type==='lesson'&&activeDays.has(s.day_of_week)).map(s=>s.id));
+    for(const load of context.loads.filter(l=>l.employee_id===id&&l.status==='active'&&!loadHasInvalidAcademicReference(l))) {
+      teaching.push({teaching_load_id:load.id,subject_id:load.subject_id,subject_name:load.subject_name||'',class_id:load.class_id,class_name:load.class_name||'',section_id:load.section_id,section_name:load.section_name||null,planned_weekly_periods:load.weekly_periods,saved_weekly_periods:new Set(context.entries.filter(e=>e.teaching_load_id===load.id&&activeSlots.has(e.slot_id)).map(e=>e.id)).size});
+    }
+    const result=await db.prepare(`SELECT a.class_id,c.name AS class_name,a.section_id,s.name AS section_name,a.attendance_confirmed,a.notes FROM section_advisors a JOIN classes c ON c.id=a.class_id AND c.school_id=a.school_id LEFT JOIN sections s ON s.id=a.section_id AND s.school_id=a.school_id WHERE a.school_id=? AND a.academic_year_id=? AND a.employee_id=? ORDER BY c.order_index,s.name`).bind(schoolId,year.id,id).all<EmployeeAdvisoryAssignment>();
+    advisory=(result.results||[]).map(a=>({...a,attendance_confirmed:!!a.attendance_confirmed}));
+  }
+  const salaries=await db.prepare(`SELECT s.*,t.business_date AS payment_business_date FROM employee_salaries s LEFT JOIN treasury_transactions t ON t.id=s.treasury_transaction_id AND t.school_id=s.school_id WHERE s.school_id=? AND s.employee_id=? ORDER BY s.year DESC,s.month DESC,s.id DESC`).bind(schoolId,id).all<EmployeeSalary>();
+  const employee=publicEmployee(row,canViewPrivate);if(canViewPrivate){employee.qualifications=qualifications;employee.primary_qualification=qualifications.find(q=>q.is_primary)||null;}
+  const data:EmployeeProfile={employee,qualifications,academic_years:years,academic_year:year?{id:year.id,name:year.name}:null,teaching_assignments:teaching,total_saved_weekly_periods:teaching.reduce((n,l)=>n+l.saved_weekly_periods,0),advisory_assignments:advisory,salary_history:salaries.results||[],can_manage:canViewPrivate,can_view_private:canViewPrivate,document_settings:metadata!.document_settings};
+  return c.json({data});
+});
+
+app.get('/api/staff-register', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_ACCESS_ROLES), async (c) => {
+  const schoolId=validEmployeeReadSchool(c);if(!schoolId)return c.json({error:'حدد المدرسة المطلوبة'},400);
+  const q=(c.req.query('q')||'').trim(),role=c.req.query('role')||'',status=c.req.query('status')||'active';
+  if(!['active','archived','all'].includes(status)||q.length>200||role.length>80)return c.json({error:'مرشحات سجل الكادر غير صالحة'},400);
+  const privateView=canManageEmployees((c.get('user') as UserContext).role_key),metadata=await staffDocumentMetadata(c.env.DB,schoolId);if(!metadata)return c.json({error:'المدرسة غير موجودة'},404);
+  const rows=await c.env.DB.prepare(`SELECT * FROM employees WHERE school_id=? ${status==='all'?'':'AND status=?'} ${role?'AND role=?':''} ${q?"AND (instr(lower(full_name),lower(?))>0 OR instr(lower(coalesce(employee_number,'')),lower(?))>0 OR instr(lower(coalesce(job_title,'')),lower(?))>0)":''} ORDER BY full_name,id`).bind(schoolId,...(status==='all'?[]:[status]),...(role?[role]:[]),...(q?[q,q,q]:[])).all<Record<string,unknown>>();
+  const qualifications=privateView?await employeeQualifications(c.env.DB,schoolId):[];
+  return c.json({data:{...metadata,can_view_private:privateView,filters:{q,role,status},employees:(rows.results||[]).map(row=>{const employee=publicEmployee(row,privateView);if(privateView)employee.primary_qualification=qualifications.find(q=>q.employee_id===employee.id&&q.is_primary)||null;return employee;})}});
+});
+
+app.get('/api/salary-receipts', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_SALARY_ROLES), async (c) => {
+  const db=c.env.DB,schoolId=validEmployeeReadSchool(c),month=parseFinancePeriodPart(c.req.query('month'),1,12),year=parseFinancePeriodPart(c.req.query('year'),2000,2200),status=c.req.query('status')||'unpaid';
+  if(!schoolId||month==null||year==null||!['unpaid','paid','cancelled','all'].includes(status))return c.json({error:'حدد المدرسة والشهر والسنة والحالة بشكل صحيح'},400);
+  const metadata=await staffDocumentMetadata(db,schoolId);if(!metadata)return c.json({error:'المدرسة غير موجودة'},404);
+  const allRows=(await db.prepare(`SELECT s.*,e.full_name AS employee_name,e.employee_number,e.job_title,e.status AS employee_status,t.business_date AS payment_business_date FROM employee_salaries s LEFT JOIN employees e ON e.id=s.employee_id AND e.school_id=s.school_id LEFT JOIN treasury_transactions t ON t.id=s.treasury_transaction_id AND t.school_id=s.school_id WHERE s.school_id=? AND s.month=? AND s.year=? ORDER BY e.full_name,s.id`).bind(schoolId,month,year).all<EmployeeSalary>()).results||[];
+  const missing=(await db.prepare(`SELECT e.id,e.full_name,e.employee_number FROM employees e WHERE e.school_id=? AND e.status='active' AND NOT EXISTS(SELECT 1 FROM employee_salaries s WHERE s.school_id=e.school_id AND s.employee_id=e.id AND s.month=? AND s.year=?) ORDER BY e.full_name,e.id`).bind(schoolId,month,year).all<{id:number;full_name:string;employee_number:string|null}>()).results||[];
+  const rows=allRows.filter(r=>status==='all'||r.status===status),payable=rows.filter(r=>r.status!=='cancelled');
+  const totals={base_salary:0,bonus_amount:0,deduction_amount:0,net_salary:0,payable_count:payable.length};
+  for(const row of payable)for(const field of ['base_salary','bonus_amount','deduction_amount','net_salary'] as const){totals[field]+=row[field];if(!Number.isSafeInteger(totals[field]))return c.json({error:'إجمالي الكشف يتجاوز الحد المالي الآمن'},400);}
+  const data:SalaryReceiptsResponse={...metadata,month,year,status:status as SalaryReceiptsResponse['status'],rows,totals,period_record_count:allRows.length,missing_employee_count:missing.length,missing_employees:missing,status_counts:{unpaid:allRows.filter(r=>r.status==='unpaid').length,paid:allRows.filter(r=>r.status==='paid').length,cancelled:allRows.filter(r=>r.status==='cancelled').length}};
+  return c.json({data});
+});
+
+app.get('/api/employees/:id/photo', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_MANAGEMENT_ROLES), async (c) => {
+  const schoolId=validEmployeeReadSchool(c),id=Number(c.req.param('id'));if(!schoolId||!Number.isSafeInteger(id)||id<=0)return c.json({error:'حدد المدرسة والموظف'},400);
+  const row=await c.env.DB.prepare('SELECT photo_object_key,photo_content_type FROM employees WHERE id=? AND school_id=?').bind(id,schoolId).first<{photo_object_key:string|null;photo_content_type:string|null}>();
+  if(!row?.photo_object_key||!row.photo_object_key.startsWith(`schools/${schoolId}/employees/${id}/`))return c.json({error:'الصورة غير موجودة'},404);
+  if(!c.env.HOMEWORK_FILES)return c.json({error:'تخزين الصور غير متاح'},503);
+  const object=await c.env.HOMEWORK_FILES.get(row.photo_object_key);if(!object)return c.json({error:'الصورة غير موجودة'},404);
+  const body=object.body||(object.arrayBuffer?await object.arrayBuffer():null);if(!body)return c.json({error:'الصورة غير موجودة'},404);
+  return new Response(body,{headers:{'Content-Type':row.photo_content_type||'application/octet-stream','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Disposition':'inline'}});
+});
+
+app.post('/api/employees/:id/photo', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_MANAGEMENT_ROLES), async (c) => {
+  const db=c.env.DB,user=c.get('user') as UserContext,id=Number(c.req.param('id'));if(!Number.isSafeInteger(id)||id<=0)return c.json({error:'معرف غير صالح'},400);
+  const target=await resolveActiveWriteSchool(db,user,c.req.query('school_id'));if(!target.ok)return c.json({error:target.error},target.status);
+  const existing=await db.prepare('SELECT photo_object_key,photo_updated_at FROM employees WHERE id=? AND school_id=?').bind(id,target.schoolId).first<{photo_object_key:string|null;photo_updated_at:number|null}>();if(!existing)return c.json({error:'الموظف غير موجود'},404);
+  const store=c.env.HOMEWORK_FILES;if(!store)return c.json({error:'تخزين الصور غير متاح'},503);
+  let key:string|null=null,committed=false;
+  try {
+    const bytes=await readEmployeePhotoBody(c.req.raw),mime=detectEmployeePhoto(bytes);if(!mime||c.req.header('Content-Type')?.split(';')[0].trim().toLowerCase()!==mime)throw new EmployeeRecordError('اختر صورة PNG أو JPEG أو WebP صحيحة');
+    key=`schools/${target.schoolId}/employees/${id}/${crypto.randomUUID()}`;const timestamp=Math.max(Math.floor(Date.now()/1000),(existing.photo_updated_at||0)+1);
+    await store.put(key,bytes,{httpMetadata:{contentType:mime},customMetadata:{school_id:String(target.schoolId),employee_id:String(id)}});
+    const result=await db.batch([db.prepare('UPDATE employees SET photo_object_key=?,photo_content_type=?,photo_updated_at=?,updated_at=unixepoch() WHERE id=? AND school_id=? AND photo_object_key IS ?').bind(key,mime,timestamp,id,target.schoolId,existing.photo_object_key),db.prepare(`INSERT INTO employee_record_audit(school_id,employee_id,actor_user_id,action,before_json,after_json) SELECT school_id,id,?,'photo_uploaded',?,? FROM employees WHERE id=? AND school_id=? AND photo_object_key=?`).bind(user.id,JSON.stringify({has_photo:!!existing.photo_object_key}),JSON.stringify({has_photo:true,photo_updated_at:timestamp}),id,target.schoolId,key)]);
+    if(!result[0].meta.changes){await store.delete(key);return c.json({error:'تغيرت صورة الموظف، حدّث الصفحة وأعد المحاولة'},409);}committed=true;
+    if(existing.photo_object_key?.startsWith(`schools/${target.schoolId}/employees/${id}/`)){try{await store.delete(existing.photo_object_key);}catch{console.warn('employee_photo_old_object_cleanup_failed');}}
+    return c.json({data:{has_photo:true,photo_updated_at:timestamp}});
+  }catch(error){if(key&&!committed){try{await store.delete(key);}catch{console.warn('employee_photo_failed_upload_cleanup');}}return c.json({error:error instanceof EmployeeRecordError?error.message:'تعذر حفظ صورة الموظف'},error instanceof EmployeeRecordError?400:500);}
+});
+
+app.delete('/api/employees/:id/photo', requireSameSchoolOrAdmin(), requireRoles(EMPLOYEE_MANAGEMENT_ROLES), async (c) => {
+  const db=c.env.DB,user=c.get('user') as UserContext,id=Number(c.req.param('id'));if(!Number.isSafeInteger(id)||id<=0)return c.json({error:'معرف غير صالح'},400);
+  const target=await resolveActiveWriteSchool(db,user,c.req.query('school_id'));if(!target.ok)return c.json({error:target.error},target.status);
+  const existing=await db.prepare('SELECT photo_object_key FROM employees WHERE id=? AND school_id=?').bind(id,target.schoolId).first<{photo_object_key:string|null}>();if(!existing)return c.json({error:'الموظف غير موجود'},404);
+  if(existing.photo_object_key){
+    const result=await db.batch([db.prepare('UPDATE employees SET photo_object_key=NULL,photo_content_type=NULL,photo_updated_at=NULL,updated_at=unixepoch() WHERE id=? AND school_id=? AND photo_object_key=?').bind(id,target.schoolId,existing.photo_object_key),db.prepare(`INSERT INTO employee_record_audit(school_id,employee_id,actor_user_id,action,before_json,after_json) SELECT school_id,id,?,'photo_deleted','{"has_photo":true}','{"has_photo":false}' FROM employees WHERE id=? AND school_id=? AND changes()>0`).bind(user.id,id,target.schoolId)]);
+    if(!result[0].meta.changes)return c.json({error:'تغيرت صورة الموظف، حدّث الصفحة وأعد المحاولة'},409);
+    if(c.env.HOMEWORK_FILES&&existing.photo_object_key.startsWith(`schools/${target.schoolId}/employees/${id}/`)){try{await c.env.HOMEWORK_FILES.delete(existing.photo_object_key);}catch{console.warn('employee_photo_deleted_object_cleanup_failed');}}
+  }
+  return c.json({data:{has_photo:false,photo_updated_at:null}});
+});
 // GET /api/salaries
 // ===========================================
 app.get('/api/salaries', requireSameSchoolOrAdmin(), async (c) => {
@@ -13591,7 +13569,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
       ? await resolveActiveAcademicYear(db, school_id)
       : null;
     const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id, s.religious_track FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
-    const existingEmployees = await db.prepare(`SELECT id, full_name, email, phone FROM employees WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
+    const existingEmployees = await db.prepare(`SELECT id, full_name, employee_number, email, phone, status FROM employees WHERE school_id = ?`).bind(school_id).all<any>();
 
     const classMap = new Map((existingClasses.results || []).map((c: any) => [c.name, c.id]));
     const normalizedClassMap = new Map((existingClasses.results || []).map((c: any) => [normalizeStudentIdentity(c.name), c.id]));
@@ -13600,8 +13578,6 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
     const normalizedSectionMap = new Map((existingSections.results || []).map((s: any) => [`${s.class_id}:${normalizeSectionName(s.name)}`, s.id]));
     const studentMap = new Map((existingStudents.results || []).map((s: any) => [s.student_number, s]));
     const subjectMap = new Map((existingSubjects.results || []).map((s: any) => [`${s.class_id}:${s.section_id || ''}:${s.name}`, s.id]));
-    const employeeEmailMap = new Map((existingEmployees.results || []).map((e: any) => [e.email, e]));
-    const employeePhoneMap = new Map((existingEmployees.results || []).map((e: any) => [e.phone, e]));
 
     const excelRowNumber = (rowIndex: number) => Number(rows[rowIndex]?._excel_row_number || rows[rowIndex]?.excel_row_number || rowIndex + 2);
     const rowError = (rowIndex: number, field: string, message: string) => {
@@ -13823,31 +13799,37 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         record.data = { subject_name: subjectName, class_id: classId, class_name: className, section_id: sectionId, section_name: sectionName, subject_type: subjectType, religious_track: religiousTrackValidation.value, counts_in_average: countsInAverage, appears_in_report_card: appearsInReportCard, passing_grade: passingGrade, exemption_grade: exemptionGrade, order_index: orderIndex, status, imported_fields: [...importedFields] };
       } else if (type === 'employees') {
         const fullName = normalizeText(mapped.full_name || mapped['الاسم'] || mapped['اسم الموظف'] || mapped['name']);
+        const employeeNumber = normalizeText(mapped.employee_number ?? mapped['الرقم الوظيفي']);
+        const employeeRole = employeeSpreadsheetRole(mapped.role ?? mapped['صفة الموظف']);
         const gender = isValidGender(mapped.gender || mapped['الجنس']);
         const phone = isValidPhone(mapped.phone || mapped['الهاتف'] || mapped['رقم الهاتف'] || mapped['mobile']);
         const email = isValidEmail(mapped.email || mapped['البريد'] || mapped['email']);
         const address = normalizeText(mapped.address || mapped['العنوان'] || mapped['السكن']);
         const jobTitle = normalizeText(mapped.job_title || mapped['المسمى الوظيفي'] || mapped['job'] || mapped['position'] || mapped['الوظيفة']);
         const employeeType = isValidEmployeeType(mapped.employee_type || mapped['نوع الموظف'] || mapped['type']);
-        const hireDate = normalizeDate(mapped.hire_date || mapped['تاريخ التعيين'] || mapped['hire']);
+        const rawHireDate = mapped.hire_date ?? mapped['تاريخ التعيين'] ?? mapped['hire'];
+        const rawCommencementDate = mapped.commencement_date ?? mapped['تاريخ المباشرة'];
+        let hireDate: string | null = null, commencementDate: string | null = null;
         const salaryAmount = normalizeNumber(mapped.salary_amount || mapped['الراتب'] || mapped['salary'] || mapped['الراتب الأساسي']);
         const salaryType = isValidSalaryType(mapped.salary_type || mapped['نوع الراتب']);
         const status = isValidStatus(mapped.status || mapped['الحالة'] || mapped['status']) || 'active';
         const notes = normalizeText(mapped.notes || mapped['ملاحظات'] || mapped['notes']);
+        let qualifications;
+        try {
+          hireDate = employeeSpreadsheetDate(rawHireDate);
+          commencementDate = employeeSpreadsheetDate(rawCommencementDate);
+          qualifications = employeeSpreadsheetQualifications(mapped, employeeSpreadsheetDate);
+          validateEmployeeFields({full_name: fullName, employee_number: employeeNumber, ...(employeeRole ? {role: employeeRole} : {}), hire_date: hireDate, commencement_date: commencementDate});
+        } catch (failure) { rowError(i, 'qualifications', failure instanceof Error ? failure.message : 'بيانات الموظف غير صالحة'); hasFatal = true; }
 
         if (!fullName) { rowError(i, 'full_name', 'اسم الموظف مطلوب'); hasFatal = true; }
         if (email && !isValidEmail(email)) { rowError(i, 'email', 'البريد الإلكتروني غير صالح'); hasFatal = true; }
         if (phone && !isValidPhone(phone)) { rowError(i, 'phone', 'رقم الهاتف غير صالح'); hasFatal = true; }
         if (salaryAmount !== null && (salaryAmount < 0 || !Number.isInteger(salaryAmount))) { rowError(i, 'salary_amount', 'الراتب يجب أن يكون عدداً صحيحاً غير سالب'); hasFatal = true; }
 
-        // Duplicate detection by email, phone, or full_name
         let dup = null;
-        if (email && employeeEmailMap.has(email)) dup = employeeEmailMap.get(email);
-        else if (phone && employeePhoneMap.has(phone)) dup = employeePhoneMap.get(phone);
-        else if (fullName) {
-          const nameMatch = (existingEmployees.results || []).find((e: any) => e.full_name === fullName);
-          if (nameMatch) dup = nameMatch;
-        }
+        try { dup = employeeSpreadsheetMatch(existingEmployees.results || [], { full_name: fullName || '', employee_number: employeeNumber, email, phone }); }
+        catch (failure) { rowError(i, 'employee_number', failure instanceof Error ? failure.message : 'تعذر مطابقة الموظف'); hasFatal = true; }
         if (dup) {
           if (mode === 'error_on_existing') {
             rowError(i, 'full_name', 'موظف بنفس البيانات موجود مسبقاً'); hasFatal = true;
@@ -13857,7 +13839,9 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
           }
         }
 
-        record.data = { full_name: fullName, gender, phone, email, address, job_title: jobTitle, employee_type: employeeType, hire_date: hireDate, salary_amount: salaryAmount, salary_type: salaryType, status, notes };
+        record.data = { full_name: fullName, gender, phone, email, address, job_title: jobTitle, employee_type: employeeType, hire_date: hireDate, salary_amount: salaryAmount, salary_type: salaryType, status, notes,
+          ...(employeeNumber != null ? {employee_number: employeeNumber} : {}), ...(employeeRole ? {role: employeeRole} : {}),
+          ...(rawCommencementDate !== undefined ? {commencement_date: commencementDate} : {}), ...(qualifications !== undefined ? {qualifications, ...employeeQualificationCells(qualifications)} : {}) };
       } else if (type === 'student-subjects') {
         const studentNumber = normalizeText(mapped.student_number || mapped['القيد'] || mapped['رقم الطالب'] || mapped['student_number']);
         const fullName = normalizeText(mapped.full_name || mapped['اسم الطالب'] || mapped['الاسم'] || mapped['student_name']);
@@ -14096,7 +14080,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
         }
       : await db.prepare(`SELECT id, student_number, full_name, father_name, mother_name, gender, birth_date, phone, guardian_name, guardian_phone, address, class_id, section_id, status, notes FROM students WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
     const existingSubjects = await db.prepare(`SELECT s.id, s.name, s.class_id, s.section_id, s.religious_track FROM subjects s JOIN classes c ON s.class_id = c.id WHERE c.school_id = ? AND s.status != 'archived'`).bind(school_id).all<any>();
-    const existingEmployees = await db.prepare(`SELECT id, full_name, email, phone FROM employees WHERE school_id = ? AND status != 'archived'`).bind(school_id).all<any>();
+    const existingEmployees = await db.prepare(`SELECT id, full_name, employee_number, email, phone, status FROM employees WHERE school_id = ?`).bind(school_id).all<any>();
 
     const classMap = new Map((existingClasses.results || []).map((c: any) => [c.name, c.id]));
     const normalizedClassMap = new Map((existingClasses.results || []).map((c: any) => [normalizeStudentIdentity(c.name), c.id]));
@@ -14104,15 +14088,8 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
     const normalizedSectionMap = new Map((existingSections.results || []).map((s: any) => [`${s.class_id}:${normalizeSectionName(s.name)}`, s.id]));
     const studentMap = new Map((existingStudents.results || []).map((s: any) => [s.student_number, s]));
     const subjectMap = new Map((existingSubjects.results || []).map((s: any) => [`${s.class_id}:${s.section_id || ''}:${s.name}`, s.id]));
-    const employeeEmailMap = new Map((existingEmployees.results || []).map((e: any) => [e.email, e]));
-    const employeePhoneMap = new Map((existingEmployees.results || []).map((e: any) => [e.phone, e]));
 
-    const employeeNameMap = new Map<string, any[]>();
-    for (const e of (existingEmployees.results || [])) {
-      const arr = employeeNameMap.get(e.full_name) || [];
-      arr.push(e);
-      employeeNameMap.set(e.full_name, arr);
-    }
+    const employeeIdentities = existingEmployees.results || [];
 
     let imported = 0;
     let skipped = 0;
@@ -14345,28 +14322,41 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
           const employeeType = isValidEmployeeType(d.employee_type) || 'other';
           const salaryType = isValidSalaryType(d.salary_type) || 'monthly';
           const salaryAmount = normalizeNumber(d.salary_amount) ?? 0;
-          const hireDate = normalizeDate(d.hire_date);
+          const hireDate = employeeSpreadsheetDate(d.hire_date);
+          const qualifications = employeeSpreadsheetQualifications(d, employeeSpreadsheetDate);
+          const employeeRole = employeeSpreadsheetRole(d.role);
+          const employeeNumber = normalizeText(d.employee_number);
+          const extraFields = {
+            ...(d.employee_number !== undefined ? {employee_number: employeeNumber} : {}),
+            ...(employeeRole ? {role: employeeRole} : {}),
+            ...(d.commencement_date !== undefined ? {commencement_date: employeeSpreadsheetDate(d.commencement_date)} : {}),
+          };
           const empStatus = isValidStatus(d.status) || 'active';
-          let dup = null;
-          if (email && employeeEmailMap.has(email)) dup = employeeEmailMap.get(email);
-          else if (phone && employeePhoneMap.has(phone)) dup = employeePhoneMap.get(phone);
-          else if (fullName) {
-            const arr = employeeNameMap.get(fullName) || [];
-            if (arr.length > 0) dup = arr[0];
-          }
+          const dup = employeeSpreadsheetMatch(employeeIdentities, {full_name: fullName, employee_number: employeeNumber, email, phone});
           if (dup) {
             if (mode === 'skip_existing') { skipped++; continue; }
             if (mode === 'error_on_existing') { rowError(i, 'full_name', 'موظف بنفس البيانات موجود مسبقاً'); continue; }
-            await db.prepare(`
-              UPDATE employees SET full_name = ?, gender = ?, phone = ?, email = ?, address = ?, job_title = ?, employee_type = ?, salary_type = ?, salary_amount = ?, hire_date = ?, status = ?, notes = ?, updated_at = unixepoch()
-              WHERE id = ? AND school_id = ?
-            `).bind(fullName, gender || null, phone || null, email || null, d.address || null, d.job_title || null, employeeType, salaryType, salaryAmount, hireDate || null, empStatus, d.notes || null, dup.id, school_id).run();
+            const before = await db.prepare('SELECT * FROM employees WHERE id=? AND school_id=?').bind(dup.id, school_id).first<Record<string, unknown>>();
+            if (!before) { rowError(i, 'full_name', 'الموظف لم يعد متاحاً'); continue; }
+            const previousQualifications = await employeeQualifications(db, school_id, dup.id);
+            const next = validateEmployeeFields({full_name: fullName,gender,phone,email,address:d.address,job_title:d.job_title,employee_type:employeeType,salary_type:salaryType,salary_amount:salaryAmount,hire_date:hireDate,notes:d.notes,...extraFields}, before);
+            const statements = [db.prepare(`
+              UPDATE employees SET full_name=?,employee_number=?,role=?,gender=?,phone=?,email=?,address=?,job_title=?,employee_type=?,salary_type=?,salary_amount=?,hire_date=?,commencement_date=?,status=?,notes=?,updated_at=unixepoch() WHERE id=? AND school_id=?
+            `).bind(next.full_name,next.employee_number,next.role,next.gender,next.phone,next.email,next.address,next.job_title,next.employee_type,next.salary_type,next.salary_amount,next.hire_date,next.commencement_date,empStatus,next.notes,dup.id,school_id),
+              createEmployeeAuditStatement(db,{schoolId:school_id,employeeId:dup.id,userId:user.id,action:'imported',before:{...publicEmployee(before,true),qualifications:previousQualifications},after:{...publicEmployee({...next,status:empStatus},true),qualifications:qualifications??previousQualifications}})];
+            if (qualifications !== undefined) statements.push(db.prepare('DELETE FROM employee_qualifications WHERE employee_id=? AND school_id=?').bind(dup.id,school_id),qualificationRows(db,school_id,dup.id,qualifications));
+            await db.batch(statements);
+            Object.assign(dup, { full_name: fullName, employee_number: next.employee_number, email, phone, status: empStatus });
             updated++;
           } else {
-            await db.prepare(`
-              INSERT INTO employees (school_id, full_name, employee_number, gender, phone, email, address, job_title, role, employee_type, salary_type, salary_amount, hire_date, status, notes, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'staff', ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-            `).bind(school_id, fullName, null, gender || null, phone || null, email || null, d.address || null, d.job_title || null, employeeType, salaryType, salaryAmount, hireDate || null, empStatus, d.notes || null).run();
+            const next = validateEmployeeFields({full_name:fullName,gender,phone,email,address:d.address,job_title:d.job_title,employee_type:employeeType,salary_type:salaryType,salary_amount:salaryAmount,hire_date:hireDate,notes:d.notes,...extraFields});
+            const result = await db.batch([db.prepare(`
+              INSERT INTO employees(school_id,full_name,employee_number,role,gender,phone,email,address,job_title,employee_type,salary_type,salary_amount,hire_date,commencement_date,status,notes,created_by_user_id,created_at,updated_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,unixepoch(),unixepoch())
+            `).bind(school_id,next.full_name,next.employee_number,next.role,next.gender,next.phone,next.email,next.address,next.job_title,next.employee_type,next.salary_type,next.salary_amount,next.hire_date,next.commencement_date,empStatus,next.notes,user.id),
+              createEmployeeAuditStatement(db,{schoolId:school_id,userId:user.id,action:'imported',before:null,after:{...next,status:empStatus,qualifications:qualifications??[]}}),
+              qualificationRows(db,school_id,undefined,qualifications??[])]);
+            employeeIdentities.push({id:Number(result[0].meta.last_row_id),full_name:fullName,employee_number:next.employee_number,email,phone,status:empStatus});
             imported++;
           }
         } else if (type === 'student-subjects') {
@@ -14456,6 +14446,9 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
   if (!user || !canExport(user.role_key)) {
     return c.json({ error: 'غير مسموح: لا تملك صلاحية التصدير' }, 403);
   }
+  if (type === 'employees' && !canImportEmployees(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية تصدير بيانات الموظفين' }, 403);
+  }
   if (!PHASE13A_TYPES.includes(type)) {
     return c.json({ error: 'نوع التصدير غير مدعوم في هذه المرحلة' }, 400);
   }
@@ -14498,12 +14491,13 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
       rows = res.results || [];
     } else if (type === 'employees') {
       const res = await db.prepare(`
-        SELECT full_name, gender, phone, email, address, job_title, employee_type, salary_type, salary_amount, hire_date, status, notes
+        SELECT id, full_name, employee_number, role, gender, phone, email, address, job_title, employee_type, salary_type, salary_amount, hire_date, commencement_date, status, notes
         FROM employees
         WHERE school_id = ? AND status != 'archived'
         ORDER BY id
       `).bind(schoolId).all<any>();
-      rows = res.results || [];
+      const qualifications = await employeeQualifications(db,schoolId);
+      rows = (res.results || []).map(({id,...row}:Record<string,any>)=>({...row,...employeeQualificationCells(qualifications.filter(q=>q.employee_id===id))}));
     } else if (type === 'grades') {
       const res = await db.prepare(`
         SELECT st.student_number, st.full_name as student_name, c.name as class_name, sec.name as section_name, s.name as subject_name,

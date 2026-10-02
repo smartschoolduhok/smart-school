@@ -1,0 +1,51 @@
+.staff-document { color: #172033; font-family: "Cairo", "Tajawal", Arial, Tahoma, sans-serif; font-size: 10pt; line-height: 1.55; }
+.staff-register-print-sheet { width: 210mm; padding: 15mm; margin: 0 auto; background: white; box-sizing: border-box; }
+.staff-document-page { display: flex; flex-direction: column; min-height: 258mm; background: white; }
+.staff-document-page + .staff-document-page { margin-top: 10mm; border-top: 1px dashed #94a3b8; padding-top: 5mm; }
+.staff-document-header { margin-bottom: 5mm; break-inside: avoid; }
+.staff-document-header-grid { display: grid; grid-template-columns: minmax(0,1fr) 23mm minmax(0,1fr); gap: 4mm; align-items: center; font-size: 8.5pt; font-weight: 600; }
+.staff-document-header-grid > div { overflow-wrap: anywhere; }
+.staff-document-header-grid > [dir="rtl"] { text-align: right; }
+.staff-document-header-grid > [dir="ltr"] { text-align: left; }
+.staff-document-logo { width: 23mm; height: 23mm; object-fit: contain; display: block; }
+.staff-document-header h1 { text-align: center; font-size: 16pt; font-weight: 800; margin: 3mm 0; padding: 2mm; border-block: 1px solid #64748b; }
+.staff-document-meta { display: flex; justify-content: space-between; gap: 5mm; font-size: 9pt; }
+.staff-document-note, .staff-document-footer p { text-align: center; margin: 1mm 0; white-space: pre-line; overflow-wrap: anywhere; }
+.staff-document-footer { margin-top: auto; border-top: 1px solid #94a3b8; padding-top: 2mm; text-align: center; font-size: 8pt; }
+.staff-register-cards { display: flex; flex-direction: column; gap: 5mm; padding-bottom: 5mm; }
+.staff-register-card { border: 1px solid #94a3b8; border-radius: 2mm; break-inside: avoid; }
+.staff-register-card-heading { padding: 2.5mm 3mm; display: flex; justify-content: space-between; gap: 3mm; background: #edf2f7; border-bottom: 1px solid #cbd5e1; overflow-wrap: anywhere; }
+.staff-register-card-heading b { font-size: 11pt; }
+.staff-register-card-heading > span { font-size: 9pt; flex-shrink: 0; }
+.staff-register-card-body { display: flex; gap: 4mm; padding: 3mm; align-items: start; }
+.staff-register-photo { display: block; width: 25mm; height: 31mm; object-fit: contain; background: #f8fafc; border: 1px solid #cbd5e1; flex-shrink: 0; }
+.staff-register-photo-placeholder { display: flex; align-items: center; justify-content: center; text-align: center; font-size: 8pt; color: #64748b; padding: 2mm; }
+.staff-register-card dl { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 2mm 4mm; margin: 0; flex: 1; min-width: 0; }
+.staff-register-card dt { font-size: 8pt; color: #475569; }
+.staff-register-card dd { margin: 0; font-size: 9.5pt; overflow-wrap: anywhere; }
+.staff-register-wide { grid-column: 1 / -1; }
+.staff-document-landscape { min-height: 175mm; }
+.salary-receipts-print-sheet { width: 297mm; padding: 15mm; margin: 0 auto; background: white; }
+.salary-receipts-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9pt; line-height: 1.4; }
+.salary-receipts-table th, .salary-receipts-table td { border: 1px solid #64748b; padding: 1.5mm 1mm; text-align: center; overflow-wrap: anywhere; vertical-align: middle; }
+.salary-receipts-table thead th, .salary-receipts-table tfoot { background: #e2e8f0; font-weight: 700; }
+.salary-receipts-table tbody th { text-align: right; font-weight: 600; }
+.salary-receipts-table small { display: block; font-size: 7pt; font-weight: 400; }
+.salary-receipts-table tbody tr { height: 8mm; }
+.salary-row-cancelled { color: #64748b; }
+.salary-receipts-notes { padding-top: 3mm; font-size: 8pt; }
+.salary-receipts-notes p { margin: 1mm 0; }
+.salary-receipts-notes p:last-child { display: flex; gap: 30mm; padding: 3mm 0; }
+@media print {
+  /* Keep the document's sheet size when shared print styles are injected later. */
+  @page staffRegister { size: A4 portrait !important; margin: 15mm; }
+  @page salaryReceipts { size: A4 landscape !important; margin: 15mm; }
+  .staff-register-print-sheet { page: staffRegister; }
+  .salary-receipts-print-sheet { page: salaryReceipts; }
+  .print-a4.staff-register-print-sheet { width: 180mm !important; min-height: 0 !important; padding: 0 !important; margin: 0 auto !important; box-shadow: none !important; overflow: visible !important; }
+  .salary-receipts-print-sheet { width: 267mm !important; min-height: 0 !important; padding: 0 !important; margin: 0 auto !important; box-shadow: none !important; }
+  .staff-document-page + .staff-document-page { break-before: page; page-break-before: always; margin-top: 0; padding-top: 0; border-top: 0; }
+  .staff-document-header, .staff-document-footer, .staff-register-card, .salary-receipts-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .salary-receipts-table thead { display: table-header-group; }
+  .salary-receipts-table tfoot { display: table-row-group; }
+}

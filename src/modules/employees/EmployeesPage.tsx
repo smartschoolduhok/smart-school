@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
@@ -10,6 +11,8 @@ import {
   getSalaryMonthlyReport,
 } from '../../lib/api';
 import { BUSINESS_TIME_ZONE_LABEL, businessDate, businessMonth } from '../../lib/businessTime';
+import { getEmployeeProfile } from '../../lib/employeeRecordsApi';
+import { EmployeeFormFields, emptyEmployeeDraft, employeeDraftFrom, employeeDraftPayload, validateEmployeeDraft, type EmployeeDraft } from './EmployeeFormFields';
 import {
   Users, Plus, Search, Trash2, X, DollarSign, Calendar,
   CheckCircle, AlertTriangle, ArrowRight, BarChart3, Wallet,
@@ -98,7 +101,16 @@ export default function EmployeesPage() {
   const isManageSalary = hasRole(user?.role_key, EMPLOYEE_SALARY_ROLES);
   const hasSelectedSchool = schoolId != null;
 
-  const [activeTab, setActiveTab] = useState<TabKey>('list');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const activeTab: TabKey = requestedTab === 'add' && isManageEmployee ? 'add'
+    : isManageSalary && ['salaries', 'generate', 'pay', 'reports'].includes(requestedTab || '') ? requestedTab as TabKey
+    : 'list';
+  const setActiveTab = (tab: TabKey) => setSearchParams(previous => {
+    const next = new URLSearchParams(previous);
+    if (tab === 'list') next.delete('tab'); else next.set('tab', tab);
+    return next;
+  }, { replace: true });
   const [employees, setEmployees] = useState<EmployeeRecord[]>([]);
   const [salaries, setSalaries] = useState<SalaryRecord[]>([]);
   const [reports, setReports] = useState<ReportRow[]>([]);
@@ -110,11 +122,9 @@ export default function EmployeesPage() {
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeRecord | null>(null);
   const [selectedSalary, setSelectedSalary] = useState<SalaryRecord | null>(null);
 
-  const [newEmployee, setNewEmployee] = useState<Record<string, any>>({
-    full_name: '', employee_number: '', phone: '', email: '', role: 'staff',
-    job_title: '', salary_amount: '', hire_date: '', notes: '',
-  });
-  const [editEmployee, setEditEmployee] = useState<Record<string, any> | null>(null);
+  const [newEmployee, setNewEmployee] = useState<EmployeeDraft>(emptyEmployeeDraft);
+  const [editEmployee, setEditEmployee] = useState<EmployeeDraft | null>(null);
+  const [savingEmployee, setSavingEmployee] = useState(false);
 
   const initialPeriod = businessMonth().split('-');
   const [genPayload, setGenPayload] = useState<Record<string, any>>({
@@ -148,6 +158,7 @@ export default function EmployeesPage() {
     const res = await getEmployees(schoolId);
     if (!isCurrent()) return;
     if (res.data) setEmployees(res.data as EmployeeRecord[]);
+    if (res.error) showError(res.error);
     setLoading(false);
   }, [schoolId]);
 
@@ -178,12 +189,13 @@ export default function EmployeesPage() {
     setSelectedEmployee(null);
     setSelectedSalary(null);
     setEditEmployee(null);
+    setNewEmployee(emptyEmployeeDraft());
+    setSavingEmployee(false);
     setPaySalaryId('');
     setCancelPayload({ id: '', reason: '' });
     setLoading(false);
     setError(null);
     setSuccess(null);
-    setActiveTab('list');
   }, [schoolId]);
 
   useEffect(() => {
@@ -194,15 +206,19 @@ export default function EmployeesPage() {
 
   async function handleAddEmployee(e: React.FormEvent) {
     e.preventDefault();
+    if (savingEmployee || !isManageEmployee) return;
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
-    if (!newEmployee.full_name) { showError('اسم الموظف مطلوب'); return; }
+    const validation = validateEmployeeDraft(newEmployee);
+    if (validation) { showError(validation); return; }
     const isCurrent = captureSchoolRequest();
-    const res = await createEmployee({ ...newEmployee, school_id: schoolId, salary_amount: Number(newEmployee.salary_amount) || 0 });
+    setSavingEmployee(true);
+    const res = await createEmployee({ ...employeeDraftPayload(newEmployee), school_id: schoolId });
     if (!isCurrent()) return;
+    setSavingEmployee(false);
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم إضافة الموظف بنجاح');
-      setNewEmployee({ full_name: '', employee_number: '', phone: '', email: '', role: 'staff', job_title: '', salary_amount: '', hire_date: '', notes: '' });
+      setNewEmployee(emptyEmployeeDraft());
       setActiveTab('list');
       loadEmployees();
     }
@@ -210,22 +226,43 @@ export default function EmployeesPage() {
 
   async function handleUpdateEmployee(e: React.FormEvent) {
     e.preventDefault();
+    if (savingEmployee || !isManageEmployee) return;
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!editEmployee || !selectedEmployee) return;
+    const validation = validateEmployeeDraft(editEmployee);
+    if (validation) { showError(validation); return; }
     const isCurrent = captureSchoolRequest();
+    setSavingEmployee(true);
     const res = await updateEmployee(selectedEmployee.id, {
-      ...editEmployee,
+      ...employeeDraftPayload(editEmployee),
       school_id: schoolId,
-      salary_amount: Number(editEmployee.salary_amount) || 0,
     });
     if (!isCurrent()) return;
+    setSavingEmployee(false);
     if (res.error) { showError(res.error); }
     else {
       showSuccess('تم تحديث الموظف بنجاح');
       setEditEmployee(null);
       setSelectedEmployee(null);
+      setActiveTab('list');
       loadEmployees();
     }
+  }
+
+  async function openEmployeeEditor(employee: EmployeeRecord) {
+    if (schoolId == null || !isManageEmployee) return;
+    const isCurrent = captureSchoolRequest();
+    setLoading(true);
+    const response = await getEmployeeProfile(employee.id, { school_id: schoolId });
+    if (!isCurrent()) return;
+    setLoading(false);
+    if (response.error || !response.data) { showError(response.error || 'تعذر تحميل ملف الموظف'); return; }
+    if (response.data.employee.school_id !== schoolId || response.data.employee.id !== employee.id || !response.data.can_manage) {
+      showError('لا يمكن تعديل ملف الموظف في المدرسة المختارة'); return;
+    }
+    setSelectedEmployee(employee);
+    setEditEmployee(employeeDraftFrom({ ...response.data.employee, qualifications: response.data.qualifications }));
+    setActiveTab('add');
   }
 
   async function handleArchive(id: number) {
@@ -366,6 +403,8 @@ export default function EmployeesPage() {
             {t.label}
           </button>
         ))}
+        {hasSelectedSchool && <Link to={`/staff-register?school_id=${schoolId}`} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700"><Users size={18} /> سجل الكادر</Link>}
+        {hasSelectedSchool && isManageSalary && <Link to={`/salary-receipts?school_id=${schoolId}`} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700"><FileText size={18} /> كشف استلام الرواتب</Link>}
       </div>
 
       {loading && <div className="text-center py-12 text-gray-500">جارِ التحميل...</div>}
@@ -411,7 +450,7 @@ export default function EmployeesPage() {
                 {filteredEmployees.map(emp => (
                   <tr key={emp.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3">
-                      <div className="font-medium text-gray-900">{emp.full_name}</div>
+                      <Link to={`/employees/${emp.id}?school_id=${schoolId}`} className="font-medium text-primary-700 hover:underline">{emp.full_name}</Link>
                       {emp.phone && <div className="text-xs text-gray-500">{emp.phone}</div>}
                     </td>
                     <td className="px-4 py-3 text-gray-600">{emp.employee_number || '-'}</td>
@@ -430,7 +469,7 @@ export default function EmployeesPage() {
                         <div className="flex gap-2">
                           <button
                             className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50"
-                            onClick={() => { setSelectedEmployee(emp); setEditEmployee({ ...emp }); setActiveTab('add'); }}
+                            onClick={() => void openEmployeeEditor(emp)}
                             title="تعديل"
                           >
                             <Plus size={16} />
@@ -456,7 +495,7 @@ export default function EmployeesPage() {
         </div>
       )}
 
-      {!loading && activeTab === 'add' && (
+      {!loading && activeTab === 'add' && isManageEmployee && hasSelectedSchool && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-2xl">
           <button type="button" onClick={() => { setEditEmployee(null); setSelectedEmployee(null); setActiveTab('list'); }} className="mb-4 flex items-center gap-1 text-sm text-gray-600">
             <ArrowRight size={16} /> العودة إلى الموظفين
@@ -466,98 +505,13 @@ export default function EmployeesPage() {
             {editEmployee ? 'تعديل موظف' : 'إضافة موظف جديد'}
           </h2>
           <form onSubmit={editEmployee ? handleUpdateEmployee : handleAddEmployee} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">الاسم الكامل <span className="text-red-500">*</span></label>
-                <input
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={editEmployee ? editEmployee.full_name : newEmployee.full_name}
-                  onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, full_name: e.target.value }) : setNewEmployee({ ...newEmployee, full_name: e.target.value })}
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">رقم الموظف</label>
-                <input
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={editEmployee ? editEmployee.employee_number || '' : newEmployee.employee_number}
-                  onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, employee_number: e.target.value }) : setNewEmployee({ ...newEmployee, employee_number: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">المسمى الوظيفي</label>
-                <input
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={editEmployee ? editEmployee.job_title || '' : newEmployee.job_title}
-                  onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, job_title: e.target.value }) : setNewEmployee({ ...newEmployee, job_title: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">الدور</label>
-                <select
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={editEmployee ? editEmployee.role || 'staff' : newEmployee.role}
-                  onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, role: e.target.value }) : setNewEmployee({ ...newEmployee, role: e.target.value })}
-                >
-                  <option value="staff">موظف</option>
-                  <option value="manager">مدير قسم</option>
-                  <option value="supervisor">مشرف</option>
-                  <option value="teacher">مدرس</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">الراتب (IQD)</label>
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={editEmployee ? editEmployee.salary_amount : newEmployee.salary_amount}
-                  onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, salary_amount: e.target.value }) : setNewEmployee({ ...newEmployee, salary_amount: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">تاريخ التعيين</label>
-                <input
-                  type="date"
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={editEmployee ? editEmployee.hire_date || '' : newEmployee.hire_date}
-                  onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, hire_date: e.target.value }) : setNewEmployee({ ...newEmployee, hire_date: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">الهاتف</label>
-                <input
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={editEmployee ? editEmployee.phone || '' : newEmployee.phone}
-                  onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, phone: e.target.value }) : setNewEmployee({ ...newEmployee, phone: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">البريد الإلكتروني</label>
-                <input
-                  type="email"
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={editEmployee ? editEmployee.email || '' : newEmployee.email}
-                  onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, email: e.target.value }) : setNewEmployee({ ...newEmployee, email: e.target.value })}
-                />
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">ملاحظات</label>
-              <textarea
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                rows={3}
-                value={editEmployee ? editEmployee.notes || '' : newEmployee.notes}
-                onChange={e => editEmployee ? setEditEmployee({ ...editEmployee, notes: e.target.value }) : setNewEmployee({ ...newEmployee, notes: e.target.value })}
-              />
-            </div>
+            <EmployeeFormFields value={editEmployee || newEmployee} onChange={editEmployee ? setEditEmployee : setNewEmployee} disabled={savingEmployee} />
             <div className="flex gap-3">
-              <button type="submit" className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700">
-                {editEmployee ? 'حفظ التعديلات' : 'إضافة موظف'}
+              <button type="submit" disabled={savingEmployee} className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50">
+                {savingEmployee ? 'جارِ الحفظ...' : editEmployee ? 'حفظ التعديلات' : 'إضافة موظف'}
               </button>
               {editEmployee && (
-                <button type="button" className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200" onClick={() => { setEditEmployee(null); setSelectedEmployee(null); }}>
+                <button type="button" disabled={savingEmployee} className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200" onClick={() => { setEditEmployee(null); setSelectedEmployee(null); setActiveTab('list'); }}>
                   إلغاء
                 </button>
               )}
