@@ -14,7 +14,7 @@ import {
   FINALIZED_STUDENT_PLACEMENT_MESSAGE,
   isStudentPlacementFinalized,
 } from '../../lib/studentPlacementUx';
-import { Search, Plus, Filter, Archive, Edit2, Eye, X, Check, User, Users } from 'lucide-react';
+import { Search, Plus, Filter, Archive, Edit2, Eye, X, Check, User, Users, CalendarSearch, Printer } from 'lucide-react';
 
 interface StudentRecord {
   id: number;
@@ -23,7 +23,7 @@ interface StudentRecord {
   full_name: string;
   father_name: string | null;
   mother_name: string | null;
-  gender: 'male' | 'female';
+  gender: 'male' | 'female' | 'unknown';
   religion: StudentReligion | null;
   birth_date: string | null;
   phone: string | null;
@@ -59,7 +59,7 @@ const emptyForm = {
   full_name: '',
   father_name: '',
   mother_name: '',
-  gender: 'male' as 'male' | 'female',
+  gender: 'male' as 'male' | 'female' | 'unknown',
   religion: '' as '' | StudentReligion,
   birth_date: '',
   phone: '',
@@ -242,6 +242,7 @@ export default function StudentsPage() {
   }
 
   async function handleSave() {
+    if (saving || !canManageSelectedSchool) return;
     setFormError('');
     if (schoolId == null) { setFormError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!form.student_number.trim() || !form.full_name.trim() || !form.gender) {
@@ -273,7 +274,7 @@ export default function StudentsPage() {
       if (res.error) setFormError(res.error);
       else { setModalOpen(false); loadData(); }
     } else if (editingId != null) {
-      const res = await updateStudent(editingId, { ...payload, status: 'active' });
+      const res = await updateStudent(editingId, payload);
       if (!isCurrentRequest()) return;
       if (res.error) setFormError(res.error);
       else { setModalOpen(false); loadData(); }
@@ -295,6 +296,8 @@ export default function StudentsPage() {
     if (!form.class_id) return [];
     return sections.filter((sec) => String(sec.class_id) === String(form.class_id));
   }, [form.class_id, sections]);
+  const activeFilterCount = [filterClass, filterSection, filterGender, filterStudyStatus, filterStatus !== 'active'].filter(Boolean).length;
+  const resetFilters = () => { setFilterClass(''); setFilterSection(''); setFilterGender(''); setFilterStudyStatus(''); setFilterStatus('active'); };
 
   return (
     <div>
@@ -313,8 +316,6 @@ export default function StudentsPage() {
           </p>
         </div>
         {canManageSelectedSchool && (
-          <div className="flex flex-wrap items-center gap-2">
-          <Link to="/student-age-review" className="rounded-lg border px-4 py-2.5 text-sm text-blue-700">مراجعة أعمار الطلاب</Link>
           <button
             onClick={openCreate}
             className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
@@ -322,25 +323,20 @@ export default function StudentsPage() {
             <Plus size={18} />
             <span>إضافة طالب</span>
           </button>
-          </div>
         )}
       </div>
 
       <div className="mb-6">
         <SystemAdminSchoolSelector {...schoolScope} />
       </div>
-      {canManageSelectedSchool && <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm">
-        <div><p className="font-semibold text-blue-900">نوع الدراسة في السنة الحالية {studyRoster.data && <bdi>{studyRoster.data.academic_year.name}</bdi>}</p><p className="mt-1 text-xs text-blue-800">قائمة التوزيع تشمل التسجيلات السنوية النشطة والدرجات المخفية، حسب الصف والشعبة ونوع الدراسة. يمكن اختيار سنة أخرى من المعاينة.</p>{studyRoster.loading && <p role="status" className="mt-2">جاري تحميل الوضع الدراسي…</p>}{studyRoster.error && <p role="alert" className="mt-2 text-red-700">{studyRoster.error} <button onClick={studyRoster.reload} className="underline">إعادة المحاولة</button></p>}</div>
-        {studyRoster.data && <Link to={`/print/student-roster?${rosterQuery}`} className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-semibold text-blue-800">معاينة قائمة التوزيع</Link>}
-      </div>}
-
       {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[200px]">
+          <div className="relative w-full min-w-0 sm:w-auto sm:flex-1 sm:min-w-[220px]">
             <Search size={18} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               value={search}
+              aria-label="البحث عن الطلاب"
               onChange={(e) => setSearch(e.target.value)}
               placeholder={isFinanceDirectory
                 ? 'البحث بالاسم أو رقم الطالب...'
@@ -350,18 +346,23 @@ export default function StudentsPage() {
           </div>
           <button
             onClick={() => setShowFilters(!showFilters)}
+            aria-expanded={showFilters}
+            aria-controls="student-directory-filters"
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
               showFilters ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
             }`}
           >
             <Filter size={18} />
             <span>التصفية</span>
+            {activeFilterCount > 0 && <span className="rounded-full bg-blue-100 px-1.5 text-xs text-blue-800" aria-label={`${activeFilterCount} مرشحات نشطة`}>{toArabicDigits(activeFilterCount)}</span>}
           </button>
-          {canManage && <label className="text-sm text-gray-700">نوع الدراسة<select aria-label="تصفية نوع الدراسة" className="mr-2 rounded-lg border border-gray-200 p-2 text-sm" disabled={!studyRoster.data} value={filterStudyStatus} onChange={event => setFilterStudyStatus(event.target.value as StudyStatus | '')}><option value="">الكل</option>{Object.entries(STUDY_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
+          {canManage && <label className="flex items-center gap-2 text-sm text-gray-700">نوع الدراسة<select aria-label="تصفية نوع الدراسة" className="rounded-lg border border-gray-200 p-2 text-sm" disabled={!studyRoster.data} value={filterStudyStatus} onChange={event => setFilterStudyStatus(event.target.value as StudyStatus | '')}><option value="">الكل</option>{Object.entries(STUDY_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
+          {activeFilterCount > 0 && <button type="button" className="flex items-center gap-1 rounded-lg px-2 py-2 text-xs text-gray-600 hover:bg-gray-50" onClick={resetFilters}><X size={14} /> مسح التصفية</button>}
         </div>
         {showFilters && (
-          <div className={`grid grid-cols-1 sm:grid-cols-2 ${isFinanceDirectory ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-3 mt-3 pt-3 border-t border-gray-100`}>
+          <div id="student-directory-filters" className={`grid grid-cols-1 sm:grid-cols-2 ${isFinanceDirectory ? 'lg:grid-cols-3' : 'lg:grid-cols-4'} gap-3 mt-3 pt-3 border-t border-gray-100`}>
             <select
+              aria-label="تصفية حالة الطالب"
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
               className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -372,6 +373,7 @@ export default function StudentsPage() {
               <option value="">الكل</option>
             </select>
             <select
+              aria-label="تصفية الصف"
               value={filterClass}
               onChange={(e) => { setFilterClass(e.target.value); setFilterSection(''); }}
               className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -382,6 +384,7 @@ export default function StudentsPage() {
               ))}
             </select>
             <select
+              aria-label="تصفية الشعبة"
               value={filterSection}
               onChange={(e) => setFilterSection(e.target.value)}
               className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -395,6 +398,7 @@ export default function StudentsPage() {
             </select>
             {!isFinanceDirectory && (
               <select
+                aria-label="تصفية الجنس"
                 value={filterGender}
                 onChange={(e) => setFilterGender(e.target.value)}
                 className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -402,10 +406,21 @@ export default function StudentsPage() {
                 <option value="">كل الأجناس</option>
                 <option value="male">ذكر</option>
                 <option value="female">أنثى</option>
+                <option value="unknown">غير محدد</option>
               </select>
             )}
           </div>
         )}
+        {canManageSelectedSchool && <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-3 text-xs">
+          <div className="text-gray-500"><p>نوع الدراسة في السنة الحالية {studyRoster.data && <bdi className="font-medium text-gray-700">{studyRoster.data.academic_year.name}</bdi>}</p>
+            {studyRoster.loading && <p role="status" className="mt-1">جاري تحميل الوضع الدراسي…</p>}
+            {studyRoster.error && <p role="alert" className="mt-1 text-red-700">{studyRoster.error} <button onClick={studyRoster.reload} className="underline">إعادة المحاولة</button></p>}
+          </div>
+          <nav aria-label="أدوات الطلاب" className="flex flex-wrap items-center gap-2">
+            <Link to="/student-age-review" className="inline-flex items-center gap-1.5 rounded-lg px-2 py-2 font-medium text-gray-600 hover:bg-gray-50 hover:text-blue-700"><CalendarSearch size={15} /> مراجعة أعمار الطلاب</Link>
+            {studyRoster.data && <Link to={`/print/student-roster?${rosterQuery}`} title="تشمل التسجيلات السنوية النشطة والدرجات المخفية. يمكن اختيار سنة أخرى من المعاينة." className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 font-medium text-gray-700 hover:bg-gray-50"><Printer size={15} /><span>معاينة قائمة التوزيع</span></Link>}
+          </nav>
+        </div>}
       </div>
 
       {/* Stats */}
@@ -503,7 +518,7 @@ export default function StudentsPage() {
                         </Link>
                       )}
                     </td>
-                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">{s.gender === 'male' ? 'ذكر' : 'أنثى'}</td>}
+                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">{s.gender === 'male' ? 'ذكر' : s.gender === 'female' ? 'أنثى' : 'غير محدد'}</td>}
                     <td className="px-4 py-3 text-sm text-gray-600">{s.class_name || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{s.section_name || '—'}</td>
                     {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">{s.guardian_name || '—'}</td>}
@@ -549,17 +564,17 @@ export default function StudentsPage() {
 
       {/* Modal */}
       {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" role="dialog" aria-modal="true" aria-labelledby="student-editor-title">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between p-6 border-b border-gray-100">
-              <h2 className="text-xl font-bold text-gray-900">
+              <h2 id="student-editor-title" className="text-xl font-bold text-gray-900">
                 {modalMode === 'create' ? 'إضافة طالب جديد' : 'تعديل بيانات الطالب'}
               </h2>
-              <button onClick={() => setModalOpen(false)} className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100">
+              <button onClick={() => setModalOpen(false)} disabled={saving} aria-label="إغلاق نموذج الطالب" className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-50">
                 <X size={20} />
               </button>
             </div>
-            <div className="p-6 space-y-4">
+            <fieldset disabled={saving} className="p-6 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">رقم الطالب <span className="text-red-500">*</span></label>
@@ -597,11 +612,12 @@ export default function StudentsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">الجنس <span className="text-red-500">*</span></label>
                   <select
                     value={form.gender}
-                    onChange={(e) => setForm({ ...form, gender: e.target.value as 'male' | 'female' })}
+                    onChange={(e) => setForm({ ...form, gender: e.target.value as 'male' | 'female' | 'unknown' })}
                     className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="male">ذكر</option>
                     <option value="female">أنثى</option>
+                    {modalMode === 'edit' && form.gender === 'unknown' && <option value="unknown">غير محدد</option>}
                   </select>
                 </div>
                 <div>
@@ -701,7 +717,7 @@ export default function StudentsPage() {
                   />
                 </div>
               </div>
-            </div>
+            </fieldset>
             <div className="sticky bottom-0 border-t border-gray-100 bg-white">
               {formError && (
                 <div
@@ -713,7 +729,7 @@ export default function StudentsPage() {
                 </div>
               )}
               <div className="flex items-center justify-end gap-3 p-6">
-                <button onClick={() => setModalOpen(false)} className="px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
+                <button onClick={() => setModalOpen(false)} disabled={saving} className="px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50">
                   إلغاء
                 </button>
                 <button

@@ -55,10 +55,11 @@ test('specific updateStudent backend errors remain visible without closing the m
   assert.match(workerSource, /FINALIZED_ENROLLMENT_PLACEMENT_ERROR[\s\S]*?409/);
 });
 
-test('normal active pending placement save still calls updateStudent with class and section', () => {
+test('pending placement save keeps class and section without forcing the student status', () => {
   assert.match(studentsPage, /class_id: form\.class_id \? Number\(form\.class_id\) : null/);
   assert.match(studentsPage, /section_id: form\.section_id \? Number\(form\.section_id\) : null/);
-  assert.match(studentsPage, /await updateStudent\(editingId, \{ \.\.\.payload, status: 'active' \}\)/);
+  assert.match(studentsPage, /await updateStudent\(editingId, payload\)/);
+  assert.doesNotMatch(studentsPage, /updateStudent\([^;]*status: 'active'/);
 });
 
 test('Student UX patch does not replace backend enrollment lifecycle protection', () => {

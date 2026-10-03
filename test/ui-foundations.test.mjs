@@ -59,10 +59,39 @@ test('mobile sidebar is inert while closed and returns keyboard focus to the men
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
   assert.equal(sidebar.inert, false);
   assert.equal(document.activeElement?.id, 'sidebar-close-button');
-  await act(async () => container.querySelector('#sidebar-close-button').click());
+  assert.equal(container.querySelector('#main-content').parentElement.inert, true);
+  assert.equal(document.body.style.overflow, 'hidden');
+  const closeButton = container.querySelector('#sidebar-close-button');
+  const logoutButton = sidebar.querySelector('[aria-label="تسجيل الخروج"]');
+  await act(async () => closeButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })));
+  assert.equal(document.activeElement, logoutButton, 'Shift+Tab stays inside the open drawer');
+  await act(async () => logoutButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })));
+  assert.equal(document.activeElement, closeButton, 'Tab wraps back to the drawer close control');
+  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
   assert.equal(sidebar.inert, true);
   assert.equal(document.activeElement?.id, 'mobile-menu-button');
+  assert.equal(document.body.style.overflow, '');
+  assert.equal(container.querySelector('#main-content').parentElement.inert, false);
+  await act(async () => menuButton.click());
+  await act(async () => window.happyDOM.setWindowSize({ width: 1280, height: 900 }));
+  assert.equal(document.body.style.overflow, '', 'resizing to desktop releases the mobile scroll lock');
+  assert.equal(container.querySelector('#main-content').parentElement.inert, false);
+  await act(async () => window.happyDOM.setWindowSize({ width: 390, height: 844 }));
+});
+
+test('parent grade notification alias highlights the single canonical grades link', async t => {
+  const previousFetch = globalThis.fetch;
+  const user = { id: 99, role_key: 'parent', school_id: 41, full_name: 'Parent' };
+  globalThis.fetch = async url => new Response(JSON.stringify({ data: String(url) === '/api/auth/me'
+    ? user : { unread_count: 0, notifications: [] } }));
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const container = await render(t, createElement(MemoryRouter, { initialEntries: ['/grade-progress'] },
+    createElement(AuthProvider, null, createElement(Layout, null, createElement('p', null, 'Parent progress')))));
+  await waitForContent(container, 'Parent progress');
+  const sidebar = container.querySelector('#application-sidebar');
+  assert.equal(sidebar.querySelector('a[href="/grades"]')?.getAttribute('aria-current'), 'page');
+  assert.equal(sidebar.querySelectorAll('a[href="/grade-progress"]').length, 0);
 });
 
 async function render(t, element) {
@@ -176,9 +205,12 @@ test('document settings save the monthly card view and stable custom top text', 
 });
 
 test('navigation is grouped, hides future placeholders, and scopes parent destinations', () => {
-  assert.equal(NAVIGATION_GROUPS.length, 6, 'six groups plus the dashboard produce seven top-level choices');
-  const groupLabels = NAVIGATION_GROUPS.map(group => group.label);
-  assert.deepEqual(groupLabels, ['شؤون الطلاب', 'التعليم والجدول', 'المالية والموظفون', 'التقارير والوثائق', 'البيانات', 'الإدارة والإعدادات']);
+  assert.ok(NAVIGATION_GROUPS.every(group => group.items.length <= 5), 'large sections stay split into manageable groups');
+  const paths = NAVIGATION_GROUPS.flatMap(group => group.items.map(item => item.path));
+  assert.equal(paths.length, new Set(paths).size, 'each page has one navigation destination');
+  assert.ok(paths.includes('/student-age-review'));
+  assert.ok(paths.includes('/staff-register'));
+  assert.ok(paths.includes('/salary-receipts'));
   const allLabels = NAVIGATION_GROUPS.flatMap(group => group.items.map(item => item.label));
   for (const unavailable of ['النقل المدرسي', 'بوابة المدرس', 'بوابة ولي الأمر', 'المساعد الذكي']) {
     assert.equal(allLabels.includes(unavailable), false);
@@ -186,6 +218,7 @@ test('navigation is grouped, hides future placeholders, and scopes parent destin
   const parentPaths = getVisibleNavigationItems('parent').map(item => item.path);
   assert.ok(parentPaths.includes('/students'));
   assert.ok(parentPaths.includes('/grades'));
+  assert.ok(!parentPaths.includes('/grade-progress'), 'parent grade progress has one canonical entry');
   assert.ok(!parentPaths.includes('/analytics'));
   assert.ok(!parentPaths.includes('/fees'));
 });

@@ -69,9 +69,10 @@ export default function StudentProfilePage() {
   const [studyStatusRefreshKey, setStudyStatusRefreshKey] = useState(0);
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
-  const parsedStudentId = id && /^\d+$/.test(id) && Number(id) > 0 ? Number(id) : null;
+  const parsedStudentId = id && /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) && Number(id) > 0 ? Number(id) : null;
   const requestedStudentIdRef = useRef<number | null>(parsedStudentId);
   requestedStudentIdRef.current = parsedStudentId;
+  const profileRequestGeneration = useRef(0);
 
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
@@ -118,10 +119,12 @@ export default function StudentProfilePage() {
     }
 
     void loadProfile(parsedStudentId, schoolId);
-  }, [parsedStudentId, schoolId]);
+    return () => { profileRequestGeneration.current++; };
+  }, [parsedStudentId, schoolId, user?.id, user?.role_key]);
 
   async function loadProfile(requestedStudentId: number, requestedSchoolId: number) {
     const isCurrentRequest = captureSchoolRequest();
+    const generation = ++profileRequestGeneration.current;
     setLoading(true);
     setError('');
     setNotFound(false);
@@ -132,7 +135,7 @@ export default function StudentProfilePage() {
       getStudentReligiousSubject(requestedStudentId, requestedSchoolId),
     ]);
 
-    if (!isCurrentRequest() || requestedStudentIdRef.current !== requestedStudentId) return;
+    if (!isCurrentRequest() || requestedStudentIdRef.current !== requestedStudentId || generation !== profileRequestGeneration.current) return;
 
     if (studentResponse.error || !studentResponse.data) {
       const message = studentResponse.error || 'تعذر تحميل ملف الطالب';
@@ -146,6 +149,13 @@ export default function StudentProfilePage() {
       setStudent(null);
       setHistory([]);
       setError('غير مسموح: الطالب لا ينتمي إلى المدرسة المحددة');
+      setLoading(false);
+      return;
+    }
+    if (Number(studentResponse.data.id) !== requestedStudentId) {
+      setStudent(null);
+      setHistory([]);
+      setError('تعذر مطابقة ملف الطالب المطلوب');
       setLoading(false);
       return;
     }
@@ -175,8 +185,9 @@ export default function StudentProfilePage() {
   }
 
   async function saveReligiousSubject(confirmExistingGrades = false) {
-    if (schoolId == null || parsedStudentId == null) return;
+    if (schoolId == null || parsedStudentId == null || religiousSaving || !canManageReligiousSubject) return;
     const isCurrentRequest = captureSchoolRequest();
+    const generation = profileRequestGeneration.current;
     setReligiousSaving(true);
     setReligiousSaveError('');
     const response = await setStudentReligiousSubject(
@@ -185,7 +196,7 @@ export default function StudentProfilePage() {
       selectedReligiousSubjectId ? Number(selectedReligiousSubjectId) : null,
       confirmExistingGrades,
     );
-    if (!isCurrentRequest() || requestedStudentIdRef.current !== parsedStudentId) return;
+    if (!isCurrentRequest() || requestedStudentIdRef.current !== parsedStudentId || generation !== profileRequestGeneration.current) return;
     if (response.error) {
       if (response.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE) {
         setGradeConfirmationPending(true);
@@ -249,7 +260,7 @@ export default function StudentProfilePage() {
             إعادة المحاولة
           </button>
         </div>
-      ) : student && Number(student.school_id) === schoolId ? (
+      ) : student && Number(student.school_id) === schoolId && Number(student.id) === parsedStudentId ? (
         <>
           <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
             <div className="grid gap-5 p-6 md:grid-cols-[auto_1fr] md:items-center">

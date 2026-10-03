@@ -22,7 +22,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const source = path => readFileSync(join(root, path), 'utf8');
 const page = source('src/modules/homework/HomeworkPage.tsx');
 const app = source('src/App.tsx');
-const sidebar = source('src/components/Sidebar.tsx');
+const sidebar = source('src/components/navigation.tsx');
 const api = source('src/lib/api.ts');
 const worker = source('src/lib/homeworkDb.ts');
 const platformWorker = source('src/worker.ts');

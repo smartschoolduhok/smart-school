@@ -26,7 +26,7 @@ export interface ReligiousSubjectPreparedStatement {
 
 export interface ReligiousSubjectDatabase {
   prepare(query: string): ReligiousSubjectPreparedStatement;
-  batch(statements: ReligiousSubjectPreparedStatement[]): Promise<Array<{ meta?: { changes?: number } }>>;
+  batch(statements: ReligiousSubjectPreparedStatement[]): Promise<Array<{ meta?: { changes?: number }; results?: unknown[] }>>;
 }
 
 export interface ActiveReligiousAssignment {
@@ -261,6 +261,7 @@ export async function deactivateStudentSubjectAssignments(
   db: ReligiousSubjectDatabase,
   schoolId: number,
   assignmentIds: unknown[],
+  options: { notes?: string | null } = {},
 ): Promise<StudentSubjectDeactivationResult> {
   const normalizedIds = [...new Set(assignmentIds.map(Number))];
   if (normalizedIds.length === 0 || normalizedIds.some((id) => !Number.isInteger(id) || id <= 0)) {
@@ -297,8 +298,8 @@ export async function deactivateStudentSubjectAssignments(
     if (assignment.is_active !== 1 || assignment.religious_track == null) continue;
     if (await hasRecordedReligiousSubjectGrades(db, schoolId, assignment.assignment_id)) conflicts.push(assignment);
   }
-  if (conflicts.length > 0) {
-    const first = conflicts[0];
+  const conflictResult = (currentConflicts: StudentSubjectDeactivationRecord[]): StudentSubjectDeactivationResult => {
+    const first = currentConflicts[0];
     return {
       ok: false,
       status: 409,
@@ -309,22 +310,48 @@ export async function deactivateStudentSubjectAssignments(
         student_id: first.student_id,
         subject_id: first.subject_id,
         recorded_grade_data: true,
-        conflicting_assignments: conflicts.map((assignment) => ({
+        conflicting_assignments: currentConflicts.map((assignment) => ({
           assignment_id: assignment.assignment_id,
           student_id: assignment.student_id,
           subject_id: assignment.subject_id,
         })),
       },
     };
-  }
+  };
+  if (conflicts.length > 0) return conflictResult(conflicts);
 
   const activeAssignments = assignments.filter((assignment) => assignment.is_active === 1);
   if (activeAssignments.length > 0) {
-    await db.batch(activeAssignments.map((assignment) => db.prepare(`
+    const activeIds = JSON.stringify(activeAssignments.map(assignment => assignment.assignment_id));
+    const currentConflictsSql = `
+      SELECT assignment.id AS assignment_id, assignment.school_id, assignment.student_id,
+             assignment.subject_id, assignment.is_active, subject.religious_track
+      FROM student_subjects assignment
+      JOIN subjects subject ON subject.id = assignment.subject_id AND subject.school_id = assignment.school_id
+      WHERE assignment.school_id = ? AND assignment.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+        AND assignment.is_active = 1 AND subject.religious_track IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM grades grade
+          WHERE grade.school_id = assignment.school_id AND grade.student_subject_id = assignment.id
+            AND (${RECORDED_RAW_GRADE_SQL}
+              OR TRIM(COALESCE(grade.notes, '')) <> ''
+              OR EXISTS (SELECT 1 FROM grade_change_logs log WHERE log.grade_id = grade.id AND log.school_id = grade.school_id))
+        )`;
+    // A grade or religious classification can change after the friendly preflight.
+    // Recheck the entire set inside the write so a conflict cannot partially
+    // deactivate a mixed ordinary/religious batch. Read its details in that same
+    // transaction, before another request can change the reason for rejection.
+    const results = await db.batch([db.prepare(`
       UPDATE student_subjects
       SET is_active = 0, removed_at = unixepoch(), updated_at = unixepoch()
-      WHERE id = ? AND school_id = ? AND is_active = 1
-    `).bind(assignment.assignment_id, schoolId)));
+          ${options.notes !== undefined ? ', notes = ?' : ''}
+      WHERE school_id = ? AND id IN (SELECT CAST(value AS INTEGER) FROM json_each(?)) AND is_active = 1
+        AND NOT EXISTS (${currentConflictsSql})
+    `).bind(...(options.notes !== undefined ? [options.notes] : []), schoolId, activeIds, schoolId, activeIds),
+    db.prepare(currentConflictsSql).bind(schoolId, activeIds)]);
+    const currentConflicts = (results[1].results || []) as StudentSubjectDeactivationRecord[];
+    if (currentConflicts.length > 0) return conflictResult(currentConflicts);
+    return { ok: true, affected: Number(results[0].meta?.changes || 0) };
   }
-  return { ok: true, affected: activeAssignments.length };
+  return { ok: true, affected: 0 };
 }

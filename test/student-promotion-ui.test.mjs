@@ -23,7 +23,7 @@ const rootDir = join(testDir, '..');
 const source = (path) => readFileSync(join(rootDir, path), 'utf8');
 const pageSource = source('src/modules/studentPromotion/StudentPromotionPage.tsx');
 const appSource = source('src/App.tsx');
-const sidebarSource = source('src/components/Sidebar.tsx');
+const sidebarSource = source('src/components/navigation.tsx');
 const profileSource = source('src/modules/students/StudentProfilePage.tsx');
 const bulkPageSource = source('src/modules/studentPromotion/BulkStudentPromotionPanel.tsx');
 const bulkUiSource = source('src/lib/studentBulkPromotionUi.ts');

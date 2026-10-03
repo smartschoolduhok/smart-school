@@ -159,3 +159,43 @@ test('ambiguous, conflicting and archived employee identifiers are rejected in p
   assert.equal(f.db.prepare("SELECT status FROM employees WHERE email='first@example.test'").get().status,'archived');
   assert.equal(f.db.prepare('SELECT count(*) n FROM employees').get().n,original.length);
 });
+
+test('partial employee spreadsheet updates preserve every unmapped field through preview and direct confirmation',async t=>{
+ for(const previewFirst of [false,true])await t.test(previewFirst?'preview then confirm':'direct confirm',async sub=>{
+  const f=financeFixture(sub),initial={...draft(),phone:'07500000000',email:'employee@example.test',gender:'male',job_title:'مدرس الفيزياء',salary_type:'daily',notes:'ملاحظات تبقى محفوظة'};
+  assert.equal((await call(f,{body:initial})).body.data.imported_count,1);
+  const before=f.db.prepare("SELECT * FROM employees WHERE employee_number='STAFF-008'").get();
+  let renamed={full_name:'اسم الموظف بعد التصحيح',employee_number:'STAFF-008'};
+  if(previewFirst){const preview=await call(f,{action:'preview',body:renamed});assert.equal(preview.body.data.errors.length,0);renamed=preview.body.data.valid[0].data;}
+  const result=await call(f,{body:renamed});assert.equal(result.body.data.updated_count,1,JSON.stringify(result));
+  let saved=f.db.prepare('SELECT * FROM employees WHERE id=?').get(before.id);
+  assert.equal(saved.full_name,'اسم الموظف بعد التصحيح');
+  for(const field of ['salary_amount','salary_type','employee_type','phone','email','address','gender','job_title','hire_date','commencement_date','notes','role','status'])assert.equal(saved[field],before[field],field);
+  let clearing={full_name:saved.full_name,employee_number:'STAFF-008',phone:null,notes:'',salary_amount:0};
+  if(previewFirst)clearing=(await call(f,{action:'preview',body:clearing})).body.data.valid[0].data;
+  assert.equal((await call(f,{body:clearing})).body.data.updated_count,1);
+  saved=f.db.prepare('SELECT * FROM employees WHERE id=?').get(before.id);assert.equal(saved.phone,null);assert.equal(saved.notes,null);assert.equal(saved.salary_amount,0);assert.equal(saved.email,before.email);assert.equal(saved.hire_date,before.hire_date);
+ });
+});
+
+test('invalid supplied employee contact or salary cells are rejected instead of clearing saved values',async t=>{
+ const f=financeFixture(t);assert.equal((await call(f,{body:{...draft(),email:'keep@example.test',phone:'07500000000'}})).body.data.imported_count,1);
+ const before=f.db.prepare('SELECT * FROM employees ORDER BY id').all();
+ for(const patch of [{email:'invalid-address'},{phone:'not-a-phone'},{salary_amount:'not-money'},{salary_amount:9007199254740992}]){
+  const body={full_name:draft().full_name,employee_number:'STAFF-008',...patch};
+  const preview=await call(f,{action:'preview',body});assert.ok(preview.body.data.errors.length>0,JSON.stringify(patch));
+  const confirmation=await call(f,{body});assert.equal(confirmation.body.data.error_count,1,JSON.stringify(patch));
+  assert.deepEqual(f.db.prepare('SELECT * FROM employees ORDER BY id').all(),before);
+ }
+});
+
+test('employee spreadsheet update rejects an intervening edit without overwriting it or replacing qualifications',async t=>{
+ const f=financeFixture(t);assert.equal((await call(f,{body:draft()})).body.data.imported_count,1);
+ const id=f.db.prepare("SELECT id FROM employees WHERE employee_number='STAFF-008'").get().id;
+ const beforeQualifications=f.db.prepare('SELECT * FROM employee_qualifications ORDER BY id').all(),beforeAudit=f.db.prepare('SELECT * FROM employee_record_audit').all();
+ f.d1.beforeWrite=()=>f.db.prepare('UPDATE employees SET salary_amount=1250000 WHERE id=?').run(id);
+ const r=await call(f,{body:{...draft(),full_name:'تعديل متزامن',qualifications:[{degree:'شهادة جديدة',is_primary:true}]}});
+ assert.equal(r.body.data.error_count,1,JSON.stringify(r));assert.match(r.body.data.row_errors[0].message,/تغيرت/);
+ assert.equal(f.db.prepare('SELECT salary_amount FROM employees WHERE id=?').get(id).salary_amount,1250000);
+ assert.deepEqual(f.db.prepare('SELECT * FROM employee_qualifications ORDER BY id').all(),beforeQualifications);assert.deepEqual(f.db.prepare('SELECT * FROM employee_record_audit').all(),beforeAudit);
+});
