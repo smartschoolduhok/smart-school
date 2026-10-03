@@ -65,4 +65,4 @@
 
 ## حالة التسليم
 
-التعديلات محفوظة للمراجعة في فرع `codex/project-review-ux`. هذه الجولة لا تتضمن نشرًا على STAGING أو Production ولا تغيير بيانات بعيدة. بوابة GitHub تعيد تشغيل المصفوفة والسيناريوهات المحلية والبناء على نسخة الفرع قبل الدمج.
+التعديلات محفوظة في فرع `codex/project-review-ux` و[طلب المراجعة 78](https://github.com/smartschoolduhok/smart-school/pull/78). أنشأ تكامل Cloudflare [معاينة للفرع](https://codex-project-review-ux.smart-school-staging.pages.dev) تلقائيًا. لم تُغيّر هذه الجولة نسخة STAGING الرئيسية أو Production أو بيانات المدارس البعيدة. بوابة GitHub تعيد تشغيل المصفوفة والسيناريوهات المحلية والبناء على نسخة الفرع قبل الدمج.
