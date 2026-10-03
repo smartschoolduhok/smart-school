@@ -7,6 +7,21 @@ const qualificationColumns = [
   ['college', 'الكلية أو القسم'], ['graduation_date', 'تاريخ التخرج'], ['is_primary', 'المؤهل الأساسي'],
 ] as const;
 
+const employeeColumnAliases: Record<string, readonly string[]> = {
+  full_name: ['الاسم', 'اسم الموظف', 'name'], employee_number: ['الرقم الوظيفي'], role: ['صفة الموظف'],
+  gender: ['الجنس'], phone: ['الهاتف', 'رقم الهاتف', 'mobile'], email: ['البريد'], address: ['العنوان', 'السكن'],
+  job_title: ['المسمى الوظيفي', 'job', 'position', 'الوظيفة'], employee_type: ['نوع الموظف', 'type'],
+  hire_date: ['تاريخ التعيين', 'hire'], commencement_date: ['تاريخ المباشرة'],
+  salary_amount: ['الراتب', 'salary', 'الراتب الأساسي'], salary_type: ['نوع الراتب'], status: ['الحالة'], notes: ['ملاحظات'],
+};
+
+/** A missing spreadsheet column must not clear an existing employee's value. */
+export function employeeSpreadsheetFields(row: Record<string, unknown>): string[] {
+  return Object.entries(employeeColumnAliases)
+    .filter(([field, aliases]) => [field, ...aliases].some(key => Object.prototype.hasOwnProperty.call(row, key)))
+    .map(([field]) => field);
+}
+
 export function employeeSpreadsheetDate(value: unknown, date1904 = false): string | null {
   if (value == null || value === '' || (typeof value === 'string' && !value.trim())) return null;
   const normalized = typeof value === 'string' ? value.trim() : value;

@@ -26,7 +26,38 @@ export function boundedText(value: unknown, max: number): string {
   return value.trim();
 }
 export async function workflowBody(c: WorkflowContext, keys: string[]): Promise<Record<string, any>> {
-  const text = await c.req.text();
+  // Bound bytes while reading; checking only after req.text() lets an oversized
+  // authenticated request allocate the entire payload in the Worker first.
+  // Four UTF-8 bytes per allowed character preserves the existing text limit.
+  const maxBytes = 32_000 * 4;
+  const request = c.req.raw;
+  const declaredLength = request.headers.get('content-length');
+  if (declaredLength != null && /^\d+$/.test(declaredLength) && Number(declaredLength) > maxBytes) {
+    await request.body?.cancel();
+    throw new WorkflowError('request_too_large', 'الطلب كبير جدًا');
+  }
+  const reader = request.body?.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0, text = '';
+  if (reader) {
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > maxBytes) {
+          await reader.cancel();
+          throw new WorkflowError('request_too_large', 'الطلب كبير جدًا');
+        }
+        text += decoder.decode(chunk.value, { stream: true });
+        if (text.length > 32_000) {
+          await reader.cancel();
+          throw new WorkflowError('request_too_large', 'الطلب كبير جدًا');
+        }
+      }
+      text += decoder.decode();
+    } finally { reader.releaseLock(); }
+  }
   ensure(text.length <= 32_000, 'request_too_large', 'الطلب كبير جدًا');
   let value: any;
   try { value = JSON.parse(text); } catch { throw new WorkflowError('invalid_json', 'صيغة الطلب غير صالحة'); }

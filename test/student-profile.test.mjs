@@ -124,7 +124,7 @@ test('school switching clears profile data and stale responses are rejected', ()
   assert.match(profileSource, /captureSchoolRequest\(\)/);
   assert.match(profileSource, /!isCurrentRequest\(\) \|\| requestedStudentIdRef\.current !== requestedStudentId/);
   assert.match(profileSource, /setStudent\(null\)[\s\S]*?setHistory\(\[\]\)/);
-  assert.match(profileSource, /\[parsedStudentId, schoolId\]/);
+  assert.match(profileSource, /\[parsedStudentId, schoolId, user\?\.id, user\?\.role_key\]/);
 });
 
 test('cross-school student responses are rejected before rendering', () => {

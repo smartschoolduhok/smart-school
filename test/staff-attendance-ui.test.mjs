@@ -21,7 +21,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const source = path => readFileSync(join(root, path), 'utf8');
 const page = source('src/modules/attendance/StaffAttendancePage.tsx');
 const app = source('src/App.tsx');
-const sidebar = source('src/components/Sidebar.tsx');
+const sidebar = source('src/components/navigation.tsx');
 const api = source('src/lib/api.ts');
 const worker = source('src/lib/staffAttendanceDb.ts');
 const migration = source('migrations/0040_staff_attendance.sql');

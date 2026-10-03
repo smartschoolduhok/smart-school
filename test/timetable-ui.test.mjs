@@ -13,7 +13,7 @@ const gridSource = readFileSync(join(rootDir, 'src', 'modules', 'timetable', 'Ti
 const timetableSource = readFileSync(join(rootDir, 'src', 'lib', 'timetable.ts'), 'utf8');
 const apiSource = readFileSync(join(rootDir, 'src', 'lib', 'api.ts'), 'utf8');
 const appSource = readFileSync(join(rootDir, 'src', 'App.tsx'), 'utf8');
-const sidebarSource = readFileSync(join(rootDir, 'src', 'components', 'Sidebar.tsx'), 'utf8');
+const sidebarSource = readFileSync(join(rootDir, 'src', 'components', 'navigation.tsx'), 'utf8');
 
 test('timetable module is Arabic RTL and exposes the weekly grid with all foundation tabs', () => {
   assert.match(pageSource, /dir="rtl"/);
