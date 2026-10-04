@@ -49,6 +49,7 @@ jobs:
           npm run test:user-accounts:local
           npm run test:employee-records:local
           npm run test:student-study-status:local
+          npm run test:transport:local
 
       - name: Validate fresh local D1 seed
         run: npm run test:finance-seed:local

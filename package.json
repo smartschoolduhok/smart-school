@@ -52,6 +52,7 @@
     "test:student-promotion": "node --experimental-strip-types --test test/student-promotion.test.mjs test/student-promotion-ui.test.mjs",
     "test:student-profile": "node --experimental-strip-types --test --test-concurrency=1 test/student-profile.test.mjs test/student-ui-review.test.mjs",
     "test:transport": "node --experimental-strip-types --test --test-concurrency=1 test/transport.test.mjs test/transport-api.test.mjs",
+    "test:transport:local": "node --experimental-strip-types scripts/validate-student-transport-local.mjs",
     "test:flexible-grades": "node --experimental-strip-types --test test/flexible-grade-scheme.test.mjs",
     "test:grade-policies": "node --experimental-strip-types --test --test-concurrency=1 test/grade-policy.test.mjs test/grade-policy-api.test.mjs test/grade-policy-migration.test.mjs test/grade-policy-ui.test.mjs",
     "test:academic-analytics": "node --experimental-strip-types --test --test-concurrency=1 test/published-academic-analytics.test.mjs",

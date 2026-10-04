@@ -50,6 +50,12 @@ try {
   const migratedEmployee=await db.prepare('SELECT hire_date,commencement_date,photo_object_key FROM employees WHERE id=2').first();
   assert.deepEqual(migratedEmployee,{hire_date:'2020-09-01',commencement_date:null,photo_object_key:null});
   assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);checks.push('populated migration preserves existing tables and service dates');
+  // The preservation gate remains specific to 0054; current handlers need the later schema too.
+  for(const file of migrationFiles.filter(file=>file.slice(0,4)>'0054')) {
+    const statements=unstable_splitSqlQuery(readFileSync(join(root,'migrations',file),'utf8'));
+    await db.batch([...statements.map(sql=>db.prepare(sql)),db.prepare('INSERT INTO d1_migrations(name) VALUES(?)').bind(file)]);
+  }
+  assert.equal((await db.prepare('SELECT count(*) n FROM d1_migrations').first()).n,migrationFiles.length);
   const {default:app}=await vite.ssrLoadModule('/src/worker.ts');
   const secret='local-employee-records-validation-secret-2026';
   const tokens=Object.fromEntries(await Promise.all([['owner',1],['accountant',4],['teacher',3]].map(async([role,id])=>[role,await signJWT({id,email:`${role}@matrix.test`,auth_version:1},secret)])));

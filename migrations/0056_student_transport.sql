@@ -39,38 +39,38 @@ CREATE INDEX idx_students_transport_from ON students(school_id, transport_from_s
 
 CREATE TRIGGER students_transport_insert_guard BEFORE INSERT ON students
 BEGIN
-  SELECT CASE WHEN NEW.residential_area_id IS NOT NULL AND NOT EXISTS (
+  SELECT RAISE(ABORT, 'transport_area_school_mismatch') WHERE NEW.residential_area_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM residential_areas WHERE id = NEW.residential_area_id AND school_id = NEW.school_id
-  ) THEN RAISE(ABORT, 'transport_area_school_mismatch') END;
-  SELECT CASE WHEN NEW.transport_to_school_line_id IS NOT NULL AND (
+  );
+  SELECT RAISE(ABORT, 'transport_to_line_school_mismatch') WHERE NEW.transport_to_school_line_id IS NOT NULL AND (
     NEW.transport_to_school <> 'school' OR NOT EXISTS (
       SELECT 1 FROM transport_lines WHERE id = NEW.transport_to_school_line_id AND school_id = NEW.school_id
     )
-  ) THEN RAISE(ABORT, 'transport_to_line_school_mismatch') END;
-  SELECT CASE WHEN NEW.transport_from_school_line_id IS NOT NULL AND (
+  );
+  SELECT RAISE(ABORT, 'transport_from_line_school_mismatch') WHERE NEW.transport_from_school_line_id IS NOT NULL AND (
     NEW.transport_from_school <> 'school' OR NOT EXISTS (
       SELECT 1 FROM transport_lines WHERE id = NEW.transport_from_school_line_id AND school_id = NEW.school_id
     )
-  ) THEN RAISE(ABORT, 'transport_from_line_school_mismatch') END;
+  );
 END;
 
 CREATE TRIGGER students_transport_update_guard
 BEFORE UPDATE OF school_id, residential_area_id, transport_to_school, transport_from_school,
   transport_to_school_line_id, transport_from_school_line_id ON students
 BEGIN
-  SELECT CASE WHEN NEW.residential_area_id IS NOT NULL AND NOT EXISTS (
+  SELECT RAISE(ABORT, 'transport_area_school_mismatch') WHERE NEW.residential_area_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM residential_areas WHERE id = NEW.residential_area_id AND school_id = NEW.school_id
-  ) THEN RAISE(ABORT, 'transport_area_school_mismatch') END;
-  SELECT CASE WHEN NEW.transport_to_school_line_id IS NOT NULL AND (
+  );
+  SELECT RAISE(ABORT, 'transport_to_line_school_mismatch') WHERE NEW.transport_to_school_line_id IS NOT NULL AND (
     NEW.transport_to_school <> 'school' OR NOT EXISTS (
       SELECT 1 FROM transport_lines WHERE id = NEW.transport_to_school_line_id AND school_id = NEW.school_id
     )
-  ) THEN RAISE(ABORT, 'transport_to_line_school_mismatch') END;
-  SELECT CASE WHEN NEW.transport_from_school_line_id IS NOT NULL AND (
+  );
+  SELECT RAISE(ABORT, 'transport_from_line_school_mismatch') WHERE NEW.transport_from_school_line_id IS NOT NULL AND (
     NEW.transport_from_school <> 'school' OR NOT EXISTS (
       SELECT 1 FROM transport_lines WHERE id = NEW.transport_from_school_line_id AND school_id = NEW.school_id
     )
-  ) THEN RAISE(ABORT, 'transport_from_line_school_mismatch') END;
+  );
 END;
 
 CREATE TRIGGER residential_areas_school_immutable BEFORE UPDATE OF school_id ON residential_areas
