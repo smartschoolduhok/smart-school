@@ -22,6 +22,7 @@ import {
   STUDENT_DIRECTORY_ROLES,
   STUDENT_RESOURCE_VIEW_ROLES,
   SYSTEM_ADMIN_ROLES,
+  TRANSPORT_ACCESS_ROLES,
   USER_DIRECTORY_ROLES,
   hasRole,
 } from './lib/rbac';
@@ -34,6 +35,7 @@ const UsersPage = lazy(() => import('./modules/users/UsersPage'));
 const RolesPage = lazy(() => import('./modules/roles/RolesPage'));
 const StudentsPage = lazy(() => import('./modules/students/StudentsPage'));
 const StudentProfilePage = lazy(() => import('./modules/students/StudentProfilePage'));
+const TransportPage = lazy(() => import('./modules/transport/TransportPage'));
 const StudentFinancePage = lazy(() => import('./modules/students/StudentFinancePage'));
 const StudentPromotionPage = lazy(() => import('./modules/studentPromotion/StudentPromotionPage'));
 const TimetablePage = lazy(() => import('./modules/timetable/TimetablePage'));
@@ -196,6 +198,7 @@ export default function App() {
           <Route path="/roles" element={<Layout><AdminRoute><RolesPage /></AdminRoute></Layout>} />
 
           {/* Academic routes */}
+          <Route path="/transport" element={<Layout><RoleGuard allowedRoles={TRANSPORT_ACCESS_ROLES}><TransportPage /></RoleGuard></Layout>} />
           <Route path="/students" element={<Layout><RoleGuard allowedRoles={STUDENT_DIRECTORY_ROLES}><StudentsPage /></RoleGuard></Layout>} />
           <Route path="/students/:id" element={<Layout><RoleGuard allowedRoles={STUDENT_RESOURCE_VIEW_ROLES}><StudentProfilePage /></RoleGuard></Layout>} />
           <Route path="/students/:id/finance" element={<Layout><FinanceRoute><StudentFinancePage /></FinanceRoute></Layout>} />

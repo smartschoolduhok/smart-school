@@ -29,6 +29,7 @@ const academicSchema = readFileSync(join(rootDir, 'migrations', '0002_phase2_aca
 const academicYearIntegrity = readFileSync(join(rootDir, 'migrations', '0017_academic_year_integrity.sql'), 'utf8');
 const enrollmentMigration = readFileSync(join(rootDir, 'migrations', '0020_student_enrollments.sql'), 'utf8');
 const religionMigration = readFileSync(join(rootDir, 'migrations', '0021_student_religion.sql'), 'utf8');
+const transportMigration = readFileSync(join(rootDir, 'migrations', '0056_student_transport.sql'), 'utf8');
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 
 class LocalPreparedStatement {
@@ -102,6 +103,7 @@ function createFixture() {
   database.exec(academicYearIntegrity);
   database.exec(enrollmentMigration);
   database.exec(religionMigration);
+  database.exec(transportMigration);
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'private', 'Duhok', 'active'),
@@ -414,6 +416,64 @@ test('student religion migration keeps existing records null and restricts store
     /CHECK constraint failed/,
   );
   assert.equal(database.prepare('SELECT religion FROM students WHERE id = ?').get(studentId).religion, null);
+  database.close();
+});
+
+test('transport metadata survives legacy and Smart Excel identity updates and supports explicit clearing', async () => {
+  const { database, adapter, ids } = createFixture();
+  const areaId = insertId(database, "INSERT INTO residential_areas (school_id, name, name_key) VALUES (1, 'Area A', 'area a')");
+  const lineId = insertId(database, "INSERT INTO transport_lines (school_id, name, name_key) VALUES (1, 'Line A', 'line a')");
+  const creation = await createStudentWithEnrollmentBridge(adapter, {
+    ...studentValues(ids), residential_area_id: areaId,
+    transport_to_school: 'private', transport_from_school: 'school', transport_from_school_line_id: lineId,
+    pickup_landmark: 'Near park', guardian_phone_secondary: '07501234567',
+    private_driver_name: 'Private Driver', private_driver_phone: '07509999999',
+  }, ids.userA);
+  assert.equal(creation.ok, true);
+  const studentId = creation.student.id;
+  const before = await getStudentWithEffectivePlacement(adapter, studentId);
+  assert.equal(before.residential_area_name, 'Area A');
+  assert.equal(before.transport_from_school_line_name, 'Line A');
+  const result = await persistStudentImportWithEnrollmentBridge(adapter, {
+    existingStudent: before,
+    student: valuesFromStudent(database, studentId, { full_name: 'Imported New Name' }),
+    placement: { hasClassId: false, hasSectionId: false, class_id: null, section_id: null },
+    userId: ids.userA,
+  });
+  assert.equal(result.ok, true);
+  for (const key of ['residential_area_id', 'pickup_landmark', 'guardian_phone_secondary', 'transport_to_school',
+    'transport_from_school', 'transport_from_school_line_id', 'private_driver_name', 'private_driver_phone']) {
+    assert.equal(result.student[key], before[key], key);
+  }
+  await updateStudentIdentityOnly(adapter, studentId, valuesFromStudent(database, studentId, {
+    residential_area_id: null, pickup_landmark: null, guardian_phone_secondary: null,
+    transport_from_school: 'family', transport_from_school_line_id: null,
+  }));
+  const cleared = await getStudentWithEffectivePlacement(adapter, studentId);
+  assert.equal(cleared.residential_area_id, null);
+  assert.equal(cleared.residential_area_name, null);
+  assert.equal(cleared.transport_from_school, 'family');
+  assert.equal(cleared.transport_from_school_line_name, null);
+  assert.equal(cleared.transport_to_school, 'private');
+  database.close();
+});
+
+test('transport storage blocks foreign-school areas and lines and preserves legacy defaults', async () => {
+  const { database, adapter, ids } = createFixture();
+  const studentId = insertStudent(database, ids);
+  const foreignArea = insertId(database, "INSERT INTO residential_areas (school_id, name, name_key) VALUES (2, 'Area B', 'area b')");
+  const foreignLine = insertId(database, "INSERT INTO transport_lines (school_id, name, name_key) VALUES (2, 'Line B', 'line b')");
+  const localLine = insertId(database, "INSERT INTO transport_lines (school_id, name, name_key) VALUES (1, 'Line A', 'line a')");
+  const student = await getStudentWithEffectivePlacement(adapter, studentId);
+  assert.equal(student.transport_to_school, 'unspecified');
+  assert.equal(student.transport_from_school, 'unspecified');
+  assert.equal(student.residential_area_id, null);
+  assert.throws(() => database.prepare('UPDATE students SET residential_area_id = ? WHERE id = ?').run(foreignArea, studentId), /transport_area_school_mismatch/);
+  assert.throws(() => database.prepare("UPDATE students SET transport_to_school = 'school', transport_to_school_line_id = ? WHERE id = ?").run(foreignLine, studentId), /transport_to_line_school_mismatch/);
+  assert.throws(() => database.prepare('UPDATE students SET transport_from_school_line_id = ? WHERE id = ?').run(localLine, studentId), /transport_from_line_school_mismatch/);
+  assert.throws(() => database.prepare('UPDATE transport_lines SET school_id = 2 WHERE id = ?').run(localLine), /transport_school_immutable/);
+  assert.throws(() => database.prepare("UPDATE students SET transport_to_school = 'invalid' WHERE id = ?").run(studentId), /CHECK constraint/);
+  assert.equal((await getStudentWithEffectivePlacement(adapter, studentId)).transport_to_school, 'unspecified');
   database.close();
 });
 

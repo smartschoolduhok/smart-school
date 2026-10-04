@@ -34,6 +34,7 @@ const academicSchema = readFileSync(join(rootDir, 'migrations', '0002_phase2_aca
 const academicYearIntegrity = readFileSync(join(rootDir, 'migrations', '0017_academic_year_integrity.sql'), 'utf8');
 const enrollmentMigration = readFileSync(join(rootDir, 'migrations', '0020_student_enrollments.sql'), 'utf8');
 const studentReligionMigration = readFileSync(join(rootDir, 'migrations', '0021_student_religion.sql'), 'utf8');
+const transportMigration = readFileSync(join(rootDir, 'migrations', '0056_student_transport.sql'), 'utf8');
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 const bulkPromotionSource = readFileSync(join(rootDir, 'src', 'lib', 'studentBulkPromotion.ts'), 'utf8');
 
@@ -123,6 +124,7 @@ function createFixture() {
   database.exec(academicYearIntegrity);
   database.exec(enrollmentMigration);
   database.exec(studentReligionMigration);
+  database.exec(transportMigration);
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'private', 'Duhok', 'active'),

@@ -76,6 +76,7 @@ export function applyTeachingLoadMatrix(data: MatrixRequest & { confirm_apply: t
 export function previewTeachingLoadCopy(data: MatrixCopyRequest) {
   return fetchApi<MatrixCopyPlan>('/api/timetable/teaching-load-matrix/copy-preview', { method: 'POST', body: JSON.stringify(data) });
 }
+import type { ResidentialArea, TransportDirection, TransportLine, TransportRoster } from './transport';
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from './studentEnrollments';
 import type { StudentReligiousSubjectState } from './religiousSubjects';
 import type {
@@ -494,6 +495,42 @@ export async function downloadHomeworkAttachment(
   } catch (error) {
     return { error: error instanceof Error ? error.message : 'تعذر تنزيل المرفق' };
   }
+}
+
+export function getResidentialAreas(schoolId: number) {
+  return fetchApi<ResidentialArea[]>(`/api/transport/areas?school_id=${schoolId}`);
+}
+
+export function createResidentialArea(schoolId: number, name: string) {
+  return fetchApi<ResidentialArea>('/api/transport/areas', { method: 'POST', body: JSON.stringify({ school_id: schoolId, name }) });
+}
+
+export function updateResidentialArea(id: number, schoolId: number, name: string) {
+  return fetchApi<ResidentialArea>(`/api/transport/areas/${id}`, { method: 'PUT', body: JSON.stringify({ school_id: schoolId, name }) });
+}
+
+export function getTransportLines(schoolId: number) {
+  return fetchApi<TransportLine[]>(`/api/transport/lines?school_id=${schoolId}`);
+}
+
+type TransportLineInput = { name: string; driver_name?: string | null; driver_phone?: string | null };
+
+export function createTransportLine(schoolId: number, data: TransportLineInput) {
+  return fetchApi<TransportLine>('/api/transport/lines', { method: 'POST', body: JSON.stringify({ ...data, school_id: schoolId }) });
+}
+
+export function updateTransportLine(id: number, schoolId: number, data: TransportLineInput) {
+  return fetchApi<TransportLine>(`/api/transport/lines/${id}`, { method: 'PUT', body: JSON.stringify({ ...data, school_id: schoolId }) });
+}
+
+export function getTransportRoster(schoolId: number) {
+  return fetchApi<TransportRoster>(`/api/transport/roster?school_id=${schoolId}`);
+}
+
+export function assignTransportLine(schoolId: number, studentIds: number[], lineId: number, direction: TransportDirection) {
+  return fetchApi<{ updated: number }>('/api/transport/assign', {
+    method: 'PUT', body: JSON.stringify({ school_id: schoolId, student_ids: studentIds, line_id: lineId, direction }),
+  });
 }
 
 // Dashboard

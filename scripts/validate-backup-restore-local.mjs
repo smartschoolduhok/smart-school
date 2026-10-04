@@ -1,7 +1,7 @@
 // Disposable LOCAL D1 backup/restore drill. Never reads a configured remote DB.
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { prepareLocalRestore, contentSnapshot, assertSameContent, digest } from './lib/local-d1-restore.mjs';
+import { prepareLocalRestore, contentSnapshot, assertSameContent, digest, orderRestoreTables, sqlStatements } from './lib/local-d1-restore.mjs';
 import { createManifest, verifyBackup } from './lib/backup-verification.mjs';
 import { restoreLocalD1 } from './lib/backup-local-d1.mjs';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -17,6 +17,7 @@ const source = environment('source', 'smart-school-backup-source-local');
 const restored = environment('restored', 'smart-school-backup-restored-local');
 const backupPath = join(drillRoot, 'backup.sql');
 const commandLogs = [];
+let transportFixture;
 
 console.log(`LOCAL backup/restore artifacts: ${drillRoot}`);
 
@@ -111,6 +112,21 @@ try {
     largeSource.env.DB.prepare(`INSERT INTO section_advisors(school_id,academic_year_id,class_id,employee_id,version,created_by_user_id,updated_by_user_id)
       VALUES(1,?,?,NULL,5,?,?)`).bind(adviserYear.id,clearedClass.id,adviserCreator.id,adviserCreator.id),
   ]);
+  // Transport parents were added after students. Populated references exercise
+  // export order, deferred FK checks, chunk restoration and the generic verifier.
+  const transportStudent = await largeSource.env.DB.prepare('SELECT id FROM students WHERE school_id=1 ORDER BY id LIMIT 1').first();
+  assert.ok(transportStudent, 'seed must include a student for transport restore');
+  const area = await largeSource.env.DB.prepare('INSERT INTO residential_areas(school_id,name,name_key) VALUES(1,?,?) RETURNING id')
+    .bind("حي النقل, 'محلي'", 'local-transport-area').first();
+  const line = await largeSource.env.DB.prepare('INSERT INTO transport_lines(school_id,name,name_key,driver_name,driver_phone) VALUES(1,?,?,?,?) RETURNING id')
+    .bind('خط النقل المحلي', 'local-transport-line', 'سائق تجريبي', '07700000001').first();
+  transportFixture = { student_id: transportStudent.id, residential_area_id: area.id, pickup_landmark: 'قرب المدرسة\nالباب الثاني',
+    guardian_phone_secondary: '07700000002', transport_to_school: 'school', transport_from_school: 'school',
+    transport_to_school_line_id: line.id, transport_from_school_line_id: line.id };
+  await largeSource.env.DB.prepare(`UPDATE students SET residential_area_id=?,pickup_landmark=?,guardian_phone_secondary=?,
+    transport_to_school='school',transport_from_school='school',transport_to_school_line_id=?,transport_from_school_line_id=? WHERE id=?`)
+    .bind(area.id, transportFixture.pickup_landmark, transportFixture.guardian_phone_secondary, line.id, line.id, transportStudent.id).run();
+  assert.deepEqual((await largeSource.env.DB.prepare('PRAGMA foreign_key_check').all()).results, []);
 } finally { await largeSource.dispose(); }
 runLocal(source, ['export', source.databaseName, '--local', '--output', backupPath], 'source-export');
 assert.ok(readFileSync(backupPath, 'utf8').length > 1_000, 'backup export is unexpectedly empty');
@@ -123,29 +139,41 @@ const basePaths = plan.baseChunks.map((chunk, index) => {
   writeFileSync(path, chunk);
   return path;
 });
-for (const [index, path] of basePaths.entries()) {
-  runLocal(
-    restored,
-    ['execute', restored.databaseName, '--local', '--file', path],
-    `restore-base-import-${String(index + 1).padStart(2, '0')}`,
-  );
-}
-
 const sourceProxy = await openLocal(source);
 const restoredProxy = await openLocal(restored);
 try {
   const read = db => async sql => (await db.prepare(sql).all()).results;
-  for (const insert of plan.inserts) {
-    const result = await restoredProxy.env.DB.prepare(insert.sql).bind(...insert.values).run();
-    assert.equal(result.success, true);
-    assert.equal(result.meta.changes, 1);
+  // Restore the parsed chunk files in one genuine D1 transaction: newer parent
+  // rows can appear in a later chunk than their historical child table. Each
+  // prepared statement stays below the SQL-size limit, while FK checks remain
+  // enabled and deferred until all chunks and oversized bound rows are present.
+  const rowsAndSchema = [], triggers = [];
+  for (const path of basePaths) {
+    const chunk = readFileSync(path, 'utf8');
+    for (const statement of sqlStatements(chunk)) {
+      const [first, second] = statement.tokens.map(token => token.text.toUpperCase());
+      const destination = first === 'CREATE' && second === 'TRIGGER' ? triggers : rowsAndSchema;
+      destination.push(chunk.slice(statement.start, statement.end));
+    }
   }
+  assert.equal((await restoredProxy.env.DB.prepare('PRAGMA foreign_keys').first()).foreign_keys, 1);
+  const results = await restoredProxy.env.DB.batch([
+    restoredProxy.env.DB.prepare('PRAGMA defer_foreign_keys=TRUE'),
+    ...rowsAndSchema.map(sql => restoredProxy.env.DB.prepare(sql)),
+    ...plan.inserts.map(insert => restoredProxy.env.DB.prepare(insert.sql).bind(...insert.values)),
+    // Restoring historical rows must not rerun present-day business guards.
+    ...triggers.map(sql => restoredProxy.env.DB.prepare(sql)),
+  ]);
+  assert.ok(results.every(result => result.success));
+  for (const result of results.slice(1 + rowsAndSchema.length, 1 + rowsAndSchema.length + plan.inserts.length)) assert.equal(result.meta.changes, 1);
   const before = await contentSnapshot(read(sourceProxy.env.DB));
   const after = await contentSnapshot(read(restoredProxy.env.DB));
   assertSameContent(before, after);
   const baseline = new DatabaseSync(':memory:');
   try {
-    baseline.exec(exportedSql);
+    // Create all referenced tables before rows, and defer forward row references
+    // until the entire SQLite baseline has been restored.
+    baseline.exec('BEGIN;\nPRAGMA defer_foreign_keys=TRUE;\n' + orderRestoreTables(exportedSql) + '\nCOMMIT;');
     assertSameContent(await contentSnapshot(async sql => baseline.prepare(sql).all()), after);
   } finally { baseline.close(); }
   const largeRow = await restoredProxy.env.DB.prepare('SELECT summary_json FROM import_jobs WHERE summary_json = ?').bind(largeText).first();
@@ -155,6 +183,13 @@ try {
   const adviserHistory = (await restoredProxy.env.DB.prepare('SELECT employee_id,attendance_confirmed,notes,version FROM section_advisors ORDER BY id').all()).results;
   assert.equal(adviserHistory[0].version,4);assert.equal(adviserHistory[0].attendance_confirmed,1);
   assert.deepEqual(adviserHistory[1],{employee_id:null,attendance_confirmed:0,notes:'',version:5});
+  const restoredTransport = await restoredProxy.env.DB.prepare(`SELECT id AS student_id,residential_area_id,pickup_landmark,guardian_phone_secondary,
+    transport_to_school,transport_from_school,transport_to_school_line_id,transport_from_school_line_id FROM students WHERE id=?`)
+    .bind(transportFixture.student_id).first();
+  assert.deepEqual(restoredTransport, transportFixture);
+  assert.equal(after.tables.residential_areas.count, 1);
+  assert.equal(after.tables.transport_lines.count, 1);
+  assert.deepEqual(after.foreignKeys, []);
   const evidence = {
     local_only: true,
     migration_count: migrationFiles.length,
@@ -164,11 +199,13 @@ try {
     oversized_single_row_restored: true,
     installment_plan_rows_restored: after.tables.fee_installment_plans.count === 1 && after.tables.fee_installment_items.count === 2,
     historical_and_cleared_advisors_restored: true,
+    populated_transport_and_references_restored: true,
     large_row_bytes: Buffer.byteLength(largeText),
     large_row_hash: digest(largeText),
     statements_before: plan.statementCount,
     restore_base_statements: plan.baseStatementCount,
     restore_base_chunks: plan.baseChunks.length,
+    restore_chunks_atomic_with_deferred_foreign_keys: true,
     backup_bytes: readFileSync(backupPath).byteLength,
     exact_application_snapshot: true,
     finance,

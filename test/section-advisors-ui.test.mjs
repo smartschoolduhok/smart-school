@@ -217,8 +217,11 @@ test('print waiting for fonts is cancelled when the document date changes', asyn
   Object.defineProperty(document, 'fonts', {configurable: true, value: {ready: pending.promise}});
   t.after(() => {if (descriptor) Object.defineProperty(document, 'fonts', descriptor); else delete document.fonts;});
   const u = await mount(t);
+  const dateInput = u.container.querySelector('input[type="date"]');
+  // Use two explicit dates so the edit changes the snapshot even when today is 2026-10-04.
+  await setValue(dateInput, '2026-10-03');
   await click(button(u, 'طباعة / حفظ PDF'));
-  await setValue(u.container.querySelector('input[type="date"]'), '2026-10-04');
+  await setValue(dateInput, '2026-10-04');
   await act(async () => pending.resolve());
   assert.equal(calls.length, 0);
   assert.match(u.container.textContent, /تغير الكتاب أثناء تجهيز الطباعة/);

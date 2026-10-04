@@ -106,6 +106,14 @@ try {
   assert.deepEqual(after.foreignKeys, []);
   cases.push('0051 to 0052 preserves every historical column value/type and changes only declared prior schema objects');
 
+  // Keep the account migration assertions isolated, then complete the current API schema.
+  for (const file of migrationFiles.filter(file => file > accountMigration)) {
+    const statements = unstable_splitSqlQuery(readFileSync(join(root, 'migrations', file), 'utf8'));
+    await db.batch([...statements.map(sql => db.prepare(sql)), db.prepare('INSERT INTO d1_migrations(name) VALUES(?)').bind(file)]);
+  }
+  const apiBaseline = await snapshot(db);
+  assert.equal(apiBaseline.tables.d1_migrations.count, migrationFiles.length);
+  assert.deepEqual(apiBaseline.foreignKeys, []);
   const { default: app } = await vite.ssrLoadModule('/src/worker.ts');
   const secret = 'generated-local-workerd-user-accounts-secret-2026';
   const owner = await signJWT({ id: 1, email: 'owner@matrix.test', auth_version: 1, session_transport: 'bearer' }, secret);
@@ -203,7 +211,7 @@ try {
 
   const final = await snapshot(db);
   const changedTables = new Set(['users', 'teacher_employee_links', 'user_account_audit', 'revoked_sessions', 'login_throttles', 'sqlite_sequence']);
-  for (const [name, previous] of Object.entries(after.tables)) {
+  for (const [name, previous] of Object.entries(apiBaseline.tables)) {
     if (!changedTables.has(name)) assert.deepEqual(final.tables[name], previous, `API scenarios unexpectedly changed ${name}`);
   }
   const oldForeign = before.tables.users.content.filter(encoded => JSON.parse(encoded)[1]?.[1] === '2');
@@ -218,6 +226,7 @@ try {
     database_engine: 'Cloudflare workerd D1',
     migration: accountMigration,
     migration_count: after.tables.d1_migrations.count,
+    api_migration_count: apiBaseline.tables.d1_migrations.count,
     baseline_fingerprint: digest(before),
     upgraded_fingerprint: digest(after),
     typed_historical_values_preserved: true,

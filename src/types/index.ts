@@ -3,6 +3,8 @@
 // Multi-school SaaS Foundation
 // ===========================================
 
+import type { TransportStudentFields } from '../lib/transport';
+
 export type SchoolType = 'خاص' | 'حكومي' | 'دولي' | 'مختلط';
 export type UserStatus = 'active' | 'inactive';
 export type RoleKey = 'system_admin' | 'school_owner' | 'principal' | 'vice_principal' | 'teacher' | 'accountant' | 'registrar' | 'parent';
@@ -162,7 +164,7 @@ export interface Section {
   students_count?: number;
 }
 
-export interface Student {
+export interface Student extends TransportStudentFields {
   id: number;
   school_id: number;
   student_number: string;

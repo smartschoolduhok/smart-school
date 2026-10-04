@@ -1,0 +1,71 @@
+.transport-print-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  overflow: auto;
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.transport-preview-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #d1d5db;
+  background: #fff;
+}
+
+.transport-preview-toolbar h2 { font-weight: 700; font-size: 1.1rem; }
+.transport-preview-toolbar p { margin-top: 0.2rem; color: #6b7280; font-size: 0.8rem; }
+.transport-print-document { min-width: 960px; max-width: 1120px; margin: 1.5rem auto; padding: 0 1rem; }
+.transport-print-area { margin-bottom: 1.5rem; padding: 1.5rem; background: #fff; }
+.transport-print-heading { margin-bottom: 0.8rem; }
+.transport-print-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.4rem 1rem; }
+.transport-print-heading p, .transport-print-meta { margin-top: 0.3rem; font-size: 0.75rem; }
+.transport-print-warning { color: #92400e; }
+.transport-print-table { width: 100%; border-collapse: collapse; table-layout: fixed; text-align: right; font-size: 0.8rem; }
+.transport-print-table th, .transport-print-table td { padding: 0.5rem; border: 1px solid #9ca3af; vertical-align: top; overflow-wrap: anywhere; }
+.transport-print-table th { background: #f3f4f6; font-weight: 700; }
+.transport-print-table .transport-print-identity { background: #fff; font-weight: 400; }
+.transport-print-identity-title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.3rem 1rem; font-size: 0.95rem; font-weight: 700; }
+.transport-print-identity > p { margin-top: 0.3rem; font-size: 0.75rem; }
+.transport-print-table p { margin: 0; }
+.transport-print-table p + p { margin-top: 0.3rem; }
+.transport-print-table bdi { white-space: nowrap; }
+
+@media print {
+  @page transport-roster { size: A4 landscape; margin: 10mm; }
+
+  body.transport-print-mode { margin: 0 !important; padding: 0 !important; overflow: visible !important; background: #fff !important; }
+  body.transport-print-mode > * { display: none !important; }
+  body.transport-print-mode > .transport-print-layer {
+    display: block !important;
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: auto !important;
+    background: #fff !important;
+    page: transport-roster;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .transport-preview-toolbar { display: none !important; }
+  .transport-print-document { display: block; width: 100%; min-width: 0; max-width: none; margin: 0; padding: 0; }
+  .transport-print-area { display: block; margin: 0; padding: 0; break-before: page; page-break-before: always; }
+  .transport-print-area:first-child { break-before: auto; page-break-before: auto; }
+  .transport-print-heading { break-inside: avoid; page-break-inside: avoid; break-after: avoid; page-break-after: avoid; margin-bottom: 3mm; }
+  .transport-print-heading p, .transport-print-meta { font-size: 9pt; }
+  .transport-print-identity-title { font-size: 11pt; }
+  .transport-print-identity > p { font-size: 9pt; }
+  .transport-print-table { width: 100%; font-size: 10pt; }
+  .transport-print-table th, .transport-print-table td { padding: 2mm; color: #111; white-space: normal; }
+  .transport-print-table thead { display: table-header-group; }
+  .transport-print-table tbody { display: table-row-group; }
+  .transport-print-table tr { break-inside: avoid; page-break-inside: avoid; }
+}

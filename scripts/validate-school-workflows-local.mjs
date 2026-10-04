@@ -26,12 +26,22 @@ try{
  const parallelMigration=readFileSync(join(root,'migrations/0049_timetable_parallel_lessons.sql'),'utf8');
  const accountsMigration=readFileSync(join(root,'migrations/0052_school_user_accounts.sql'),'utf8');
  const employeeMigration=readFileSync(join(root,'migrations/0054_employee_records.sql'),'utf8');
+ const transportMigration=readFileSync(join(root,'migrations/0056_student_transport.sql'),'utf8');
  const accountColumns=[
   'must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))',
   'temporary_password_expires_at INTEGER',
   'account_revision INTEGER NOT NULL DEFAULT 1 CHECK (account_revision > 0)',
  ];
  const employeeColumns=['commencement_date TEXT','photo_object_key TEXT','photo_content_type TEXT','photo_updated_at INTEGER'];
+ const transportColumns=[
+  'residential_area_id INTEGER REFERENCES residential_areas(id)',
+  'pickup_landmark TEXT','guardian_phone_secondary TEXT',
+  "transport_to_school TEXT NOT NULL DEFAULT 'unspecified' CHECK(transport_to_school IN ('school', 'private', 'family', 'other', 'unspecified'))",
+  "transport_from_school TEXT NOT NULL DEFAULT 'unspecified' CHECK(transport_from_school IN ('school', 'private', 'family', 'other', 'unspecified'))",
+  'transport_to_school_line_id INTEGER REFERENCES transport_lines(id)',
+  'transport_from_school_line_id INTEGER REFERENCES transport_lines(id)',
+  'private_driver_name TEXT','private_driver_phone TEXT',
+ ];
  const parallelColumn='parallel_with_load_id INTEGER REFERENCES timetable_teaching_loads(id) ON DELETE RESTRICT';
  assert.match(parallelMigration,new RegExp('ALTER TABLE timetable_teaching_loads ADD COLUMN '+parallelColumn.replace(/[()]/g,'\\$&')+';'));
  const replacedEntryTriggers=new Set(['trg_timetable_entries_validate_insert','trg_timetable_entries_validate_update']);
@@ -58,6 +68,13 @@ try{
    assert.ok(constraint>0);assert.deepEqual(old.sql[constraint-1],['symbol',',']);
    const expected=[...old.sql.slice(0,constraint-1),...employeeColumns.flatMap(column=>[['symbol',','],...sqlTokens(column).map(t=>[t.kind,t.text])]),...old.sql.slice(constraint-1)];
    assert.deepEqual(actual,{...old,sql:expected},'only the four declared nullable employee record columns are appended');
+  }else if(old.type==='table'&&old.name==='students'){
+   for(const column of transportColumns)assert.ok(transportMigration.replace(/\s+/g,' ').includes('ALTER TABLE students ADD COLUMN '+column+';'));
+   // SQLite appends the transport columns before the existing school/number UNIQUE constraint.
+   const constraint=old.sql.findIndex(([kind,text])=>kind==='word'&&text==='UNIQUE');
+   assert.ok(constraint>0);assert.deepEqual(old.sql[constraint-1],['symbol',',']);
+   const expected=[...old.sql.slice(0,constraint-1),...transportColumns.flatMap(column=>[['symbol',','],...sqlTokens(column).map(t=>[t.kind,t.text])]),...old.sql.slice(constraint-1)];
+   assert.deepEqual(actual,{...old,sql:expected},'only the nine declared transport columns are appended');
   }else if(old.type==='trigger'&&['trg_parent_student_links_validate_update','trg_teacher_employee_links_validate_update'].includes(old.name)){
    const statement=sqlStatements(accountsMigration).find(s=>s.tokens[0]?.text==='CREATE'&&s.tokens[1]?.text==='TRIGGER'&&s.tokens.some(t=>t.text===old.name));
    assert.ok(statement,'replacement revocation trigger is declared');
@@ -116,6 +133,18 @@ try{
     return JSON.stringify(row);
    }).sort();
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-1),content,hash:digest(content)},value,'every prior load column, value and SQLite type is unchanged');
+  }else if(name==='students'){
+   const actual=after.tables[name];
+   assert.deepEqual(actual.columns.slice(-transportColumns.length),transportColumns.map((declaration,index)=>{
+    const [name,type]=declaration.split(' '),isMode=index===3||index===4;
+    return {cid:value.columns.length+index,name,type,notnull:isMode?1:0,dflt_value:isMode?"'unspecified'":null,pk:0,hidden:0};
+   }),'transport additions have exactly the declared types and defaults');
+   const content=actual.content.map(encoded=>{
+    const row=JSON.parse(encoded);
+    assert.deepEqual(row.splice(-transportColumns.length),transportColumns.map((_,index)=>index===3||index===4?['text',Buffer.from('unspecified').toString('hex').toUpperCase()]:['null',null]),'legacy students receive only unspecified transport and NULL details');
+    return JSON.stringify(row);
+   }).sort();
+   assert.deepEqual({...actual,columns:actual.columns.slice(0,-transportColumns.length),content,hash:digest(content)},value,'every previous student column, value, row count, SQLite type and content hash is unchanged');
   }else assert.deepEqual(after.tables[name],value,name);
  }
  for(const name of ['employee_qualifications','employee_record_audit']){
@@ -126,7 +155,15 @@ try{
   assert.deepEqual(after.schema.find(item=>item.type==='table'&&item.name===name),{type:'table',name,tbl_name:name,sql:expected},name+' schema exactly matches migration 0054');
   assert.equal(after.tables[name].count,0);assert.deepEqual(after.tables[name].content,[]);assert.equal(after.tables[name].hash,digest([]));
  }
- assert.equal(Object.keys(after.tables).length,104);assert.equal(after.tables.student_study_status.count,0);assert.equal(after.tables.student_study_status_audit.count,0);assert.equal(after.tables.section_advisors.count,0);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
+ for(const name of ['residential_areas','transport_lines']){
+  assert.equal(before.tables[name],undefined,'transport tables are new');
+  const statement=sqlStatements(transportMigration).find(s=>s.tokens[0]?.text==='CREATE'&&s.tokens[1]?.text==='TABLE'&&s.tokens[2]?.text===name);
+  assert.ok(statement,'new transport table is declared');
+  const expected=sqlTokens(transportMigration.slice(statement.start,statement.end).trim().replace(/;$/,'')).map(t=>[t.kind,t.text]);
+  assert.deepEqual(after.schema.find(item=>item.type==='table'&&item.name===name),{type:'table',name,tbl_name:name,sql:expected},name+' schema exactly matches migration 0056');
+  assert.equal(after.tables[name].count,0);assert.deepEqual(after.tables[name].content,[]);assert.equal(after.tables[name].hash,digest([]));
+ }
+ assert.equal(Object.keys(after.tables).length,106);assert.equal(after.tables.student_study_status.count,0);assert.equal(after.tables.student_study_status_audit.count,0);assert.equal(after.tables.section_advisors.count,0);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
  const {default:app}=await vite.ssrLoadModule('/src/worker.ts'),f={d1:db};
  const call=async(role,method,path,body,status)=>{const r=await request(app,f,role,method,path,body);assert.equal(r.status,status,JSON.stringify({path,...r}));return r.data;};
  const count=async table=>(await db.prepare(`SELECT count(*) n FROM ${table}`).first()).n;

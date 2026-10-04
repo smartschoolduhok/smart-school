@@ -150,7 +150,9 @@ test('student birthday validation uses real calendar dates and the Baghdad busin
 
 test('student create and update reject impossible or future birthdays before any identity or enrollment write', async t => {
   const f=fixture(t);
-  const create={school_id:1,student_number:'DOB-TEST',full_name:'DOB test student',gender:'female',class_id:1,section_id:2};
+  const area=f.db.prepare("INSERT INTO residential_areas(school_id,name,name_key) VALUES(1,'DOB test area','dob test area') RETURNING id").get();
+  const create={school_id:1,student_number:'DOB-TEST',full_name:'DOB test student',gender:'female',class_id:1,section_id:2,
+    residential_area_id:area.id,guardian_phone:'07700000000'};
   for(const value of ['2026-02-30','2099-01-01','2023-02-29',0,{}]) {
     for(const [method,path,body] of [['POST','/api/students',{...create,birth_date:value}],['PUT','/api/students/101',{school_id:1,birth_date:value,full_name:'Must not change',class_id:2,section_id:null}]]) {
       const before=snapshot(f.db),response=await request(app,f,'owner',method,path,body);

@@ -4,8 +4,10 @@ import {
   ArrowRight,
   ArrowLeftRight,
   BookOpen,
+  Bus,
   CalendarDays,
   GraduationCap,
+  Edit2,
   Hash,
   History,
   MapPin,
@@ -28,6 +30,7 @@ import {
 } from '../../lib/religiousSubjects';
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from '../../lib/studentEnrollments';
 import { studentReligionLabel } from '../../lib/studentReligion';
+import { getTransportMissingFields, schoolSubscriptionLabel, transportModeLabel } from '../../lib/transport';
 import {
   EMPTY_STUDENT_PROFILE_VALUE,
   NO_CURRENT_ENROLLMENT_MESSAGE,
@@ -213,6 +216,7 @@ export default function StudentProfilePage() {
   }
 
   const noCurrentEnrollment = student ? hasActiveYearWithoutEnrollment(student) : false;
+  const missingTransportFields = student ? getTransportMissingFields(student) : [];
   const currentAcademicYearStartsAt = student?.current_academic_year_id == null
     ? null
     : history.find((enrollment) => enrollment.academic_year_id === student.current_academic_year_id)?.starts_at ?? null;
@@ -282,6 +286,16 @@ export default function StudentProfilePage() {
                   <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${studentStatusClasses(student.status)}`}>
                     حالة الطالب: {studentStatusLabel(student.status)}
                   </span>
+                  {canManagePromotion && (
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/students?edit=${student.id}`)}
+                      className="inline-flex items-center gap-2 rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+                    >
+                      <Edit2 size={15} />
+                      تعديل بيانات الطالب
+                    </button>
+                  )}
                   {canManagePromotion && student.current_enrollment_id != null && (
                     <button
                       type="button"
@@ -399,8 +413,12 @@ export default function StudentProfilePage() {
                 <InformationItem label="حالة الطالب" value={studentStatusLabel(student.status)} />
                 <InformationItem label="تاريخ إنشاء الملف" value={formatStudentProfileUnixSeconds(student.created_at)} />
                 <InformationItem label="آخر تحديث" value={formatStudentProfileUnixSeconds(student.updated_at)} />
+                <InformationItem label="منطقة السكن" value={safeStudentProfileValue(student.residential_area_name)} icon={<MapPin size={15} />} />
                 <div className="sm:col-span-2">
-                  <InformationItem label="العنوان" value={safeStudentProfileValue(student.address)} icon={<MapPin size={15} />} />
+                  <InformationItem label="العنوان التفصيلي" value={safeStudentProfileValue(student.address)} icon={<MapPin size={15} />} />
+                </div>
+                <div className="sm:col-span-2">
+                  <InformationItem label="أقرب نقطة دالة / نقطة الالتقاء" value={safeStudentProfileValue(student.pickup_landmark)} icon={<MapPin size={15} />} />
                 </div>
                 {user?.role_key !== 'parent' && student.notes && <div className="sm:col-span-2"><InformationItem label="ملاحظات المدرسة" value={student.notes} /></div>}
               </div>
@@ -413,10 +431,51 @@ export default function StudentProfilePage() {
               </div>
               <div className="space-y-3">
                 <InformationItem label="اسم ولي الأمر" value={safeStudentProfileValue(student.guardian_name)} />
-                <InformationItem label="هاتف ولي الأمر" value={safeStudentProfileValue(student.guardian_phone)} icon={<Phone size={15} />} />
+                <InformationItem label="هاتف ولي الأمر" value={<bdi dir="ltr">{safeStudentProfileValue(student.guardian_phone)}</bdi>} icon={<Phone size={15} />} />
+                <InformationItem label="هاتف إضافي لولي الأمر" value={<bdi dir="ltr">{safeStudentProfileValue(student.guardian_phone_secondary)}</bdi>} icon={<Phone size={15} />} />
               </div>
             </section>
           </div>
+
+          <section className="rounded-xl border border-gray-200 bg-white p-6">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Bus className="text-blue-600" size={21} />
+                <h2 className="text-lg font-bold text-gray-900">النقل والاشتراكات</h2>
+              </div>
+              {(student.transport_to_school === 'school' || student.transport_from_school === 'school') && (
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">{schoolSubscriptionLabel(student)}</span>
+              )}
+            </div>
+            {missingTransportFields.length > 0 && (
+              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <p>بيانات بحاجة إلى استكمال: {missingTransportFields.join('، ')}.</p>
+                {canManagePromotion && (
+                  <button type="button" onClick={() => navigate(`/students?edit=${student.id}`)} className="mt-2 font-semibold underline">استكمال بيانات الطالب</button>
+                )}
+              </div>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-3">
+                <InformationItem label="الذهاب إلى المدرسة" value={transportModeLabel(student.transport_to_school)} />
+                {student.transport_to_school === 'school' && (
+                  <InformationItem label="خط الذهاب / صاحب الاشتراك" value={student.transport_to_school_line_name || 'لم يُحدد الخط بعد'} />
+                )}
+              </div>
+              <div className="space-y-3">
+                <InformationItem label="الإياب من المدرسة" value={transportModeLabel(student.transport_from_school)} />
+                {student.transport_from_school === 'school' && (
+                  <InformationItem label="خط الإياب / صاحب الاشتراك" value={student.transport_from_school_line_name || 'لم يُحدد الخط بعد'} />
+                )}
+              </div>
+              {(student.transport_to_school === 'private' || student.transport_from_school === 'private') && (
+                <>
+                  <InformationItem label="سائق الاشتراك الخاص" value={safeStudentProfileValue(student.private_driver_name)} />
+                  <InformationItem label="هاتف سائق الاشتراك الخاص" value={<bdi dir="ltr">{safeStudentProfileValue(student.private_driver_phone)}</bdi>} icon={<Phone size={15} />} />
+                </>
+              )}
+            </div>
+          </section>
 
           <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
             <div className="flex items-center gap-2 border-b border-gray-100 px-6 py-4">

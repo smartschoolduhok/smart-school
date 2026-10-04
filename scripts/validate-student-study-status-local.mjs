@@ -43,6 +43,10 @@ try {
   for (const name of ['student_study_status','student_study_status_audit']) assert.equal(after.tables[name].count, 0);
   assert.deepEqual(after.foreignKeys, []);
   checks.push('0055 preserves every existing table value, SQLite type and schema definition');
+  // Preserve the isolated 0055 comparison above, then run today's API on today's schema.
+  await migrate(db, migrationFiles.filter(file => file.slice(0,4) > '0055'));
+  const apiMigrationCount = (await db.prepare('SELECT count(*) AS count FROM d1_migrations').first()).count;
+  assert.equal(apiMigrationCount, migrationFiles.length);
   const { default: app } = await vite.ssrLoadModule('/src/worker.ts');
   const call = async (role, method, path, body, expected = 200) => {
     const result = await request(app, { d1: db }, role, method, path, body);
@@ -87,7 +91,7 @@ try {
   assert.equal(visible.grades[0].first_month, 82);
   assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results, []);
   checks.push('D1 transaction rolls back metadata and visibility when its audit fails; showing grades restores unchanged values');
-  const evidence = { local_only: true, checks, existing_tables_preserved: Object.keys(before.tables).filter(name => !['sqlite_sequence','d1_migrations'].includes(name)).length, migrations: after.tables.d1_migrations.count, foreign_key_check: [] };
+  const evidence = { local_only: true, checks, existing_tables_preserved: Object.keys(before.tables).filter(name => !['sqlite_sequence','d1_migrations'].includes(name)).length, migrations: after.tables.d1_migrations.count, api_migrations: apiMigrationCount, foreign_key_check: [] };
   writeFileSync(join(directory, 'evidence.json'), JSON.stringify(evidence,null,2));
   console.log(JSON.stringify(evidence,null,2));
 } finally { await vite?.close(); await proxy.dispose(); }

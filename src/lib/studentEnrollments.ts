@@ -1,4 +1,5 @@
 import type { StudentReligion } from './studentReligion.ts';
+import type { TransportStudentFields } from './transport.ts';
 
 export interface StudentEnrollmentPreparedStatement {
   bind(...values: unknown[]): StudentEnrollmentPreparedStatement;
@@ -53,7 +54,7 @@ export interface EffectiveStudentPlacement extends StudentLegacyPlacement {
   current_promotion_status: string | null;
 }
 
-export interface EffectiveStudentRecord extends EffectiveStudentPlacement {
+export interface EffectiveStudentRecord extends EffectiveStudentPlacement, TransportStudentFields {
   id: number;
   school_id: number;
   student_number: string;
@@ -95,7 +96,10 @@ export interface StudentEnrollmentHistoryRecord {
   updated_at: number;
 }
 
-export interface StudentWriteValues extends StudentLegacyPlacement {
+export type StudentTransportWriteFields = Omit<TransportStudentFields,
+  'residential_area_name' | 'transport_to_school_line_name' | 'transport_from_school_line_name'>;
+
+export interface StudentWriteValues extends StudentLegacyPlacement, StudentTransportWriteFields {
   school_id: number;
   student_number: string;
   full_name: string;
@@ -192,6 +196,18 @@ const EFFECTIVE_STUDENT_SELECT = `
     student.guardian_name,
     student.guardian_phone,
     student.address,
+    student.residential_area_id,
+    residential_area.name AS residential_area_name,
+    student.pickup_landmark,
+    student.guardian_phone_secondary,
+    student.transport_to_school,
+    student.transport_from_school,
+    student.transport_to_school_line_id,
+    student.transport_from_school_line_id,
+    to_school_line.name AS transport_to_school_line_name,
+    from_school_line.name AS transport_from_school_line_name,
+    student.private_driver_name,
+    student.private_driver_phone,
     ${EFFECTIVE_CLASS_ID_SQL} AS class_id,
     ${EFFECTIVE_SECTION_ID_SQL} AS section_id,
     student.status,
@@ -207,6 +223,12 @@ const EFFECTIVE_STUDENT_SELECT = `
     current_enrollment.status AS current_enrollment_status,
     current_enrollment.promotion_status AS current_promotion_status
   FROM students AS student
+  LEFT JOIN residential_areas AS residential_area
+    ON residential_area.id = student.residential_area_id AND residential_area.school_id = student.school_id
+  LEFT JOIN transport_lines AS to_school_line
+    ON to_school_line.id = student.transport_to_school_line_id AND to_school_line.school_id = student.school_id
+  LEFT JOIN transport_lines AS from_school_line
+    ON from_school_line.id = student.transport_from_school_line_id AND from_school_line.school_id = student.school_id
   LEFT JOIN academic_years AS active_year
     ON active_year.school_id = student.school_id
    AND active_year.is_active = 1
@@ -222,6 +244,13 @@ const EFFECTIVE_STUDENT_SELECT = `
    AND section.school_id = student.school_id
 `;
 
+const STUDENT_TRANSPORT_WRITE_KEYS = [
+  'residential_area_id', 'pickup_landmark', 'guardian_phone_secondary',
+  'transport_to_school', 'transport_from_school',
+  'transport_to_school_line_id', 'transport_from_school_line_id',
+  'private_driver_name', 'private_driver_phone',
+] as const satisfies readonly (keyof StudentTransportWriteFields)[];
+
 function studentInsertStatement(
   db: StudentEnrollmentDatabase,
   student: StudentWriteValues,
@@ -232,8 +261,12 @@ function studentInsertStatement(
       school_id, student_number, full_name, father_name, mother_name,
       gender, religion, birth_date, phone, guardian_name, guardian_phone,
       address, class_id, section_id, status, photo_url, notes,
+      residential_area_id, pickup_landmark, guardian_phone_secondary,
+      transport_to_school, transport_from_school,
+      transport_to_school_line_id, transport_from_school_line_id,
+      private_driver_name, private_driver_phone,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
     ${returning ? 'RETURNING id, school_id, student_number, full_name, religion, class_id, section_id, status' : ''}
   `).bind(
     student.school_id,
@@ -253,6 +286,15 @@ function studentInsertStatement(
     student.status,
     student.photo_url,
     student.notes,
+    student.residential_area_id ?? null,
+    student.pickup_landmark ?? null,
+    student.guardian_phone_secondary ?? null,
+    student.transport_to_school ?? 'unspecified',
+    student.transport_from_school ?? 'unspecified',
+    student.transport_to_school_line_id ?? null,
+    student.transport_from_school_line_id ?? null,
+    student.private_driver_name ?? null,
+    student.private_driver_phone ?? null,
   );
 }
 
@@ -264,6 +306,9 @@ function studentUpdateStatement(
   requiredMutableEnrollment: CurrentStudentEnrollment | null = null,
 ): StudentEnrollmentPreparedStatement {
   const placementSql = includePlacement ? 'class_id = ?, section_id = ?,' : '';
+  // Imports and older clients omit transport fields; omission must preserve saved values.
+  const transportKeys = STUDENT_TRANSPORT_WRITE_KEYS.filter(key => student[key] !== undefined);
+  const transportSql = transportKeys.map(key => `${key} = ?,`).join(' ');
   const values: unknown[] = [
     student.student_number,
     student.full_name,
@@ -277,6 +322,7 @@ function studentUpdateStatement(
     student.guardian_phone,
     student.address,
   ];
+  values.push(...transportKeys.map(key => student[key]));
   if (includePlacement) values.push(student.class_id, student.section_id);
   values.push(
     student.photo_url,
@@ -310,7 +356,7 @@ function studentUpdateStatement(
     UPDATE students SET
       student_number = ?, full_name = ?, father_name = ?, mother_name = ?,
       gender = ?, religion = ?, birth_date = ?, phone = ?, guardian_name = ?, guardian_phone = ?,
-      address = ?, ${placementSql} photo_url = ?, notes = ?, status = ?,
+      address = ?, ${transportSql} ${placementSql} photo_url = ?, notes = ?, status = ?,
       updated_at = unixepoch()
     WHERE id = ? AND school_id = ?
       ${mutableEnrollmentGuard}

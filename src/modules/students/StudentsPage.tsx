@@ -1,22 +1,23 @@
-import { useState, useEffect, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
-import { getStudents, getClasses, getSections, createStudent, updateStudent, archiveStudent } from '../../lib/api';
+import { getStudents, getClasses, getSections, createStudent, updateStudent, archiveStudent, getResidentialAreas, createResidentialArea, getTransportLines } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_ACCESS_ROLES, ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import type { StudentReligion } from '../../lib/studentReligion';
 import { STUDY_STATUS_LABELS, type StudyStatus } from '../../lib/studentStudyStatus';
 import { useCurrentStudentStudyRoster } from './useCurrentStudentStudyRoster';
+import { TRANSPORT_MODES, type ResidentialArea, type TransportLine, type TransportMode, type TransportStudentFields } from '../../lib/transport';
 import {
   FINALIZED_STUDENT_PLACEMENT_MESSAGE,
   isStudentPlacementFinalized,
 } from '../../lib/studentPlacementUx';
 import { Search, Plus, Filter, Archive, Edit2, Eye, X, Check, User, Users, CalendarSearch, Printer } from 'lucide-react';
 
-interface StudentRecord {
+interface StudentRecord extends TransportStudentFields {
   id: number;
   school_id: number;
   student_number: string;
@@ -65,7 +66,16 @@ const emptyForm = {
   phone: '',
   guardian_name: '',
   guardian_phone: '',
+  guardian_phone_secondary: '',
   address: '',
+  residential_area_id: '' as string | number,
+  pickup_landmark: '',
+  transport_to_school: 'unspecified' as TransportMode,
+  transport_from_school: 'unspecified' as TransportMode,
+  transport_to_school_line_id: '' as string | number,
+  transport_from_school_line_id: '' as string | number,
+  private_driver_name: '',
+  private_driver_phone: '',
   class_id: '' as string | number,
   section_id: '' as string | number,
   notes: '',
@@ -73,6 +83,7 @@ const emptyForm = {
 
 export default function StudentsPage() {
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
@@ -80,6 +91,10 @@ export default function StudentsPage() {
   const [students, setStudents] = useState<StudentRecord[]>([]);
   const [classes, setClasses] = useState<ClassRecord[]>([]);
   const [sections, setSections] = useState<SectionRecord[]>([]);
+  const [residentialAreas, setResidentialAreas] = useState<ResidentialArea[]>([]);
+  const [transportLines, setTransportLines] = useState<TransportLine[]>([]);
+  const [transportOptionsError, setTransportOptionsError] = useState('');
+  const [loadedSchoolId, setLoadedSchoolId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -98,6 +113,9 @@ export default function StudentsPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
   const [placementFinalized, setPlacementFinalized] = useState(false);
+  const [newAreaName, setNewAreaName] = useState('');
+  const [addingArea, setAddingArea] = useState(false);
+  const modalSessionRef = useRef(0);
 
   const canManage = hasRole(user?.role_key, ACADEMIC_MANAGEMENT_ROLES);
   const canManageSelectedSchool = canManage && schoolId != null;
@@ -115,6 +133,10 @@ export default function StudentsPage() {
     setStudents([]);
     setClasses([]);
     setSections([]);
+    setResidentialAreas([]);
+    setTransportLines([]);
+    setTransportOptionsError('');
+    setLoadedSchoolId(null);
     setFilterClass('');
     setFilterSection('');
     setFilterStudyStatus('');
@@ -126,8 +148,23 @@ export default function StudentsPage() {
     setError('');
     setFormError('');
     setPlacementFinalized(false);
+    setNewAreaName('');
+    setAddingArea(false);
+    modalSessionRef.current += 1;
     void loadData();
+    return () => { modalSessionRef.current += 1; };
   }, [schoolId]);
+
+  useEffect(() => {
+    const editId = searchParams.get('edit');
+    if (!editId || !canManageSelectedSchool || loading || loadedSchoolId !== schoolId) return;
+    const target = students.find(student => String(student.id) === editId && student.school_id === schoolId);
+    if (target) openEdit(target);
+    else setError('تعذر العثور على الطالب المطلوب في المدرسة المحددة');
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('edit');
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, students, loading, loadedSchoolId, schoolId, canManageSelectedSchool]);
 
   async function loadData() {
     const isCurrentRequest = captureSchoolRequest();
@@ -141,16 +178,21 @@ export default function StudentsPage() {
     }
     setLoading(true);
     setError('');
-    const [sRes, cRes, secRes] = await Promise.all([
+    const [sRes, cRes, secRes, areasRes, linesRes] = await Promise.all([
       getStudents(schoolId),
       canBrowseAcademicCatalog ? getClasses(schoolId) : Promise.resolve({ data: [] as ClassRecord[] }),
       canBrowseAcademicCatalog ? getSections(schoolId) : Promise.resolve({ data: [] as SectionRecord[] }),
+      canManage ? getResidentialAreas(schoolId) : Promise.resolve({ data: [] as ResidentialArea[], error: undefined }),
+      canManage ? getTransportLines(schoolId) : Promise.resolve({ data: [] as TransportLine[], error: undefined }),
     ]);
     if (!isCurrentRequest()) return;
-    if (sRes.data) setStudents(sRes.data as StudentRecord[]);
+    if (sRes.data) { setStudents(sRes.data as StudentRecord[]); setLoadedSchoolId(schoolId); }
     else if (sRes.error) setError(sRes.error);
     if (cRes.data) setClasses(cRes.data as ClassRecord[]);
     if (secRes.data) setSections(secRes.data as SectionRecord[]);
+    if (areasRes.data) setResidentialAreas(areasRes.data);
+    if (linesRes.data) setTransportLines(linesRes.data);
+    setTransportOptionsError(areasRes.error || linesRes.error || '');
     setLoading(false);
   }
 
@@ -204,7 +246,11 @@ export default function StudentsPage() {
   }, [isFinanceDirectory, sections, students]);
 
   function openCreate() {
-    if (schoolId == null) return;
+    if (!canManageSelectedSchool) return;
+    modalSessionRef.current += 1;
+    setNewAreaName('');
+    setAddingArea(false);
+    setSaving(false);
     setForm(emptyForm);
     setFormError('');
     setModalMode('create');
@@ -214,7 +260,11 @@ export default function StudentsPage() {
   }
 
   function openEdit(s: StudentRecord) {
-    if (schoolId == null) return;
+    if (!canManageSelectedSchool || s.school_id !== schoolId) return;
+    modalSessionRef.current += 1;
+    setNewAreaName('');
+    setAddingArea(false);
+    setSaving(false);
     setForm({
       student_number: s.student_number,
       full_name: s.full_name,
@@ -226,7 +276,16 @@ export default function StudentsPage() {
       phone: s.phone || '',
       guardian_name: s.guardian_name || '',
       guardian_phone: s.guardian_phone || '',
+      guardian_phone_secondary: s.guardian_phone_secondary || '',
       address: s.address || '',
+      residential_area_id: s.residential_area_id || '',
+      pickup_landmark: s.pickup_landmark || '',
+      transport_to_school: s.transport_to_school || 'unspecified',
+      transport_from_school: s.transport_from_school || 'unspecified',
+      transport_to_school_line_id: s.transport_to_school_line_id || '',
+      transport_from_school_line_id: s.transport_from_school_line_id || '',
+      private_driver_name: s.private_driver_name || '',
+      private_driver_phone: s.private_driver_phone || '',
       class_id: s.class_id || '',
       section_id: s.section_id || '',
       notes: s.notes || '',
@@ -241,15 +300,43 @@ export default function StudentsPage() {
     setModalOpen(true);
   }
 
+  function closeModal() {
+    modalSessionRef.current += 1;
+    setModalOpen(false);
+  }
+
+  async function handleAddArea() {
+    if (schoolId == null || !newAreaName.trim() || addingArea || saving) return;
+    const isCurrentRequest = captureSchoolRequest();
+    const modalSession = modalSessionRef.current;
+    setAddingArea(true);
+    setFormError('');
+    const response = await createResidentialArea(schoolId, newAreaName.trim());
+    if (!isCurrentRequest() || modalSession !== modalSessionRef.current) return;
+    if (response.error) setFormError(response.error);
+    else if (response.data) {
+      const area = response.data;
+      setResidentialAreas(current => [...current.filter(item => item.id !== area.id), area].sort((a, b) => a.name.localeCompare(b.name, 'ar')));
+      setForm(current => ({ ...current, residential_area_id: area.id }));
+      setNewAreaName('');
+    }
+    setAddingArea(false);
+  }
+
   async function handleSave() {
-    if (saving || !canManageSelectedSchool) return;
+    if (saving || addingArea || !canManageSelectedSchool) return;
     setFormError('');
     if (schoolId == null) { setFormError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
     if (!form.student_number.trim() || !form.full_name.trim() || !form.gender) {
       setFormError('رقم الطالب والاسم الكامل والجنس مطلوبة');
       return;
     }
+    if (modalMode === 'create' && (!form.residential_area_id || !form.guardian_phone.trim())) {
+      setFormError('منطقة السكن وهاتف ولي الأمر مطلوبان للطالب الجديد');
+      return;
+    }
     const isCurrentRequest = captureSchoolRequest();
+    const modalSession = modalSessionRef.current;
     setSaving(true);
     const payload = {
       school_id: schoolId,
@@ -263,19 +350,28 @@ export default function StudentsPage() {
       phone: form.phone.trim() || null,
       guardian_name: form.guardian_name.trim() || null,
       guardian_phone: form.guardian_phone.trim() || null,
+      guardian_phone_secondary: form.guardian_phone_secondary.trim() || null,
       address: form.address.trim() || null,
+      residential_area_id: form.residential_area_id ? Number(form.residential_area_id) : null,
+      pickup_landmark: form.pickup_landmark.trim() || null,
+      transport_to_school: form.transport_to_school,
+      transport_from_school: form.transport_from_school,
+      transport_to_school_line_id: form.transport_to_school === 'school' && form.transport_to_school_line_id ? Number(form.transport_to_school_line_id) : null,
+      transport_from_school_line_id: form.transport_from_school === 'school' && form.transport_from_school_line_id ? Number(form.transport_from_school_line_id) : null,
+      private_driver_name: form.private_driver_name.trim() || null,
+      private_driver_phone: form.private_driver_phone.trim() || null,
       class_id: form.class_id ? Number(form.class_id) : null,
       section_id: form.section_id ? Number(form.section_id) : null,
       notes: form.notes.trim() || null,
     };
     if (modalMode === 'create') {
       const res = await createStudent(payload);
-      if (!isCurrentRequest()) return;
+      if (!isCurrentRequest() || modalSession !== modalSessionRef.current) return;
       if (res.error) setFormError(res.error);
       else { setModalOpen(false); loadData(); }
     } else if (editingId != null) {
       const res = await updateStudent(editingId, payload);
-      if (!isCurrentRequest()) return;
+      if (!isCurrentRequest() || modalSession !== modalSessionRef.current) return;
       if (res.error) setFormError(res.error);
       else { setModalOpen(false); loadData(); }
     }
@@ -495,6 +591,7 @@ export default function StudentsPage() {
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الصف</th>
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الشعبة</th>
                   {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">ولي الأمر</th>}
+                  {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">منطقة السكن</th>}
                   <th className="px-4 py-3 text-xs font-semibold text-gray-600">الحالة</th>
                   {canManage && <th className="px-4 py-3 text-xs font-semibold text-gray-600">نوع الدراسة — السنة الحالية</th>}
                   {!isFinanceDirectory && <th className="px-4 py-3 text-xs font-semibold text-gray-600">الإجراءات</th>}
@@ -521,7 +618,13 @@ export default function StudentsPage() {
                     {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">{s.gender === 'male' ? 'ذكر' : s.gender === 'female' ? 'أنثى' : 'غير محدد'}</td>}
                     <td className="px-4 py-3 text-sm text-gray-600">{s.class_name || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{s.section_name || '—'}</td>
-                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">{s.guardian_name || '—'}</td>}
+                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">
+                      <p>{s.guardian_name || '—'}</p>
+                      {s.guardian_phone ? <bdi dir="ltr" className="text-xs">{s.guardian_phone}</bdi> : <span className="text-xs text-amber-700">هاتف ولي الأمر غير مكتمل</span>}
+                    </td>}
+                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-600">
+                      {s.residential_area_name || <span className="text-xs text-amber-700">منطقة السكن غير محددة</span>}
+                    </td>}
                     <td className="px-4 py-3">
                       <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
                         s.status === 'active' ? 'bg-green-100 text-green-700' :
@@ -570,11 +673,16 @@ export default function StudentsPage() {
               <h2 id="student-editor-title" className="text-xl font-bold text-gray-900">
                 {modalMode === 'create' ? 'إضافة طالب جديد' : 'تعديل بيانات الطالب'}
               </h2>
-              <button onClick={() => setModalOpen(false)} disabled={saving} aria-label="إغلاق نموذج الطالب" className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-50">
+              <button onClick={closeModal} disabled={saving || addingArea} aria-label="إغلاق نموذج الطالب" className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-50">
                 <X size={20} />
               </button>
             </div>
             <fieldset disabled={saving} className="p-6 space-y-4">
+              {modalMode === 'edit' && (!form.residential_area_id || !form.guardian_phone.trim()) && (
+                <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  بيانات السكن والتواصل غير مكتملة. يرجى تحديد منطقة السكن وإضافة هاتف ولي الأمر لتجهيز قوائم النقل.
+                </p>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">رقم الطالب <span className="text-red-500">*</span></label>
@@ -659,21 +767,134 @@ export default function StudentsPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">هاتف ولي الأمر</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">هاتف ولي الأمر {modalMode === 'create' && <span className="text-red-500">*</span>}</label>
                   <input
                     value={form.guardian_phone}
                     onChange={(e) => setForm({ ...form, guardian_phone: e.target.value })}
                     className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    type="tel"
+                    dir="ltr"
+                    aria-required={modalMode === 'create'}
                   />
                 </div>
+                <div>
+                  <label htmlFor="guardian-phone-secondary" className="block text-sm font-medium text-gray-700 mb-1">هاتف إضافي لولي الأمر (اختياري)</label>
+                  <input
+                    id="guardian-phone-secondary"
+                    type="tel"
+                    dir="ltr"
+                    value={form.guardian_phone_secondary}
+                    onChange={(event) => setForm({ ...form, guardian_phone_secondary: event.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="residential-area" className="block text-sm font-medium text-gray-700 mb-1">منطقة السكن {modalMode === 'create' && <span className="text-red-500">*</span>}</label>
+                  <select
+                    id="residential-area"
+                    value={form.residential_area_id}
+                    onChange={(event) => setForm({ ...form, residential_area_id: event.target.value })}
+                    disabled={loading || addingArea || !!transportOptionsError}
+                    aria-required={modalMode === 'create'}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                  >
+                    <option value="">— اختر منطقة السكن —</option>
+                    {form.residential_area_id && !residentialAreas.some(area => area.id === Number(form.residential_area_id)) && (
+                      <option value={form.residential_area_id}>{students.find(student => student.id === editingId)?.residential_area_name || 'منطقة الطالب الحالية'}</option>
+                    )}
+                    {residentialAreas.map(area => <option key={area.id} value={area.id}>{area.name}</option>)}
+                  </select>
+                </div>
                 <div className="sm:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">العنوان</label>
+                  <label htmlFor="new-residential-area" className="block text-xs font-medium text-gray-500 mb-1">المنطقة غير موجودة؟ أضفها إلى قائمة المدرسة</label>
+                  <div className="flex gap-2">
+                    <input
+                      id="new-residential-area"
+                      value={newAreaName}
+                      onChange={(event) => setNewAreaName(event.target.value)}
+                      disabled={addingArea || loading || !!transportOptionsError}
+                      placeholder="اسم منطقة السكن"
+                      className="min-w-0 flex-1 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                    />
+                    <button type="button" onClick={() => void handleAddArea()} disabled={!newAreaName.trim() || addingArea || loading || !!transportOptionsError} className="rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50">
+                      {addingArea ? 'جاري الإضافة...' : 'إضافة المنطقة'}
+                    </button>
+                  </div>
+                </div>
+                {transportOptionsError && (
+                  <div className="sm:col-span-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+                    <p>تعذر تحميل مناطق السكن أو خطوط النقل: {transportOptionsError}</p>
+                    <button type="button" onClick={() => void loadData()} disabled={loading} className="mt-2 font-semibold underline">إعادة المحاولة</button>
+                  </div>
+                )}
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">العنوان التفصيلي</label>
                   <input
                     value={form.address}
                     onChange={(e) => setForm({ ...form, address: e.target.value })}
                     className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
+                <div className="sm:col-span-2">
+                  <label htmlFor="pickup-landmark" className="block text-sm font-medium text-gray-700 mb-1">أقرب نقطة دالة / نقطة الالتقاء</label>
+                  <input
+                    id="pickup-landmark"
+                    value={form.pickup_landmark}
+                    onChange={(event) => setForm({ ...form, pickup_landmark: event.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="sm:col-span-2 border-t border-gray-100 pt-4">
+                  <h3 className="font-semibold text-gray-900">طريقة النقل</h3>
+                  <p className="mt-1 text-xs text-gray-500">حدد طريقة الذهاب والإياب بشكل مستقل، مثلاً الذهاب باشتراك المدرسة والإياب مع الأهل.</p>
+                </div>
+                {([
+                  { mode: 'transport_to_school', line: 'transport_to_school_line_id', label: 'الذهاب إلى المدرسة' },
+                  { mode: 'transport_from_school', line: 'transport_from_school_line_id', label: 'الإياب من المدرسة' },
+                ] as const).map(direction => (
+                  <div key={direction.mode} className="space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
+                    <div>
+                      <label htmlFor={direction.mode} className="block text-sm font-medium text-gray-700 mb-1">{direction.label}</label>
+                      <select
+                        id={direction.mode}
+                        value={form[direction.mode]}
+                        onChange={(event) => setForm(current => ({ ...current, [direction.mode]: event.target.value as TransportMode, [direction.line]: event.target.value === 'school' ? current[direction.line] : '' }))}
+                        className="w-full px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        {TRANSPORT_MODES.map(mode => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+                      </select>
+                    </div>
+                    {form[direction.mode] === 'school' && (
+                      <div>
+                        <label htmlFor={direction.line} className="block text-sm font-medium text-gray-700 mb-1">خط النقل / صاحب الاشتراك</label>
+                        <select
+                          id={direction.line}
+                          value={form[direction.line]}
+                          onChange={(event) => setForm({ ...form, [direction.line]: event.target.value })}
+                          disabled={loading || !!transportOptionsError}
+                          className="w-full px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                        >
+                          <option value="">لم يُحدد الخط بعد</option>
+                          {form[direction.line] && !transportLines.some(line => line.id === Number(form[direction.line])) && <option value={form[direction.line]}>خط الطالب الحالي</option>}
+                          {transportLines.map(line => <option key={line.id} value={line.id}>{line.name}{line.driver_name ? ` — ${line.driver_name}` : ''}</option>)}
+                        </select>
+                        {transportLines.length === 0 && !loading && !transportOptionsError && <p className="mt-1 text-xs text-gray-500">يمكن إنشاء خطوط النقل من صفحة اشتراكات النقل ثم ربط الطالب بها.</p>}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {(form.transport_to_school === 'private' || form.transport_from_school === 'private') && (
+                  <>
+                    <div>
+                      <label htmlFor="private-driver-name" className="block text-sm font-medium text-gray-700 mb-1">اسم سائق الاشتراك الخاص (اختياري)</label>
+                      <input id="private-driver-name" value={form.private_driver_name} onChange={(event) => setForm({ ...form, private_driver_name: event.target.value })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                    </div>
+                    <div>
+                      <label htmlFor="private-driver-phone" className="block text-sm font-medium text-gray-700 mb-1">هاتف سائق الاشتراك الخاص (اختياري)</label>
+                      <input id="private-driver-phone" type="tel" dir="ltr" value={form.private_driver_phone} onChange={(event) => setForm({ ...form, private_driver_phone: event.target.value })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                    </div>
+                  </>
+                )}
                 {modalMode === 'edit' && placementFinalized && (
                   <div className="sm:col-span-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-800">
                     {FINALIZED_STUDENT_PLACEMENT_MESSAGE}
@@ -729,12 +950,12 @@ export default function StudentsPage() {
                 </div>
               )}
               <div className="flex items-center justify-end gap-3 p-6">
-                <button onClick={() => setModalOpen(false)} disabled={saving} className="px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50">
+                <button onClick={closeModal} disabled={saving || addingArea} className="px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50">
                   إلغاء
                 </button>
                 <button
                   onClick={handleSave}
-                  disabled={saving}
+                  disabled={saving || addingArea || loading}
                   className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white rounded-lg text-sm font-medium transition-colors"
                 >
                   {saving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Check size={18} />}
