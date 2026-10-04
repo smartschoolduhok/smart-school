@@ -11,7 +11,7 @@ import { buildSectionAdvisorPlacements, parseSectionAdvisorSaveRequest, sectionA
 // HttpOnly browser sessions; explicit Bearer authentication for non-browser clients
 // ===========================================
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { parseTimetablePreferences, storedTimetablePreferences, type TimetableSchoolPreferences } from './lib/timetablePreferences'
 import { ParallelTimetableError, parallelLoads, parallelEntryGroup, newParallelEntry, validateParallelEntryProjection, parallelEntryStatements, parallelLockStatements, parallelLoadDeactivationStatements, linkedScheduleProjection, assertParallelLoads } from './lib/timetableParallelDb'
 import { parseTimetableScope, timetableLoadMatchesScope, scopedTimetableSolverLoads, collectTimetableFixedEntries, type TimetableScope } from './lib/timetableScope'
@@ -60,6 +60,8 @@ import {
   SETTINGS_MANAGEMENT_ROLES,
   SETTINGS_VIEW_ROLES,
   USER_DIRECTORY_ROLES,
+  TRANSPORT_ACCESS_ROLES,
+  TRANSPORT_MANAGEMENT_ROLES,
   hasRole,
 } from './lib/rbac'
 import {
@@ -228,6 +230,17 @@ import {
   executeOfficialBulkStudentPromotion,
   previewOfficialBulkStudentPromotion,
 } from './lib/officialBulkPromotion'
+import {
+  assignTransportLineAtomically,
+  listResidentialAreas,
+  listTransportLines,
+  loadTransportRoster,
+  validateStudentTransportInput,
+  validateTransportAssignment,
+  validateTransportDriver,
+  validateTransportName,
+} from './lib/transportStorage'
+import type { ResidentialArea, TransportLine } from './lib/transport'
 import { ANALYTICS_APPLICABLE_GRADE_JOINS } from './lib/subjectApplicability'
 import {
   STUDENT_RELIGION_HEADER_ALIASES,
@@ -5230,6 +5243,119 @@ app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
 })
 
 // ===========================================
+// API ROUTES: Residence and school transport
+// ===========================================
+app.get('/api/transport/areas', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+  const schoolId = c.get('resolvedSchoolId')
+  if (schoolId == null) return c.json({ error: 'يجب تحديد المدرسة لعرض مناطق السكن' }, 400)
+  try {
+    return c.json({ data: await listResidentialAreas(c.env.DB, schoolId) })
+  } catch {
+    return c.json({ error: 'فشل في جلب مناطق السكن' }, 500)
+  }
+})
+
+app.get('/api/transport/lines', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_ROLES), async (c) => {
+  const schoolId = c.get('resolvedSchoolId')
+  if (schoolId == null) return c.json({ error: 'يجب تحديد المدرسة لعرض خطوط النقل' }, 400)
+  try {
+    return c.json({ data: await listTransportLines(c.env.DB, schoolId) })
+  } catch {
+    return c.json({ error: 'فشل في جلب خطوط النقل' }, 500)
+  }
+})
+
+async function writeTransportReference(
+  c: Context<{ Bindings: Bindings; Variables: Variables }>,
+  kind: 'area' | 'line',
+  update: boolean,
+) {
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات النقل غير صالحة' }, 400)
+    const target = await resolveActiveWriteSchool(c.env.DB, c.get('user'), body.school_id)
+    if (!target.ok) return c.json({ error: target.error }, target.status)
+    const table = kind === 'area' ? 'residential_areas' : 'transport_lines'
+    const id = update ? Number(c.req.param('id')) : null
+    if (update && (!Number.isSafeInteger(id) || (id ?? 0) <= 0)) {
+      return c.json({ error: 'المعرّف غير صالح' }, 400)
+    }
+    const existing = update ? await c.env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`)
+      .bind(id).first<ResidentialArea | TransportLine>() : null
+    if (update && !existing) return c.json({ error: 'السجل غير موجود' }, 404)
+    if (existing && existing.school_id !== target.schoolId) {
+      return c.json({ error: 'غير مسموح: السجل يتبع مدرسة أخرى' }, 403)
+    }
+    const name = validateTransportName(body.name === undefined ? existing?.name : body.name)
+    if (!name.ok) return c.json({ error: name.error }, 400)
+
+    if (kind === 'area') {
+      const data = update
+        ? await c.env.DB.prepare(`UPDATE residential_areas SET name = ?, name_key = ?, updated_at = unixepoch()
+            WHERE id = ? AND school_id = ? RETURNING id, school_id, name`)
+          .bind(name.value.name, name.value.name_key, id, target.schoolId).first<ResidentialArea>()
+        : await c.env.DB.prepare(`INSERT INTO residential_areas (school_id, name, name_key) VALUES (?, ?, ?)
+            RETURNING id, school_id, name`)
+          .bind(target.schoolId, name.value.name, name.value.name_key).first<ResidentialArea>()
+      return c.json({ data }, update ? 200 : 201)
+    }
+
+    const driver = validateTransportDriver({ ...existing, ...body })
+    if (!driver.ok) return c.json({ error: driver.error }, 400)
+    const data = update
+      ? await c.env.DB.prepare(`UPDATE transport_lines SET name = ?, name_key = ?, driver_name = ?, driver_phone = ?, updated_at = unixepoch()
+          WHERE id = ? AND school_id = ? RETURNING id, school_id, name, driver_name, driver_phone`)
+        .bind(name.value.name, name.value.name_key, driver.value.driver_name, driver.value.driver_phone, id, target.schoolId).first<TransportLine>()
+      : await c.env.DB.prepare(`INSERT INTO transport_lines (school_id, name, name_key, driver_name, driver_phone) VALUES (?, ?, ?, ?, ?)
+          RETURNING id, school_id, name, driver_name, driver_phone`)
+        .bind(target.schoolId, name.value.name, name.value.name_key, driver.value.driver_name, driver.value.driver_phone).first<TransportLine>()
+    return c.json({ data }, update ? 200 : 201)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('UNIQUE constraint failed')) {
+      return c.json({ error: kind === 'area' ? 'منطقة السكن موجودة مسبقاً في هذه المدرسة' : 'اسم خط النقل موجود مسبقاً في هذه المدرسة' }, 409)
+    }
+    return c.json({ error: 'فشل في حفظ بيانات النقل' }, 500)
+  }
+}
+
+app.post('/api/transport/areas', requireSameSchoolOrAdmin(), requireRoles(TRANSPORT_MANAGEMENT_ROLES), (c) => writeTransportReference(c, 'area', false))
+app.put('/api/transport/areas/:id', requireSameSchoolOrAdmin(), requireRoles(TRANSPORT_MANAGEMENT_ROLES), (c) => writeTransportReference(c, 'area', true))
+app.post('/api/transport/lines', requireSameSchoolOrAdmin(), requireRoles(TRANSPORT_MANAGEMENT_ROLES), (c) => writeTransportReference(c, 'line', false))
+app.put('/api/transport/lines/:id', requireSameSchoolOrAdmin(), requireRoles(TRANSPORT_MANAGEMENT_ROLES), (c) => writeTransportReference(c, 'line', true))
+
+app.get('/api/transport/roster', requireSameSchoolOrAdmin(), requireRoles(TRANSPORT_ACCESS_ROLES), async (c) => {
+  const schoolId = c.get('resolvedSchoolId')
+  if (schoolId == null) return c.json({ error: 'يجب تحديد المدرسة لعرض قوائم النقل' }, 400)
+  try {
+    return c.json({ data: await loadTransportRoster(c.env.DB, schoolId) })
+  } catch {
+    return c.json({ error: 'فشل في جلب قوائم النقل' }, 500)
+  }
+})
+
+app.put('/api/transport/assign', requireSameSchoolOrAdmin(), requireRoles(TRANSPORT_MANAGEMENT_ROLES), async (c) => {
+  try {
+    const body = await readJsonObject(c)
+    if (!body) return c.json({ error: 'بيانات إسناد خط النقل غير صالحة' }, 400)
+    const target = await resolveActiveWriteSchool(c.env.DB, c.get('user'), body.school_id)
+    if (!target.ok) return c.json({ error: target.error }, target.status)
+    const input = validateTransportAssignment(body)
+    if (!input.ok) return c.json({ error: input.error }, 400)
+    const line = await c.env.DB.prepare('SELECT id FROM transport_lines WHERE id = ? AND school_id = ?')
+      .bind(input.value.lineId, target.schoolId).first()
+    if (!line) return c.json({ error: 'خط النقل غير موجود في هذه المدرسة' }, 400)
+    const updated = await assignTransportLineAtomically(c.env.DB, target.schoolId, input.value)
+    if (updated !== input.value.studentIds.length) {
+      return c.json({ error: 'تعذر إسناد الخط: يجب أن يكون جميع الطلاب نشطين ومسجلين في السنة الحالية لهذه المدرسة. لم يتم تغيير أي طالب.' }, 409)
+    }
+    return c.json({ data: { updated } })
+  } catch {
+    return c.json({ error: 'فشل في إسناد خط النقل' }, 500)
+  }
+})
+
+// ===========================================
 // API ROUTES: Students (with RBAC + school_id filtering)
 // ===========================================
 app.get('/api/students', requireSameSchoolOrAdmin(), requireRoles(STUDENT_DIRECTORY_ROLES), async (c) => {
@@ -5432,6 +5558,12 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
     if (!school_id || !student_number || !full_name || !gender) {
       return c.json({ error: 'المدرسة ورقم الطالب والاسم والجنس مطلوبة' }, 400)
     }
+    if (typeof guardian_phone !== 'string' || !guardian_phone.trim() || guardian_phone.length > 40) {
+      return c.json({ error: 'هاتف ولي الأمر مطلوب ويجب ألا يتجاوز 40 حرفاً' }, 400)
+    }
+    guardian_phone = guardian_phone.trim()
+    const transport = await validateStudentTransportInput(db, school_id, body, {}, true)
+    if (!transport.ok) return c.json({ error: transport.error }, 400)
     const religionValidation = validateStudentReligion(religion)
     if (!religionValidation.ok) {
       return c.json({ error: 'قيمة الديانة غير صالحة' }, 400)
@@ -5448,6 +5580,7 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
 
     if (!user) return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401)
     const studentValues: StudentWriteValues = {
+      ...transport.value,
       school_id,
       student_number,
       full_name,
@@ -5485,14 +5618,15 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     const targetSchool = await resolveActiveWriteSchool(db, user, body.school_id)
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status)
 
-    const existing = await db.prepare(`SELECT * FROM students WHERE id = ?`).bind(id).first<{
-      school_id: number; student_number: string; full_name: string; father_name: string | null; mother_name: string | null;
-      gender: string; religion: StudentWriteValues['religion']; birth_date: string | null; phone: string | null; guardian_name: string | null; guardian_phone: string | null;
-      address: string | null; class_id: number | null; section_id: number | null; photo_url: string | null; notes: string | null; status: string;
-    }>()
+    const existing = await db.prepare(`SELECT * FROM students WHERE id = ?`).bind(id).first<StudentWriteValues>()
     if (!existing) return c.json({ error: 'الطالب غير موجود' }, 404)
     if (existing.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل طالب في مدرسة أخرى' }, 403)
+    }
+    const transport = await validateStudentTransportInput(db, targetSchool.schoolId, body, existing)
+    if (!transport.ok) return c.json({ error: transport.error }, 400)
+    if (body.guardian_phone != null && (typeof body.guardian_phone !== 'string' || body.guardian_phone.length > 40)) {
+      return c.json({ error: 'هاتف ولي الأمر غير صالح' }, 400)
     }
 
     const student_number = body.student_number ?? existing.student_number
@@ -5569,6 +5703,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
 
     if (!user) return c.json({ error: 'غير مسموح: يجب تسجيل الدخول أولاً' }, 401)
     const studentValues: StudentWriteValues = {
+      ...transport.value,
       school_id: targetSchool.schoolId,
       student_number,
       full_name,

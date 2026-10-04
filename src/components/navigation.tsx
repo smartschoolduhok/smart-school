@@ -3,6 +3,7 @@ import {
   BarChart3,
   BookMarked,
   BookOpen,
+  Bus,
   Calculator,
   CalendarDays,
   ClipboardCheck,
@@ -42,6 +43,7 @@ import {
   SETTINGS_VIEW_ROLES,
   STUDENT_DIRECTORY_ROLES,
   SYSTEM_ADMIN_ROLES,
+  TRANSPORT_ACCESS_ROLES,
   USER_DIRECTORY_ROLES,
   hasRole,
 } from '../lib/rbac';
@@ -52,6 +54,7 @@ export const DASHBOARD_NAVIGATION_ITEM: NavigationItem = { label: 'لوحة ال
 export const NAVIGATION_GROUPS: NavigationGroup[] = [
   { key: 'students', label: 'شؤون الطلاب', description: 'الملفات والقيد والقبول', icon: <GraduationCap size={19} />, items: [
     { label: 'الطلاب', path: '/students', icon: <GraduationCap size={18} />, allowedRoles: STUDENT_DIRECTORY_ROLES },
+    { label: 'اشتراكات النقل', path: '/transport', icon: <Bus size={18} />, allowedRoles: TRANSPORT_ACCESS_ROLES },
     { label: 'القبول والنقل', path: '/admissions', icon: <ArrowDownUp size={18} />, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
     { label: 'ترفيع الطلاب', path: '/student-promotion', icon: <ArrowDownUp size={18} />, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
     { label: 'مراجعة أعمار الطلاب', path: '/student-age-review', icon: <UserCheck size={18} />, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },

@@ -121,6 +121,7 @@ async function mountDirectory(t,role='school_owner'){
     else if(path==='/api/students')data=roster(3).roster.map(row=>({...row,id:row.student_id,school_id:1,status:'active',gender:'male'}));
     else if(path==='/api/classes')data=[{id:4,name:'الأول المتوسط'}];
     else if(path==='/api/sections')data=[{id:8,class_id:4,name:'أ'}];
+    else if(path==='/api/transport/areas'||path==='/api/transport/lines')data=[];
     else if(path==='/api/academic-years')data=years(1);
     else if(path==='/api/student-study-status')data={...roster(3),rows:[status(1,3,{study_status:'affiliated',grades_visible:false}),status(2,3,{study_status:'hosted'})]};
     else throw new Error('Unexpected '+path);

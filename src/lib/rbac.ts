@@ -53,6 +53,9 @@ export const ACADEMIC_MANAGEMENT_ROLES: readonly RoleKey[] = [
   'registrar',
 ];
 
+export const TRANSPORT_ACCESS_ROLES: readonly RoleKey[] = ACADEMIC_MANAGEMENT_ROLES;
+export const TRANSPORT_MANAGEMENT_ROLES: readonly RoleKey[] = TRANSPORT_ACCESS_ROLES;
+
 // Teachers may enter grades without managing classes, sections, or subjects.
 // Registrars keep their defined academic-management permissions and may also enter grades.
 export const GRADE_MANAGEMENT_ROLES: readonly RoleKey[] = [

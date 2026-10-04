@@ -41,6 +41,7 @@ async function mount(t, { role = 'school_owner', rows = [student()], profile = f
     if (call.path === '/api/students') return json({ data: rows });
     if (call.path === '/api/classes') return json({ data: [{ id: 4, name: 'الأول المتوسط', school_id: 1 }] });
     if (call.path === '/api/sections') return json({ data: [{ id: 8, class_id: 4, name: 'أ', school_id: 1 }] });
+    if (call.path === '/api/transport/areas' || call.path === '/api/transport/lines') return json({ data: [] });
     if (call.path === '/api/academic-years') return json({ data: [{ id: 3, school_id: 1, name: '2026-2027', is_active: 1 }] });
     if (call.path === '/api/student-study-status') return json({ data: { school: { id: 1, name: 'مدرسة' }, academic_year: { id: 3, name: '2026-2027' }, rows: [], roster: rows.map(row => ({ student_id: row.id, study_status: 'regular', grades_visible: true })) } });
     const match = /^\/api\/students\/(\d+)(?:\/(.*))?$/.exec(call.path);
@@ -152,5 +153,5 @@ test('accountant directory contains only financial actions and no private academ
   assert.equal(ui.container.querySelector('[aria-label="تصفية نوع الدراسة"]'), null);
   assert.equal(ui.container.querySelector('button[title="تعديل"]'), null);
   assert.ok(ui.container.querySelector('a[href="/students/11/finance"]'));
-  assert.equal(ui.calls.some(call => ['/api/classes', '/api/academic-years', '/api/student-study-status'].includes(call.path)), false);
+  assert.equal(ui.calls.some(call => ['/api/classes', '/api/academic-years', '/api/student-study-status', '/api/transport/areas', '/api/transport/lines'].includes(call.path)), false);
 });

@@ -120,3 +120,14 @@ npm audit --audit-level=low
 - `docs/PHASE_21B_STUDENT_GATE_ATTENDANCE_QA.md` لبطاقات بوابة الطلبة والحركات والإشعارات والتدقيق.
 - `docs/PHASE_21C_STAFF_ATTENDANCE_QA.md` لحضور الموظفين والأساتذة وعزل الصلاحيات وبوابة STAGING.
 - `docs/PHASE_21D_HOMEWORK_QA.md` لعقود الواجبات والمرفقات المحمية والجمهور والإشعارات وأدلة التنفيذ المحلي.
+
+## Transport subscriptions
+
+- `/transport` is available to school management and registrars. Add unified residential areas and saved driver lines under **المناطق والخطوط**.
+- Student profiles store residence, guardian contacts, a landmark, and independent outbound/return methods: school subscription, private subscription, family, other, or unspecified. Each school journey can use a different line.
+- New manually created students require an area and guardian phone. Existing records and Excel imports remain compatible; missing information is highlighted for completion. Ordinary edits preserve archived/inactive status.
+- Select areas and filter by method, journey, or driver. **معاينة وطباعة القائمة** includes every filtered student across screen pages; student checkboxes are for assigning lines (up to 100 at once).
+- Print/PDF output starts each area on a new A4 landscape page and repeats its school/area/driver header. Driver-specific lists show only the journeys assigned to that driver.
+- The roster uses active students with active enrollment in the active academic year. Without an active year it explicitly displays current legacy student records. Transport methods/lines are current profile data, not an annual subscription history or payment ledger.
+- Apply `migrations/0056_student_transport.sql` through the configured database migration workflow **before deploying this application version**, because student reads now include its new columns and lookup tables. The migration preserves existing records with unspecified transport defaults.
+- Validation: `pnpm test:transport`, `pnpm typecheck`, and `pnpm build`.

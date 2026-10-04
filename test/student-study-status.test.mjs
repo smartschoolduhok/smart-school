@@ -107,8 +107,9 @@ test('annual roster includes hidden students, uses selected annual placement, an
 });
 test('documented younger and older students can complete new admission from an unplaced identity',async t=>{
   const f=fixture(t);await regulation(f);
+  const area=f.db.prepare("INSERT INTO residential_areas(school_id,name,name_key) VALUES(1,'Admission test area','admission test area') RETURNING id").get();
   for(const birth_date of ['2020-01-01','1980-01-01']){
-    const identity=await req(f,'owner','POST','/api/students',{school_id:1,student_number:crypto.randomUUID(),full_name:'TEST exceptional age',gender:'male',birth_date,class_id:null,section_id:null});
+    const identity=await req(f,'owner','POST','/api/students',{school_id:1,student_number:crypto.randomUUID(),full_name:'TEST exceptional age',gender:'male',birth_date,class_id:null,section_id:null,residential_area_id:area.id,guardian_phone:'07700000000'});
     assert.equal(identity.status,201,JSON.stringify(identity));const student=identity.data.id;
     assert.equal(f.db.prepare('SELECT count(*) n FROM student_enrollments WHERE student_id=?').get(student).n,0);
     assert.equal((await req(f,'owner','PUT',`/api/students/${student}/study-status?academic_year_id=1`,body({age_exception:evidence(),confirm_age_exception_verified:true}))).status,200);
