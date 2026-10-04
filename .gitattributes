@@ -1,4 +1,1 @@
 migrations/*.sql text eol=lf
-
-# D1 remote trigger parsing requires LF line endings.
-migrations/0056_student_transport.sql text eol=lf
