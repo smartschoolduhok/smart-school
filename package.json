@@ -15,6 +15,8 @@
     "test:student-study-status:local": "node --experimental-strip-types scripts/validate-student-study-status-local.mjs",
     "test:employee-records": "node --experimental-strip-types --test --test-concurrency=1 test/employee-records-api.test.mjs test/employee-records-import.test.mjs test/employee-records-ui.test.mjs test/employee-records-print.test.mjs",
     "test:employee-records:local": "node --experimental-strip-types scripts/validate-employee-records-local.mjs",
+    "test:school-registers": "node --experimental-strip-types --test --test-concurrency=1 test/school-registers.test.mjs test/school-registers-api.test.mjs test/school-registers-ui.test.mjs test/staff-attendance-register-print.test.mjs",
+    "test:staff-dossiers": "node --experimental-strip-types --test --test-concurrency=1 test/staff-dossier-api.test.mjs test/staff-dossier-ui.test.mjs",
     "test:section-advisors": "node --experimental-strip-types --test --test-concurrency=1 test/section-advisors.test.mjs test/section-advisors-api.test.mjs test/section-advisors-ui.test.mjs",
     "test:finance-fees": "node --experimental-strip-types --test --test-concurrency=1 test/finance-fees.test.mjs test/finance-fees-api.test.mjs test/finance-installments-parent.test.mjs test/finance-fees-ui.test.mjs test/finance-review.test.mjs",
     "test:treasury-payroll": "node --experimental-strip-types --test --test-concurrency=1 test/treasury-payroll-integrity.test.mjs test/treasury-payroll-ui.test.mjs",

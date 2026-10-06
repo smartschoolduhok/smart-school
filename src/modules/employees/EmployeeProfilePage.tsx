@@ -131,6 +131,7 @@ export function EmployeeProfile({ schoolId, employeeId, role, requestedAcademicY
     <div className="flex flex-wrap items-center justify-between gap-3">
       <a className="flex items-center gap-1 text-sm text-gray-600 hover:text-primary-700" href={`/employees${schoolId == null ? '' : `?school_id=${schoolId}`}`}><ArrowRight size={16} /> العودة إلى الموظفين</a>
       {schoolId != null && <a href={`/staff-register?school_id=${schoolId}`} className="flex items-center gap-1 text-sm text-primary-700"><FileText size={16} /> سجل الكادر</a>}
+      {canManage && <a href={`/employees/${employeeId}/dossier?school_id=${schoolId}`} className="flex items-center gap-1 rounded-lg border border-primary-200 px-3 py-2 text-sm text-primary-700"><FileText size={16} /> سجل جماعة المدرسين والطباعة</a>}
     </div>
     {schoolId == null && <p className={panelClass}>اختر المدرسة لعرض ملف الموظف.</p>}
     {employeeId == null && <p role="alert" className="rounded-xl bg-red-50 p-4 text-red-700">معرف الموظف غير صالح.</p>}

@@ -1,4 +1,6 @@
 import { registerUserAccountRoutes, canManageAccount, updateOwnPassword, accountErrorResponse } from './lib/userAccounts'
+import { registerSchoolRegisterRoutes } from './lib/schoolRegistersDb'
+import { registerStaffDossierRoutes } from './lib/staffDossierDb'
 import { employeeSpreadsheetQualifications, employeeQualificationCells, employeeSpreadsheetRole, employeeSpreadsheetDate, employeeSpreadsheetMatch, employeeSpreadsheetFields } from './lib/employeeSpreadsheet'
 import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualifications, qualificationRows, createEmployeeAuditStatement, publicEmployee, employeeQualifications, readEmployeePhotoBody, detectEmployeePhoto } from './lib/employeeRecords'
 import type { EmployeeProfile, EmployeeSalary, EmployeeTeachingAssignment, EmployeeAdvisoryAssignment, StaffDocumentMetadata, SalaryReceiptsResponse } from './types/employees'
@@ -10757,6 +10759,8 @@ registerGateAttendanceRoutes(app);
 
 // Employee/teacher cards, immutable movements, reporting and linked self-view.
 registerStaffAttendanceRoutes(app);
+registerSchoolRegisterRoutes(app);
+registerStaffDossierRoutes(app);
 
 // Homework drafts, immutable publication snapshots and protected attachments.
 registerHomeworkRoutes(app);

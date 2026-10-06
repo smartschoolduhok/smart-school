@@ -18,6 +18,7 @@ import {
   IMPORT_EXPORT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
   SETTINGS_VIEW_ROLES,
+  SCHOOL_MANAGEMENT_ROLES,
   GRADE_VIEW_ROLES,
   STUDENT_DIRECTORY_ROLES,
   STUDENT_RESOURCE_VIEW_ROLES,
@@ -60,6 +61,9 @@ const TreasuryPage = lazy(() => import('./modules/treasury/TreasuryPage'));
 const EmployeesPage = lazy(() => import('./modules/employees/EmployeesPage'));
 const EmployeeProfilePage = lazy(() => import('./modules/employees/EmployeeProfilePage'));
 const StaffRegisterPage = lazy(() => import('./modules/employees/StaffRegisterPage'));
+const StaffDossierPage = lazy(() => import('./modules/employees/StaffDossierPage'));
+const SchoolRegistersPage = lazy(() => import('./modules/schoolRegisters/SchoolRegistersPage'));
+const PrintStaffAttendancePage = lazy(() => import('./modules/print/PrintStaffAttendancePage'));
 const SalaryReceiptsPage = lazy(() => import('./modules/employees/SalaryReceiptsPage'));
 const PrintStaffRegisterPage = lazy(() => import('./modules/print/PrintStaffRegisterPage'));
 const PrintSalaryReceiptsPage = lazy(() => import('./modules/print/PrintSalaryReceiptsPage'));
@@ -233,6 +237,8 @@ export default function App() {
           {/* HR routes */}
           <Route path="/employees" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><EmployeesPage /></RoleGuard></Layout>} />
           <Route path="/employees/:id" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><EmployeeProfilePage /></RoleGuard></Layout>} />
+          <Route path="/employees/:id/dossier" element={<Layout><RoleGuard allowedRoles={SCHOOL_MANAGEMENT_ROLES}><StaffDossierPage /></RoleGuard></Layout>} />
+          <Route path="/print/staff-attendance" element={<RoleGuard allowedRoles={SCHOOL_MANAGEMENT_ROLES}><PrintStaffAttendancePage /></RoleGuard>} />
           <Route path="/staff-register" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><StaffRegisterPage /></RoleGuard></Layout>} />
           <Route path="/salary-receipts" element={<Layout><RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><SalaryReceiptsPage /></RoleGuard></Layout>} />
           <Route path="/print/staff-register" element={<RoleGuard allowedRoles={EMPLOYEE_ACCESS_ROLES}><PrintStaffRegisterPage /></RoleGuard>} />
@@ -241,6 +247,8 @@ export default function App() {
           {/* Official books - admin + registrar */}
           <Route path="/official-books" element={<Layout><RoleGuard allowedRoles={OFFICIAL_BOOK_ACCESS_ROLES}><OfficialBooksPage /></RoleGuard></Layout>} />
           <Route path="/print-records" element={<Layout><RoleGuard allowedRoles={OFFICIAL_BOOK_ACCESS_ROLES}><PrintRecordsPage /></RoleGuard></Layout>} />
+          <Route path="/school-registers" element={<Layout><RoleGuard allowedRoles={SCHOOL_MANAGEMENT_ROLES}><SchoolRegistersPage /></RoleGuard></Layout>} />
+          <Route path="/school-registers/:registerKey" element={<Layout><RoleGuard allowedRoles={SCHOOL_MANAGEMENT_ROLES}><SchoolRegistersPage /></RoleGuard></Layout>} />
 
           {/* Import/Export - admin + school staff */}
           <Route path="/import-export" element={<Layout><RoleGuard allowedRoles={IMPORT_EXPORT_ROLES}><ImportExportPage /></RoleGuard></Layout>} />

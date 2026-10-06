@@ -1,0 +1,94 @@
+.staff-dossier-page { color: #172b46; }
+.dossier-control-panel { padding:22px; background:linear-gradient(120deg,#fff,#f0f7f8); border:1px solid #d5e4e7; border-radius:16px; box-shadow:0 4px 18px #172b4605; }
+.dossier-eyebrow { color:#39767b; font-size:12px; font-weight:700; margin-bottom:5px; }
+.dossier-save-state { display:inline-block; border-radius:20px; padding:3px 10px; font-size:11px; background:#e2f1ed; color:#176458; }
+.dossier-save-state-dirty { background:#fff0cb; color:#825715; }
+.dossier-editor-layout { display:grid; grid-template-columns:185px minmax(0,1fr); align-items:start; gap:20px; margin-top:20px; }
+.dossier-editor-fields { min-width:0; }
+.dossier-section-nav { position:sticky; top:85px; padding:12px; background:white; border:1px solid #dce4ec; border-radius:12px; }
+.dossier-section-nav > p { margin:2px 8px 8px; color:#64748b; font-size:11px; font-weight:700; }
+.dossier-section-nav a { display:flex; align-items:center; justify-content:space-between; gap:8px; border-radius:7px; padding:9px 8px; font-size:12px; }
+.dossier-section-nav a:hover,.dossier-section-nav a:focus-visible { color:#125b62; background:#edf5f5; }
+.dossier-section-nav b { border-radius:5px; background:#eef2f5; padding:0 5px; font-size:10px; font-weight:500; }
+.dossier-nav-save { width:100%; justify-content:center; margin-top:12px; }
+.dossier-section-number { display:inline-flex; justify-content:center; align-items:center; width:30px; height:30px; border-radius:8px; background:#eaf4f4; color:#125b62; margin-inline-end:7px; font-size:12px; font-weight:700; }
+.dossier-count { font-weight:400; font-size:11px; color:#64748b; margin-inline-start:10px; }
+.dossier-bottom-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:18px 0; }
+.dossier-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.dossier-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.dossier-button { display:inline-flex; align-items:center; gap:6px; padding:9px 14px; border:1px solid #cbd5e1; border-radius:8px; background:white; font-size:14px; }
+.dossier-button-primary { background:#125b62; color:white; border-color:#125b62; }
+.dossier-button:disabled { opacity:.45; cursor:not-allowed; }
+.dossier-form-panel { border:1px solid #dce4ec; background:white; border-radius:12px; padding:20px; margin-top:16px; scroll-margin-top:90px; }
+.dossier-form-panel h2 { font-weight:700; margin-bottom:14px; }
+.dossier-form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.dossier-form-panel label { display:block; font-size:13px; color:#334155; }
+.dossier-form-panel input,.dossier-form-panel select,.dossier-form-panel textarea { display:block; margin-top:6px; width:100%; border:1px solid #cbd5e1; border-radius:7px; padding:9px 11px; background:#fff; color:#172b46; }
+.dossier-form-panel input:focus,.dossier-form-panel select:focus,.dossier-form-panel textarea:focus { outline:2px solid #64b6ae; outline-offset:1px; }
+.dossier-history-editor { border-top:1px solid #e2e8f0; margin-top:14px; padding-top:14px; }
+.dossier-row-label { margin-bottom:10px; color:#39767b; font-size:12px; font-weight:700; }
+.dossier-hint { font-size:13px; color:#64748b; margin:10px 0; }
+.dossier-alert { background:#fff6e3; color:#7c4c13; padding:12px; border:1px solid #f5d48f; border-radius:8px; margin:12px 0; }
+.dossier-success { color:#115e59; background:#ecfdf5; padding:12px; border-radius:8px; }
+.dossier-preview-scroll { overflow-x:auto; padding:20px 0; }
+.staff-dossier-document { box-sizing:border-box; width:186mm; max-width:none; margin:0 auto; padding:10mm; background:#fff; color:#172b46; font-family:Cairo,Tahoma,Arial,sans-serif; font-size:10pt; line-height:1.7; box-shadow:0 5px 25px #172b4612; }
+.dossier-page-flow { width:100%; border-collapse:collapse; table-layout:fixed; }
+.dossier-page-flow > thead > tr > td,.dossier-page-flow > tbody > tr > td { padding:0; border:0; }
+.dossier-header { display:grid; grid-template-columns:20mm 1fr 35mm; gap:5mm; align-items:center; border-bottom:2px solid #125b62; padding:0 0 5mm; margin-bottom:5mm; }
+.dossier-header h1 { font-size:19pt; font-weight:800; margin:1mm 0; }
+.dossier-header p { font-size:10pt; margin:0; }
+.dossier-header-reference { font-size:9pt; text-align:left; }
+.dossier-header-reference strong { display:block; color:#a16207; }
+.dossier-school-logo { width:20mm; height:20mm; object-fit:contain; }
+.dossier-portrait { width:27mm; height:34mm; object-fit:contain; border:1px solid #ccd9df; border-radius:2mm; }
+.dossier-image-empty { display:flex; align-items:center; justify-content:center; font-size:8pt; color:#64748b; text-align:center; }
+.dossier-personal-top { display:grid; grid-template-columns:1fr 27mm; gap:6mm; align-items:start; }
+.dossier-section { margin:0 0 5mm; }
+.dossier-section h2 { background:#edf5f5; border-right:3px solid #125b62; padding:1.5mm 3mm; font-size:11pt; font-weight:700; margin:0 0 3mm; break-after:avoid; }
+.dossier-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:5mm; margin:0; }
+.dossier-pair { display:block; min-width:0; padding:1.5mm 0; border-bottom:1px solid #e7edf0; break-inside:avoid; }
+.dossier-pair dt { font-size:8pt; color:#547080; }
+.dossier-pair dd { font-size:10pt; min-height:6mm; margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.dossier-blank { min-height:6mm; display:block; }
+.dossier-qualification { padding:1mm 0 3mm; margin-bottom:3mm; }
+.dossier-history { width:100%; border-collapse:collapse; table-layout:fixed; }
+.dossier-history th,.dossier-history td { border:1px solid #d7e1e5; padding:2mm; text-align:right; vertical-align:top; overflow-wrap:anywhere; white-space:pre-wrap; }
+.dossier-history th { font-size:8pt; background:#f4f7f9; }
+.dossier-history th:first-child { width:22mm; }
+.dossier-history th:nth-child(3) { width:30mm; }
+.dossier-empty { font-size:9pt; color:#64748b; min-height:9mm; }
+.dossier-unresolved { font-size:9pt; color:#945a16; }
+.dossier-notes { white-space:pre-wrap; overflow-wrap:anywhere; min-height:16mm; }
+.dossier-signatures { display:flex; justify-content:space-between; border-top:1px solid #cbd5e1; padding-top:5mm; font-size:9pt; break-inside:avoid; }
+@media(max-width:640px) { .dossier-form-grid { grid-template-columns:1fr; } .dossier-form-panel { padding:14px; } }
+@media(max-width:1000px) {
+  .dossier-editor-layout { grid-template-columns:1fr; gap:0; }
+  .dossier-section-nav { position:static; display:flex; flex-wrap:wrap; gap:4px; }
+  .dossier-section-nav > p { width:100%; }
+  .dossier-section-nav a { border:1px solid #e5ecef; }
+  .dossier-nav-save { width:auto; margin-top:0; }
+}
+@media(max-width:640px) { .dossier-control-panel { padding:16px; } .dossier-bottom-actions { flex-wrap:wrap; } }
+@media print {
+  @page staffDossier { size:A4 portrait; margin:12mm; }
+  body:has(.staff-dossier-document),body:has(.staff-dossier-document) #root { page:staffDossier; }
+  body:has(.staff-dossier-document) { background:white!important; }
+  body:has(.staff-dossier-document) #application-sidebar,body:has(.staff-dossier-document) .app-shell > a,
+  body:has(.staff-dossier-document) .app-shell > button,body:has(.staff-dossier-document) .app-shell > div > header,
+  .dossier-no-print { display:none!important; }
+  body:has(.staff-dossier-document) .app-shell > div { margin:0!important; min-height:0!important; }
+  body:has(.staff-dossier-document) #main-content { padding:0!important; }
+  .dossier-preview-scroll { overflow:visible!important; padding:0!important; }
+  .staff-dossier-document { page:staffDossier; width:100%; margin:0; padding:0; box-shadow:none; print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+  /* Distinct body rows and an unbreakable header allow Chromium to repeat the school header. */
+  .dossier-page-flow > thead { display:table-header-group; break-inside:avoid; }
+  .dossier-page-flow > thead > tr { break-inside:avoid; }
+  .dossier-page-flow > tbody > tr { break-inside:auto; }
+  .dossier-header { position:static; grid-template-columns:18mm minmax(0,1fr) 28mm; gap:4mm; padding-bottom:3mm; margin-bottom:5mm; break-inside:avoid; }
+  .dossier-header h1 { font-size:16pt; line-height:1.3; }
+  .dossier-header p { font-size:8pt; line-height:1.4; overflow-wrap:anywhere; }
+  .dossier-header-reference { font-size:8pt; overflow-wrap:anywhere; }
+  .dossier-school-logo { width:18mm; height:18mm; }
+  .dossier-history thead { display:table-header-group; }
+  .dossier-history tr,.dossier-history td { break-inside:auto; }
+}

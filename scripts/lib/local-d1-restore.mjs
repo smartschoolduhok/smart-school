@@ -77,8 +77,9 @@ export function localRestoreChunks(sql, maximumBytes = 180000) {
   return chunks;
 }
 
-// Fail closed for other oversized SQL. Only import and timetable snapshot rows
-// can use bound inserts, without rewriting literals or financial data.
+// Fail closed for other oversized SQL. Only import, timetable snapshots, school
+// registers and staff dossiers (including their audit snapshots) can use bound
+// inserts, without rewriting literals or financial data.
 export function prepareLocalRestore(sql) {
   sql = orderRestoreTables(sql);
   const statements = sqlStatements(sql), oversized = statements.filter(s => Buffer.byteLength(sql.slice(s.start, s.end)) > 100000);
@@ -92,7 +93,9 @@ export function prepareLocalRestore(sql) {
       assert.equal(tokens[0].text.toUpperCase(), 'INSERT', 'Unsupported oversized statement');
       assert.equal(tokens[1].text.toUpperCase(), 'INTO', 'Unsupported INSERT form');
       const table = tokens[2].text.replaceAll('"', '');
-      assert.ok(['import_jobs', 'timetable_week_archives', 'timetable_schedule_versions'].includes(table), 'Unsupported oversized table');
+      assert.ok(['import_jobs', 'timetable_week_archives', 'timetable_schedule_versions',
+        'school_register_entries', 'school_register_history', 'staff_dossiers', 'staff_dossier_audit',
+      ].includes(table), 'Unsupported oversized table');
       const single = new DatabaseSync(':memory:');
       try {
         single.exec('PRAGMA foreign_keys=OFF');

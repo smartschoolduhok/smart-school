@@ -41,6 +41,7 @@ import {
   IMPORT_EXPORT_ROLES,
   OFFICIAL_BOOK_ACCESS_ROLES,
   SETTINGS_VIEW_ROLES,
+  SCHOOL_MANAGEMENT_ROLES,
   STUDENT_DIRECTORY_ROLES,
   SYSTEM_ADMIN_ROLES,
   TRANSPORT_ACCESS_ROLES,
@@ -89,6 +90,7 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
     { label: 'حضور الموظفين', path: '/staff-attendance', icon: <Clock3 size={18} />, allowedRoles: STAFF_ATTENDANCE_VIEW_ROLES },
   ] },
   { key: 'documents', label: 'الوثائق والبيانات', description: 'الكتب الرسمية والسجلات والاستيراد', icon: <FileText size={19} />, items: [
+    { label: 'السجلات المدرسية', path: '/school-registers', icon: <NotebookPen size={18} />, allowedRoles: SCHOOL_MANAGEMENT_ROLES },
     { label: 'الكتب الرسمية', path: '/official-books', icon: <BookMarked size={18} />, allowedRoles: OFFICIAL_BOOK_ACCESS_ROLES },
     { label: 'السجلات المطبوعة', path: '/print-records', icon: <Printer size={18} />, allowedRoles: OFFICIAL_BOOK_ACCESS_ROLES },
     { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={18} />, allowedRoles: IMPORT_EXPORT_ROLES },
