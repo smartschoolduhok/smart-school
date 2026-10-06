@@ -347,23 +347,25 @@ export interface TimetableSubjectColor {
   foreground: string;
 }
 
+// Pale, muted fills keep dense weekly grids comfortable to scan. Dark text and
+// distinct border hues retain subject identification on screen and in print.
 const TIMETABLE_SUBJECT_PALETTE: readonly TimetableSubjectColor[] = [
-  { background: '#2563eb', border: '#1e40af', foreground: '#ffffff' },
-  { background: '#34d399', border: '#047857', foreground: '#111827' },
-  { background: '#92400e', border: '#78350f', foreground: '#ffffff' },
-  { background: '#f472b6', border: '#be185d', foreground: '#111827' },
-  { background: '#7e22ce', border: '#581c87', foreground: '#ffffff' },
-  { background: '#22d3ee', border: '#0e7490', foreground: '#111827' },
-  { background: '#fb923c', border: '#c2410c', foreground: '#111827' },
-  { background: '#3730a3', border: '#312e81', foreground: '#ffffff' },
-  { background: '#0f766e', border: '#134e4a', foreground: '#ffffff' },
-  { background: '#e879f9', border: '#a21caf', foreground: '#111827' },
-  { background: '#a3e635', border: '#4d7c0f', foreground: '#111827' },
-  { background: '#b91c1c', border: '#7f1d1d', foreground: '#ffffff' },
-  { background: '#166534', border: '#14532d', foreground: '#ffffff' },
-  { background: '#7dd3fc', border: '#0369a1', foreground: '#111827' },
-  { background: '#facc15', border: '#a16207', foreground: '#111827' },
-  { background: '#fb7185', border: '#be123c', foreground: '#111827' },
+  { background: '#e6edf5', border: '#6b84a3', foreground: '#293c55' },
+  { background: '#e6efe9', border: '#738e7b', foreground: '#2e4737' },
+  { background: '#f1e9de', border: '#a58b65', foreground: '#54432d' },
+  { background: '#f3e5ed', border: '#aa8298', foreground: '#58394c' },
+  { background: '#ece7f4', border: '#9380ab', foreground: '#49395e' },
+  { background: '#e1eef0', border: '#6e979d', foreground: '#2d4c51' },
+  { background: '#f4e8dd', border: '#b18a68', foreground: '#5d422c' },
+  { background: '#e6e8f3', border: '#818cac', foreground: '#353f5d' },
+  { background: '#e3efeb', border: '#6e978c', foreground: '#2b4d43' },
+  { background: '#f0e6f0', border: '#a183a1', foreground: '#543b54' },
+  { background: '#ebefdf', border: '#909b69', foreground: '#444e2d' },
+  { background: '#f3e5e2', border: '#ac8278', foreground: '#5d3a32' },
+  { background: '#e1ebdf', border: '#779271', foreground: '#344b30' },
+  { background: '#e4eef4', border: '#7798aa', foreground: '#304c5d' },
+  { background: '#f3efdf', border: '#a79860', foreground: '#564d2a' },
+  { background: '#f1e3e6', border: '#ac8090', foreground: '#5e3744' },
 ] as const;
 
 // Keep common school subjects distinct even when their names hash to the same
