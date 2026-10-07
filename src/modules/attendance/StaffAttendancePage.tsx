@@ -43,6 +43,7 @@ import { defaultAttendanceDate } from '../../lib/attendance';
 import {
   STAFF_ATTENDANCE_MANAGEMENT_ROLES,
   STAFF_ATTENDANCE_REPORT_ROLES,
+  SCHOOL_MANAGEMENT_ROLES,
   hasRole,
 } from '../../lib/rbac';
 import {
@@ -536,6 +537,7 @@ export default function StaffAttendancePage() {
             <p className="text-sm text-gray-500">بطاقة موظف مستقلة، دخول وخروج موثق، وتقارير لا تختلط بحضور الطلاب.</p>
           </div>
         </div>
+        {schoolId != null && hasRole(user?.role_key, SCHOOL_MANAGEMENT_ROLES) && <a href={`/print/staff-attendance?date=${date}`} className="flex items-center gap-2 rounded-lg border border-primary-200 bg-white px-3 py-2 text-sm font-bold text-primary-700"><Printer size={16}/> سجل التوقيع اليومي</a>}
         <button type="button" onClick={() => void loadAll()} disabled={loading || (!isTeacher && schoolId == null)} className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> تحديث
         </button>

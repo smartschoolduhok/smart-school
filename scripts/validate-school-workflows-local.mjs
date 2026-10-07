@@ -4,6 +4,7 @@ import {mkdtempSync,mkdirSync,copyFileSync,writeFileSync,readFileSync} from 'nod
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
+import {DatabaseSync} from 'node:sqlite';
 import {getPlatformProxy,unstable_splitSqlQuery} from 'wrangler';
 import {createServer} from 'vite';
 import {root,migrationFiles,baseFixtureSQL,schoolWorkflowFixtureSQL,request} from '../test/helpers/school-workflow-fixture.mjs';
@@ -23,6 +24,15 @@ proxy=await open();const vite=await createServer({root,appType:'custom',server:{
 const cases=[];
 try{
  const db=proxy.env.DB,after=await contentSnapshot(async sql=>(await db.prepare(sql).all()).results);
+ // Derive the complete table inventory from an independent fresh migration
+ // chain, so a new additive migration cannot leave a stale numeric assertion.
+ // Comparing names also rejects missing/unexpected tables with an equal count.
+ const expectedDb=new DatabaseSync(':memory:');let expectedFresh;
+ try{
+  for(const file of migrationFiles)expectedDb.exec(readFileSync(join(root,'migrations',file),'utf8'));
+  expectedFresh=await contentSnapshot(async sql=>expectedDb.prepare(sql).all().map(row=>({...row})));
+ }finally{expectedDb.close();}
+ assert.deepEqual(Object.keys(after.tables).sort(),[...Object.keys(expectedFresh.tables),'d1_migrations'].sort(),'upgraded tables exactly match the fresh migration chain plus Wrangler history');
  const parallelMigration=readFileSync(join(root,'migrations/0049_timetable_parallel_lessons.sql'),'utf8');
  const accountsMigration=readFileSync(join(root,'migrations/0052_school_user_accounts.sql'),'utf8');
  const employeeMigration=readFileSync(join(root,'migrations/0054_employee_records.sql'),'utf8');
@@ -163,7 +173,14 @@ try{
   assert.deepEqual(after.schema.find(item=>item.type==='table'&&item.name===name),{type:'table',name,tbl_name:name,sql:expected},name+' schema exactly matches migration 0056');
   assert.equal(after.tables[name].count,0);assert.deepEqual(after.tables[name].content,[]);assert.equal(after.tables[name].hash,digest([]));
  }
- assert.equal(Object.keys(after.tables).length,106);assert.equal(after.tables.student_study_status.count,0);assert.equal(after.tables.student_study_status_audit.count,0);assert.equal(after.tables.section_advisors.count,0);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type`);
+ const registerTables=['school_register_entries','school_register_history','staff_dossiers','staff_dossier_audit'];
+ for(const name of registerTables){
+  assert.equal(before.tables[name],undefined,'register and dossier tables are new');
+  assert.deepEqual(after.tables[name],expectedFresh.tables[name],name+' columns, values and SQLite types match the fresh empty table');
+  assert.equal(after.tables[name].count,0,name+' has no inferred records');
+ }
+ assert.deepEqual(after.schema.filter(item=>registerTables.includes(item.tbl_name)),expectedFresh.schema.filter(item=>registerTables.includes(item.tbl_name)),'all register and dossier tables, indexes and audit/guard triggers exactly match migrations 0057/0058');
+ assert.equal(after.tables.student_study_status.count,0);assert.equal(after.tables.student_study_status_audit.count,0);assert.equal(after.tables.section_advisors.count,0);assert.equal(after.tables.user_account_audit.count,0);assert.equal(after.tables.user_account_write_guards.count,0);assert.equal(after.tables.timetable_school_preferences.count,0);assert.equal(after.tables.d1_migrations.count,migrationFiles.length);assert.deepEqual(after.foreignKeys,[]);cases.push(`upgrade 42→${migrationFiles.length} preserves every historical application value and type; new registers and dossiers exactly match their empty schema`);
  const {default:app}=await vite.ssrLoadModule('/src/worker.ts'),f={d1:db};
  const call=async(role,method,path,body,status)=>{const r=await request(app,f,role,method,path,body);assert.equal(r.status,status,JSON.stringify({path,...r}));return r.data;};
  const count=async table=>(await db.prepare(`SELECT count(*) n FROM ${table}`).first()).n;

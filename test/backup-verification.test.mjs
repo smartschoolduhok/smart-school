@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { backupStatus, createManifest, externalPath, readEvidence, retentionPlan, sha256, verifyBackup, writeEvidence } from '../scripts/lib/backup-verification.mjs';
-import { digest, sqlStatements } from '../scripts/lib/local-d1-restore.mjs';
+import { digest, prepareLocalRestore, sqlStatements } from '../scripts/lib/local-d1-restore.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const target = { environment: 'local', account_id: '0'.repeat(32), database_id: '00000000-0000-0000-0000-000000000001', database_name: 'synthetic-backup-test' };
@@ -58,8 +58,32 @@ test('manifest records export integrity without names, SQL, or implied cloud aut
 
 test('verify CLI restores typed rows, large snapshots, FK, triggers, views and indexes to local D1', { timeout: 120000 }, async () => {
   const large = "اختبار ' ; \n".repeat(24000);
-  const { directory, backupPath, manifest } = await fixture("\nINSERT INTO import_jobs VALUES(1,'" + large.replaceAll("'", "''") + "');");
+  const snapshot = JSON.stringify({ notes: "سجل تجريبي ' ; \n".repeat(7000), extra_fields: [{ label: 'حقل', value: 'قيمة' }] });
+  const literal = value => "'" + value.replaceAll("'", "''") + "'";
+  const extra = `
+INSERT INTO import_jobs VALUES(1,${literal(large)});
+CREATE TABLE school_register_entries(id INTEGER PRIMARY KEY,data_json TEXT NOT NULL,status TEXT,version INTEGER);
+CREATE TABLE school_register_history(id INTEGER PRIMARY KEY,entry_id INTEGER REFERENCES school_register_entries(id),before_json TEXT,after_json TEXT);
+CREATE TABLE staff_dossiers(employee_id INTEGER PRIMARY KEY,data_json TEXT NOT NULL,version INTEGER);
+CREATE TABLE staff_dossier_audit(id INTEGER PRIMARY KEY,employee_id INTEGER REFERENCES staff_dossiers(employee_id),before_json TEXT,after_json TEXT);
+INSERT INTO school_register_entries VALUES(1,${literal(snapshot)},'voided',2);
+INSERT INTO school_register_history VALUES(1,1,NULL,${literal(snapshot)});
+INSERT INTO staff_dossiers VALUES(1,${literal(snapshot)},2);
+INSERT INTO staff_dossier_audit VALUES(1,1,${literal(snapshot)},${literal(snapshot)});
+CREATE TRIGGER school_register_entries_created AFTER INSERT ON school_register_entries BEGIN INSERT INTO school_register_history VALUES(99,new.id,NULL,new.data_json); END;
+CREATE TRIGGER staff_dossiers_created AFTER INSERT ON staff_dossiers BEGIN INSERT INTO staff_dossier_audit VALUES(99,new.employee_id,NULL,new.data_json); END;
+CREATE TRIGGER school_register_history_no_delete BEFORE DELETE ON school_register_history BEGIN SELECT RAISE(ABORT,'immutable'); END;
+CREATE TRIGGER staff_dossier_audit_no_update BEFORE UPDATE ON staff_dossier_audit BEGIN SELECT RAISE(ABORT,'immutable'); END;`;
+  const { directory, backupPath, manifest } = await fixture(extra);
   assert.ok(manifest.bytes > 360000);
+  const plan = prepareLocalRestore(readFileSync(backupPath, 'utf8'));
+  assert.equal(plan.inserts.length, 5);
+  for (const table of ['school_register_entries', 'school_register_history', 'staff_dossiers', 'staff_dossier_audit']) {
+    assert.equal(manifest.snapshot.tables[table].rows, 1);
+    const insertion = plan.inserts.find(insert => insert.sql.startsWith(`INSERT INTO "${table}"`));
+    assert.ok(insertion, `${table} must use bound inserts beyond the SQL byte limit`);
+    assert.ok(insertion.values.includes(snapshot), `${table} JSON must remain exact`);
+  }
   const targetPath = join(directory, 'target.json'), manifestPath = join(directory, 'manifest.json');
   writeEvidence(targetPath, target); writeEvidence(manifestPath, manifest);
   const output = join(directory, 'receipt.json'), config = join(directory, 'local.json');
@@ -74,6 +98,11 @@ test('verify CLI restores typed rows, large snapshots, FK, triggers, views and i
   assert.equal(receipt.foreign_key_violations, 0); assert.equal(receipt.remote_access, false);
   assert.doesNotMatch(result.stdout + result.stderr, /Private synthetic name|اختبار|Using secrets/);
   assert.deepEqual(readdirSync(directory).sort(), ['.dev.vars', '.env', 'backup.sql', 'local.json', 'local.json.empty.env', 'manifest.json', 'receipt.json', 'target.json']);
+});
+
+test('oversized restore inserts remain disallowed for unrelated financial tables', () => {
+  const unrelated = "CREATE TABLE payments(id INTEGER PRIMARY KEY,details TEXT); INSERT INTO payments VALUES(1,'" + 'x'.repeat(100001) + "');";
+  assert.throws(() => prepareLocalRestore(unrelated), /Unsupported oversized table/);
 });
 
 test('corruption is rejected before invoking any restore', async () => {
