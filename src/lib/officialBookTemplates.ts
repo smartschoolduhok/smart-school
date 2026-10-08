@@ -1,6 +1,16 @@
 export const OFFICIAL_BOOK_TITLE_MAX_LENGTH = 180;
 export const OFFICIAL_BOOK_BODY_MAX_LENGTH = 12_000;
 export const OFFICIAL_BOOK_FIELD_MAX_LENGTH = 2_000;
+export const OFFICIAL_BOOK_NUMBER_MAX_LENGTH = 80;
+
+export function validateOfficialBookNumber(value: unknown, required = false): string | null {
+  if (value === undefined || value === null) return required ? 'أدخل العدد الذي تحدده المدرسة لهذا الكتاب' : null;
+  if (typeof value !== 'string' || !value.trim()) return 'أدخل عددًا صالحًا للكتاب';
+  if (value.trim().length > OFFICIAL_BOOK_NUMBER_MAX_LENGTH || /[\u0000-\u001f\u007f]/.test(value)) {
+    return `العدد يجب أن يكون بسطر واحد وألا يتجاوز ${OFFICIAL_BOOK_NUMBER_MAX_LENGTH} حرفًا`;
+  }
+  return null;
+}
 
 export type OfficialBookTemplateCategory = 'student' | 'verification' | 'committee' | 'administrative';
 export type OfficialBookFieldType = 'text' | 'textarea';
@@ -170,7 +180,7 @@ export const BUILT_IN_OFFICIAL_BOOK_TEMPLATES: BuiltInOfficialBookTemplate[] = [
     source: 'builtin',
     category: 'student',
     title: 'عدم ممانعة من قبول طالب',
-    description: 'صيغة قبول أولي لطالب غير مسجل بعد، مع طلب وثيقته وبطاقته المدرسية.',
+    description: 'صيغة قبول أولي لطالب غير مسجل بعد، مع طلب وثيقته وبطاقته المدرسية والصور الشخصية.',
     paper_size: 'A4',
     requires_student: false,
     requires_employee: false,
@@ -181,7 +191,7 @@ export const BUILT_IN_OFFICIAL_BOOK_TEMPLATES: BuiltInOfficialBookTemplate[] = [
 
 لا مانع لدينا من قبول الطالب/الطالبة {{student_name}} في الصف {{target_class}} للعام الدراسي {{academic_year}}، شريطة استكمال متطلبات القبول والنقل الأصولية وتوفر الطاقة الاستيعابية.
 
-يرجى التفضل بتزويدنا بـ{{requested_documents}}، مع بيان آخر صف دراسي ونتيجة الطالب/الطالبة.
+يرجى التفضل بتزويدنا بـ{{requested_documents}} والصور الشخصية، مع بيان آخر صف دراسي ونتيجة الطالب/الطالبة.
 
 مع التقدير.`,
     fields: [

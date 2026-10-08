@@ -1,0 +1,23 @@
+.student-attendance-preview { max-width: 100%; overflow-x: auto; }
+.student-attendance-preview .print-controls { flex-wrap: wrap; gap: 1rem; }
+.student-attendance-preview .print-controls > div { flex-wrap: wrap; }
+.student-attendance-document { color: #111; font-size: 10pt; }
+.student-attendance-school { text-align: center; font-size: 12pt; font-weight: 700; margin: 0; overflow-wrap: anywhere; }
+.student-attendance-scope { text-align: center; font-size: 9pt; margin: 2mm 0; overflow-wrap: anywhere; }
+.student-attendance-day { display: flex; justify-content: space-between; align-items: baseline; gap: 4mm; font-size: 10pt; margin-top: 4mm; }
+.student-attendance-write-line { display: inline-block; width: 35mm; height: 5mm; vertical-align: bottom; border-bottom: 1px dotted #444; }
+.student-attendance-table { width: 100%; border-collapse: collapse; table-layout: fixed; line-height: 1.4; }
+.student-attendance-table th, .student-attendance-table td { border: 1px solid #555; padding: 1mm; text-align: center; vertical-align: middle; overflow-wrap: anywhere; }
+.student-attendance-table thead th { background: #f1f1f1; font-weight: 700; height: 9mm; }
+.student-attendance-row { height: 6mm; }
+.student-attendance-row th { text-align: right; font-size: 9pt; font-weight: 500; }
+.student-attendance-table tfoot th { font-size: 9pt; font-weight: 600; }
+.student-attendance-table tfoot td { height: 10mm; background: white; }
+.student-attendance-instructions { font-size: 8pt; margin: 3mm 0 4mm; }
+@media print {
+  .student-attendance-preview { overflow: visible; }
+  .student-attendance-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .student-attendance-table thead { display: table-header-group; }
+  .student-attendance-table tfoot { display: table-row-group; break-inside: avoid; page-break-inside: avoid; }
+  .student-attendance-instructions { break-inside: avoid; page-break-inside: avoid; }
+}

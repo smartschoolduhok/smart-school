@@ -547,6 +547,7 @@ export default function TimetablePage() {
             </select>
             <div className="mt-3">
               <TeacherWorkloadPrintButton schoolId={schoolId} academicYearId={academicYearId} enabled={academicYearMatchesSchool} />
+              <TeacherWorkloadPrintButton schoolId={schoolId} academicYearId={academicYearId} enabled={academicYearMatchesSchool} detailed />
             </div>
             {academicYearId != null && <p className="mt-2 text-xs text-gray-500">السنة المحددة: <YearValue value={years.find((year) => year.id === academicYearId)?.name || ''} /></p>}
           </div>

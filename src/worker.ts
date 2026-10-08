@@ -191,6 +191,7 @@ import {
   renderOfficialBookText,
   validateOfficialBookAdHocFieldValues,
   validateOfficialBookDraft,
+  validateOfficialBookNumber,
   validateOfficialBookFieldValues,
 } from './lib/officialBookTemplates'
 import {
@@ -12789,6 +12790,10 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'هذا القالب يتطلب اختيار موظف' }, 400);
     }
 
+    const numberError = validateOfficialBookNumber(body.document_number, presetKey === 'student-acceptance-no-objection');
+    if (numberError) return c.json({ error: numberError }, 400);
+    const schoolDocumentNumber = typeof body.document_number === 'string' ? body.document_number.trim() : null;
+
     const sourceTitle = body.title === undefined ? template.title : body.title;
     const sourceBodyText = body.body_text === undefined ? template.body_text : body.body_text;
     const draftError = validateOfficialBookDraft(sourceTitle, sourceBodyText);
@@ -12905,7 +12910,7 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       employee_name: employeeName,
       employee_position: employeePosition,
       date: dateStr,
-      document_number: null,
+      document_number: schoolDocumentNumber,
     };
     const preliminaryRender = renderOfficialBookText(sourceBodyText.trim(), placeholderValues);
     const unresolvedBeforeNumber = preliminaryRender.unresolved.filter((key) => key !== 'document_number');
@@ -12920,21 +12925,21 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-    const tempNumber = `TEMP-${Date.now()}`;
+    const initialNumber = schoolDocumentNumber || `TEMP-${token}`;
     const result = await db.prepare(`
       INSERT INTO official_books (school_id, template_id, document_number, title, body_text, paper_size, student_id, employee_id, school_name_snapshot, principal_name_snapshot, logo_url_snapshot, stamp_url_snapshot, use_logo_snapshot, use_stamp_snapshot, header_text_snapshot, footer_text_snapshot, verification_note_snapshot, date_format_snapshot, use_arabic_indic_digits_snapshot, settings_snapshot_json, verification_token, verification_hash, status, created_by_user_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
-    `).bind(schoolId, templateId, tempNumber, sourceTitle.trim(), preliminaryRender.text, snapshot.paper_size, studentId, employeeId, snapshot.school_name, snapshot.principal_name || null, snapshot.logo_url, snapshot.stamp_url, snapshot.use_logo ? 1 : 0, snapshot.use_stamp ? 1 : 0, snapshot.official_book_header_text, snapshot.official_book_footer_text, snapshot.verification_note, snapshot.date_format, snapshot.use_arabic_indic_digits ? 1 : 0, JSON.stringify(snapshot), token, hashHex, user.id).run();
+    `).bind(schoolId, templateId, initialNumber, sourceTitle.trim(), preliminaryRender.text, snapshot.paper_size, studentId, employeeId, snapshot.school_name, snapshot.principal_name || null, snapshot.logo_url, snapshot.stamp_url, snapshot.use_logo ? 1 : 0, snapshot.use_stamp ? 1 : 0, snapshot.official_book_header_text, snapshot.official_book_footer_text, snapshot.verification_note, snapshot.date_format, snapshot.use_arabic_indic_digits ? 1 : 0, JSON.stringify(snapshot), token, hashHex, user.id).run();
 
     const bookId = result.meta?.last_row_id;
     const ts = Math.floor(Date.now() / 1000);
-    const documentNumber = `BOOK-${schoolId}-${bookId}-${ts}`;
+    const documentNumber = schoolDocumentNumber || `BOOK-${schoolId}-${bookId}-${ts}`;
 
     const finalRender = renderOfficialBookText(sourceBodyText.trim(), {
       ...placeholderValues,
       document_number: documentNumber,
     });
-    await db.prepare(`
+    if (!schoolDocumentNumber) await db.prepare(`
       UPDATE official_books
       SET document_number = ?, body_text = ?, updated_at = unixepoch()
       WHERE id = ? AND school_id = ?
@@ -12950,6 +12955,9 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       },
     }, 201);
   } catch (err: any) {
+    if (/UNIQUE constraint failed: official_books\.school_id, official_books\.document_number/i.test(String(err?.message))) {
+      return c.json({ error: 'هذا العدد مستخدم لكتاب آخر في المدرسة. أدخل العدد الصحيح من سجل الصادر.', code: 'duplicate_document_number' }, 409);
+    }
     return c.json({ error: 'فشل في إنشاء الكتاب الرسمي', detail: err.message }, 500);
   }
 });

@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import type { RoleKey } from '../../types';
 import type { OfficialBookTemplateField } from '../../lib/officialBookTemplates';
-import { officialBookTemplateDefaults } from '../../lib/officialBookTemplates';
+import { officialBookTemplateDefaults, OFFICIAL_BOOK_NUMBER_MAX_LENGTH, validateOfficialBookNumber } from '../../lib/officialBookTemplates';
 import {
   OfficialBookDocument,
   type OfficialBookDocumentRecord,
@@ -387,6 +387,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
   const [selectedStudent, setSelectedStudent] = useState<number | ''>('');
   const [selectedEmployee, setSelectedEmployee] = useState<number | ''>('');
   const [titleDraft, setTitleDraft] = useState('');
+  const [documentNumber, setDocumentNumber] = useState('');
   const [bodyDraft, setBodyDraft] = useState('');
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
@@ -401,6 +402,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     setSelectedStudent('');
     setSelectedEmployee('');
     setTitleDraft('');
+    setDocumentNumber('');
     setBodyDraft('');
     setFieldValues({});
     setError('');
@@ -447,6 +449,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     setGenerated(null);
     setError('');
     setTitleDraft(nextTemplate?.title || '');
+    setDocumentNumber('');
     setBodyDraft(nextTemplate?.body_text || '');
     const nextFields = nextTemplate?.fields || (nextTemplate ? inferredCustomFields(nextTemplate.body_text) : []);
     setFieldValues(nextFields.length > 0
@@ -461,6 +464,11 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     const isCurrent = captureSchoolRequest();
 
     setError('');
+    const numberError = validateOfficialBookNumber(documentNumber.trim() || undefined, template.preset_key === 'student-acceptance-no-objection');
+    if (numberError) {
+      setError(numberError);
+      return;
+    }
     for (const field of activeFields) {
       if (field.required && !(fieldValues[field.key] || '').trim()) {
         setError(`الحقل «${field.label}» مطلوب`);
@@ -471,6 +479,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
       title: titleDraft,
       body_text: bodyDraft,
       field_values: fieldValues,
+      ...(documentNumber.trim() ? {document_number: documentNumber.trim()} : {}),
     };
     if (template.source === 'builtin') data.preset_key = template.preset_key;
     else data.template_id = template.id;
@@ -522,6 +531,12 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
           </select>
           {template?.description && <p className="mt-2 text-xs leading-relaxed text-gray-500">{template.description}</p>}
         </div>
+
+        {template && <label className="block">
+          <span className="mb-1 block text-sm font-medium text-gray-700">العدد (رقم الكتاب){template.preset_key === 'student-acceptance-no-objection' ? ' *' : ''}</span>
+          <input aria-label="العدد (رقم الكتاب)" type="text" required={template.preset_key === 'student-acceptance-no-objection'} value={documentNumber} onChange={event => setDocumentNumber(event.target.value)} maxLength={OFFICIAL_BOOK_NUMBER_MAX_LENGTH} placeholder="أدخل العدد المعتمد في المدرسة" className="w-full rounded-lg border px-3 py-2 text-sm"/>
+          <span className="mt-1 block text-xs text-gray-500">{template.preset_key === 'student-acceptance-no-objection' ? 'تحدده المدرسة ويظهر أعلى الكتاب عند الطباعة.' : 'يمكن للمدرسة تحديد العدد؛ يُنشأ رقم تلقائي إذا تُرك فارغًا.'}</span>
+        </label>}
 
         {template?.requires_student && (
           <div>

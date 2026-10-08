@@ -29,6 +29,10 @@ test('summary counts saved lessons rather than assigned demand and reads configu
   const before=snapshot(f.db),r=await call(f);
   assert.equal(r.status,200,JSON.stringify(r));
   assert.deepEqual(counts(r.body.data),{1:0,2:2,6:0});
+  assert.deepEqual(r.body.data.teachers.find(row=>row.employee_id===2).breakdown,[{
+    class_id:1,class_name:'Class A',section_id:2,section_name:'B',subject_id:1,subject_name:'Math',weekly_periods:2,
+  }]);
+  assert.deepEqual(r.body.data.teachers.find(row=>row.employee_id===1).breakdown,[]);
   assert.equal(r.body.data.total_weekly_periods,2);
   assert.deepEqual(r.body.data.school,{id:1,name:'Example school',name_en:'Example English',province:'Duhok',principal_name:'School principal',logo_url:'/logo.svg'});
   assert.deepEqual(r.body.data.academic_year,{id:1,name:'2026-2027'});
@@ -70,6 +74,7 @@ test('archived references, inactive loads and hidden slots or days exclude only 
     const f=fixture(child);entry(f.db,2,1);entry(f.db,3,6);f.db.exec(sql);
     const before=snapshot(f.db),r=await call(f);
     assert.equal(r.status,200);assert.equal(counts(r.body.data)[2]??0,0);assert.equal(counts(r.body.data)[6],1);
+    for(const teacher of r.body.data.teachers) assert.equal(teacher.breakdown.reduce((total,row)=>total+row.weekly_periods,0),teacher.weekly_periods);
     assert.equal(r.body.data.total_weekly_periods,1);assert.deepEqual(snapshot(f.db),before);
   });
 });

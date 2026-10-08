@@ -18,6 +18,38 @@ const fixture = patch => ({
 });
 const counts = result => Object.fromEntries(result.teachers.map(row=>[row.employee_id,row.weekly_periods]));
 
+test('detail groups the same saved lessons by class, section and subject IDs and reconciles every total',()=>{
+  const input=fixture({loads:[
+    load(1,1,{class_name:'الأول المتوسط',section_name:'أ',subject_id:8,subject_name:'الرياضيات'}),
+    load(2,1,{class_name:'الأول المتوسط',section_name:'أ',subject_id:8,subject_name:'الرياضيات'}),
+    load(3,1,{class_name:'الأول المتوسط',section_name:'ب',section_id:2,subject_id:8,subject_name:'الرياضيات'}),
+    load(4,1,{class_name:'الأول المتوسط',section_name:'أ',subject_id:9,subject_name:'الفيزياء'}),
+    load(5,2,{class_name:'الأول المتوسط',section_name:'أ',subject_id:8,subject_name:'الرياضيات'}),
+  ], entries:[entry(1,1),entry(1,1),entry(2,1),entry(3,2),entry(4,3),entry(5,4),entry(6,5)]});
+  const before=structuredClone(input), result=aggregateTeacherWorkloadSummary(input);
+  const first=result.teachers.find(row=>row.employee_id===1);
+  assert.equal(first.breakdown.length,3);
+  assert.deepEqual(first.breakdown.find(row=>row.section_id===1&&row.subject_id===8),{
+    class_id:1,class_name:'الأول المتوسط',section_id:1,section_name:'أ',subject_id:8,subject_name:'الرياضيات',weekly_periods:3,
+  });
+  for(const teacher of result.teachers) assert.equal(teacher.breakdown.reduce((sum,row)=>sum+row.weekly_periods,0),teacher.weekly_periods);
+  assert.deepEqual(result.teachers.find(row=>row.employee_id===3).breakdown,[]);
+  assert.equal(result.total_weekly_periods,6);
+  assert.deepEqual(input,before);
+});
+
+test('same subject labels remain distinct by ID and sections without an assignment are represented explicitly',()=>{
+  const result=aggregateTeacherWorkloadSummary(fixture({loads:[
+    load(1,1,{subject_name:'المادة نفسها',section_id:null,active_section_count:0,section_name:null}),
+    load(2,1,{subject_name:'المادة نفسها',section_id:null,active_section_count:0,section_name:null}),
+    load(3,1,{subject_name:'مادة غير مجدولة'}),
+  ],entries:[entry(1,1),entry(2,2)]}));
+  const details=result.teachers.find(row=>row.employee_id===1).breakdown;
+  assert.deepEqual(details.map(row=>row.subject_id),[1,2]);
+  assert.ok(details.every(row=>row.section_id===null&&row.section_name===null&&row.weekly_periods===1));
+  assert.doesNotMatch(JSON.stringify(details),/غير مجدولة/);
+});
+
 test('saved entries are counted once by ID, names are not merged, zero teachers remain, and inputs are unchanged',()=>{
   const input=fixture({teachers:[teacher(2,{full_name:'Same name'}),teacher(1,{full_name:'Same name'}),teacher(3)],
     entries:[entry(1,1),entry(1,1),entry(2,1),entry(3,2)]});

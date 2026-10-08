@@ -79,6 +79,7 @@ const PrintOfficialBookPage = lazy(() => import('./modules/print/PrintOfficialBo
 const PrintTeacherWorkloadsPage = lazy(() => import('./modules/print/PrintTeacherWorkloadsPage'));
 const PrintSectionAdvisorsPage = lazy(() => import('./modules/print/PrintSectionAdvisorsPage'));
 const PrintStudentRosterPage = lazy(() => import('./modules/print/PrintStudentRosterPage'));
+const PrintStudentAttendancePage = lazy(() => import('./modules/print/PrintStudentAttendancePage'));
 const ImportExportPage = lazy(() => import('./modules/importExport/ImportExportPage'));
 const SettingsPage = lazy(() => import('./modules/settings/SettingsPage'));
 
@@ -211,6 +212,7 @@ export default function App() {
           <Route path="/section-advisors" element={<Layout><RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><SectionAdvisorsPage /></RoleGuard></Layout>} />
           <Route path="/print/section-advisors" element={<RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><PrintSectionAdvisorsPage /></RoleGuard>} />
           <Route path="/print/student-roster" element={<RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><PrintStudentRosterPage /></RoleGuard>} />
+          <Route path="/print/student-attendance" element={<RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><PrintStudentAttendancePage /></RoleGuard>} />
           <Route path="/print/teacher-workloads" element={<RoleGuard allowedRoles={ACADEMIC_MANAGEMENT_ROLES}><PrintTeacherWorkloadsPage /></RoleGuard>} />
           <Route path="/attendance" element={<Layout><RoleGuard allowedRoles={ATTENDANCE_VIEW_ROLES}><AttendancePage /></RoleGuard></Layout>} />
           <Route path="/gate-attendance" element={<Layout><RoleGuard allowedRoles={GATE_ATTENDANCE_VIEW_ROLES}><GateAttendancePage /></RoleGuard></Layout>} />
