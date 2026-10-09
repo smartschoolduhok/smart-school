@@ -170,6 +170,14 @@ test('official header normalization is safe, bilingual and derives the Iraqi dir
   const layout = resolvedOfficialBookLayout({}, { name: 'مدرسة الحدباء', province: 'نينوى' });
   assert.equal(layout.directorate_ar, 'المديرية العامة لتربية نينوى');
   assert.equal(layout.school_name_ar, 'مدرسة الحدباء');
+  const schoolHeader = resolvedOfficialBookLayout({
+    directorate_ar: 'المديرية العامة لتربية نينوى', department_ar: 'قسم دهوك',
+    directorate_en: 'Nineveh General Directorate of Education', department_en: 'Duhok Department',
+  }, {name: 'ثانوية المنار ثنائية اللغة', province: 'دهوك'});
+  assert.equal(schoolHeader.directorate_ar, 'المديرية العامة لتربية نينوى');
+  assert.equal(schoolHeader.department_ar, 'قسم دهوك');
+  assert.equal(schoolHeader.directorate_en, 'Nineveh General Directorate of Education');
+  assert.equal(schoolHeader.department_en, 'Duhok Department');
 });
 
 test('templates API returns built-ins without duplicating rows and hides them from parent accounts', async () => {
@@ -213,6 +221,7 @@ test('manual acceptance preset needs no existing student but remains editable an
   const response = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {
     school_id: 1,
     preset_key: 'student-acceptance-no-objection',
+    document_number: '  ١٢٣/شؤون الطلبة  ',
     title: 'عدم ممانعة قبول — نسخة معدلة',
     field_values: {
       recipient_school: 'مدرسة الرافدين',
@@ -226,11 +235,48 @@ test('manual acceptance preset needs no existing student but remains editable an
   const row = fixture.database.prepare('SELECT * FROM official_books WHERE id = ?').get(data.id);
   assert.equal(row.student_id, null);
   assert.equal(row.title, 'عدم ممانعة قبول — نسخة معدلة');
+  assert.equal(data.document_number, '١٢٣/شؤون الطلبة');
+  assert.equal(row.document_number, '١٢٣/شؤون الطلبة');
   assert.match(row.body_text, /نور حسن/);
   assert.match(row.body_text, /مدرسة الرافدين/);
+  assert.match(row.body_text, /الوثيقة والبطاقة المدرسية والصور الشخصية/);
+  const markup = renderToStaticMarkup(React.createElement(OfficialBookDocument, {book: row, verificationUrl: ''}));
+  assert.match(markup, /١٢٣\/شؤون الطلبة/);
+  assert.match(markup, /والصور الشخصية/);
   const verify = await app.request(`http://localhost/api/verify/official-book/${data.verification_token}`, {}, fixture.env);
   assert.equal(verify.status, 200);
   assert.equal((await verify.json()).data.title, row.title);
+});
+
+test('acceptance requires a school-issued number and rejects invalid numbers without saving', async () => {
+  const fixture = await createFixture();
+  const draft = {school_id: 1, preset_key: 'student-acceptance-no-objection', field_values: {
+    recipient_school: 'مدرسة الرافدين', student_name: 'نور حسن', target_class: 'الرابع العلمي',
+  }};
+  for (const number of [undefined, null, '', '  ', 123, {}, 'س'.repeat(81), '123\n456']) {
+    const response = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {...draft, document_number: number});
+    assert.equal(response.status, 400);
+  }
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS n FROM official_books').get().n, 0);
+  const response = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {...draft, document_number: '123/2026'});
+  assert.equal(response.status, 201);
+  const stored = fixture.database.prepare('SELECT * FROM official_books').get();
+  assert.match(stored.body_text, /الوثيقة المدرسية والبطاقة المدرسية والصور الشخصية/);
+});
+
+test('school-issued numbers are unique within each school and conflicts leave no temporary book', async () => {
+  const fixture = await createFixture();
+  const draft = {school_id: 1, preset_key: 'student-acceptance-no-objection', document_number: '125/2026', field_values: {
+    recipient_school: 'مدرسة الرافدين', student_name: 'نور حسن', target_class: 'الرابع العلمي',
+  }, body_text: 'العدد {{document_number}} — الطالب {{student_name}}'};
+  assert.equal((await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', draft)).status, 201);
+  const duplicate = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', draft);
+  assert.equal(duplicate.status, 409);
+  assert.equal((await duplicate.json()).code, 'duplicate_document_number');
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS n FROM official_books').get().n, 1);
+  assert.equal(fixture.database.prepare('SELECT body_text FROM official_books').get().body_text, 'العدد 125/2026 — الطالب نور حسن');
+  assert.equal((await api(fixture, fixture.tokens.ownerTwo, 'POST', '/api/official-books', {...draft, school_id: 2})).status, 201);
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS n FROM official_books').get().n, 2);
 });
 
 test('generation rejects cross-school linked resources and unresolved edited placeholders', async () => {

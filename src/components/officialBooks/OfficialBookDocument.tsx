@@ -131,7 +131,7 @@ export function OfficialBookDocument({
       </header>
 
       <div className="mt-3 grid grid-cols-2 gap-x-8 text-sm font-semibold">
-        <div>العدد: <span dir="ltr" className="inline-block font-normal">{digits(book.document_number)}</span></div>
+        <div>العدد: <span dir="ltr" className="inline-block max-w-full align-top font-normal [overflow-wrap:anywhere]">{digits(book.document_number)}</span></div>
         <div className="text-left">التاريخ: <span className="font-normal">{digits(dateText)}</span></div>
       </div>
 

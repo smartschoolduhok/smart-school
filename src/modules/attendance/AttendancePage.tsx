@@ -11,6 +11,7 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  Printer,
   RefreshCw,
   Save,
   Send,
@@ -355,9 +356,12 @@ function StaffAttendance() {
             <p className="text-sm text-gray-500">الحصص مأخوذة من الجدول الرسمي، والغياب لا يظهر لولي الأمر قبل الاعتماد.</p>
           </div>
         </div>
+        <div className="flex flex-wrap gap-2">
+        {schoolId != null && canManage && <a href="/print/student-attendance" className="flex items-center gap-2 rounded-lg border border-primary-200 bg-white px-3 py-2 text-sm font-bold text-primary-700"><Printer size={16}/> سجل الحضور الورقي</a>}
         <button type="button" onClick={() => void loadLessons()} disabled={loading} className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> تحديث
         </button>
+        </div>
       </div>
 
       <SystemAdminSchoolSelector {...schoolScope} />

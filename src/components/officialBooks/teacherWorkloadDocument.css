@@ -1,4 +1,5 @@
 .teacher-workload-document {
+  width: 180mm;
   color: #0f172a;
   font-family: "Cairo", "Tajawal", "Arial", "Tahoma", sans-serif;
   font-size: 10pt;
@@ -100,6 +101,12 @@
 
 .teacher-workload-index-column { width: 12mm; }
 .teacher-workload-count-column { width: 42mm; }
+.teacher-workload-section-column { width: 27mm; }
+.teacher-workload-detail-count-column { width: 30mm; }
+.teacher-workload-detail-table { line-height: 1.5; }
+.teacher-workload-table .teacher-workload-teacher th { font-weight: 800; background: #e2e8f0; }
+.teacher-workload-table .teacher-workload-subtotal th,
+.teacher-workload-table .teacher-workload-subtotal td { font-weight: 700; background: #f8fafc; }
 
 .teacher-workload-table th,
 .teacher-workload-table td {
@@ -171,4 +178,6 @@
   .teacher-workload-table thead { display: table-header-group; }
   .teacher-workload-table tr { break-inside: avoid; page-break-inside: avoid; }
   .teacher-workload-table .teacher-workload-total { break-before: avoid; page-break-before: avoid; }
+  .teacher-workload-table .teacher-workload-subtotal { break-before: avoid; page-break-before: avoid; }
+  .teacher-workload-table .teacher-workload-teacher { break-after: avoid; page-break-after: avoid; }
 }

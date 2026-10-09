@@ -19,6 +19,7 @@ const vite = await createServer({
 });
 const {TeacherWorkloadPreview} = await vite.ssrLoadModule('/src/modules/print/PrintTeacherWorkloadsPage.tsx');
 const {TeacherWorkloadPrintButton} = await vite.ssrLoadModule('/src/modules/timetable/TeacherWorkloadPrintButton.tsx');
+const {paginateWorkloadDetails} = await vite.ssrLoadModule('/src/components/officialBooks/TeacherWorkloadDocument.tsx');
 after(async () => {await vite.close(); await window.happyDOM.close();});
 
 function fixture({schoolId = 3, yearId = 5, schoolName = 'ثانوية المنار ثنائية اللغة', principal = 'انور يونس عيدان', teachers} = {}) {
@@ -31,7 +32,7 @@ function fixture({schoolId = 3, yearId = 5, schoolName = 'ثانوية المن�
     school: {id: schoolId, name: schoolName, name_en: null, province: null, logo_url: null, principal_name: principal},
     academic_year: {id: yearId, name: yearId === 5 ? '2026-2027' : '2027-2028'},
     document_settings: {official_book_layout: null, use_arabic_indic_digits: false, header_text: '', footer_text: ''},
-    teachers: rows, total_weekly_periods: rows.reduce((total, row) => total + row.weekly_periods, 0),
+    teachers: rows.map(row => ({...row, breakdown: row.breakdown ?? (row.weekly_periods ? [{class_id: 1, class_name: 'الأول المتوسط', section_id: 2, section_name: 'أ', subject_id: 3, subject_name: 'الرياضيات', weekly_periods: row.weekly_periods}] : [])})), total_weekly_periods: rows.reduce((total, row) => total + row.weekly_periods, 0),
   };
 }
 
@@ -84,6 +85,72 @@ test('workload action opens the selected school and year in an isolated new tab 
   await u.render({academicYearId: 5, enabled: false});
   assert.equal(u.container.querySelector('a'), null);
   assert.equal(button(u, 'كتاب أنصبة المدرّسين').disabled, true);
+});
+
+test('separate detailed action preserves the selected school and year and chooses the detailed preview', async t => {
+  const u = await mount(t, TeacherWorkloadPrintButton, {schoolId: 3, academicYearId: 5, enabled: true, detailed: true});
+  const link = u.container.querySelector('a');
+  assert.match(link.textContent, /بالتفصيل/);
+  assert.deepEqual([...new URL(link.href).searchParams], [['school_id', '3'], ['academic_year_id', '5'], ['mode', 'detailed']]);
+  assert.equal(link.target, '_blank');
+  await u.render({academicYearId: null});
+  assert.equal(u.container.querySelector('a'), null);
+  assert.equal(button(u, 'بالتفصيل').disabled, true);
+});
+
+test('detailed preview shows each class, section and subject, reconciled teacher subtotals and one grand total including zero teachers', async t => {
+  const summary = fixture({teachers: [
+    {employee_id: 3, employee_name: 'ابراهيم ناهض', weekly_periods: 9, breakdown: [
+      {class_id: 1, class_name: 'الأول المتوسط', section_id: 2, section_name: 'أ', subject_id: 3, subject_name: 'الرياضيات', weekly_periods: 4},
+      {class_id: 2, class_name: 'الثاني المتوسط', section_id: 3, section_name: 'ب', subject_id: 4, subject_name: 'الفيزياء', weekly_periods: 5},
+    ]},
+    {employee_id: 18, employee_name: 'امنة امجد', weekly_periods: 0, breakdown: []},
+  ]});
+  const u = await mount(t, TeacherWorkloadPreview, {initialMode: 'detailed', loadSummary: async () => ({data: summary})});
+  assert.equal(report(u).dataset.mode, 'detailed');
+  const assignments = [...u.container.querySelectorAll('.teacher-workload-assignment')];
+  assert.deepEqual(assignments.map(row => [...row.cells].map(cell => cell.textContent)), [
+    ['الأول المتوسط', 'أ', 'الرياضيات', '4'], ['الثاني المتوسط', 'ب', 'الفيزياء', '5'],
+  ]);
+  assert.deepEqual([...u.container.querySelectorAll('.teacher-workload-subtotal td')].map(cell => cell.textContent), ['9', '0']);
+  assert.equal(u.container.querySelectorAll('.teacher-workload-total').length, 1);
+  assert.equal(u.container.querySelector('.teacher-workload-total td').textContent, '9');
+  assert.match(report(u).textContent, /لا توجد حصص/);
+  await click(button(u, 'ملخّص الحصص'));
+  assert.equal(report(u).dataset.mode, 'summary');
+  assert.equal(teacherRow(u, 'ابراهيم ناهض').querySelector('td:last-child').textContent, '9');
+  await click(button(u, 'بالتفصيل حسب'));
+  assert.equal(u.container.querySelectorAll('.teacher-workload-assignment').length, 2);
+});
+
+test('many assignments retain every detail, repeat teacher identity on continuation and keep final assignment with subtotal', async t => {
+  const breakdown = Array.from({length: 80}, (_, index) => ({class_id: index + 1, class_name: `الصف ${index + 1}`, section_id: index + 1, section_name: 'أ', subject_id: 1, subject_name: 'الرياضيات', weekly_periods: index % 3 + 1}));
+  const count = breakdown.reduce((total, row) => total + row.weekly_periods, 0);
+  const u = await mount(t, TeacherWorkloadPreview, {initialMode: 'detailed', loadSummary: async () => ({data: fixture({teachers: [{employee_id: 3, employee_name: 'مدرس متعدد الصفوف', weekly_periods: count, breakdown}]})})});
+  const pages = [...u.container.querySelectorAll('.teacher-workload-page')];
+  assert.ok(pages.length > 2);
+  assert.equal(u.container.querySelectorAll('.teacher-workload-assignment').length, 80);
+  assert.equal(u.container.querySelectorAll('.teacher-workload-subtotal').length, 1);
+  assert.equal(u.container.querySelectorAll('.teacher-workload-total').length, 1);
+  for (const [index, page] of pages.entries()) {
+    assert.match(page.querySelector('tbody tr:first-child').textContent, /مدرس متعدد الصفوف/);
+    if (index) assert.match(page.querySelector('tbody tr:first-child').textContent, /تابع/);
+  }
+  const subtotal = u.container.querySelector('.teacher-workload-subtotal');
+  assert.ok(subtotal.previousElementSibling.classList.contains('teacher-workload-assignment'));
+  assert.equal(subtotal.querySelector('td').textContent, String(count));
+  assert.equal(u.container.querySelector('.teacher-workload-total td').textContent, String(count));
+  assert.equal(u.container.querySelector('[rowspan]'), null);
+});
+
+test('pagination uses measured row heights and preserves compact groups and subtotal adjacency', () => {
+  const first = {heading: {key: 'a', kind: 'teacher'}, assignments: [{key: 'a1', kind: 'assignment'}], tail: [{key: 'at', kind: 'subtotal'}]};
+  const long = {heading: {key: 'b', kind: 'teacher'}, assignments: [{key: 'b1', kind: 'assignment'}, {key: 'b2', kind: 'assignment'}, {key: 'b3', kind: 'assignment'}], tail: [{key: 'bt', kind: 'subtotal'}, {key: 'total', kind: 'total'}]};
+  const heights = new Map([['a', 20], ['a1', 45], ['at', 20], ['b', 25], ['b1', 110], ['b2', 90], ['b3', 60], ['bt', 20], ['total', 20]]);
+  const pages = paginateWorkloadDetails([first, long], heights, 180);
+  assert.deepEqual(pages.map(page => page.map(row => row.key)), [['a', 'a1', 'at'], ['b', 'b1'], ['b', 'b2'], ['b', 'b3', 'bt', 'total']]);
+  assert.ok(pages.every(page => page.reduce((total, row) => total + heights.get(row.key), 0) <= 180));
+  assert.ok(pages[2][0].continued && pages[3][0].continued);
 });
 
 test('preview shows saved teacher counts including zero, total, and a real principal without fabricated verification identifiers', async t => {
@@ -265,4 +332,37 @@ test('refreshing the same school while print waits for fonts cancels the superse
   assert.equal(calls.length, 1, 'a fresh click prints the refreshed document');
   assert.match(calls[0].text, /مدير محدث/);
   assert.doesNotMatch(calls[0].text, /انور يونس عيدان/);
+});
+
+test('changing print mode while fonts load cancels the original request even when switched back', async t => {
+  const fonts = deferred(), calls = observePrint(t);
+  const errors = t.mock.method(console, 'error', () => {});
+  const descriptor = Object.getOwnPropertyDescriptor(document, 'fonts');
+  Object.defineProperty(document, 'fonts', {configurable: true, value: {ready: fonts.promise}});
+  t.after(() => {if (descriptor) Object.defineProperty(document, 'fonts', descriptor); else delete document.fonts;});
+  const u = await mount(t);
+  await click(button(u, 'طباعة / حفظ PDF'));
+  await click(button(u, 'بالتفصيل حسب'));
+  await click(button(u, 'ملخّص الحصص'));
+  await act(async () => fonts.resolve());
+  assert.equal(calls.length, 0);
+  assert.equal(errors.mock.callCount(), 1);
+  assert.match(u.container.querySelector('[role="alert"]').textContent, /تغير الكشف/);
+  await click(button(u, 'بالتفصيل حسب'));
+  await click(button(u, 'طباعة / حفظ PDF'));
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].title, /بالتفصيل/);
+  assert.match(calls[0].text, /الأول المتوسط.*الرياضيات/);
+});
+
+test('missing or inconsistent detail data cannot print a misleading detailed report and summary remains available', async t => {
+  const summary = fixture();
+  delete summary.teachers[0].breakdown;
+  const u = await mount(t, TeacherWorkloadPreview, {initialMode: 'detailed', loadSummary: async () => ({data: summary})});
+  assert.match(u.container.querySelector('[role="alert"]').textContent, /تفاصيل الحصص غير مكتملة/);
+  assert.equal(report(u), null);
+  assert.equal(button(u, 'طباعة / حفظ PDF'), undefined);
+  await click(button(u, 'ملخّص الحصص'));
+  assert.equal(report(u).dataset.mode, 'summary');
+  assert.ok(button(u, 'طباعة / حفظ PDF'));
 });

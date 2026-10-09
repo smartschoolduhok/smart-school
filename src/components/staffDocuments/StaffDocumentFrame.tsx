@@ -8,8 +8,8 @@ function Logo({url, name}: {url: string | null; name: string}) {
   const [failed, setFailed] = useState<string | null>(null);
   return url && failed !== url ? <img className="staff-document-logo" src={url} alt={`شعار ${name}`} onError={() => setFailed(url)} /> : <span className="staff-document-logo" />;
 }
-export function StaffDocumentFrame({metadata, title, subtitle, pageIndex, pageCount, children, landscape = false}: {
-  metadata: StaffDocumentMetadata; title: string; subtitle: string; pageIndex: number; pageCount: number; children: ReactNode; landscape?: boolean;
+export function StaffDocumentFrame({metadata, title, subtitle, pageIndex, pageCount, children, landscape = false, showPreparedDate = true}: {
+  metadata: StaffDocumentMetadata; title: string; subtitle: string; pageIndex: number; pageCount: number; children: ReactNode; landscape?: boolean; showPreparedDate?: boolean;
 }) {
   const {school, document_settings: settings} = metadata;
   const layout = resolvedOfficialBookLayout(settings.official_book_layout, school);
@@ -22,7 +22,7 @@ export function StaffDocumentFrame({metadata, title, subtitle, pageIndex, pageCo
       </div>
       {settings.header_text && <p className="staff-document-note">{settings.header_text}</p>}
       <h1>{title}</h1>
-      <div className="staff-document-meta"><span>{subtitle}</span><span>تاريخ الإعداد: <bdi>{staffDate(metadata.prepared_at, settings)}</bdi></span></div>
+      <div className="staff-document-meta"><span>{subtitle}</span>{showPreparedDate && <span>تاريخ الإعداد: <bdi>{staffDate(metadata.prepared_at, settings)}</bdi></span>}</div>
     </header>
     {children}
     <footer className="staff-document-footer">
