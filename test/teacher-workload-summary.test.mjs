@@ -96,5 +96,15 @@ test('disabled and nonlesson slots or days and cross-scope entries are excluded'
 
 test('archived staff and foreign teachers are never returned, even if a load names their ID',()=>{
   const result=aggregateTeacherWorkloadSummary(fixture({teachers:[teacher(1,{status:'archived'}),teacher(2,{role:'staff'}),teacher(3,{school_id:2})]}));
-  assert.deepEqual(result,{teachers:[],total_weekly_periods:0});
+  assert.deepEqual(result,{teachers:[],total_weekly_periods:0,total_scheduled_weekly_periods:0,total_extra_weekly_periods:0,total_report_weekly_periods:0});
+});
+
+
+test('report-only extras reconcile without becoming scheduled demand; named resources stay distinct from real teachers',()=>{
+  const extra={id:1,school_id:1,academic_year_id:1,employee_id:1,subject_name:'التربية المسيحية',weekly_periods:5,deleted_at:null};
+  const input=fixture({teachers:[teacher(1,{full_name:'مدرس الإنكليزي'})],loads:[load(1,1),load(2,null,{teacher_placeholder:'مدرس الإنكليزي'}),load(3,null,{teacher_placeholder:'مدرس الإنكليزي'})],entries:[entry(1,1),entry(2,2),entry(3,3)],extras:[extra,extra,{...extra,id:2,school_id:2},{...extra,id:3,academic_year_id:2},{...extra,id:4,deleted_at:1},{...extra,id:5,employee_id:999}]});
+  const saved=structuredClone(input),r=aggregateTeacherWorkloadSummary(input),real=r.teachers.find(t=>t.employee_id===1),placeholder=r.teachers.find(t=>t.employee_id===null);
+  assert.equal(real.weekly_periods,1);assert.equal(real.report_weekly_periods,6);assert.equal(real.extra_weekly_periods,5);assert.equal(real.breakdown.reduce((s,r)=>s+r.weekly_periods,0),1);
+  assert.equal(placeholder.teacher_key,'placeholder:مدرس الإنكليزي');assert.equal(placeholder.weekly_periods,2);assert.equal(placeholder.extras.length,0);
+  assert.equal(r.total_scheduled_weekly_periods,3);assert.equal(r.total_report_weekly_periods,8);assert.equal(r.total_extra_weekly_periods,5);assert.deepEqual(input,saved);
 });

@@ -18,6 +18,7 @@ const vite = await createServer({
   server: {middlewareMode: true, hmr: false},
 });
 const {TeacherWorkloadPreview} = await vite.ssrLoadModule('/src/modules/print/PrintTeacherWorkloadsPage.tsx');
+const {TeacherWorkloadExtrasEditor} = await vite.ssrLoadModule('/src/modules/print/TeacherWorkloadExtrasEditor.tsx');
 const {TeacherWorkloadPrintButton} = await vite.ssrLoadModule('/src/modules/timetable/TeacherWorkloadPrintButton.tsx');
 const {paginateWorkloadDetails} = await vite.ssrLoadModule('/src/components/officialBooks/TeacherWorkloadDocument.tsx');
 after(async () => {await vite.close(); await window.happyDOM.close();});
@@ -365,4 +366,38 @@ test('missing or inconsistent detail data cannot print a misleading detailed rep
   await click(button(u, 'ملخّص الحصص'));
   assert.equal(report(u).dataset.mode, 'summary');
   assert.ok(button(u, 'طباعة / حفظ PDF'));
+});
+
+
+test('reports separate scheduled and report-only totals and detailed extras never invent a class or section',async t=>{
+ const extra={id:8,school_id:3,academic_year_id:5,employee_id:9,subject_name:'التربية المسيحية',weekly_periods:5,version:2};
+ const summary=fixture({teachers:[{employee_id:9,employee_name:'مريم',weekly_periods:18,extra_weekly_periods:5,report_weekly_periods:23,extras:[extra]},
+  {employee_id:null,teacher_key:'placeholder:English',employee_name:'مدرس الإنكليزي',weekly_periods:19},
+  {employee_id:null,teacher_key:'placeholder:Arabic',employee_name:'مدرس العربي والإسلامية',weekly_periods:30}]});
+ Object.assign(summary,{total_scheduled_weekly_periods:67,total_extra_weekly_periods:5,total_report_weekly_periods:72});
+ const u=await mount(t,TeacherWorkloadPreview,{loadSummary:async()=>({data:summary})});
+ assert.equal(teacherRow(u,'مريم').querySelector('td:last-child').textContent,'23');
+ assert.deepEqual([...teacherRow(u,'مريم').querySelectorAll('td')].map(e=>e.textContent),['1','18','5','23']);
+ assert.match(report(u).textContent,/خارج الجدول/);
+ const options=[...u.container.querySelectorAll('select[aria-label="مدرس النصاب الإضافي"] option')];assert.equal(options.length,2);assert.equal(options[1].value,'9');
+ await click(button(u,'بالتفصيل حسب'));
+ const extraRow=u.container.querySelector('.teacher-workload-extra');assert.deepEqual([...extraRow.cells].map(e=>e.textContent),['خارج الجدول','التربية المسيحية','5']);assert.equal(extraRow.cells[0].colSpan,2);
+ assert.match(u.container.querySelector('.teacher-workload-subtotal').textContent,/مجدول: 18.*خارج الجدول: 5/);
+ assert.equal(u.container.querySelector('.teacher-workload-total td').textContent,'72');
+ assert.equal(u.container.querySelectorAll('.teacher-workload-teacher').length,3);
+});
+
+test('extras editor sends scoped CAS updates/deletes, blocks placeholders, and refreshes only after successful mutation',async t=>{
+ const extra={id:8,school_id:3,academic_year_id:5,employee_id:9,subject_name:'التربية المسيحية',weekly_periods:5,version:7};
+ const summary=fixture({teachers:[{employee_id:9,employee_name:'مريم',weekly_periods:18,extras:[extra]},{employee_id:null,teacher_key:'placeholder:English',employee_name:'مدرس الإنكليزي',weekly_periods:19}]});
+ const calls=[],busy=[];let refreshed=0,saveResult={data:{...extra,version:8}};
+ const u=await mount(t,TeacherWorkloadExtrasEditor,{summary,onChanged:()=>{refreshed++},onBusyChange:b=>busy.push(b),save:async(...args)=>{calls.push(args);return saveResult;},remove:async(...args)=>{calls.push(args);return {data:{...extra,deleted_at:1,version:8}};}});
+ await click(button(u,'تعديل'));
+ assert.equal(u.container.querySelector('select').disabled,true);
+ await act(async()=>u.container.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+ assert.deepEqual(calls[0],[{school_id:3,academic_year_id:5,employee_id:9,subject_name:'التربية المسيحية',weekly_periods:5,expected_version:7},8]);assert.equal(refreshed,1);assert.deepEqual(busy,[true,false]);
+ saveResult={error:'تغير النصاب. حدّث الكشف'};await click(button(u,'تعديل'));
+ await act(async()=>u.container.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+ assert.equal(refreshed,1);assert.match(u.container.querySelector('[role="alert"]').textContent,/تغير النصاب/);
+ await click(button(u,'حذف'));assert.deepEqual(calls.at(-1),[8,{school_id:3,academic_year_id:5,expected_version:7}]);assert.equal(refreshed,2);
 });

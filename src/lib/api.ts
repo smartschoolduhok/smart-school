@@ -1,3 +1,4 @@
+import type { TeacherWorkloadExtra, TeacherWorkloadExtraWrite } from './teacherWorkloadExtras';
 // ===========================================
 // API Client - HttpOnly cookie sessions with CSRF protection
 // Connects React frontend to Hono backend
@@ -772,6 +773,13 @@ export function getTimetableMasterGrid(schoolId: number, academicYearId: number)
 
 export function getTimetableTeacherWorkloadSummary(schoolId: number, academicYearId: number) {
   return fetchApi<TeacherWorkloadSummary>(`/api/timetable/teacher-workload-summary?${timetableQuery(schoolId, academicYearId)}`);
+}
+
+export function saveTeacherWorkloadExtra(input: TeacherWorkloadExtraWrite, id?: number) {
+  return fetchApi<TeacherWorkloadExtra>(`/api/teacher-workload-extras${id == null ? '' : `/${id}`}`, { method: id == null ? 'POST' : 'PUT', body: JSON.stringify(input) });
+}
+export function deleteTeacherWorkloadExtra(id: number, input: Pick<TeacherWorkloadExtraWrite, 'school_id' | 'academic_year_id' | 'expected_version'>) {
+  return fetchApi<TeacherWorkloadExtra>(`/api/teacher-workload-extras/${id}`, { method: 'DELETE', body: JSON.stringify(input) });
 }
 
 export function getSectionAdvisors(schoolId: number, academicYearId: number) {
