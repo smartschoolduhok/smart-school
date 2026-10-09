@@ -200,6 +200,12 @@ import {
   validateOfficialBookLayout,
 } from './lib/officialBookLayout'
 import {
+  formatOfficialBookIssueDate,
+  getOfficialBookIssueDate,
+  todayOfficialBookDate,
+  validateOfficialBookIssueDate,
+} from './lib/officialBookDates'
+import {
   buildGeneratedStudentNumber,
   findStudentDuplicate,
   normalizeStudentIdentity,
@@ -12655,7 +12661,7 @@ app.get('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
 
     sql += ` ORDER BY ob.created_at DESC`;
     const rows = await db.prepare(sql).bind(...params).all<any>();
-    return c.json({ data: rows.results || [] });
+    return c.json({ data: (rows.results || []).map(row => ({ ...row, document_date: getOfficialBookIssueDate(row) })) });
   } catch (err: any) {
     return c.json({ error: 'فشل في جلب الكتب الرسمية', detail: err.message }, 500);
   }
@@ -12703,9 +12709,9 @@ app.get('/api/official-books/:id', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'غير مسموح: لا تملك صلاحية عرض الكتب الرسمية' }, 403);
     }
 
-    let data = row;
+    let data = { ...row, document_date: getOfficialBookIssueDate(row) };
     try {
-      data = { ...row, settings_snapshot: JSON.parse(row.settings_snapshot_json || '{}') };
+      data = { ...data, settings_snapshot: JSON.parse(row.settings_snapshot_json || '{}') };
     } catch { /* leave as-is */ }
 
     return c.json({ data });
@@ -12793,6 +12799,9 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
     const numberError = validateOfficialBookNumber(body.document_number, presetKey === 'student-acceptance-no-objection');
     if (numberError) return c.json({ error: numberError }, 400);
     const schoolDocumentNumber = typeof body.document_number === 'string' ? body.document_number.trim() : null;
+    const documentDate = body.document_date === undefined ? todayOfficialBookDate() : body.document_date;
+    const dateError = validateOfficialBookIssueDate(documentDate);
+    if (dateError) return c.json({ error: dateError }, 400);
 
     const sourceTitle = body.title === undefined ? template.title : body.title;
     const sourceBodyText = body.body_text === undefined ? template.body_text : body.body_text;
@@ -12876,6 +12885,7 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
     );
     const snapshot = {
       schema_version: 2,
+      document_date: documentDate,
       school_name: school?.name || '',
       school_name_en: school?.name_en || '',
       province: school?.province || school?.city || '',
@@ -12897,7 +12907,7 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       academic_year: activeAcademicYear?.name || null,
     };
 
-    const dateStr = new Date().toLocaleDateString('ar-IQ');
+    const dateStr = formatOfficialBookIssueDate(documentDate, snapshot.use_arabic_indic_digits ? 'ar-IQ' : 'en-GB');
     const placeholderValues: Record<string, string | number | null> = {
       ...fieldResult.values,
       school_name: snapshot.school_name,
@@ -12945,10 +12955,15 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       WHERE id = ? AND school_id = ?
     `).bind(documentNumber, finalRender.text, bookId, schoolId).run();
 
+    const createdBook = await db.prepare('SELECT created_at FROM official_books WHERE id = ? AND school_id = ?')
+      .bind(bookId, schoolId).first<{ created_at: number }>();
+
     return c.json({
       data: {
         id: bookId,
         document_number: documentNumber,
+        document_date: documentDate,
+        created_at: createdBook?.created_at,
         verification_token: token,
         preset_key: presetKey,
         message: 'تم إنشاء الكتاب الرسمي بنجاح',
@@ -13125,6 +13140,7 @@ app.get('/api/verify/official-book/:token', async (c) => {
       student_name: book.student_name,
       employee_name: book.employee_name,
       generated_at: book.created_at,
+      document_date: getOfficialBookIssueDate(book),
       status: book.status,
       verification_note: settings.verification_note || null,
     };

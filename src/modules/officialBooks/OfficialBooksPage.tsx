@@ -15,6 +15,8 @@ import {
 import type { RoleKey } from '../../types';
 import type { OfficialBookTemplateField } from '../../lib/officialBookTemplates';
 import { officialBookTemplateDefaults, OFFICIAL_BOOK_NUMBER_MAX_LENGTH, validateOfficialBookNumber } from '../../lib/officialBookTemplates';
+import { formatOfficialBookDisplayDate, todayOfficialBookDate, validateOfficialBookIssueDate } from '../../lib/officialBookDates';
+import { officialBookDate } from '../../lib/officialBookLayout';
 import {
   OfficialBookDocument,
   type OfficialBookDocumentRecord,
@@ -35,6 +37,11 @@ function canManageBooks(roleKey?: RoleKey): boolean {
 }
 function canViewBooks(roleKey?: RoleKey): boolean {
   return hasRole(roleKey, OFFICIAL_BOOK_VIEW_ROLES);
+}
+
+function systemCreationTime(createdAt: string | number): string {
+  const date = officialBookDate(createdAt);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ar-IQ', {timeZone: 'Asia/Baghdad'});
 }
 
 function statusBadge(status: string | null) {
@@ -388,6 +395,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
   const [selectedEmployee, setSelectedEmployee] = useState<number | ''>('');
   const [titleDraft, setTitleDraft] = useState('');
   const [documentNumber, setDocumentNumber] = useState('');
+  const [documentDate, setDocumentDate] = useState(todayOfficialBookDate);
   const [bodyDraft, setBodyDraft] = useState('');
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
@@ -403,6 +411,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     setSelectedEmployee('');
     setTitleDraft('');
     setDocumentNumber('');
+    setDocumentDate(todayOfficialBookDate());
     setBodyDraft('');
     setFieldValues({});
     setError('');
@@ -450,6 +459,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     setError('');
     setTitleDraft(nextTemplate?.title || '');
     setDocumentNumber('');
+    setDocumentDate(todayOfficialBookDate());
     setBodyDraft(nextTemplate?.body_text || '');
     const nextFields = nextTemplate?.fields || (nextTemplate ? inferredCustomFields(nextTemplate.body_text) : []);
     setFieldValues(nextFields.length > 0
@@ -464,6 +474,11 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     const isCurrent = captureSchoolRequest();
 
     setError('');
+    const dateError = validateOfficialBookIssueDate(documentDate);
+    if (dateError) {
+      setError(dateError);
+      return;
+    }
     const numberError = validateOfficialBookNumber(documentNumber.trim() || undefined, template.preset_key === 'student-acceptance-no-objection');
     if (numberError) {
       setError(numberError);
@@ -479,6 +494,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
       title: titleDraft,
       body_text: bodyDraft,
       field_values: fieldValues,
+      document_date: documentDate,
       ...(documentNumber.trim() ? {document_number: documentNumber.trim()} : {}),
     };
     if (template.source === 'builtin') data.preset_key = template.preset_key;
@@ -536,6 +552,12 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
           <span className="mb-1 block text-sm font-medium text-gray-700">العدد (رقم الكتاب){template.preset_key === 'student-acceptance-no-objection' ? ' *' : ''}</span>
           <input aria-label="العدد (رقم الكتاب)" type="text" required={template.preset_key === 'student-acceptance-no-objection'} value={documentNumber} onChange={event => setDocumentNumber(event.target.value)} maxLength={OFFICIAL_BOOK_NUMBER_MAX_LENGTH} placeholder="أدخل العدد المعتمد في المدرسة" className="w-full rounded-lg border px-3 py-2 text-sm"/>
           <span className="mt-1 block text-xs text-gray-500">{template.preset_key === 'student-acceptance-no-objection' ? 'تحدده المدرسة ويظهر أعلى الكتاب عند الطباعة.' : 'يمكن للمدرسة تحديد العدد؛ يُنشأ رقم تلقائي إذا تُرك فارغًا.'}</span>
+        </label>}
+
+        {template && <label className="block">
+          <span className="mb-1 block text-sm font-medium text-gray-700">تاريخ الكتاب *</span>
+          <input aria-label="تاريخ الكتاب" type="date" required value={documentDate} onChange={event => {setDocumentDate(event.target.value); setGenerated(null);}} className="w-full rounded-lg border px-3 py-2 text-sm" />
+          <span className="mt-1 block text-xs text-gray-500">تختاره المدرسة ويظهر في الكتاب المطبوع؛ وقت الإنشاء في النظام يُحفظ تلقائيًا بصورة مستقلة.</span>
         </label>}
 
         {template?.requires_student && (
@@ -631,6 +653,8 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
           </div>
           <div className="text-sm text-emerald-800 space-y-1">
             <div>رقم الكتاب: {generated.document_number}</div>
+            <div>تاريخ الكتاب: {formatOfficialBookDisplayDate(generated)}</div>
+            <div>وقت الإنشاء في النظام: {systemCreationTime(generated.created_at)}</div>
             <div className="break-all">رمز التحقق: {generated.verification_token}</div>
           </div>
           <a href={`/print/official-book/${generated.id}`} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800">
@@ -698,6 +722,8 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
              <div className="space-y-1">
                <div className="font-bold text-gray-900">{b.title}</div>
                <div className="text-sm text-gray-500">{b.document_number} | {b.paper_size}</div>
+               <div className="text-sm text-gray-600">تاريخ الكتاب: {formatOfficialBookDisplayDate(b)}</div>
+               <div className="text-xs text-gray-500">وقت الإنشاء في النظام: {systemCreationTime(b.created_at)}</div>
                {(b.student_name || b.employee_name) && (
                  <div className="text-sm text-gray-600">{b.student_name || b.employee_name}</div>
                )}
@@ -794,6 +820,8 @@ function VerifyTab() {
             <div className="text-sm space-y-1">
               <div><span className="font-medium">العنوان:</span> {result.title}</div>
               <div><span className="font-medium">رقم الكتاب:</span> {result.document_number}</div>
+              <div><span className="font-medium">تاريخ الكتاب:</span> {formatOfficialBookDisplayDate({ ...result, created_at: result.generated_at })}</div>
+              <div><span className="font-medium">وقت الإنشاء في النظام:</span> {systemCreationTime(result.generated_at)}</div>
               <div><span className="font-medium">المدرسة:</span> {result.school_name}</div>
               {result.student_name && <div><span className="font-medium">الطالب:</span> {result.student_name}</div>}
               {result.employee_name && <div><span className="font-medium">الموظف:</span> {result.employee_name}</div>}

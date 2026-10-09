@@ -30,6 +30,7 @@ const vite = await createServer({ root: rootDir, appType: 'custom', server: { mi
 const { default: app } = await vite.ssrLoadModule('/src/worker.ts');
 const { OfficialBookDocument } = await vite.ssrLoadModule('/src/components/officialBooks/OfficialBookDocument.tsx');
 const { formatOfficialBookDate, officialBookDate } = await vite.ssrLoadModule('/src/lib/officialBookLayout.ts');
+const { formatOfficialBookDisplayDate, formatOfficialBookIssueDate, todayOfficialBookDate, validateOfficialBookIssueDate } = await vite.ssrLoadModule('/src/lib/officialBookDates.ts');
 after(async () => vite.close());
 
 class LocalStatement {
@@ -398,4 +399,99 @@ test('A4 document honors legacy numeric zero for Western digits', () => {
   }));
   assert.match(html, /BOOK-123/);
   assert.doesNotMatch(html, /BOOK-١٢٣/);
+});
+
+test('issue dates validate real calendar days and stay stable across reader timezones', () => {
+  for (const value of [null, undefined, '', 20261009, {}, '09/10/2026', '2026-2-03', '2026-02-29', '1900-02-29', '2026-04-31', '0000-01-01', '2026-10-09T00:00:00Z']) {
+    assert.ok(validateOfficialBookIssueDate(value), JSON.stringify(value));
+  }
+  for (const value of ['2000-02-29', '2024-02-29', '2026-10-09', '2030-01-01']) assert.equal(validateOfficialBookIssueDate(value), null);
+  assert.equal(todayOfficialBookDate(new Date('2026-10-08T20:59:00Z')), '2026-10-08');
+  assert.equal(todayOfficialBookDate(new Date('2026-10-08T21:00:00Z')), '2026-10-09');
+  const previousTimezone = process.env.TZ;
+  try {
+    for (const timeZone of ['America/Los_Angeles', 'Asia/Baghdad', 'Pacific/Kiritimati']) {
+      process.env.TZ = timeZone;
+      assert.equal(formatOfficialBookDisplayDate({created_at: 1789000000, document_date: '2024-02-29'}, 'en-GB'), '29/02/2024');
+    }
+  } finally {
+    if (previousTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimezone;
+  }
+  assert.equal(formatOfficialBookDisplayDate({created_at: 1789000000, settings_snapshot_json: '{bad'}, 'en-GB'), formatOfficialBookDate(1789000000, 'en-GB'));
+  assert.equal(formatOfficialBookDisplayDate({created_at: 1789000000, document_date: '2026-10-09', settings_snapshot_json: '{"document_date":"2024-02-29"}'}, 'en-GB'), '29/02/2024');
+});
+
+test('school-selected dates apply to every preset and stay separate from creation timestamps', async () => {
+  const fixture = await createFixture();
+  for (const [index, preset] of BUILT_IN_OFFICIAL_BOOK_TEMPLATES.entries()) {
+    const response = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {
+      school_id: 1, preset_key: preset.preset_key, document_number: `DATE-${index}`, document_date: '2024-02-29',
+      ...(preset.requires_student ? {student_id: 1} : {}),
+      ...(preset.requires_employee ? {employee_id: 1} : {}),
+      field_values: Object.fromEntries(preset.fields.map(field => [field.key, field.default_value || 'نص المدرسة'])),
+    });
+    assert.equal(response.status, 201, `${preset.preset_key}: ${JSON.stringify(await response.clone().json())}`);
+    const created = (await response.json()).data;
+    assert.equal(created.document_date, '2024-02-29');
+    const stored = fixture.database.prepare('SELECT * FROM official_books WHERE id = ?').get(created.id);
+    assert.equal(created.created_at, stored.created_at);
+    assert.equal(JSON.parse(stored.settings_snapshot_json).document_date, '2024-02-29');
+    assert.ok(stored.created_at > Date.parse('2025-01-01T00:00:00Z') / 1000);
+    if (preset.body_text.includes('{{date}}')) assert.ok(stored.body_text.includes(formatOfficialBookIssueDate('2024-02-29')));
+    const getResponse = await api(fixture, fixture.tokens.ownerOne, 'GET', `/api/official-books/${created.id}`);
+    assert.equal((await getResponse.json()).data.document_date, '2024-02-29');
+    const verifyResponse = await app.request(`http://localhost/api/verify/official-book/${created.verification_token}`, {}, fixture.env);
+    const verified = (await verifyResponse.json()).data;
+    assert.equal(verified.document_date, '2024-02-29');
+    assert.equal(verified.generated_at, stored.created_at);
+    const html = renderToStaticMarkup(React.createElement(OfficialBookDocument, {book: stored, verificationUrl: ''}));
+    assert.ok(html.includes(formatOfficialBookIssueDate('2024-02-29')));
+  }
+  const list = await api(fixture, fixture.tokens.ownerOne, 'GET', '/api/official-books?school_id=1');
+  assert.ok((await list.json()).data.every(book => book.document_date === '2024-02-29'));
+});
+
+test('invalid issue dates save nothing and legacy callers receive the current Baghdad date', async () => {
+  const fixture = await createFixture();
+  const draft = {school_id: 1, preset_key: 'student-acceptance-no-objection', document_number: 'DATE/1', field_values: {
+    recipient_school: 'مدرسة الرافدين', student_name: 'نور حسن', target_class: 'الرابع العلمي',
+  }};
+  for (const date of [null, '', 20261009, {}, '2026-02-29', '2026-04-31', '09/10/2026']) {
+    assert.equal((await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {...draft, document_date: date})).status, 400);
+  }
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM official_books').get().count, 0);
+  const before = todayOfficialBookDate();
+  const response = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', draft);
+  assert.equal(response.status, 201);
+  assert.ok([before, todayOfficialBookDate()].includes((await response.json()).data.document_date));
+});
+
+test('custom template date, header and footer use school settings and remain frozen after settings change', async () => {
+  const fixture = await createFixture();
+  const layout = {
+    header_mode: 'custom', custom_header_ar: 'هيئة التعليم الخاصة\nفرع المدرسة الأول', custom_header_en: 'Independent Education\nSchool One',
+    show_english_header: true, show_verification_number: false, show_verification_qr: false, show_verification_note: false,
+  };
+  const settings = await api(fixture, fixture.tokens.ownerOne, 'PUT', '/api/settings/document', {
+    school_id: 1, official_book_layout_settings: layout, official_book_header_text: '', official_book_footer_text: 'العنوان المختار\nهاتف المدرسة',
+  });
+  assert.equal(settings.status, 200);
+  const secondSchool = fixture.database.prepare('SELECT official_book_layout_settings_json FROM school_settings WHERE school_id = 2').get();
+  assert.equal(secondSchool.official_book_layout_settings_json, null);
+  assert.equal((await api(fixture, fixture.tokens.ownerOne, 'PUT', '/api/settings/document', {school_id: 2, official_book_layout_settings: layout})).status, 403);
+  fixture.database.prepare(`INSERT INTO official_book_templates (id, school_id, title, body_text, paper_size, status) VALUES (8, 1, 'كتاب المدرسة الخاص', 'العدد {{document_number}} بتاريخ {{date}}', 'A4', 'active')`).run();
+  const response = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {school_id: 1, template_id: 8, document_number: 'ص/52', document_date: '2024-02-29'});
+  assert.equal(response.status, 201);
+  const created = (await response.json()).data;
+  const original = fixture.database.prepare('SELECT * FROM official_books WHERE id = ?').get(created.id);
+  assert.ok(original.body_text.includes(formatOfficialBookIssueDate('2024-02-29')));
+  const render = book => renderToStaticMarkup(React.createElement(OfficialBookDocument, {book, verificationUrl: 'https://example.test/verify/synthetic'}));
+  const html = render(original);
+  for (const value of ['هيئة التعليم الخاصة', 'School One', 'العنوان المختار', 'هاتف المدرسة', 'ص/52']) assert.ok(html.includes(value));
+  assert.doesNotMatch(html, /جمهورية العراق|وزارة التربية|المديرية العامة|رقم التحقق|امسح للتحقق/);
+  const update = await api(fixture, fixture.tokens.ownerOne, 'PUT', '/api/settings/document', {school_id: 1, official_book_layout_settings: {header_mode: 'custom', custom_header_ar: 'ترويسة جديدة'}, official_book_footer_text: 'تذييل جديد'});
+  assert.equal(update.status, 200);
+  const reread = await api(fixture, fixture.tokens.ownerOne, 'GET', `/api/official-books/${created.id}`);
+  assert.equal(render((await reread.json()).data), html);
 });

@@ -7,7 +7,12 @@ import {
   type ResultCardGradeDetailMode,
   type ResultCardDisplaySettingKey,
 } from '../../lib/resultCardPresentation';
-import { normalizeOfficialBookLayout } from '../../lib/officialBookLayout';
+import {
+  normalizeOfficialBookLayout,
+  validateOfficialBookLayout,
+  OFFICIAL_BOOK_CUSTOM_HEADER_MAX_LENGTH,
+} from '../../lib/officialBookLayout';
+import { OfficialBookStationeryPreview } from '../../components/officialBooks/OfficialBookDocument';
 import {
   Save,
   Loader2,
@@ -42,6 +47,7 @@ interface TextAreaFieldProps {
   hint?: string;
   rows?: number;
   maxLength?: number;
+  dir?: 'rtl' | 'ltr';
   onChange: (name: string, value: string) => void;
 }
 
@@ -54,6 +60,7 @@ function TextAreaField({
   hint,
   rows = 3,
   maxLength,
+  dir,
   onChange,
 }: TextAreaFieldProps) {
   const inputId = `document-setting-${name}`;
@@ -66,6 +73,7 @@ function TextAreaField({
       <textarea
         id={inputId}
         name={name}
+        dir={dir}
         value={value}
         onChange={event => onChange(name, event.target.value)}
         disabled={!canEdit}
@@ -180,6 +188,7 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
   const [form, setForm] = useState<Record<string, any>>({});
   const [saving, setSaving] = useState(false);
   const [changed, setChanged] = useState(false);
+  const officialBookLayout = form.official_book_layout_settings ?? normalizeOfficialBookLayout(undefined);
 
   useEffect(() => {
     setForm({
@@ -250,6 +259,11 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!schoolId || !canEdit) return;
+    const layoutError = validateOfficialBookLayout(form.official_book_layout_settings);
+    if (layoutError) {
+      onError(layoutError);
+      return;
+    }
     const isCurrent = captureSchoolRequest();
     setSaving(true);
     const { data: resData, error } = await updateDocumentSettings(form, schoolId);
@@ -349,12 +363,37 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
             <Landmark size={20} />
           </span>
           <div>
-            <h3 className="font-bold text-gray-900">ترويسة الكتب الرسمية</h3>
+            <h3 className="font-bold text-gray-900">ترويسة وتذييل جميع الكتب الرسمية</h3>
             <p className="mt-1 text-xs leading-relaxed text-gray-600">
-              تظهر هذه البيانات في رأس الكتاب العربي والإنكليزي، وتُحفظ نسخة منها داخل كل كتاب عند إصداره.
+              تختار كل مدرسة النص الذي يظهر في جميع قوالب كتبها الرسمية. تُحفظ هذه الإعدادات عند إصدار الكتاب، وتبقى الكتب السابقة كما صدرت.
             </p>
           </div>
         </div>
+
+        <fieldset className="mb-5">
+          <legend className="mb-2 text-sm font-semibold text-gray-700">طريقة كتابة الترويسة</legend>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {[
+              { value: 'structured', label: 'حقول الترويسة', hint: 'الدولة والوزارة والمديرية والقسم واسم المدرسة.' },
+              { value: 'custom', label: 'نص تكتبه المدرسة بالكامل', hint: 'اكتب كل الأسطر المطلوبة، بما فيها اسم المدرسة إن رغبت.' },
+            ].map(option => (
+              <label key={option.value} className={`rounded-lg border p-3 text-sm ${officialBookLayout.header_mode === option.value ? 'border-emerald-400 bg-white' : 'border-gray-200 bg-gray-50'} ${canEdit ? 'cursor-pointer' : 'opacity-70'}`}>
+                <span className="flex items-center gap-2 font-semibold">
+                  <input type="radio" name="official-book-header-mode" value={option.value} checked={officialBookLayout.header_mode === option.value} onChange={() => changeOfficialBookLayout('header_mode', option.value)} disabled={!canEdit} />
+                  {option.label}
+                </span>
+                <span className="mt-1 block text-xs leading-relaxed text-gray-500">{option.hint}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        {officialBookLayout.header_mode === 'custom' && (
+          <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <TextAreaField label="الترويسة العربية كاملة" name="custom_header_ar" value={officialBookLayout.custom_header_ar} canEdit={canEdit} onChange={changeOfficialBookLayout} rows={6} maxLength={OFFICIAL_BOOK_CUSTOM_HEADER_MAX_LENGTH} dir="rtl" placeholder={'جمهورية العراق\nوزارة التربية\nالمديرية العامة لتربية نينوى\nقسم دهوك\nاسم المدرسة'} hint="حتى 10 أسطر. يظهر النص كما تكتبه المدرسة، ويمكن تركه فارغًا." />
+            {officialBookLayout.show_english_header && <TextAreaField label="الترويسة الإنكليزية كاملة (اختياري)" name="custom_header_en" value={officialBookLayout.custom_header_en} canEdit={canEdit} onChange={changeOfficialBookLayout} rows={6} maxLength={OFFICIAL_BOOK_CUSTOM_HEADER_MAX_LENGTH} dir="ltr" placeholder={'Republic of Iraq\nMinistry of Education\nSchool name'} hint="حتى 10 أسطر. يظهر في الجانب الإنكليزي عند تفعيله." />}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <TextAreaField
@@ -368,7 +407,7 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
             maxLength={1_000}
           />
           <TextAreaField
-            label="تذييل الكتب الرسمية"
+            label="نص تذييل الكتب الرسمية كاملًا"
             name="official_book_footer_text"
             value={form.official_book_footer_text || ''}
             canEdit={canEdit}
@@ -376,10 +415,11 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
             placeholder="العنوان أو الهاتف أو تعليمات النسخ"
             rows={2}
             maxLength={1_000}
+            hint="اكتب العنوان أو الهاتف أو أي نص تريد ظهوره أسفل جميع الكتب الرسمية. يمكن تركه فارغًا."
           />
         </div>
 
-        <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+        {officialBookLayout.header_mode === 'structured' && <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
           {[
             ['country_ar', 'الدولة — عربي', 'جمهورية العراق', 'rtl'],
             ['country_en', 'الدولة — إنكليزي', 'Republic of Iraq', 'ltr'],
@@ -395,7 +435,7 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
               <input
                 type="text"
                 dir={direction}
-                value={normalizeOfficialBookLayout(form.official_book_layout_settings)[key as keyof ReturnType<typeof normalizeOfficialBookLayout>] as string}
+                value={officialBookLayout[key] as string}
                 onChange={event => changeOfficialBookLayout(key, event.target.value)}
                 disabled={!canEdit}
                 maxLength={250}
@@ -404,31 +444,31 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
               />
             </label>
           ))}
-        </div>
+        </div>}
 
         <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
           <button
             type="button"
             onClick={() => changeOfficialBookLayout(
               'show_english_header',
-              !normalizeOfficialBookLayout(form.official_book_layout_settings).show_english_header,
+              !officialBookLayout.show_english_header,
             )}
             disabled={!canEdit}
-            className={`flex items-center gap-2 rounded-lg border px-3 py-3 text-right text-sm ${normalizeOfficialBookLayout(form.official_book_layout_settings).show_english_header ? 'border-emerald-300 bg-white text-emerald-800' : 'border-gray-200 bg-white text-gray-600'} ${canEdit ? 'hover:border-emerald-400' : 'cursor-not-allowed opacity-70'}`}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-3 text-right text-sm ${officialBookLayout.show_english_header ? 'border-emerald-300 bg-white text-emerald-800' : 'border-gray-200 bg-white text-gray-600'} ${canEdit ? 'hover:border-emerald-400' : 'cursor-not-allowed opacity-70'}`}
           >
-            {normalizeOfficialBookLayout(form.official_book_layout_settings).show_english_header ? <CheckSquare size={17} /> : <Square size={17} />}
+            {officialBookLayout.show_english_header ? <CheckSquare size={17} /> : <Square size={17} />}
             عرض الجانب الإنكليزي في الترويسة
           </button>
           <button
             type="button"
             onClick={() => changeOfficialBookLayout(
               'show_official_emblem',
-              !normalizeOfficialBookLayout(form.official_book_layout_settings).show_official_emblem,
+              !officialBookLayout.show_official_emblem,
             )}
             disabled={!canEdit}
-            className={`flex items-center gap-2 rounded-lg border px-3 py-3 text-right text-sm ${normalizeOfficialBookLayout(form.official_book_layout_settings).show_official_emblem ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-gray-200 bg-white text-gray-600'} ${canEdit ? 'hover:border-amber-400' : 'cursor-not-allowed opacity-70'}`}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-3 text-right text-sm ${officialBookLayout.show_official_emblem ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-gray-200 bg-white text-gray-600'} ${canEdit ? 'hover:border-amber-400' : 'cursor-not-allowed opacity-70'}`}
           >
-            {normalizeOfficialBookLayout(form.official_book_layout_settings).show_official_emblem ? <CheckSquare size={17} /> : <Square size={17} />}
+            {officialBookLayout.show_official_emblem ? <CheckSquare size={17} /> : <Square size={17} />}
             عرض شعار جمهورية العراق
           </button>
         </div>
@@ -438,7 +478,7 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
           <input
             type="text"
             dir="ltr"
-            value={normalizeOfficialBookLayout(form.official_book_layout_settings).official_emblem_url}
+            value={officialBookLayout.official_emblem_url}
             onChange={event => changeOfficialBookLayout('official_emblem_url', event.target.value)}
             disabled={!canEdit}
             maxLength={2_000}
@@ -449,6 +489,36 @@ export default function DocumentTab({ data, school, canEdit, schoolId, onSuccess
         <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900">
           فعّل الشعار الرسمي فقط إذا كانت المدرسة أو الجهة مخوّلة باستعماله. النظام لا يضيف شعار الجمهورية تلقائيًا.
         </p>
+
+        <fieldset className="mt-5">
+          <legend className="mb-2 text-sm font-semibold text-gray-700">عناصر التحقق أسفل الكتاب</legend>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            {[
+              ['show_verification_qr', 'عرض رمز QR وعبارة المسح'],
+              ['show_verification_number', 'عرض رقم التحقق'],
+              ['show_verification_note', 'عرض ملاحظة التحقق العامة'],
+            ].map(([key, label]) => (
+              <label key={key} className={`flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-3 text-sm ${canEdit ? 'cursor-pointer' : 'opacity-70'}`}>
+                <input type="checkbox" checked={officialBookLayout[key]} onChange={event => changeOfficialBookLayout(key, event.target.checked)} disabled={!canEdit} />
+                {label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        <div className="mt-5">
+          <h4 className="mb-2 text-sm font-semibold text-gray-700">معاينة الترويسة والتذييل</h4>
+          <OfficialBookStationeryPreview book={{
+            id: 0, title: '', body_text: '', status: 'issued', created_at: 0,
+            document_number: '', verification_token: 'PREVIEW',
+            school_name_snapshot: school?.name || 'اسم المدرسة',
+            logo_url_snapshot: school?.logo_url || '', use_logo_snapshot: form.use_school_logo_on_docs,
+            header_text_snapshot: form.official_book_header_text || '',
+            footer_text_snapshot: form.official_book_footer_text || '',
+            verification_note_snapshot: form.verification_note_text || '',
+            settings_snapshot_json: JSON.stringify({ official_book_layout: officialBookLayout, school_name_en: school?.name_en, province: school?.province }),
+          }} />
+        </div>
       </section>
 
       <div className="border-t border-gray-200 pt-5">

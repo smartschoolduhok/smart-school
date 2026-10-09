@@ -126,7 +126,7 @@ test('printed lesson label does not repeat a stored numbered lesson', () => {
   assert.match(viewSource, /timetablePrintSlotLabel\(slot\)/);
 });
 
-test('subject palette maintains readable text contrast for representative visual keys', () => {
+test('subject palette keeps deeper readable fills with strong dark-text contrast for every visual color', () => {
   function luminance(hex) {
     const channels = hex.match(/[a-f\d]{2}/gi).map((value) => Number.parseInt(value, 16) / 255)
       .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
@@ -143,7 +143,10 @@ test('subject palette maintains readable text contrast for representative visual
   }
   assert.equal(colors.size, 16);
   for (const color of colors.values()) {
-    assert.ok(contrast(color.background, color.foreground) >= 4.5, JSON.stringify(color));
+    assert.ok(contrast(color.background, color.foreground) >= 7, JSON.stringify(color));
+    assert.ok(luminance(color.foreground) < 0.1, 'subject labels remain dark');
+    assert.ok(luminance(color.background) >= 0.55 && luminance(color.background) <= 0.8,
+      'colored fills stay visible against white without becoming dark blocks');
   }
 });
 
