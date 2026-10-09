@@ -193,6 +193,7 @@ export const PRINT_CSS = `
   }
 
   .official-book-header,
+  .official-book-closing,
   .official-book-signature,
   .official-book-document footer {
     break-inside: avoid;
