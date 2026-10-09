@@ -5,23 +5,50 @@ import {
   type TimetableMasterGridData,
   type TimetablePlacement,
 } from './timetable.ts';
+import { timetableTeacherName, timetableTeacherResourceKey } from './timetableTeacherResource.ts';
 
 export type TimetablePrintGrouping = 'combined' | 'stage' | 'class' | 'placement';
 export type TimetablePrintMode = 'master' | 'placement' | 'teacher';
+export type TimetablePrintTeacherId = number | string;
 export interface TimetablePrintSelection {
   mode: TimetablePrintMode;
   grouping: TimetablePrintGrouping;
   stage: string;
   classId: number | null;
   placementKey: string;
-  teacherId: number | null;
+  teacherId: TimetablePrintTeacherId | null;
 }
 export interface TimetablePrintSheet {
   key: string;
   title: string;
   kind: TimetablePrintMode;
   placements: TimetablePlacement[];
-  teacherId?: number;
+  teacherId?: TimetablePrintTeacherId;
+}
+
+// Placeholder teachers are schedule resources only. Keep them separate from
+// employee IDs so selecting/printing one never creates a staff record.
+export function timetablePrintTeacherOptions(data: TimetableMasterGridData): Array<{ id: TimetablePrintTeacherId; full_name: string }> {
+  const teachers: Array<{ id: TimetablePrintTeacherId; full_name: string }> = data.teachers
+    .filter((teacher) => Number(teacher.school_id) === Number(data.school.id))
+    .map((teacher) => ({ id: Number(teacher.id), full_name: teacher.full_name }));
+  const names = new Map<string, string>();
+  for (const load of data.loads || []) {
+    if (load.status !== 'active' || load.employee_id != null
+      || Number(load.school_id) !== Number(data.school.id)
+      || Number(load.academic_year_id) !== Number(data.academic_year.id)) continue;
+    const key = timetableTeacherResourceKey(load);
+    const name = timetableTeacherName(load);
+    if (key && name) names.set(key, name);
+  }
+  for (const [id, full_name] of names) teachers.push({ id, full_name });
+  return teachers;
+}
+
+export function timetableEntryMatchesPrintTeacher(entry: TimetableGridEntry, teacherId: TimetablePrintTeacherId | undefined): boolean {
+  return typeof teacherId === 'number'
+    ? entry.employee_id != null && Number(entry.employee_id) === teacherId
+    : teacherId != null && entry.employee_id == null && timetableTeacherResourceKey(entry) === teacherId;
 }
 
 export function timetablePlacementLabel(placement: TimetablePlacement): string {
@@ -36,14 +63,14 @@ export function filterTimetablePrintPlacements(data: TimetableMasterGridData, st
 }
 
 export function timetablePrintSheetEntries(entries: TimetableGridEntry[], sheet: TimetablePrintSheet) {
-  if (sheet.kind === 'teacher') return entries.filter((entry) => Number(entry.employee_id) === sheet.teacherId);
+  if (sheet.kind === 'teacher') return entries.filter((entry) => timetableEntryMatchesPrintTeacher(entry, sheet.teacherId));
   return entries.filter((entry) => sheet.placements.some((placement) => Number(entry.class_id) === placement.class_id
     && (entry.section_id == null || Number(entry.section_id) === placement.section_id)));
 }
 
 export function buildTimetablePrintSheets(data: TimetableMasterGridData, selection: TimetablePrintSelection): TimetablePrintSheet[] {
   if (selection.mode === 'teacher') {
-    const teacher = data.teachers.find((item) => Number(item.id) === selection.teacherId && Number(item.school_id) === Number(data.school.id));
+    const teacher = timetablePrintTeacherOptions(data).find((item) => item.id === selection.teacherId);
     return teacher ? [{key: `teacher:${teacher.id}`, title: `جدول المدرس: ${teacher.full_name}`, kind: 'teacher', placements: [], teacherId: teacher.id}] : [];
   }
   const placements = filterTimetablePrintPlacements(data, selection.stage, selection.classId);

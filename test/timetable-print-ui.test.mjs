@@ -92,6 +92,23 @@ test('teacher grid prints simultaneous entries and afterprint cleans global prin
   assert.equal(document.body.classList.contains('timetable-print-mode'), false);
 });
 
+test('named placeholder appears once in teacher selector and renders its lessons for print', async t => {
+  const data = printFixture();
+  const resource = {school_id: 1, academic_year_id: 1, employee_id: null, teacher_placeholder: 'مدرس الإنكليزي', status: 'active'};
+  data.loads = [{...resource, id: 11}, {...resource, id: 12}];
+  data.entries.push({...data.entries[0], ...resource, id: 11, teaching_load_id: 11, subject_name: 'English A', employee_name: 'مدرس الإنكليزي'},
+    {...data.entries[1], ...resource, id: 12, teaching_load_id: 12, slot_id: data.slots[1].id, subject_name: 'English B', employee_name: 'مدرس الإنكليزي'});
+  const u = await mount(t, data);
+  await act(async () => button(u, 'جدول مدرس').click());
+  const options = [...u.container.querySelector('[aria-label="مدرس الطباعة"]').options].filter(o => o.textContent === 'مدرس الإنكليزي');
+  assert.equal(options.length, 1);
+  await select(u, 'مدرس الطباعة', options[0].value);
+  const cards = [...u.container.querySelectorAll('.timetable-subject-card')];
+  assert.equal(cards.length, 2);
+  assert.ok(cards.every(c => c.textContent.includes('مدرس الإنكليزي')));
+  assert.equal(button(u, 'طباعة / حفظ PDF').disabled, false);
+});
+
 test('changing school resets stage, placement and teacher; stale response cannot repaint another school', async t => {
   const u = await mount(t);
   await select(u, 'مرحلة الطباعة', 'ابتدائي');

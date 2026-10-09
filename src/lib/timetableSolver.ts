@@ -20,6 +20,7 @@ import { createTimetablePedagogyScorer, type TimetablePedagogyMetrics } from './
 import { DEFAULT_TIMETABLE_PREFERENCES, type TimetablePreferences } from './timetablePreferences.ts';
 import { missingTimetableSectionDays, timetableSectionDayGroups, validateTimetableSectionDays } from './timetableSectionDays.ts';
 import { createTimetableDailySubjectPolicy } from './timetableDailySubjects.ts';
+import { timetableTeacherName, timetableTeacherResourceKey } from './timetableTeacherResource.ts';
 
 export type TimetableSolverStatus = 'complete' | 'partial' | 'impossible' | 'fixed_conflict';
 
@@ -46,7 +47,7 @@ export interface TimetableSolverFeasibilityBlocker {
   message: string;
   class_id?: number;
   section_id?: number | null;
-  employee_id?: number;
+  employee_id?: number | null;
   teaching_load_id?: number;
 }
 
@@ -64,7 +65,7 @@ export interface TimetableSolverReadiness {
     available_capacity: number;
   }>;
   overloaded_teachers: Array<{
-    employee_id: number;
+    employee_id: number | null;
     employee_name: string;
     required_periods: number;
     available_capacity: number;
@@ -112,6 +113,7 @@ export interface TimetableSolverProposalEntry {
   section_name: string | null;
   employee_id: number | null;
   employee_name: string | null;
+  teacher_placeholder?: string | null;
   day_of_week: number;
   lesson_number: number | null;
   start_time: string;
@@ -873,6 +875,31 @@ export function hasBetterTimetableScore(candidate: TimetableSolverScoring, curre
 }
 
 export function solveTimetable(input: TimetableSolverInput): TimetableSolverPreview {
+  // The search's numeric indexes use a private, collision-free bijection for
+  // named vacancies. Only real employee IDs and nullable metadata leave here.
+  const named = input.loads.filter(load => load.employee_id == null && load.teacher_placeholder && !loadHasInvalidTeacherReference(load));
+  if (!named.length) return solveTimetableResources(input);
+  const keys = [...new Set(named.map(load => timetableTeacherResourceKey(load)!))].sort();
+  const ids = new Map(keys.map((key, index) => [key, -index - 1]));
+  const loads = input.loads.map(load => {
+    const id = load.employee_id == null ? ids.get(timetableTeacherResourceKey(load)!) : undefined;
+    return id == null ? load : {...load, employee_id: id, employee_name: timetableTeacherName(load), teacher_placeholder: null,
+      employee_status: 'active', employee_school_id: load.school_id, employee_role: 'teacher'};
+  });
+  const result = solveTimetableResources({...input, loads});
+  const byId = new Map(input.loads.map(load => [load.id, load]));
+  const restore = <T extends {teaching_load_id: number; employee_id: number | null; employee_name: string | null}>(entry: T): T => {
+    const load = byId.get(entry.teaching_load_id)!;
+    return {...entry, employee_id: load.employee_id, employee_name: timetableTeacherName(load),
+      ...(load.teacher_placeholder ? {teacher_placeholder: load.teacher_placeholder} : {})};
+  };
+  return {...result, entries: result.entries.map(restore), unscheduled: result.unscheduled.map(restore), readiness: {...result.readiness,
+    overloaded_teachers: result.readiness.overloaded_teachers.map(item => ({...item, employee_id: item.employee_id != null && item.employee_id < 0 ? null : item.employee_id})),
+    hard_feasibility_blockers: result.readiness.hard_feasibility_blockers.map(item => item.employee_id != null && item.employee_id < 0 ? {...item, employee_id: null} : item),
+  }};
+}
+
+function solveTimetableResources(input: TimetableSolverInput): TimetableSolverPreview {
   if (input.allowConsecutiveSubjectDouble != null) return solveTimetableOnce(input);
   const started = Date.now();
   const limits = {...DEFAULT_LIMITS, ...input.limits};

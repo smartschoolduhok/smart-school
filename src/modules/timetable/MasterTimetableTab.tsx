@@ -20,7 +20,10 @@ import {
   buildTimetablePrintWeek,
   filterTimetablePrintPlacements,
   timetablePrintSheetEntries,
+  timetablePrintTeacherOptions,
+  timetableEntryMatchesPrintTeacher,
   type TimetablePrintGrouping,
+  type TimetablePrintTeacherId,
 } from '../../lib/timetablePrint';
 
 type ViewMode = 'master' | 'placement' | 'teacher';
@@ -181,10 +184,10 @@ function MasterGrid({ data, placements }: { data: TimetableMasterGridData; place
   );
 }
 
-function WeeklyGrid({ data, placement, teacherId }: { data: TimetableMasterGridData; placement?: TimetablePlacement; teacherId?: number }) {
+function WeeklyGrid({ data, placement, teacherId }: { data: TimetableMasterGridData; placement?: TimetablePlacement; teacherId?: TimetablePrintTeacherId }) {
   const week = buildTimetablePrintWeek(data);
   const entriesBySlot = new Map<number, TimetableGridEntry[]>();
-  if (teacherId != null) for (const entry of data.entries.filter((entry) => Number(entry.employee_id) === teacherId)) {
+  if (teacherId != null) for (const entry of data.entries.filter((entry) => timetableEntryMatchesPrintTeacher(entry, teacherId))) {
     const entries = entriesBySlot.get(Number(entry.slot_id)) || [];
     entries.push(entry);
     entriesBySlot.set(Number(entry.slot_id), entries);
@@ -241,7 +244,7 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
   const [stage, setStage] = useState('');
   const [classId, setClassId] = useState<number | null>(null);
   const [grouping, setGrouping] = useState<TimetablePrintGrouping>('combined');
-  const [teacherId, setTeacherId] = useState<number | null>(null);
+  const [teacherId, setTeacherId] = useState<TimetablePrintTeacherId | null>(null);
   const [pageSize, setPageSize] = useState<MasterPageSize>('A3');
   const [fitOnePage, setFitOnePage] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -282,6 +285,7 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
   const stages = useMemo(() => [...new Set(data?.classes.filter((item) => item.status === 'active').map((item) => item.stage) || [])], [data]);
   const filteredClasses = data?.classes.filter((item) => item.status === 'active' && (!stage || item.stage === stage)) || [];
   const sheets = useMemo(() => data ? buildTimetablePrintSheets(data, {mode, grouping, stage, classId, placementKey, teacherId}) : [], [data, mode, grouping, stage, classId, placementKey, teacherId]);
+  const teacherOptions = useMemo(() => data ? timetablePrintTeacherOptions(data) : [], [data]);
   const teacherConflictCount = data?.entries.filter((entry) => (
     entry.hard_conflicts.some((conflict) => conflict.code === 'teacher_collision')
   )).length || 0;
@@ -358,9 +362,9 @@ export function MasterTimetableTab({ schoolId, academicYearId, dataVersion, onOp
           )}
           {mode === 'teacher' && (
             <label className="text-sm font-semibold text-gray-700">المدرس
-              <select aria-label="مدرس الطباعة" value={teacherId ?? ''} onChange={(event) => setTeacherId(event.target.value ? Number(event.target.value) : null)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
+              <select aria-label="مدرس الطباعة" value={teacherId ?? ''} onChange={(event) => setTeacherId(teacherOptions.find((teacher) => String(teacher.id) === event.target.value)?.id ?? null)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
                 <option value="">اختر مدرسًا</option>
-                {data.teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.full_name}</option>)}
+                {teacherOptions.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.full_name}</option>)}
               </select>
             </label>
           )}

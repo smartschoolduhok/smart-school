@@ -6,6 +6,7 @@ import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualificat
 import type { EmployeeProfile, EmployeeSalary, EmployeeTeachingAssignment, EmployeeAdvisoryAssignment, StaffDocumentMetadata, SalaryReceiptsResponse } from './types/employees'
 import { temporarySessionSecret } from './lib/authSecurity'
 import { aggregateTeacherWorkloadSummary, type TeacherWorkloadSummary } from './lib/teacherWorkloadSummary'
+import { timetableTeacherName } from './lib/timetableTeacherResource'
 import { buildSectionAdvisorPlacements, parseSectionAdvisorSaveRequest, sectionAdvisorAssignment, type SectionAdvisorsResponse, type SectionAdvisorClass, type SectionAdvisorSection, type StoredSectionAdvisor } from './lib/sectionAdvisors'
 // ===========================================
 // Hono Backend - Phase 2.6 (Auth Hardening)
@@ -883,7 +884,7 @@ async function loadTimetableSchedulingContext(
              section.school_id AS section_school_id, section.class_id AS section_class_id,
              subject.name AS subject_name, subject.status AS subject_status, subject.school_id AS subject_school_id,
              subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
-             employee.full_name AS employee_name, employee.status AS employee_status,
+             COALESCE(employee.full_name, CASE WHEN load.employee_id IS NULL THEN load.teacher_placeholder END) AS employee_name, employee.status AS employee_status,
              employee.school_id AS employee_school_id, employee.role AS employee_role
       FROM timetable_teaching_loads load
       LEFT JOIN classes class ON class.id = load.class_id AND class.school_id = load.school_id
@@ -1407,7 +1408,8 @@ function timetableGridEntry(
     section_id: load.section_id == null ? null : Number(load.section_id),
     section_name: load.section_name || null,
     employee_id: load.employee_id == null ? null : Number(load.employee_id),
-    employee_name: load.employee_name || null,
+    employee_name: timetableTeacherName(load),
+    teacher_placeholder: load.employee_id == null ? load.teacher_placeholder ?? null : null,
     weekly_periods: Number(load.weekly_periods),
     load_status: load.status,
     hard_conflicts: hardConflicts,
@@ -2792,7 +2794,7 @@ app.get('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRole
              section.school_id AS section_school_id, section.class_id AS section_class_id,
              subject.name AS subject_name, subject.status AS subject_status, subject.school_id AS subject_school_id,
              subject.class_id AS subject_class_id, subject.section_id AS subject_section_id,
-             employee.full_name AS employee_name, employee.status AS employee_status, employee.school_id AS employee_school_id,
+             COALESCE(employee.full_name, CASE WHEN load.employee_id IS NULL THEN load.teacher_placeholder END) AS employee_name, employee.status AS employee_status, employee.school_id AS employee_school_id,
              employee.role AS employee_role
       FROM timetable_teaching_loads load
       LEFT JOIN classes class ON class.id = load.class_id
@@ -2870,9 +2872,9 @@ app.post('/api/timetable/teaching-load-matrix/copy-preview', requireSameSchoolOr
   }
 })
 
-function parallelLoadProjection(id:number, school:number, value:{academicYearId:number;classId:number;sectionId:number|null;subjectId:number;employeeId:number|null;weeklyPeriods:number;parallelWithLoadId?:number|null}): TimetableTeachingLoad {
+function parallelLoadProjection(id:number, school:number, value:{academicYearId:number;classId:number;sectionId:number|null;subjectId:number;employeeId:number|null;teacherPlaceholder:string|null;weeklyPeriods:number;parallelWithLoadId?:number|null}): TimetableTeachingLoad {
   return {id,school_id:school,academic_year_id:value.academicYearId,class_id:value.classId,section_id:value.sectionId,subject_id:value.subjectId,
-    employee_id:value.employeeId,weekly_periods:value.weeklyPeriods,parallel_with_load_id:value.parallelWithLoadId??null,status:'active',created_at:0,updated_at:0,
+    employee_id:value.employeeId,teacher_placeholder:value.teacherPlaceholder,weekly_periods:value.weeklyPeriods,parallel_with_load_id:value.parallelWithLoadId??null,status:'active',created_at:0,updated_at:0,
     class_status:'active',class_school_id:school,section_status:value.sectionId==null?null:'active',section_school_id:school,section_class_id:value.classId,
     subject_status:'active',subject_school_id:school,subject_class_id:value.classId,subject_section_id:null,
     employee_status:value.employeeId==null?null:'active',employee_school_id:school,employee_role:'teacher'}
@@ -2900,8 +2902,8 @@ app.post('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRol
       const updated = {...context, loads:[...context.loads,projected]}
       assertParallelLoads(updated)
       const sync = linkedScheduleProjection(updated,id)
-      const insert = c.env.DB.prepare(`INSERT INTO timetable_teaching_loads(school_id,academic_year_id,class_id,section_id,subject_id,employee_id,weekly_periods,status,parallel_with_load_id,created_by_user_id,updated_by_user_id)
-        VALUES(?,?,?,?,?,?,?,'active',?,?,?)`).bind(school,value.academicYearId,value.classId,value.sectionId,value.subjectId,value.employeeId,value.weeklyPeriods,value.parallelWithLoadId,user.id,user.id)
+      const insert = c.env.DB.prepare(`INSERT INTO timetable_teaching_loads(school_id,academic_year_id,class_id,section_id,subject_id,employee_id,teacher_placeholder,weekly_periods,status,parallel_with_load_id,created_by_user_id,updated_by_user_id)
+        VALUES(?,?,?,?,?,?,?,?,'active',?,?,?)`).bind(school,value.academicYearId,value.classId,value.sectionId,value.subjectId,value.employeeId,value.teacherPlaceholder,value.weeklyPeriods,value.parallelWithLoadId,user.id,user.id)
       await c.env.DB.batch(parallelEntryStatements(c.env.DB,school,value.academicYearId,user.id,revision,sync.before,sync.after,[insert],{temporaryId:id,primaryId:value.parallelWithLoadId!}))
       const load = await c.env.DB.prepare("SELECT * FROM timetable_teaching_loads WHERE school_id=? AND academic_year_id=? AND parallel_with_load_id=? AND status='active'").bind(school,value.academicYearId,value.parallelWithLoadId).first<TimetableTeachingLoad>()
       return c.json({data:load},201)
@@ -2909,8 +2911,8 @@ app.post('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRol
     const result = await c.env.DB.prepare(`
       INSERT INTO timetable_teaching_loads (
         school_id, academic_year_id, class_id, section_id, subject_id,
-        employee_id, weekly_periods, status, created_by_user_id, updated_by_user_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        employee_id, teacher_placeholder, weekly_periods, status, created_by_user_id, updated_by_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
     `).bind(
       targetSchool.schoolId,
       validation.value.academicYearId,
@@ -2918,6 +2920,7 @@ app.post('/api/timetable/teaching-loads', requireSameSchoolOrAdmin(), requireRol
       validation.value.sectionId,
       validation.value.subjectId,
       validation.value.employeeId,
+      validation.value.teacherPlaceholder,
       validation.value.weeklyPeriods,
       user.id,
       user.id,
@@ -2946,7 +2949,7 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
       .bind(id).first<TimetableTeachingLoad>()
     if (!existing) return c.json({ error: 'النصاب غير موجود' }, 404)
     if (Number(existing.school_id) !== targetSchool.schoolId) return c.json({ error: 'غير مسموح: النصاب من مدرسة أخرى' }, 403)
-    const validation = validateTimetableLoadInput(body)
+    const validation = validateTimetableLoadInput({ ...body, teacher_placeholder: body.teacher_placeholder === undefined ? existing.teacher_placeholder : body.teacher_placeholder })
     if (!validation.ok) return c.json({ error: validation.error }, 400)
     if (Number(existing.academic_year_id) !== validation.value.academicYearId) return c.json({ error: 'لا يمكن نقل النصاب إلى سنة دراسية أخرى' }, 400)
     const references = await validateTimetableLoadReferences(c.env.DB, targetSchool.schoolId, validation.value)
@@ -2962,15 +2965,15 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
       const updated = {...context,loads:context.loads.map(l=>l.id===id?projected:l)}
       assertParallelLoads(updated)
       const sync = linkedScheduleProjection(updated,id)
-      const update = c.env.DB.prepare(`UPDATE timetable_teaching_loads SET class_id=?,section_id=?,subject_id=?,employee_id=?,weekly_periods=?,status='active',parallel_with_load_id=?,updated_by_user_id=?,updated_at=unixepoch()
-        WHERE id=? AND school_id=? AND academic_year_id=?`).bind(value.classId,value.sectionId,value.subjectId,value.employeeId,value.weeklyPeriods,parallelId,user.id,id,school,value.academicYearId)
+      const update = c.env.DB.prepare(`UPDATE timetable_teaching_loads SET class_id=?,section_id=?,subject_id=?,employee_id=?,teacher_placeholder=?,weekly_periods=?,status='active',parallel_with_load_id=?,updated_by_user_id=?,updated_at=unixepoch()
+        WHERE id=? AND school_id=? AND academic_year_id=?`).bind(value.classId,value.sectionId,value.subjectId,value.employeeId,value.teacherPlaceholder,value.weeklyPeriods,parallelId,user.id,id,school,value.academicYearId)
       await c.env.DB.batch(parallelEntryStatements(c.env.DB,school,value.academicYearId,user.id,revision,sync.before,sync.after,[update]))
       const load = await c.env.DB.prepare('SELECT * FROM timetable_teaching_loads WHERE id=? AND school_id=?').bind(id,school).first<TimetableTeachingLoad>()
       return c.json({data:load})
     }
     await c.env.DB.prepare(`
       UPDATE timetable_teaching_loads SET
-        class_id = ?, section_id = ?, subject_id = ?, employee_id = ?,
+        class_id = ?, section_id = ?, subject_id = ?, employee_id = ?, teacher_placeholder = ?,
         weekly_periods = ?, status = 'active', updated_by_user_id = ?, updated_at = unixepoch()
       WHERE id = ? AND school_id = ? AND academic_year_id = ?
     `).bind(
@@ -2978,6 +2981,7 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
       validation.value.sectionId,
       validation.value.subjectId,
       validation.value.employeeId,
+      validation.value.teacherPlaceholder,
       validation.value.weeklyPeriods,
       user.id,
       id,
@@ -3000,6 +3004,8 @@ app.put('/api/timetable/teaching-loads/:id', requireSameSchoolOrAdmin(), require
     }
     const reassignmentError = /timetable reassignment/.test(message) ? matrixDatabaseError(error) : null
     if (reassignmentError) return c.json({ error: reassignmentError.message, code: reassignmentError.code }, reassignmentError.status)
+    if (/timetable placeholder teacher collision/.test(message)) return c.json({ error: 'المدرس المسمى مرتبط بدرس آخر في الفترة نفسها', code: 'teacher_collision' }, 409)
+    if (/timetable placeholder parallel teacher/.test(message)) return c.json({ error: 'اختر اسم مدرس مختلفًا لكل مادة من المادتين المتزامنتين', code: 'invalid_parallel_load' }, 409)
     if (isTimetableConstraintError(error)) return c.json({ error: 'يوجد نصاب فعال لهذه المادة في الصف والشعبة المحددين' }, 409)
     return c.json({ error: 'فشل في تعديل نصاب المادة' }, 500)
   }

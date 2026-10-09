@@ -23,7 +23,7 @@ export async function loadTeachingLoadMatrix(db: D1Database, schoolId: number, y
     scoped("SELECT id, school_id, class_id, name, status FROM sections WHERE school_id = ? AND class_id = ? AND status = 'active' ORDER BY id", schoolId, classId),
     scoped("SELECT id, school_id, class_id, section_id, name, status, order_index FROM subjects WHERE school_id = ? AND class_id = ? AND status = 'active' ORDER BY order_index, id", schoolId, classId),
     scoped("SELECT id, school_id, full_name, status, role FROM employees WHERE school_id = ? AND status = 'active' AND role = 'teacher' ORDER BY full_name, id", schoolId),
-    scoped(`SELECT load.*, employee.full_name AS employee_name,
+    scoped(`SELECT load.*, COALESCE(employee.full_name, load.teacher_placeholder) AS employee_name,
       employee.status AS employee_status, employee.role AS employee_role, employee.school_id AS employee_school_id,
       class.status AS class_status, class.school_id AS class_school_id,
       section.status AS section_status, section.school_id AS section_school_id, section.class_id AS section_class_id,
@@ -95,9 +95,10 @@ export function buildMatrixApplyStatements(db: D1Database, scope: Required<Matri
   }
   // Clear ONLY changing, previously assigned teachers, inside this same batch.
   // This permits coupled swaps without weakening any DB trigger.
-  const changingTeachers = updates.filter(i => i.old_employee_id != null && i.old_employee_id !== i.new_employee_id);
+  const changingTeachers = updates.filter(i => i.old_employee_id !== i.new_employee_id
+    || (i.old_teacher_placeholder ?? null) !== (i.new_teacher_placeholder ?? null));
   if (changingTeachers.length) {
-    statements.push(group(`UPDATE timetable_teaching_loads SET employee_id = NULL,
+    statements.push(group(`UPDATE timetable_teaching_loads SET employee_id = NULL, teacher_placeholder = NULL,
       updated_by_user_id = ?5, updated_at = unixepoch()
       WHERE school_id = ?2 AND academic_year_id = ?3 AND class_id = ?4 AND status = 'active'
         AND id IN (SELECT value FROM json_each(?1))`, changingTeachers.map(i => i.existing_load_id)));
@@ -105,22 +106,23 @@ export function buildMatrixApplyStatements(db: D1Database, scope: Required<Matri
   if (creates.length) {
     // Historical inactive rows are preserved; match the individual-create API.
     statements.push(group(`INSERT INTO timetable_teaching_loads
-      (school_id, academic_year_id, class_id, section_id, subject_id, employee_id, weekly_periods,
+      (school_id, academic_year_id, class_id, section_id, subject_id, employee_id, teacher_placeholder, weekly_periods,
        status, created_by_user_id, updated_by_user_id)
       SELECT ?2, ?3, ?4, json_extract(value, '$.section_id'), json_extract(value, '$.subject_id'),
-        json_extract(value, '$.employee_id'), json_extract(value, '$.weekly_periods'), 'active', ?5, ?5
+        json_extract(value, '$.employee_id'), json_extract(value, '$.teacher_placeholder'), json_extract(value, '$.weekly_periods'), 'active', ?5, ?5
       FROM json_each(?1) ORDER BY CAST(key AS INTEGER)`, creates.map(i => ({ section_id: i.section_id,
-        subject_id: i.subject_id, employee_id: i.new_employee_id, weekly_periods: i.new_weekly_periods }))));
+        subject_id: i.subject_id, employee_id: i.new_employee_id, teacher_placeholder: i.new_teacher_placeholder ?? null, weekly_periods: i.new_weekly_periods }))));
   }
   if (updates.length) {
     statements.push(group(`UPDATE timetable_teaching_loads
       SET employee_id = json_extract(change.value, '$.employee_id'),
+          teacher_placeholder = json_extract(change.value, '$.teacher_placeholder'),
           weekly_periods = json_extract(change.value, '$.weekly_periods'),
           updated_by_user_id = ?5, updated_at = unixepoch()
       FROM json_each(?1) AS change
       WHERE timetable_teaching_loads.id = json_extract(change.value, '$.id')
         AND school_id = ?2 AND academic_year_id = ?3 AND class_id = ?4 AND status = 'active'`,
-      updates.map(i => ({ id: i.existing_load_id, employee_id: i.new_employee_id, weekly_periods: i.new_weekly_periods }))));
+      updates.map(i => ({ id: i.existing_load_id, employee_id: i.new_employee_id, teacher_placeholder: i.new_teacher_placeholder ?? null, weekly_periods: i.new_weekly_periods }))));
   }
   if (exclusions.length) {
     // An inactive marker records an explicit decision for a previously empty

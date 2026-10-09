@@ -1,4 +1,5 @@
 import type { TimetableSlot, TimetableTeachingLoad } from './timetable.ts';
+import { timetableTeacherResourceKey } from './timetableTeacherResource.ts';
 import { DEFAULT_TIMETABLE_PREFERENCES, type TimetablePreferences } from './timetablePreferences.ts';
 
 export type TimetableSubjectEffort = 'light' | 'heavy' | 'neutral';
@@ -100,7 +101,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
     });
   }
   const placementKey = (load: TimetableTeachingLoad) => `${load.school_id}:${load.academic_year_id}:${load.class_id}:${load.section_id ?? 'none'}`;
-  const continuityKey = (load: TimetableTeachingLoad) => `${load.school_id}:${load.academic_year_id}:${load.class_id}:${load.employee_id}:${identityByLoad.get(load.id)}`;
+  const continuityKey = (load: TimetableTeachingLoad) => `${timetableTeacherResourceKey(load)}:${load.class_id}:${identityByLoad.get(load.id)}`;
   const earlyBasePenalty = (loadId: number, slotId: number) => effortByLoad.get(loadId) !== 'light' ? 0
     : lessonPositionBySlot.get(slotId) === 0 ? 40 : lessonPositionBySlot.get(slotId) === 1 ? 20 : 0;
   const earlyPenalty = (loadId: number, slotId: number) => earlyBasePenalty(loadId, slotId) * preferences.early_light_subjects;
@@ -132,7 +133,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       current.heavy ||= effortByLoad.get(load.id) === 'heavy';
       current.early = Math.max(current.early, earlyBasePenalty(load.id, slot.id));
       day.set(position, current); placementDays.set(dayKey, day);
-      if (load.employee_id == null || load.section_id == null) continue;
+      if (timetableTeacherResourceKey(load) == null || load.section_id == null) continue;
       const key = continuityKey(load);
       const group = continuity.get(key) || {sectionCounts: new Map(), days: new Map()};
       group.sectionCounts.set(load.section_id, (group.sectionCounts.get(load.section_id) || 0) + 1);
@@ -182,7 +183,7 @@ export function createTimetablePedagogyScorer(loads: TimetableTeachingLoad[], sl
       if (scopeDay(otherSlot) !== scopeDay(slot)) continue;
       if (placementKey(other) === placementKey(load) && effortByLoad.get(other.id) === 'heavy') heavyPositions.add(positionBySlot.get(otherSlot.id)!);
       const otherLessonPosition = lessonPositionBySlot.get(otherSlot.id);
-      if (load.employee_id != null && load.section_id != null && other.section_id != null && otherLessonPosition != null
+      if (timetableTeacherResourceKey(load) != null && load.section_id != null && other.section_id != null && otherLessonPosition != null
         && continuityKey(other) === continuityKey(load)) sectionLessons.push({position: otherLessonPosition, section: other.section_id});
     }
     if (effortByLoad.get(load.id) === 'heavy') {

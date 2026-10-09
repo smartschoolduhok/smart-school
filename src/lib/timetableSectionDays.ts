@@ -1,6 +1,7 @@
 import type { TimetableSlot, TimetableTeachingLoad } from './timetable.ts';
 import { loadHasInvalidAcademicReference, loadHasInvalidTeacherReference } from './timetable.ts';
 import { normalizeTimetableSubjectName } from './timetablePedagogy.ts';
+import { timetableTeacherResourceKey } from './timetableTeacherResource.ts';
 
 type Placement = { slot_id: number; teaching_load_id: number };
 export type TimetableSectionDayGroup = { loads: TimetableTeachingLoad[]; sections: Map<number, TimetableTeachingLoad[]> };
@@ -9,10 +10,10 @@ export type TimetableSectionDayGroup = { loads: TimetableTeachingLoad[]; section
 export function timetableSectionDayGroups(loads: TimetableTeachingLoad[], eligibleLoadIds?: number[]): TimetableSectionDayGroup[] {
   const groups = new Map<string, TimetableTeachingLoad[]>();
   for (const load of loads) {
-    if (load.status !== 'active' || load.weekly_periods <= 0 || load.employee_id == null || load.section_id == null) continue;
+    if (load.status !== 'active' || load.weekly_periods <= 0 || timetableTeacherResourceKey(load) == null || load.section_id == null) continue;
     if (loadHasInvalidAcademicReference(load) || loadHasInvalidTeacherReference(load)) continue;
     const subject = normalizeTimetableSubjectName(load.subject_name || '') || `subject-${load.subject_id}`;
-    const key = `${load.school_id}:${load.academic_year_id}:${load.class_id}:${load.employee_id}:${subject}`;
+    const key = `${timetableTeacherResourceKey(load)}:${load.class_id}:${subject}`;
     const members = groups.get(key) || [];
     members.push(load);
     groups.set(key, members);

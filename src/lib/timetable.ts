@@ -1,4 +1,5 @@
 import { countTimetableSectionPeriods, indexTimetableParallelLoadGroups, parallelTimetableLoadGroup, validateTimetableParallelLoads, type TimetableParallelLoadIssue } from './timetableParallel.ts';
+import { normalizeTimetableTeacherPlaceholder, timetableTeacherName, timetableTeacherResourceKey } from './timetableTeacherResource.ts';
 
 export const TIMETABLE_DAY_NAMES = [
   'الأحد',
@@ -154,6 +155,7 @@ export interface TimetableTeachingLoad {
   subject_section_id?: number | null;
   employee_id: number | null;
   employee_name?: string | null;
+  teacher_placeholder?: string | null;
   employee_status?: string | null;
   employee_school_id?: number | null;
   employee_role?: string | null;
@@ -226,6 +228,7 @@ export interface TimetableGridEntry extends TimetableEntry {
   section_name: string | null;
   employee_id: number | null;
   employee_name: string | null;
+  teacher_placeholder?: string | null;
   weekly_periods: number;
   load_status: TimetableLoadStatus;
   hard_conflicts: TimetableEntryNotice[];
@@ -537,7 +540,7 @@ export interface TimetableReadinessSummary {
   teacher_workloads: TimetableTeacherWorkload[];
   teacher_availability_summaries: TimetableTeacherAvailabilitySummary[];
   teacher_feasibility_issues: Array<TimetableTeacherCapacityBlocker & {
-    employee_id: number;
+    employee_id: number | null;
     employee_name: string;
   }>;
   total_scheduled_periods: number;
@@ -658,6 +661,9 @@ export function validateTimetableLoadInput(input: Record<string, unknown>) {
   const sectionId = input.section_id == null || input.section_id === '' ? null : asPositiveInteger(input.section_id);
   const subjectId = asPositiveInteger(input.subject_id);
   const employeeId = input.employee_id == null || input.employee_id === '' ? null : asPositiveInteger(input.employee_id);
+  let teacherPlaceholder: string | null;
+  try { teacherPlaceholder = employeeId == null ? normalizeTimetableTeacherPlaceholder(input.teacher_placeholder) : null; }
+  catch { return { ok: false as const, error: 'اسم المدرس المؤقت غير صالح؛ استخدم اسمًا لا يتجاوز ١٢٠ حرفًا' }; }
   const weeklyPeriods = asPositiveInteger(input.weekly_periods);
   const parallelWithLoadId = Object.prototype.hasOwnProperty.call(input, 'parallel_with_load_id')
     ? input.parallel_with_load_id == null || input.parallel_with_load_id === '' ? null : asPositiveInteger(input.parallel_with_load_id)
@@ -669,7 +675,7 @@ export function validateTimetableLoadInput(input: Record<string, unknown>) {
   if (input.employee_id != null && input.employee_id !== '' && employeeId == null) return { ok: false as const, error: 'الموظف غير صالح' };
   if (weeklyPeriods == null) return { ok: false as const, error: 'عدد الدروس الأسبوعية يجب أن يكون عددًا صحيحًا موجبًا' };
   if (input.parallel_with_load_id != null && input.parallel_with_load_id !== '' && parallelWithLoadId == null) return { ok: false as const, error: 'نصاب الدرس المتزامن غير صالح' };
-  return { ok: true as const, value: { academicYearId, classId, sectionId, subjectId, employeeId, weeklyPeriods,
+  return { ok: true as const, value: { academicYearId, classId, sectionId, subjectId, employeeId, teacherPlaceholder, weeklyPeriods,
     ...(parallelWithLoadId === undefined ? {} : { parallelWithLoadId }) } };
 }
 
@@ -985,6 +991,10 @@ export function loadHasInvalidAcademicReference(load: TimetableTeachingLoad): bo
 }
 
 export function loadHasInvalidTeacherReference(load: TimetableTeachingLoad): boolean {
+  try {
+    const placeholder = normalizeTimetableTeacherPlaceholder(load.teacher_placeholder);
+    if (placeholder != null && load.employee_id != null) return true;
+  } catch { return true; }
   return load.employee_id != null && (
     load.employee_status !== 'active'
     || load.employee_school_id !== load.school_id
@@ -1167,20 +1177,21 @@ function indexPlacementConfiguration(input: PlacementConfiguration) {
 function indexPlacementEntries(entries: TimetableEntry[], config: ReturnType<typeof indexPlacementConfiguration>) {
   const bySlot = new Map<number, TimetableEntry[]>();
   const activeByLoad = new Map<number, TimetableEntry[]>();
-  const byTeacher = new Map<number, TimetableEntry[]>();
-  const activeByTeacher = new Map<number, TimetableEntry[]>();
+  const byTeacher = new Map<string, TimetableEntry[]>();
+  const activeByTeacher = new Map<string, TimetableEntry[]>();
   const activeByTeacherDay = new Map<string, TimetableEntry[]>();
   for (const entry of entries) {
     appendPlacementIndex(bySlot, Number(entry.slot_id), entry);
     const active = config.activeLessonSlotIds.has(Number(entry.slot_id));
     if (active) appendPlacementIndex(activeByLoad, Number(entry.teaching_load_id), entry);
-    const teacherId = config.loadsById.get(Number(entry.teaching_load_id))?.employee_id;
+    const entryLoad = config.loadsById.get(Number(entry.teaching_load_id));
+    const teacherId = entryLoad ? timetableTeacherResourceKey(entryLoad) : null;
     if (teacherId == null) continue;
-    appendPlacementIndex(byTeacher, Number(teacherId), entry);
+    appendPlacementIndex(byTeacher, teacherId, entry);
     if (!active) continue;
-    appendPlacementIndex(activeByTeacher, Number(teacherId), entry);
+    appendPlacementIndex(activeByTeacher, teacherId, entry);
     const day = config.slotsById.get(Number(entry.slot_id))!.day_of_week;
-    appendPlacementIndex(activeByTeacherDay, `${Number(teacherId)}:${Number(day)}`, entry);
+    appendPlacementIndex(activeByTeacherDay, `${teacherId}:${Number(day)}`, entry);
   }
   return {bySlot, activeByLoad, byTeacher, activeByTeacher, activeByTeacherDay};
 }
@@ -1266,8 +1277,9 @@ function evaluateIndexedTimetableEntryPlacement(
     }
   }
 
-  if (load.employee_id != null) {
-    const teacherEntries = excludingCandidate(occupancy.byTeacher.get(Number(load.employee_id)));
+  const resourceKey = timetableTeacherResourceKey(load);
+  if (resourceKey != null) {
+    const teacherEntries = excludingCandidate(occupancy.byTeacher.get(resourceKey));
     if (teacherEntries.some((entry) => Number(entry.slot_id) === Number(slot.id))) {
       hardConflicts.push(entryNotice('teacher_collision', 'المدرس مرتبط بدرس آخر في الفترة نفسها'));
     }
@@ -1279,7 +1291,7 @@ function evaluateIndexedTimetableEntryPlacement(
     }
 
     const constraints = config.constraintsByTeacher.get(teacherKey);
-    const teacherEntriesForDay = excludingCandidate(occupancy.activeByTeacherDay.get(`${Number(load.employee_id)}:${Number(slot.day_of_week)}`));
+    const teacherEntriesForDay = excludingCandidate(occupancy.activeByTeacherDay.get(`${resourceKey}:${Number(slot.day_of_week)}`));
     input.onConstraintMetric?.('teacher_max_periods_per_day', teacherEntriesForDay.length + 1);
     if (constraints?.max_periods_per_day != null
       && teacherEntriesForDay.length + 1 > Number(constraints.max_periods_per_day)) {
@@ -1287,7 +1299,7 @@ function evaluateIndexedTimetableEntryPlacement(
     }
 
     if (constraints?.max_working_days != null || input.onConstraintMetric) {
-      const teacherWorkingDays = new Set(excludingCandidate(occupancy.activeByTeacher.get(Number(load.employee_id)))
+      const teacherWorkingDays = new Set(excludingCandidate(occupancy.activeByTeacher.get(resourceKey))
         .map(entry => Number(config.slotsById.get(Number(entry.slot_id))!.day_of_week)));
       const addsWorkingDay = !teacherWorkingDays.has(Number(slot.day_of_week));
       input.onConstraintMetric?.('teacher_max_working_days', teacherWorkingDays.size + Number(addsWorkingDay));
@@ -1422,7 +1434,7 @@ export function buildTimetableReadiness(input: {
   const archivedLoadDetails = loadDetails(dormantLoadIds);
   const academicallyValidLoads = demandLoads.filter((load) => !invalidAcademicLoadIds.has(Number(load.id)));
   const missingTeacherLoads = activeLoads.filter((load) => (
-    !invalidAcademicLoadIds.has(Number(load.id)) && load.employee_id == null
+    !invalidAcademicLoadIds.has(Number(load.id)) && timetableTeacherResourceKey(load) == null
   ));
   const teacherMap = new Map<number, TimetableTeacherWorkload>();
   for (const load of academicallyValidLoads) {
@@ -1460,7 +1472,7 @@ export function buildTimetableReadiness(input: {
     return {
       teaching_load_id: Number(load.id),
       subject_name: load.subject_name || 'مادة غير معروفة',
-      employee_name: load.employee_name || null,
+      employee_name: timetableTeacherName(load),
       required_periods: Number(load.weekly_periods),
       scheduled_periods: scheduledPeriods,
       remaining_periods: Math.max(0, Number(load.weekly_periods) - scheduledPeriods),
@@ -1508,7 +1520,7 @@ export function buildTimetableReadiness(input: {
         ? 'over_capacity'
         : difference === 0 ? 'exact' : 'unallocated';
     const placementMissingTeachers = placementLoads.filter((load) => (
-      load.status === 'active' && load.employee_id == null
+      load.status === 'active' && timetableTeacherResourceKey(load) == null
     )).map((load) => load.id);
     const placementInvalid = demandLoads.filter((load) => (
       invalidLoadIds.has(Number(load.id))
@@ -1548,13 +1560,27 @@ export function buildTimetableReadiness(input: {
     overrides: input.teacherAvailability || [],
     constraints: input.teacherConstraints?.find((constraint) => constraint.employee_id === teacher.employee_id),
   }));
-  const teacherFeasibilityIssues = teacherAvailabilitySummaries.flatMap((summary) => (
+  const teacherFeasibilityIssues: TimetableReadinessSummary['teacher_feasibility_issues'] = teacherAvailabilitySummaries.flatMap((summary) => (
     summary.blockers.map((blocker) => ({
       ...blocker,
       employee_id: summary.employee_id,
       employee_name: summary.employee_name,
     }))
   ));
+  const provisionalLoads = new Map<string, TimetableTeachingLoad[]>();
+  for (const load of academicallyValidLoads) {
+    if (load.status !== 'active' || load.employee_id != null || invalidTeacherLoadIds.has(load.id)) continue;
+    const key = timetableTeacherResourceKey(load);
+    if (key) provisionalLoads.set(key, [...(provisionalLoads.get(key) || []), load]);
+  }
+  for (const loads of provisionalLoads.values()) {
+    const required = loads.reduce((sum, load) => sum + load.weekly_periods, 0);
+    if (required > capacity.weeklyCapacity) teacherFeasibilityIssues.push({
+      code: 'teacher_load_exceeds_availability', employee_id: null,
+      employee_name: timetableTeacherName(loads[0])!,
+      message: `نصاب ${timetableTeacherName(loads[0])} يتجاوز عدد حصص الأسبوع المتاحة.`,
+    });
+  }
   const totalScheduledPeriods = sectionScheduled(academicallyValidLoads);
   const totalUnscheduledPeriods = Math.max(0, sectionDemand(academicallyValidLoads) - totalScheduledPeriods);
   const foundationReady = placements.length > 0

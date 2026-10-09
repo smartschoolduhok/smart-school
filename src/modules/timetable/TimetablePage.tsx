@@ -102,6 +102,7 @@ interface LoadForm {
   section_id: string;
   subject_id: string;
   employee_id: string;
+  teacher_placeholder: string;
   weekly_periods: string;
   parallel_with_load_id: string;
 }
@@ -124,6 +125,7 @@ const EMPTY_LOAD: LoadForm = {
   section_id: '',
   subject_id: '',
   employee_id: '',
+  teacher_placeholder: '',
   weekly_periods: '',
   parallel_with_load_id: '',
 };
@@ -423,6 +425,7 @@ export default function TimetablePage() {
         section_id: load.section_id == null ? '' : String(load.section_id),
         subject_id: String(load.subject_id),
         employee_id: load.employee_id == null ? '' : String(load.employee_id),
+        teacher_placeholder: load.teacher_placeholder || '',
         weekly_periods: String(load.weekly_periods),
         parallel_with_load_id: load.parallel_with_load_id == null ? '' : String(load.parallel_with_load_id),
       });
@@ -454,6 +457,7 @@ export default function TimetablePage() {
       section_id: loadForm.section_id ? Number(loadForm.section_id) : null,
       subject_id: Number(loadForm.subject_id),
       employee_id: loadForm.employee_id ? Number(loadForm.employee_id) : null,
+      teacher_placeholder: loadForm.employee_id ? null : loadForm.teacher_placeholder.trim() || null,
       weekly_periods: Number(loadForm.weekly_periods),
       parallel_with_load_id: loadForm.parallel_with_load_id ? Number(loadForm.parallel_with_load_id) : null,
     };
@@ -680,9 +684,13 @@ export default function TimetablePage() {
                     <select aria-label="صف النصاب" required value={loadForm.class_id} onChange={(event) => { setSelectedClassId(Number(event.target.value)); setLoadForm({ ...loadForm, class_id: event.target.value, section_id: '', subject_id: '', parallel_with_load_id: '' }); }} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">الصف</option>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
                     <select aria-label="شعبة النصاب" required={activeSections.length > 0} value={loadForm.section_id} onChange={(event) => { setSelectedSectionId(event.target.value ? Number(event.target.value) : null); setLoadForm({ ...loadForm, section_id: event.target.value, subject_id: '', parallel_with_load_id: '' }); }} disabled={!loadForm.class_id || activeSections.length === 0} className="rounded-lg border border-gray-300 px-3 py-2 disabled:bg-gray-100"><option value="">{activeSections.length ? 'الشعبة' : 'بلا شعبة'}</option>{activeSections.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
                     <select aria-label="مادة النصاب" required value={loadForm.subject_id} onChange={(event) => setLoadForm({ ...loadForm, subject_id: event.target.value, parallel_with_load_id: '' })} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">المادة</option>{applicableSubjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                    <select aria-label="مدرس النصاب" value={loadForm.employee_id} onChange={(event) => setLoadForm({ ...loadForm, employee_id: event.target.value })} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">مدرس غير محدد</option>{teacherCandidates.map((item) => <option key={item.id} value={item.id}>{item.full_name}{item.job_title ? ` — ${item.job_title}` : ''}</option>)}</select>
+                    <select aria-label="مدرس النصاب" value={loadForm.employee_id} onChange={(event) => setLoadForm({ ...loadForm, employee_id: event.target.value, teacher_placeholder: event.target.value ? '' : loadForm.teacher_placeholder })} className="rounded-lg border border-gray-300 px-3 py-2"><option value="">مدرس غير محدد</option>{teacherCandidates.map((item) => <option key={item.id} value={item.id}>{item.full_name}{item.job_title ? ` — ${item.job_title}` : ''}</option>)}</select>
                     <input aria-label="عدد دروس النصاب" required type="number" min="1" readOnly={!!loadForm.parallel_with_load_id} value={loadForm.weekly_periods} onChange={(event) => setLoadForm({ ...loadForm, weekly_periods: event.target.value })} placeholder="عدد الدروس" title={loadForm.parallel_with_load_id ? 'يساوي عدد دروس المادة المرتبطة؛ اختر درسًا مستقلًا لفك التزامن.' : undefined} className="rounded-lg border border-gray-300 px-3 py-2 read-only:bg-gray-100" />
                     <div className="flex gap-2"><button disabled={saving} className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-primary-600 px-3 py-2 font-semibold text-white disabled:opacity-50"><Save size={16} />{loadForm.id == null ? 'إضافة' : 'حفظ'}</button>{loadForm.id != null && <button type="button" onClick={() => beginLoad()} className="rounded-lg border border-gray-300 p-2"><X size={18} /></button>}</div>
+                    {!loadForm.employee_id && <label className="text-sm md:col-span-6">اسم المدرس لحين تعيينه
+                      <input aria-label="اسم المدرس لحين تعيينه" maxLength={120} value={loadForm.teacher_placeholder} onChange={(event) => setLoadForm({ ...loadForm, teacher_placeholder: event.target.value })} placeholder="مثل: مدرس الإنكليزي" className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2" />
+                      <span className="mt-1 block text-xs text-gray-500">استخدم الاسم نفسه للأنصبة التي سيأخذها مدرس واحد حتى لا تتعارض حصصه.</span>
+                    </label>}
                     <ParallelLoadField loads={loads} schoolId={schoolId} academicYearId={academicYearId} classId={loadForm.class_id ? Number(loadForm.class_id) : null} sectionId={loadForm.section_id ? Number(loadForm.section_id) : null} currentLoadId={loadForm.id} subjectId={loadForm.subject_id ? Number(loadForm.subject_id) : null} employeeId={loadForm.employee_id ? Number(loadForm.employee_id) : null} value={loadForm.parallel_with_load_id} disabled={saving} onChange={value => { const linked = loads.find(load => String(load.id) === value); setLoadForm({...loadForm, parallel_with_load_id: value, weekly_periods: linked ? String(linked.weekly_periods) : loadForm.weekly_periods}); }} />
                   </form>
 
@@ -715,7 +723,7 @@ export default function TimetablePage() {
                     <div><p className="font-bold">{readiness.schedule_ready ? 'الجدول مكتمل وجاهز' : 'توجد عناصر تحتاج إلى مراجعة'}</p><p className="text-sm">يجب توزيع كل الدروس المطلوبة ومعالجة المراجع والتعارضات الصلبة. تفضيلات المدرسين تبقى تحذيرات غير مانعة.</p></div>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-9"><Metric label="السعة الأسبوعية" value={readiness.weekly_capacity} /><Metric label="الدروس المطلوبة" value={readiness.total_required_periods} tone="green" /><Metric label="الدروس المجدولة" value={readiness.total_scheduled_periods} tone="blue" /><Metric label="الدروس المتبقية" value={readiness.total_unscheduled_periods} tone={readiness.total_unscheduled_periods ? 'amber' : 'green'} /><Metric label="التكليفات الفعالة" value={readiness.total_assignments} tone="amber" /><Metric label="مدرس غير محدد" value={readiness.missing_teacher_count} tone={readiness.missing_teacher_count ? 'red' : 'green'} /><Metric label="مراجع غير صالحة" value={readiness.invalid_reference_count} tone={readiness.invalid_reference_count ? 'red' : 'green'} /><Metric label="تعارضات صلبة" value={readiness.hard_constraint_violation_count} tone={readiness.hard_constraint_violation_count ? 'red' : 'green'} /><Metric label="مشكلات سعة المدرسين" value={readiness.teacher_feasibility_issues.length} tone={readiness.teacher_feasibility_issues.length ? 'red' : 'green'} /></div>
-                  {readiness.teacher_feasibility_issues.map((issue) => <div key={`${issue.employee_id}:${issue.code}`} className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800"><AlertTriangle size={18} />{issue.message}</div>)}
+                  {readiness.teacher_feasibility_issues.map((issue) => <div key={`${issue.employee_id ?? issue.employee_name}:${issue.code}`} className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800"><AlertTriangle size={18} />{issue.message}</div>)}
                   <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white"><table className="w-full min-w-[920px] text-sm"><thead className="bg-gray-50"><tr className="text-right text-gray-600"><th className="p-3">الصف / الشعبة</th><th className="p-3">السعة</th><th className="p-3">المطلوب</th><th className="p-3">المجدول</th><th className="p-3">المتبقي</th><th className="p-3">الفرق</th><th className="p-3">مطابقة النصاب للسعة</th><th className="p-3">توزيع الدروس</th><th className="p-3">ملاحظات</th></tr></thead><tbody>{readiness.placements.map((placement) => <tr key={`${placement.class_id}:${placement.section_id ?? 'none'}`} className="border-t"><td className="p-3 font-medium">{placement.class_name}{placement.section_name ? ` / ${placement.section_name}` : ''}</td><td className="p-3"><bdi dir="ltr">{placement.available_capacity}</bdi></td><td className="p-3"><bdi dir="ltr">{placement.required_periods}</bdi></td><td className="p-3"><bdi dir="ltr">{placement.scheduled_periods}</bdi></td><td className={`p-3 font-bold ${placement.remaining_periods ? 'text-amber-700' : 'text-emerald-700'}`}><bdi dir="ltr">{placement.remaining_periods}</bdi></td><td className={`p-3 font-bold ${placement.difference < 0 ? 'text-red-700' : 'text-gray-800'}`}><bdi dir="ltr">{placement.difference}</bdi></td><TimetableReadinessStatus placement={placement} /><td className="p-3 text-xs text-gray-600">{placement.missing_subjects.length > 0 && <p>مواد بلا نصاب: {placement.missing_subjects.map((item) => item.name).join('، ')}</p>}{placement.missing_teacher_load_ids.length > 0 && <p className="text-amber-700">تكليفات بلا مدرس: {placement.missing_teacher_load_ids.length}</p>}{placement.invalid_load_ids.length > 0 && <p className="text-red-700">مراجع غير صالحة: {placement.invalid_load_ids.length}</p>}{placement.missing_subjects.length === 0 && placement.missing_teacher_load_ids.length === 0 && placement.invalid_load_ids.length === 0 && '—'}</td></tr>)}</tbody></table></div>
                 </div>
               )}
