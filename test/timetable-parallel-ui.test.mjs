@@ -121,7 +121,7 @@ test('new subject without a load can link to an existing subject through the mat
   await act(async () => periods.closest('form').dispatchEvent(new Event('submit', {bubbles: true, cancelable: true})));
   const writes = calls.filter(item => item.method !== 'GET');
   assert.deepEqual(writes, [{path: '/api/timetable/teaching-loads', method: 'POST', body: {
-    school_id: 1, academic_year_id: 1, class_id: 1, section_id: 11, subject_id: 202, employee_id: 302, weekly_periods: 2, parallel_with_load_id: 101,
+    school_id: 1, academic_year_id: 1, class_id: 1, section_id: 11, subject_id: 202, employee_id: 302, teacher_placeholder: null, weekly_periods: 2, parallel_with_load_id: 101,
   }}]);
   assert.match(container.textContent, /تم حفظ نصاب المادة/);
   const confirmations = [];window.confirm = text => {confirmations.push(text);return confirmations.length === 1;};
