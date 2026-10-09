@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
 import { createServer } from 'vite';
 import { signJWT } from '../src/lib/jwtSecurity.ts';
+import { migrationFiles, migrationSQL } from './helpers/teaching-load-matrix-fixture.mjs';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -50,10 +51,7 @@ class LocalD1 {
 async function createApiFixture() {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys = ON');
-  database.exec(migration('0001_initial_schema.sql'));
-  database.exec(migration('0002_phase2_academic_tables.sql'));
-  database.exec(migration('0010_employees.sql'));
-  database.exec(migration('0016_auth_security.sql'));
+  for (const name of migrationFiles) database.exec(migrationSQL(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'خاص', 'Duhok', 'active'),
@@ -83,11 +81,6 @@ async function createApiFixture() {
       (2, NULL, 'System Admin', 'admin@example.test', 1, 'active', 1),
       (3, 1, 'Teacher User', 'teacher@example.test', 5, 'active', 1);
   `);
-  database.exec(migration('0023_timetable_foundation.sql'));
-  database.exec(migration('0024_teacher_timetable_constraints.sql'));
-  database.exec(migration('0025_timetable_entries.sql'));
-  database.exec(migration('0029_resource_access_links.sql'));
-  database.exec(migration('0052_school_user_accounts.sql'));
   const tokens = {
     owner: await signJWT({ id: 1, email: 'owner-a@example.test', auth_version: 1 }, secret),
     admin: await signJWT({ id: 2, email: 'admin@example.test', auth_version: 1 }, secret),
@@ -283,7 +276,9 @@ test('teaching-load API uses the genuine employee role schema and rejects non-te
   const fixture = await createApiFixture();
   const employeeColumns = fixture.database.prepare('PRAGMA table_info(employees)').all().map((column) => column.name);
   assert.ok(employeeColumns.includes('role'));
-  assert.equal(employeeColumns.includes('employee_type'), false);
+  // Employment type is a separate personnel field in the current schema;
+  // timetable eligibility must still use the canonical role below.
+  assert.ok(employeeColumns.includes('employee_type'));
 
   const base = {
     school_id: 1, academic_year_id: 1, class_id: 1, section_id: 1,

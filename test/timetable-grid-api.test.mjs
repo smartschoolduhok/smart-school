@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
 import { createServer } from 'vite';
 import { signJWT } from '../src/lib/jwtSecurity.ts';
+import { migrationFiles, migrationSQL } from './helpers/teaching-load-matrix-fixture.mjs';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(testDir, '..');
@@ -59,17 +60,7 @@ class LocalD1 {
 async function fixture() {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys = ON');
-  for (const name of [
-    '0001_initial_schema.sql', '0002_phase2_academic_tables.sql', '0010_employees.sql',
-    '0011_settings_school_profile.sql',
-    '0016_auth_security.sql', '0023_timetable_foundation.sql',
-    '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
-    '0026_timetable_adoption_locking.sql',
-    '0029_resource_access_links.sql',
-    '0037_timetable_teacher_collision_visibility.sql',
-    '0047_timetable_edit_saved_lesson_times.sql',
-    '0052_school_user_accounts.sql',
-  ]) database.exec(migration(name));
+  for (const name of migrationFiles) database.exec(migrationSQL(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'خاص', 'Duhok', 'active'),
@@ -1004,7 +995,9 @@ test('saved lesson times are editable while structural changes still protect ent
     school_id: 1, academic_year_id: 1, class_id: 1, section_id: 1,
     subject_id: 1, employee_id: 2, weekly_periods: 4,
   });
-  assert.equal(loadResponse.status, 400);
+  // Current schema permits a valid teacher reassignment in place.
+  assert.equal(loadResponse.status, 200);
+  assert.equal(context.database.prepare('SELECT employee_id FROM timetable_teaching_loads WHERE id=1').get().employee_id, 2);
   assert.equal(context.database.prepare('SELECT COUNT(*) AS count FROM timetable_entries').get().count, 1);
 });
 

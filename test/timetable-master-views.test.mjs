@@ -179,7 +179,9 @@ test('break rows span the complete table instead of repeating per class cell', (
 });
 
 test('teacher and placement views are scoped to the selected canonical ids', () => {
-  assert.match(viewSource, /Number\(entry\.employee_id\) === teacherId/);
+  assert.match(viewSource, /timetableEntryMatchesPrintTeacher\(entry, teacherId\)/);
+  assert.match(printSource, /Number\(entry\.employee_id\) === teacherId/);
+  assert.match(printSource, /timetableTeacherResourceKey\(entry\) === teacherId/);
   assert.match(printSource, /Number\(entry\.class_id\) === placement\.class_id/);
   assert.match(viewSource, /timetableEntriesForPlacement\(data\.entries, slot\.id, placement\)/);
 });

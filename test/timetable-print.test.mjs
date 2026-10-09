@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {buildTimetablePrintSheets, buildTimetablePrintWeek, timetablePrintSheetEntries} from '../src/lib/timetablePrint.ts';
+import {buildTimetablePrintSheets, buildTimetablePrintWeek, timetablePrintSheetEntries, timetablePrintTeacherOptions} from '../src/lib/timetablePrint.ts';
 import {printFixture} from './helpers/timetable-print-fixture.mjs';
 
 const choice = overrides => ({mode: 'master', grouping: 'combined', stage: '', classId: null, placementKey: '', teacherId: null, ...overrides});
@@ -54,4 +54,23 @@ test('teacher sheets retain simultaneous collisions visibly instead of selecting
   const sheet = buildTimetablePrintSheets(data, choice({mode: 'teacher', teacherId: 7}))[0];
   assert.equal(timetablePrintSheetEntries(data.entries, sheet).length, 2);
   assert.deepEqual(buildTimetablePrintSheets(data, choice({mode: 'teacher', teacherId: 999})), []);
+});
+
+test('named placeholder teacher sheets combine shared subjects without fake employees or foreign scope', () => {
+  const data = printFixture();
+  const base = {school_id: 1, academic_year_id: 1, employee_id: null, status: 'active', teacher_placeholder: 'مدرس العربي والإسلامية'};
+  data.loads.push({...base, id: 11}, {...base, id: 12}, {...base, id: 13, teacher_placeholder: 'مدرس الإنكليزي'},
+    {...base, id: 14, school_id: 2, teacher_placeholder: 'سري'}, {...base, id: 15, academic_year_id: 2, teacher_placeholder: 'قديم'},
+    {...base, id: 16, status: 'inactive', teacher_placeholder: 'غير فعال'});
+  data.entries.push({...data.entries[0], ...base, id: 11, teaching_load_id: 11, subject_name: 'العربي'},
+    {...data.entries[1], ...base, id: 12, teaching_load_id: 12, subject_name: 'الإسلامية'},
+    {...data.entries[1], ...base, id: 13, teaching_load_id: 13, teacher_placeholder: 'مدرس الإنكليزي'});
+  const options = timetablePrintTeacherOptions(data);
+  assert.deepEqual(options.map(o => o.full_name), ['سارة', 'مدرس العربي والإسلامية', 'مدرس الإنكليزي']);
+  assert.equal(typeof options[1].id, 'string');
+  assert.equal(data.teachers.length, 1);
+  const sheet = buildTimetablePrintSheets(data, choice({mode: 'teacher', teacherId: options[1].id}))[0];
+  assert.equal(sheet.title, 'جدول المدرس: مدرس العربي والإسلامية');
+  assert.deepEqual(timetablePrintSheetEntries(data.entries, sheet).map(e => e.id), [11, 12]);
+  assert.deepEqual(buildTimetablePrintSheets(data, choice({mode: 'teacher', teacherId: '2:1:placeholder:سري'})), []);
 });

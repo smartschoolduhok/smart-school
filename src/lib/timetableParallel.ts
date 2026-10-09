@@ -1,9 +1,10 @@
 import type { TimetableTeachingLoad } from './timetable.ts';
+import { timetableTeacherResourceKey } from './timetableTeacherResource.ts';
 
 /** Explicit timetable pairing. It never derives groups from a subject name or a student's religion. */
 export type TimetableParallelLoad = Pick<TimetableTeachingLoad,
   'id' | 'school_id' | 'academic_year_id' | 'class_id' | 'section_id' | 'subject_id'
-  | 'employee_id' | 'weekly_periods' | 'status' | 'parallel_with_load_id'>;
+  | 'employee_id' | 'teacher_placeholder' | 'weekly_periods' | 'status' | 'parallel_with_load_id'>;
 
 export interface TimetableParallelLoadIssue {
   code: 'invalid_parallel_load';
@@ -30,7 +31,8 @@ function pairReason(companion: TimetableParallelLoad, primary: TimetableParallel
   if (!sameScope(companion, primary)) return 'scope_mismatch';
   if (companion.weekly_periods !== primary.weekly_periods) return 'periods_mismatch';
   if (companion.subject_id === primary.subject_id) return 'same_subject';
-  if (companion.employee_id != null && primary.employee_id != null && companion.employee_id === primary.employee_id) return 'same_teacher';
+  const teacher = timetableTeacherResourceKey(companion);
+  if (teacher != null && teacher === timetableTeacherResourceKey(primary)) return 'same_teacher';
   return null;
 }
 

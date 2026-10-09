@@ -161,7 +161,7 @@ export function TeachingLoadMatrixTab(props: Props) {
     if (!copy || !data) return;
     const next: MatrixDraft = { ...draft };
     for (const c of copy.changes) if (c.action === 'upsert')
-      next[matrixKey(c.subject_id, c.section_id)] = { periods: String(c.weekly_periods), employeeId: c.employee_id };
+      next[matrixKey(c.subject_id, c.section_id)] = { periods: String(c.weekly_periods), employeeId: c.employee_id, teacherPlaceholder: c.teacher_placeholder };
     changeDraft(next); setCopyOpen(false);
   }
   const cards = matrixClassCards(props.classes.filter(c => c.school_id === schoolId),
@@ -182,8 +182,8 @@ export function TeachingLoadMatrixTab(props: Props) {
     if (filter === 'invalid-teacher') return cells.some(s => { const key = matrixKey(subject.id, s.id), l = loadMap.get(key); return l?.status === 'active' && !matrixCellExcluded(l, draft[key]) && matrixLoadTeacherState(l) === 'invalid_teacher'; });
     return true;
   });
-  function teacherOptions() {
-    return <><option value="">{withoutTeacher}</option>{data?.teachers.filter(t => isMatrixTeacherEligible(t, schoolId)).map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}</>;
+  function teacherOptions(placeholder?: string | null) {
+    return <><option value="">{placeholder || withoutTeacher}</option>{data?.teachers.filter(t => isMatrixTeacherEligible(t, schoolId)).map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}</>;
   }
 
   return <section className="min-w-0 space-y-4" aria-label="مصفوفة نصاب المواد والمدرسين" dir="rtl">
@@ -235,21 +235,22 @@ export function TeachingLoadMatrixTab(props: Props) {
                   const excluded = matrixCellExcluded(load, edit);
                   const value = excluded ? '0' : edit.periods ?? (load?.status === 'active' ? String(load.weekly_periods) : '');
                   const teacher = edit.employeeId === undefined ? load?.employee_id ?? null : edit.employeeId;
+                  const placeholder = edit.teacherPlaceholder !== undefined ? edit.teacherPlaceholder : edit.employeeId === undefined ? load?.teacher_placeholder : null;
                   const invalid = !excluded && value.trim() && (!Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > MAX_MATRIX_WEEKLY_PERIODS);
                   const conflict = preview?.items.find(i => matrixKey(i.subject_id, i.section_id) === key)?.blockers.length;
-                  const presentedLoad = load && (excluded ? {...load, status: 'inactive' as const} : {...load, status: 'active' as const});
+                  const presentedLoad = load && { ...load, teacher_placeholder: placeholder, status: excluded ? 'inactive' as const : 'active' as const };
                   const presentation = matrixCellPresentation(presentedLoad, teacher, data.teachers, schoolId);
                   const tone = invalid || conflict || presentation.state === 'invalid_teacher' ? 'bg-red-50' : change ? 'bg-blue-50' : presentation.tone;
                   const update = (patch: MatrixDraft[string]) => changeDraft({ ...draft, [key]: { ...edit, ...patch } });
                   const partner = load && parallelTimetableLoadGroup(load, data.loads).find(other => other.id !== load.id);
                   return <td key={key} className={`space-y-2 p-3 ${tone}`}>
-                    <select className={field + ' disabled:bg-slate-100 disabled:text-slate-500'} disabled={excluded} aria-label={`مدرس ${subject.name} / ${section.name}`} value={excluded ? '' : teacher ?? ''} onChange={e => update({ employeeId: e.target.value ? Number(e.target.value) : null, deactivate: false })}>{excluded ? <option value="">مستبعدة — لا تحتاج مدرسًا</option> : <>{presentation.state === 'invalid_teacher' && <option value={teacher!}>مدرس غير متاح — اختر بديلًا</option>}{teacherOptions()}</>}</select>
+                    <select className={field + ' disabled:bg-slate-100 disabled:text-slate-500'} disabled={excluded} aria-label={`مدرس ${subject.name} / ${section.name}`} value={excluded ? '' : teacher ?? ''} onChange={e => update({ employeeId: e.target.value ? Number(e.target.value) : null, teacherPlaceholder: null, deactivate: false })}>{excluded ? <option value="">مستبعدة — لا تحتاج مدرسًا</option> : <>{presentation.state === 'invalid_teacher' && <option value={teacher!}>مدرس غير متاح — اختر بديلًا</option>}{teacherOptions(placeholder)}</>}</select>
                     <input className={field + ' disabled:bg-slate-100 disabled:text-slate-500'} disabled={excluded} type="number" min={excluded ? '0' : '1'} max={MAX_MATRIX_WEEKLY_PERIODS} aria-label={`دروس ${subject.name} / ${section.name}`} value={value} onChange={e => update({ periods: e.target.value, deactivate: false })} />
                     <p className="text-xs">{invalid ? Number(value) === 0 ? 'للعدد صفر استعمل زر الاستبعاد؛ لا يُحفظ نصاب بقيمة صفر.' : 'عدد الدروس غير صالح' : presentation.state === 'invalid_teacher' ? presentation.label : change ? `${actionLabels[change.action === 'upsert' ? load?.status === 'active' ? 'update' : 'create' : 'deactivate']} غير محفوظ` : presentation.label}{load && ` · #${load.id}`}</p>
                     {partner && <p className="text-xs text-blue-800">متزامن مع {partner.subject_name || data.subjects.find(item => item.id === partner.subject_id)?.name}. الاستبعاد يخص هذه المادة وحدها ويُفك التزامن.</p>}
                     <div className="flex flex-wrap gap-1">
                       {!load || load.status === 'active' ? <button className={button} onClick={() => update({ deactivate: !edit.deactivate })}>{edit.deactivate ? 'إلغاء الاستبعاد' : 'استبعاد من جدول الشعبة'}</button>
-                        : excluded ? <button className={button} onClick={() => update({include: true, deactivate: false, periods: String(load.weekly_periods), employeeId: data.teachers.some(t => t.id === load.employee_id && isMatrixTeacherEligible(t, schoolId)) ? load.employee_id : null})}>إدراج المادة في جدول الشعبة</button>
+                        : excluded ? <button className={button} onClick={() => update({include: true, deactivate: false, periods: String(load.weekly_periods), employeeId: data.teachers.some(t => t.id === load.employee_id && isMatrixTeacherEligible(t, schoolId)) ? load.employee_id : null, teacherPlaceholder: load.employee_id == null ? load.teacher_placeholder ?? null : null})}>إدراج المادة في جدول الشعبة</button>
                         : <button className={button} onClick={() => {const next = {...draft}; delete next[key]; changeDraft(next);}}>إلغاء الإدراج</button>}
                       <button className={button} onClick={() => { if (allowLeave()) props.onAdvanced(load, {class_id: data.class.id, section_id: section.id, subject_id: subject.id}); }}>{load ? 'تعديل متقدم' : 'إضافة نصاب / تزامن'}</button>
                     </div>

@@ -4,6 +4,7 @@ import {
   type TimetableTeacherAvailabilityOverride, type TimetableTeacherConstraints,
 } from './timetable.ts';
 import { countTimetableSectionPeriods, parallelTimetableLoadGroup, validateTimetableParallelLoads } from './timetableParallel.ts';
+import { normalizeTimetableTeacherPlaceholder, timetableTeacherName, timetableTeacherResourceKey } from './timetableTeacherResource.ts';
 
 export const MAX_MATRIX_CHANGES = 500;
 export const MAX_MATRIX_WEEKLY_PERIODS = 100;
@@ -16,7 +17,7 @@ export interface MatrixSubject extends MatrixSection { section_id: number | null
 export interface MatrixTeacher { id: number; school_id: number; full_name: string; status: string; role: string }
 export interface MatrixScope { school_id?: number; academic_year_id: number; class_id: number }
 export type MatrixChange =
-  | { subject_id: number; section_id: number | null; action: 'upsert'; weekly_periods: number; employee_id: number | null }
+  | { subject_id: number; section_id: number | null; action: 'upsert'; weekly_periods: number; employee_id: number | null; teacher_placeholder?: string | null }
   | { subject_id: number; section_id: number | null; action: 'deactivate' };
 export interface MatrixRequest extends MatrixScope { expected_revision: number; changes: MatrixChange[]; confirm_apply?: true }
 export type MatrixCopyMode = 'periods_only' | 'periods_and_teachers';
@@ -31,6 +32,7 @@ export interface MatrixPlanItem {
   old_weekly_periods: number | null; new_weekly_periods: number | null;
   old_employee_id: number | null; new_employee_id: number | null;
   old_employee_name: string | null; new_employee_name: string | null;
+  old_teacher_placeholder?: string | null; new_teacher_placeholder?: string | null;
   locked_entry_count: number; removed_entry_count: number; warnings: MatrixNotice[]; blockers: MatrixNotice[];
 }
 export interface MatrixSummary {
@@ -72,9 +74,10 @@ export function parseMatrixRequest(input: unknown, apply = false) {
     if (change.action === 'deactivate') {
       if (!onlyKeys(change, ['subject_id', 'section_id', 'action'])) return invalid();
     } else if (change.action === 'upsert') {
-      if (!onlyKeys(change, ['subject_id', 'section_id', 'action', 'employee_id', 'weekly_periods'])
+      if (!onlyKeys(change, ['subject_id', 'section_id', 'action', 'employee_id', 'teacher_placeholder', 'weekly_periods'])
         || (change.employee_id !== null && !isId(change.employee_id))
         || !isId(change.weekly_periods) || change.weekly_periods > MAX_MATRIX_WEEKLY_PERIODS) return invalid();
+      try { normalizeTimetableTeacherPlaceholder(change.teacher_placeholder); } catch { return invalid(); }
     } else return invalid();
     const key = matrixKey(change.subject_id, change.section_id as number | null);
     if (keys.has(key)) return invalid('duplicate_matrix_cell');
@@ -108,7 +111,7 @@ export function isMatrixTeacherEligible(teacher: { school_id?: number | null; st
 // Joined metadata is scoped to the load's school in BOTH list and matrix APIs.
 // Missing metadata is invalid, never equivalent to deliberate NULL assignment.
 export function matrixLoadTeacherState(load: TimetableTeachingLoad): 'valid' | 'without_teacher' | 'invalid_teacher' {
-  if (load.employee_id == null) return 'without_teacher';
+  if (load.employee_id == null) return timetableTeacherResourceKey(load) == null ? 'without_teacher' : 'valid';
   return isMatrixTeacherEligible({ school_id: load.employee_school_id, status: load.employee_status, role: load.employee_role }, load.school_id)
     ? 'valid' : 'invalid_teacher';
 }
@@ -118,7 +121,7 @@ export function matrixCellPresentation(load: TimetableTeachingLoad | undefined, 
   if (employeeId != null && !teachers.some(t => t.id === employeeId && isMatrixTeacherEligible(t, schoolId)))
     return { state: 'invalid_teacher', tone: 'bg-red-50', label: 'مدرس غير متاح — اختر بديلًا' } as const;
   if (!load) return { state: 'missing', tone: 'bg-gray-50', label: 'لا يوجد نصاب بعد' } as const;
-  if (employeeId == null) return { state: 'without_teacher', tone: 'bg-amber-50', label: 'بدون مدرس' } as const;
+  if (employeeId == null && !load.teacher_placeholder) return { state: 'without_teacher', tone: 'bg-amber-50', label: 'بدون مدرس' } as const;
   return { state: 'valid', tone: 'bg-emerald-50', label: 'مكتمل' } as const;
 }
 
@@ -143,7 +146,7 @@ export function summarizeMatrix(classId: number, sections: MatrixSection[], subj
   const expected = cells.length - excluded;
   const configured = cellLoads.filter((l): l is TimetableTeachingLoad => l?.status === 'active');
   return { expected, configured: configured.length, missing: expected - configured.length, excluded,
-    without_teacher: configured.filter(l => l.employee_id == null).length,
+    without_teacher: configured.filter(l => timetableTeacherResourceKey(l) == null).length,
     invalid_teacher: configured.filter(l => matrixLoadTeacherState(l) === 'invalid_teacher').length,
     weekly_periods: countTimetableSectionPeriods(configured),
     completion_percent: expected ? Math.round(100 * configured.filter(l => matrixLoadTeacherState(l) === 'valid').length / expected) : cells.length ? 100 : 0,
@@ -199,6 +202,8 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
     const existing = activeLoads.get(matrixKey(change.subject_id, change.section_id));
     const subject = context.subjects.find(s => s.id === change.subject_id);
     const teacher = change.action === 'upsert' ? context.teachers.find(t => t.id === change.employee_id && isMatrixTeacherEligible(t, context.class.school_id)) : null;
+    const placeholder = change.action !== 'upsert' || change.employee_id != null ? null
+      : normalizeTimetableTeacherPlaceholder(change.teacher_placeholder === undefined ? existing?.teacher_placeholder : change.teacher_placeholder);
     const item: MatrixPlanItem = {
       class_id: context.class.id, section_id: change.section_id,
       section_name: context.sections.find(s => s.id === change.section_id)?.name ?? null,
@@ -206,7 +211,8 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
       action: 'unchanged', old_weekly_periods: existing?.weekly_periods ?? null,
       new_weekly_periods: change.action === 'upsert' ? change.weekly_periods : null,
       old_employee_id: existing?.employee_id ?? null, new_employee_id: change.action === 'upsert' ? change.employee_id : null,
-      old_employee_name: existing?.employee_name ?? null, new_employee_name: teacher?.full_name ?? null,
+      old_employee_name: existing ? timetableTeacherName(existing) : null, new_employee_name: teacher?.full_name ?? placeholder,
+      old_teacher_placeholder: existing?.teacher_placeholder ?? null, new_teacher_placeholder: placeholder,
       locked_entry_count: context.entries.filter(e => e.teaching_load_id === existing?.id && e.is_locked === 1).length,
       removed_entry_count: 0,
       warnings: [], blockers: [],
@@ -233,10 +239,10 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
         for (const survivor of finalLoads) if (survivor.parallel_with_load_id === existing.id) survivor.parallel_with_load_id = null;
       }
     } else if (existing) {
-      item.action = existing.employee_id === change.employee_id && existing.weekly_periods === change.weekly_periods ? 'unchanged' : 'update';
+      item.action = existing.employee_id === change.employee_id && (existing.teacher_placeholder ?? null) === placeholder && existing.weekly_periods === change.weekly_periods ? 'unchanged' : 'update';
       Object.assign(finalLoads.find(l => l.id === existing.id)!, {
         employee_id: change.employee_id, weekly_periods: change.weekly_periods,
-        employee_name: teacher?.full_name ?? null, employee_role: teacher?.role ?? null,
+        teacher_placeholder: placeholder, employee_name: teacher?.full_name ?? placeholder, employee_role: teacher?.role ?? null,
         employee_status: teacher?.status ?? null, employee_school_id: teacher?.school_id ?? null,
       });
       if (existing.employee_id !== change.employee_id && change.employee_id != null) destinations.add(change.employee_id);
@@ -255,20 +261,31 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
   const excludedEntries = context.entries.filter(e => excludedIds.has(e.teaching_load_id));
   const safety = teacherScheduleNotices({ ...context, loads: finalLoads, entries: context.entries.filter(e => !excludedIds.has(e.teaching_load_id)) }, destinations);
   for (const item of items) {
-    if (item.action !== 'update' || item.new_employee_id === item.old_employee_id) continue;
+    if (item.action !== 'update' || item.new_employee_id === item.old_employee_id
+      && (item.new_teacher_placeholder ?? null) === (item.old_teacher_placeholder ?? null)) continue;
     const notices = item.new_employee_id == null ? undefined : safety.get(item.new_employee_id);
     item.blockers.push(...(notices?.blockers ?? [])); item.warnings.push(...(notices?.warnings ?? []));
+    if (item.new_teacher_placeholder) {
+      for (const entry of context.entries.filter(entry => entry.teaching_load_id === item.existing_load_id)) {
+        const evaluation = evaluateTimetableEntryPlacement({...context, loads: finalLoads,
+          entries: context.entries.filter(entry => !excludedIds.has(entry.teaching_load_id)), candidate: entry});
+        if (evaluation.hard_conflicts.some(issue => issue.code === 'teacher_collision')) {
+          item.blockers.push({code: 'teacher_collision', message: 'المدرس المؤقت مرتبط بدرس آخر في الفترة نفسها.'});
+          break;
+        }
+      }
+    }
     if (item.locked_entry_count) item.warnings.push({ code: 'locked_lessons_teacher_change', message: 'يتغير مدرس دروس مقفلة مع الحفاظ على مواقعها وأقفالها.' });
     if (item.blockers.length) item.action = 'blocked';
   }
   const counts: MatrixPlan['counts'] = { create: 0, update: 0, deactivate: 0, unchanged: 0, blocked: 0 };
   items.forEach(i => { counts[i.action]++; });
   const before = context.loads.filter(l => l.class_id === context.class.id && l.status === 'active');
-  let missingTeacher = before.filter(l => l.employee_id == null).length;
+  let missingTeacher = before.filter(l => timetableTeacherResourceKey(l) == null).length;
   for (const i of items) {
     if (!['create', 'update', 'deactivate'].includes(i.action)) continue;
-    if (i.existing_load_id != null && i.old_employee_id == null) missingTeacher--;
-    if (i.action !== 'deactivate' && i.new_employee_id == null) missingTeacher++;
+    if (i.existing_load_id != null && i.old_employee_id == null && !i.old_teacher_placeholder) missingTeacher--;
+    if (i.action !== 'deactivate' && i.new_employee_id == null && !i.new_teacher_placeholder) missingTeacher++;
   }
   // Project only accepted items. Invalid/blocked cells retain stored references;
   // summary/read paths never repair, clear, deactivate or hide academic demand.
@@ -276,7 +293,7 @@ export function planTeachingLoadMatrix(context: MatrixContext, changes: MatrixCh
   for (const i of items) {
     if (!['create', 'update', 'deactivate'].includes(i.action)) continue;
     const teacher = context.teachers.find(t => t.id === i.new_employee_id && isMatrixTeacherEligible(t, context.class.school_id));
-    const values = { employee_id: i.new_employee_id, weekly_periods: i.new_weekly_periods!,
+    const values = { employee_id: i.new_employee_id, teacher_placeholder: i.new_teacher_placeholder ?? null, weekly_periods: i.new_weekly_periods!,
       employee_school_id: teacher?.school_id ?? null, employee_status: teacher?.status ?? null, employee_role: teacher?.role ?? null };
     if (i.action === 'create' || (i.action === 'deactivate' && i.existing_load_id == null)) projected.push({ ...values,
       ...(i.action === 'deactivate' ? {weekly_periods: 1, employee_id: null} : {}),
@@ -322,12 +339,14 @@ export function planTeachingLoadCopy(context: MatrixContext, source: TimetableTe
       employeeId = null;
       warnings.push({ code: 'source_teacher_removed', message: 'لم يعد المدرس متاحًا، وسيُحفظ النصاب بدون مدرس.' });
     }
-    changes.push({ subject_id: load.subject_id, section_id: load.section_id, action: 'upsert', weekly_periods: load.weekly_periods, employee_id: employeeId });
+    const placeholder = employeeId == null ? (mode === 'periods_only' ? target?.teacher_placeholder : load.teacher_placeholder) : null;
+    changes.push({ subject_id: load.subject_id, section_id: load.section_id, action: 'upsert', weekly_periods: load.weekly_periods, employee_id: employeeId,
+      ...(placeholder || target?.teacher_placeholder ? {teacher_placeholder: placeholder ?? null} : {}) });
   }
   return { changes, plan: planTeachingLoadMatrix(context, changes), warnings, unavailable };
 }
 
-export type MatrixDraft = Record<string, { periods?: string; employeeId?: number | null; deactivate?: boolean; include?: boolean }>;
+export type MatrixDraft = Record<string, { periods?: string; employeeId?: number | null; teacherPlaceholder?: string | null; deactivate?: boolean; include?: boolean }>;
 export function matrixCellExcluded(load: TimetableTeachingLoad | undefined, edit: MatrixDraft[string] = {}) {
   return edit.deactivate === true || (load?.status === 'inactive' && !edit.include && !edit.periods?.trim());
 }
@@ -365,8 +384,11 @@ export function matrixDraftChanges(data: TeachingLoadMatrixData, draft: MatrixDr
     const periods = edit.periods?.trim() ? Number(edit.periods) : existing?.weekly_periods;
     if (periods == null) return [];
     const employeeId = edit.employeeId === undefined ? existing?.employee_id ?? null : edit.employeeId;
-    if (existing && existing.weekly_periods === periods && existing.employee_id === employeeId) return [];
-    return [{ ...cell, action: 'upsert', weekly_periods: periods, employee_id: employeeId }];
+    const placeholder = employeeId != null ? null : edit.teacherPlaceholder !== undefined ? edit.teacherPlaceholder
+      : edit.employeeId === undefined ? existing?.teacher_placeholder ?? null : null;
+    if (existing && existing.weekly_periods === periods && existing.employee_id === employeeId && (existing.teacher_placeholder ?? null) === placeholder) return [];
+    return [{ ...cell, action: 'upsert', weekly_periods: periods, employee_id: employeeId,
+      ...(existing?.teacher_placeholder || placeholder || edit.teacherPlaceholder !== undefined ? {teacher_placeholder: placeholder} : {}) }];
   });
 }
 

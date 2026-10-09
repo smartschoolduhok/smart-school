@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
 import { createServer } from 'vite';
 import { signJWT } from '../src/lib/jwtSecurity.ts';
+import { migrationFiles, migrationSQL } from './helpers/teaching-load-matrix-fixture.mjs';
 import { solvePreparedTimetable } from '../src/lib/timetableSolverPrepared.ts';
 import { computeTimetableProposalDigest } from '../src/lib/timetableAdoption.ts';
 import { DEFAULT_TIMETABLE_PREFERENCES } from '../src/lib/timetablePreferences.ts';
@@ -49,15 +50,7 @@ class LocalD1 {
 async function fixture() {
   const database = new DatabaseSync(':memory:');
   database.exec('PRAGMA foreign_keys = ON');
-  for (const name of [
-    '0001_initial_schema.sql', '0002_phase2_academic_tables.sql', '0010_employees.sql',
-    '0016_auth_security.sql', '0023_timetable_foundation.sql',
-    '0024_teacher_timetable_constraints.sql', '0025_timetable_entries.sql',
-    '0026_timetable_adoption_locking.sql',
-    '0029_resource_access_links.sql',
-    '0051_timetable_school_preferences.sql',
-    '0052_school_user_accounts.sql',
-  ]) database.exec(migration(name));
+  for (const name of migrationFiles) database.exec(migrationSQL(name));
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'خاص', 'Duhok', 'active'),
