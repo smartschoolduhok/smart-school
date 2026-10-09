@@ -86,13 +86,20 @@ const pending=run(upgrade,['d1','migrations','list','phase19b-local-only']);
 assert.match(pending,/No migrations to apply/i);
 run(upgrade,['d1','execute','phase19b-local-only','--command','PRAGMA foreign_key_check']);
 
+// Keep the 0026 -> 0027 preservation proof above isolated. Current production
+// builders require the complete current schema, including named vacancies.
+for(const file of migrationFiles.filter(file=>file.slice(0,4)>'0027'))
+ copyFileSync(join(root,'migrations',file),join(upgrade.path,'migrations',file));
+run(upgrade,['d1','migrations','apply','phase19b-local-only']);
+
 // Execute the production statement builder through Wrangler's LOCAL workerd
 // D1 binding: bound JSON, UPDATE FROM, per-row triggers and batch rollback.
 const proxy=await getPlatformProxy({configPath:upgrade.configPath,persist:{path:join(upgrade.state,'v3')},remoteBindings:false,envFiles:[]});
 const setBased={};
 try {
  const db=proxy.env.DB;
- assert.equal((await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,upgradeFiles.length+1);
+ assert.equal((await db.prepare('SELECT COUNT(*) n FROM d1_migrations').first()).n,migrationFiles.length);
+ setBased.runtime_migrations=migrationFiles.length;
  const liveSnapshot=async()=>{
   const {results:tables}=await db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all();
   const rows=await db.batch(tables.map(t=>db.prepare(`SELECT * FROM "${t.name}"`)));
