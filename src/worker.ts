@@ -1,3 +1,4 @@
+import { parseTeacherWorkloadExtraWrite, type TeacherWorkloadExtra } from './lib/teacherWorkloadExtras'
 import { registerUserAccountRoutes, canManageAccount, updateOwnPassword, accountErrorResponse } from './lib/userAccounts'
 import { registerSchoolRegisterRoutes } from './lib/schoolRegistersDb'
 import { registerStaffDossierRoutes } from './lib/staffDossierDb'
@@ -4031,6 +4032,84 @@ app.put('/api/section-advisors', requireSameSchoolOrAdmin(), requireRoles(ACADEM
   }
 })
 
+// Workload supplements are intentionally not part of timetable scheduling context.
+app.get('/api/teacher-workload-extras', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+  const schoolId: number | null = c.get('resolvedSchoolId')
+  const yearId = Number(c.req.query('academic_year_id'))
+  if (schoolId == null || !Number.isSafeInteger(yearId) || yearId <= 0) return c.json({ error: 'حدد المدرسة والسنة الدراسية' }, 400)
+  const year = await validateTimetableAcademicYear(c.env.DB, schoolId, yearId)
+  if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+  const rows = await c.env.DB.prepare(`SELECT x.* FROM teacher_workload_extras x
+    JOIN employees e ON e.id=x.employee_id AND e.school_id=x.school_id AND e.role='teacher' AND e.status='active'
+    WHERE x.school_id=? AND x.academic_year_id=? AND x.deleted_at IS NULL ORDER BY x.id`).bind(schoolId, yearId).all<TeacherWorkloadExtra>()
+  return c.json({ data: rows.results || [] })
+})
+
+for (const operation of ['create', 'update', 'delete'] as const) {
+  app.on(operation === 'create' ? 'POST' : operation === 'update' ? 'PUT' : 'DELETE',
+    operation === 'create' ? '/api/teacher-workload-extras' : '/api/teacher-workload-extras/:id',
+    requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
+    try {
+      const text = await c.req.text()
+      if (text.length > 8000) return c.json({ error: 'طلب النصاب الإضافي غير صالح' }, 400)
+      let raw: unknown
+      try { raw = JSON.parse(text) } catch { return c.json({ error: 'طلب النصاب الإضافي غير صالح' }, 400) }
+      const id = operation === 'create' ? null : Number(c.req.param('id'))
+      if (id !== null && (!Number.isSafeInteger(id) || id <= 0)) return c.json({ error: 'معرّف غير صالح' }, 400)
+      const record = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : null
+      const input = operation === 'delete' ? null : parseTeacherWorkloadExtraWrite(raw)
+      if (operation !== 'delete' && (!input || (operation === 'create' ? input.expected_version !== 0 : input.expected_version <= 0)))
+        return c.json({ error: 'راجع المدرس والمادة وعدد الحصص والإصدار', code: 'invalid_workload_extra' }, 400)
+      if (operation === 'delete' && (!record || Object.keys(record).some(k => !['school_id', 'academic_year_id', 'expected_version'].includes(k))
+        || ['school_id', 'academic_year_id', 'expected_version'].some(k => typeof record[k] !== 'number' || !Number.isSafeInteger(record[k]) || (record[k] as number) <= 0)))
+        return c.json({ error: 'بيانات حذف النصاب غير صالحة' }, 400)
+      const scope = input || record!
+      const schoolId = scope.school_id as number, yearId = scope.academic_year_id as number, version = scope.expected_version as number
+      const user = c.get('user') as UserContext
+      const target = await resolveActiveWriteSchool(c.env.DB, user, schoolId)
+      if (!target.ok) return c.json({ error: target.error }, target.status)
+      const year = await validateTimetableAcademicYear(c.env.DB, target.schoolId, yearId)
+      if (!year.ok) return c.json({ error: year.error, code: year.code }, year.status)
+      if (id !== null) {
+        const current = await c.env.DB.prepare('SELECT * FROM teacher_workload_extras WHERE id=? AND school_id=? AND academic_year_id=? AND deleted_at IS NULL')
+          .bind(id, target.schoolId, yearId).first<TeacherWorkloadExtra>()
+        if (!current) return c.json({ error: 'النصاب الإضافي غير موجود' }, 404)
+        if (current.version !== version) return c.json({ error: 'تغير النصاب. حدّث الكشف قبل إعادة المحاولة.', code: 'stale_workload_extra' }, 409)
+        if (input && input.employee_id !== current.employee_id) return c.json({ error: 'لا يمكن نقل سجل النصاب إلى مدرس آخر؛ احذفه وأضف سجلًا جديدًا.' }, 400)
+      }
+      if (input) {
+        const teacher = await c.env.DB.prepare("SELECT id FROM employees WHERE id=? AND school_id=? AND role='teacher' AND status='active'")
+          .bind(input.employee_id, target.schoolId).first()
+        if (!teacher) return c.json({ error: 'اختر مدرسًا فعّالًا من المدرسة المختارة', code: 'invalid_workload_teacher' }, 400)
+      }
+      let saved: TeacherWorkloadExtra | null
+      if (operation === 'create') {
+        saved = await c.env.DB.prepare(`INSERT INTO teacher_workload_extras
+          (school_id,academic_year_id,employee_id,subject_name,weekly_periods,created_by_user_id,updated_by_user_id)
+          SELECT s.id,y.id,e.id,?,?,?,? FROM schools s JOIN academic_years y ON y.school_id=s.id
+          JOIN employees e ON e.school_id=s.id WHERE s.id=? AND s.status='active' AND y.id=?
+          AND e.id=? AND e.role='teacher' AND e.status='active' RETURNING *`)
+          .bind(input!.subject_name, input!.weekly_periods, user.id, user.id, target.schoolId, yearId, input!.employee_id).first<TeacherWorkloadExtra>()
+      } else {
+        // A single conditional statement performs the CAS and rechecks tenant/year/teacher eligibility.
+        saved = await c.env.DB.prepare(`UPDATE teacher_workload_extras SET
+          ${operation === 'delete' ? 'deleted_at=unixepoch(),' : 'subject_name=?,weekly_periods=?,'}
+          version=version+1,updated_by_user_id=?,updated_at=unixepoch()
+          WHERE id=? AND school_id=? AND academic_year_id=? AND version=? AND deleted_at IS NULL
+          AND EXISTS (SELECT 1 FROM schools s JOIN academic_years y ON y.school_id=s.id
+            WHERE s.id=teacher_workload_extras.school_id AND s.status='active' AND y.id=teacher_workload_extras.academic_year_id)
+          ${operation === 'delete' ? '' : "AND EXISTS (SELECT 1 FROM employees e WHERE e.id=teacher_workload_extras.employee_id AND e.school_id=teacher_workload_extras.school_id AND e.role='teacher' AND e.status='active')"}
+          RETURNING *`).bind(...(operation === 'delete' ? [] : [input!.subject_name, input!.weekly_periods]), user.id, id, target.schoolId, yearId, version).first<TeacherWorkloadExtra>()
+      }
+      if (!saved) return c.json({ error: 'تغير النصاب أو بيانات المدرسة أثناء الحفظ. حدّث الكشف ثم حاول مجددًا.', code: 'stale_workload_extra' }, 409)
+      return c.json({ data: saved }, operation === 'create' ? 201 : 200)
+    } catch (error) {
+      if (/UNIQUE constraint failed|workload_extra_/.test(String(error))) return c.json({ error: 'المادة مضافة لهذا المدرس أو تغيّرت بياناتها. حدّث الكشف.', code: 'workload_extra_conflict' }, 409)
+      return c.json({ error: 'تعذر حفظ النصاب خارج الجدول' }, 500)
+    }
+  })
+}
+
 app.get('/api/timetable/teacher-workload-summary', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAGEMENT_ROLES), async (c) => {
   const schoolId: number | null = c.get('resolvedSchoolId')
   const academicYearId = Number(c.req.query('academic_year_id'))
@@ -4039,7 +4118,7 @@ app.get('/api/timetable/teacher-workload-summary', requireSameSchoolOrAdmin(), r
   const yearValidation = await validateTimetableAcademicYear(c.env.DB, schoolId, academicYearId)
   if (!yearValidation.ok) return c.json({ error: yearValidation.error, code: yearValidation.code }, yearValidation.status)
   try {
-    const [school, academicYear, context, teachers, settings] = await Promise.all([
+    const [school, academicYear, context, teachers, settings, extras] = await Promise.all([
       c.env.DB.prepare(`
         SELECT id, name, name_en, province, logo_url, principal_name FROM schools
         WHERE id = ? AND status = 'active'
@@ -4062,6 +4141,7 @@ app.get('/api/timetable/teacher-workload-summary', requireSameSchoolOrAdmin(), r
         official_book_header_text: string | null;
         official_book_footer_text: string | null;
       }>(),
+      c.env.DB.prepare('SELECT * FROM teacher_workload_extras WHERE school_id=? AND academic_year_id=? AND deleted_at IS NULL ORDER BY id').bind(schoolId, academicYearId).all<TeacherWorkloadExtra>(),
     ])
     if (!school) return c.json({ error: 'المدرسة غير موجودة أو غير نشطة' }, 404)
     if (!academicYear) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404)
@@ -4074,7 +4154,7 @@ app.get('/api/timetable/teacher-workload-summary', requireSameSchoolOrAdmin(), r
         header_text: settings?.official_book_header_text || '',
         footer_text: settings?.official_book_footer_text || '',
       },
-      ...aggregateTeacherWorkloadSummary({ schoolId, academicYearId, teachers: teachers.results || [], ...context }),
+      ...aggregateTeacherWorkloadSummary({ schoolId, academicYearId, teachers: teachers.results || [], extras: extras.results || [], ...context }),
     }
     return c.json({ data })
   } catch {
