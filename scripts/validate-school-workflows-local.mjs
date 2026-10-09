@@ -37,6 +37,7 @@ try{
  const accountsMigration=readFileSync(join(root,'migrations/0052_school_user_accounts.sql'),'utf8');
  const employeeMigration=readFileSync(join(root,'migrations/0054_employee_records.sql'),'utf8');
  const transportMigration=readFileSync(join(root,'migrations/0056_student_transport.sql'),'utf8');
+ const placeholderMigration=readFileSync(join(root,'migrations/0059_timetable_teacher_placeholders.sql'),'utf8');
  const accountColumns=[
   'must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))',
   'temporary_password_expires_at INTEGER',
@@ -53,7 +54,10 @@ try{
   'private_driver_name TEXT','private_driver_phone TEXT',
  ];
  const parallelColumn='parallel_with_load_id INTEGER REFERENCES timetable_teaching_loads(id) ON DELETE RESTRICT';
+ const placeholderColumn='teacher_placeholder TEXT';
+ const loadColumns=[parallelColumn,placeholderColumn];
  assert.match(parallelMigration,new RegExp('ALTER TABLE timetable_teaching_loads ADD COLUMN '+parallelColumn.replace(/[()]/g,'\\$&')+';'));
+ assert.ok(placeholderMigration.includes('ALTER TABLE timetable_teaching_loads ADD COLUMN '+placeholderColumn+';'));
  const replacedEntryTriggers=new Set(['trg_timetable_entries_validate_insert','trg_timetable_entries_validate_update']);
  for(const old of before.schema){
   const actual=after.schema.find(item=>item.type===old.type&&item.name===old.name);
@@ -92,8 +96,8 @@ try{
    assert.deepEqual(actual,{...old,sql:sqlTokens(sql).map(t=>[t.kind,t.text])},old.name);
   }else if(old.type==='table'&&old.name==='timetable_teaching_loads'){
    assert.deepEqual(old.sql.at(-1),['symbol',')']);
-   const expected=[...old.sql.slice(0,-1),['symbol',','],...sqlTokens(parallelColumn).map(t=>[t.kind,t.text]),old.sql.at(-1)];
-   assert.deepEqual(actual,{...old,sql:expected},'only the declared nullable parallel FK is appended');
+   const expected=[...old.sql.slice(0,-1),...loadColumns.flatMap(column=>[['symbol',','],...sqlTokens(column).map(t=>[t.kind,t.text])]),old.sql.at(-1)];
+   assert.deepEqual(actual,{...old,sql:expected},'only the declared nullable parallel FK and teacher placeholder are appended');
    const references=(await db.prepare('PRAGMA foreign_key_list(timetable_teaching_loads)').all()).results.filter(r=>r.from==='parallel_with_load_id');
    assert.deepEqual(references,[{id:0,seq:0,table:'timetable_teaching_loads',from:'parallel_with_load_id',to:'id',on_update:'NO ACTION',on_delete:'RESTRICT',match:'NONE'}]);
   }else if(old.type==='table'&&old.name==='timetable_schedule_versions'){
@@ -136,13 +140,16 @@ try{
    }).sort();
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-4),content,hash:digest(content)},value,'every previous employee column, value, row count, SQLite type and content hash is unchanged');
   }else if(name==='timetable_teaching_loads'){
-   const actual=after.tables[name],newColumn=actual.columns.at(-1);
-   assert.deepEqual(newColumn,{cid:value.columns.length,name:'parallel_with_load_id',type:'INTEGER',notnull:0,dflt_value:null,pk:0,hidden:0});
+   const actual=after.tables[name];
+   assert.deepEqual(actual.columns.slice(-loadColumns.length),loadColumns.map((declaration,index)=>{
+    const [name,type]=declaration.split(' ');
+    return {cid:value.columns.length+index,name,type,notnull:0,dflt_value:null,pk:0,hidden:0};
+   }),'load additions have exactly the declared types and nullable NULL defaults');
    const content=actual.content.map(encoded=>{
-    const row=JSON.parse(encoded);assert.deepEqual(row.pop(),['null',null],'existing loads must remain unlinked');
+    const row=JSON.parse(encoded);assert.deepEqual(row.splice(-loadColumns.length),loadColumns.map(()=>['null',null]),'existing loads must remain unlinked and receive no inferred placeholder');
     return JSON.stringify(row);
    }).sort();
-   assert.deepEqual({...actual,columns:actual.columns.slice(0,-1),content,hash:digest(content)},value,'every prior load column, value and SQLite type is unchanged');
+   assert.deepEqual({...actual,columns:actual.columns.slice(0,-loadColumns.length),content,hash:digest(content)},value,'every prior load column, value and SQLite type is unchanged');
   }else if(name==='students'){
    const actual=after.tables[name];
    assert.deepEqual(actual.columns.slice(-transportColumns.length),transportColumns.map((declaration,index)=>{
