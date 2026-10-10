@@ -84,7 +84,7 @@ export function TeacherWorkloadPreview({ schoolId, academicYearId, initialMode =
 
   return <>
     <div className="print-controls mx-auto max-w-4xl px-4 pt-5 text-right text-sm text-gray-600" dir="rtl">
-      <p>الكشف يجمع الحصص المحفوظة في الجدول وأنصبة خارج الجدول المسجلة للسنة المختارة، مع بيان كل منهما. يظهر المدرس دون حصص بالعدد صفر.</p>
+      <p>الكشف يعرض جميع الأنصبة المعتمدة للمدرسين في السنة المختارة. يظهر المدرس دون حصص بالعدد صفر.</p>
       <div className="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="تفاصيل كشف الحصص">
         <span>نوع الكشف:</span>
         {(['summary', 'detailed'] as const).map(value => <button key={value} type="button" aria-pressed={mode === value} onClick={() => setMode(value)} className={`rounded-md border px-3 py-2 ${mode === value ? 'border-primary-600 bg-primary-600 text-white' : 'border-gray-300 bg-white text-gray-700'}`}>

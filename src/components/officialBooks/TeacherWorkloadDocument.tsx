@@ -89,7 +89,6 @@ export interface TeacherWorkloadDocumentProps {
 
 export function TeacherWorkloadDocument({ summary, issuedAt, mode = 'summary', ref }: TeacherWorkloadDocumentProps) {
   const { school, academic_year: academicYear, document_settings: settings, teachers } = summary;
-  const hasExtras = (summary.total_extra_weekly_periods || 0) > 0;
   const total = (teacher: Teacher) => teacher.report_weekly_periods ?? teacher.weekly_periods;
   const grandTotal = summary.total_report_weekly_periods ?? summary.total_weekly_periods;
   const layout = resolvedOfficialBookLayout(settings.official_book_layout, school);
@@ -169,12 +168,11 @@ export function TeacherWorkloadDocument({ summary, issuedAt, mode = 'summary', r
       <td>{row.assignment!.class_name || '—'}</td><td>{row.assignment!.section_name || '—'}</td><td>{row.assignment!.subject_name || '—'}</td><td><bdi dir="ltr">{digits(row.assignment!.weekly_periods)}</bdi></td>
     </tr>;
     if (row.kind === 'extra') return <tr key={row.key} {...common} className="teacher-workload-extra">
-      <td colSpan={2}>خارج الجدول</td><td>{row.extra!.subject_name}</td><td><bdi dir="ltr">{digits(row.extra!.weekly_periods)}</bdi></td>
+      <td>—</td><td>—</td><td>{row.extra!.subject_name}</td><td><bdi dir="ltr">{digits(row.extra!.weekly_periods)}</bdi></td>
     </tr>;
-    if (row.kind === 'empty') return <tr key={row.key} {...common}><td colSpan={3}>لا توجد حصص في الجدول المحفوظ</td><td>{digits(0)}</td></tr>;
+    if (row.kind === 'empty') return <tr key={row.key} {...common}><td colSpan={3}>لا توجد حصص معتمدة</td><td>{digits(0)}</td></tr>;
     return <tr key={row.key} {...common} className={row.kind === 'total' ? 'teacher-workload-total' : 'teacher-workload-subtotal'}>
-      <th colSpan={3} scope="row">{row.kind === 'total' ? 'المجموع الكلي' : `مجموع حصص ${row.teacher!.employee_name}`}
-        {hasExtras && <small className="block">مجدول: {digits(row.kind === 'total' ? summary.total_weekly_periods : row.teacher!.weekly_periods)} · خارج الجدول: {digits(row.kind === 'total' ? summary.total_extra_weekly_periods || 0 : row.teacher!.extra_weekly_periods || 0)}</small>}</th>
+      <th colSpan={3} scope="row">{row.kind === 'total' ? 'المجموع الكلي' : `مجموع حصص ${row.teacher!.employee_name}`}</th>
       <td><bdi dir="ltr">{digits(row.kind === 'total' ? grandTotal : total(row.teacher!))}</bdi></td>
     </tr>;
   };
@@ -202,7 +200,7 @@ export function TeacherWorkloadDocument({ summary, issuedAt, mode = 'summary', r
 
       <h1>كشف الحصص الأسبوعية للهيئة التدريسية{mode === 'detailed' ? ' — بالتفصيل' : ''}</h1>
       <p className="teacher-workload-intro">
-        يبيّن الكشف أدناه عدد الحصص الأسبوعية لكل مدرس{mode === 'detailed' ? ' حسب الصف والشعبة والمادة' : ''} وفق الجدول الدراسي المحفوظ{hasExtras ? ' والأنصبة المسجلة خارج الجدول' : ''} للعام الدراسي{' '}
+        يبيّن الكشف أدناه عدد الحصص الأسبوعية لكل مدرس{mode === 'detailed' ? ' حسب الصف والشعبة والمادة' : ''} وفق الأنصبة المعتمدة للعام الدراسي{' '}
         <bdi dir="ltr">{digits(academicYear.name)}</bdi>.
       </p>
 
@@ -213,18 +211,18 @@ export function TeacherWorkloadDocument({ summary, issuedAt, mode = 'summary', r
         <tbody>{detailPages[pageIndex].map(renderDetailRow)}</tbody>
       </table> : <table className="teacher-workload-table">
         <caption className="sr-only">أسماء المدرسين وعدد حصصهم الأسبوعية — {academicYear.name}</caption>
-        <colgroup><col className="teacher-workload-index-column" /><col />{hasExtras && <><col style={{width:"24mm"}} /><col style={{width:"24mm"}} /></>}<col style={{width:hasExtras ? "24mm" : "42mm"}} /></colgroup>
-        <thead><tr><th scope="col">ت</th><th scope="col">اسم المدرس</th>{hasExtras && <><th scope="col">في الجدول</th><th scope="col">خارج الجدول</th></>}<th scope="col">{hasExtras ? "الإجمالي" : "عدد الحصص الأسبوعية"}</th></tr></thead>
+        <colgroup><col className="teacher-workload-index-column" /><col /><col style={{ width: '42mm' }} /></colgroup>
+        <thead><tr><th scope="col">ت</th><th scope="col">اسم المدرس</th><th scope="col">عدد الحصص الأسبوعية</th></tr></thead>
         <tbody>
           {summaryPages[pageIndex].map((teacher, index) => <tr key={teacher.teacher_key || teacher.employee_id}>
             <td><bdi dir="ltr">{digits(pageIndex * TEACHERS_PER_PAGE + index + 1)}</bdi></td>
             <th scope="row">{teacher.employee_name}</th>
-            <>{hasExtras && <><td>{digits(teacher.weekly_periods)}</td><td>{digits(teacher.extra_weekly_periods || 0)}</td></>}<td><bdi dir="ltr">{digits(total(teacher))}</bdi></td></>
+            <td><bdi dir="ltr">{digits(total(teacher))}</bdi></td>
           </tr>)}
-          {summaryPages[pageIndex].length === 0 && <tr><td colSpan={hasExtras ? 5 : 3}>لا يوجد مدرسون نشطون في المدرسة.</td></tr>}
+          {summaryPages[pageIndex].length === 0 && <tr><td colSpan={3}>لا يوجد مدرسون نشطون في المدرسة.</td></tr>}
           {pageIndex === pageCount - 1 && <tr className="teacher-workload-total">
             <th colSpan={2} scope="row">المجموع الكلي</th>
-            <>{hasExtras && <><td>{digits(summary.total_weekly_periods)}</td><td>{digits(summary.total_extra_weekly_periods || 0)}</td></>}<td><bdi dir="ltr">{digits(grandTotal)}</bdi></td></>
+            <td><bdi dir="ltr">{digits(grandTotal)}</bdi></td>
           </tr>}
         </tbody>
       </table>}

@@ -369,7 +369,7 @@ test('missing or inconsistent detail data cannot print a misleading detailed rep
 });
 
 
-test('reports separate scheduled and report-only totals and detailed extras never invent a class or section',async t=>{
+test('reports show combined approved totals and detailed extras never invent a class or section',async t=>{
  const extra={id:8,school_id:3,academic_year_id:5,employee_id:9,subject_name:'التربية المسيحية',weekly_periods:5,version:2};
  const summary=fixture({teachers:[{employee_id:9,employee_name:'مريم',weekly_periods:18,extra_weekly_periods:5,report_weekly_periods:23,extras:[extra]},
   {employee_id:null,teacher_key:'placeholder:English',employee_name:'مدرس الإنكليزي',weekly_periods:19},
@@ -377,12 +377,15 @@ test('reports separate scheduled and report-only totals and detailed extras neve
  Object.assign(summary,{total_scheduled_weekly_periods:67,total_extra_weekly_periods:5,total_report_weekly_periods:72});
  const u=await mount(t,TeacherWorkloadPreview,{loadSummary:async()=>({data:summary})});
  assert.equal(teacherRow(u,'مريم').querySelector('td:last-child').textContent,'23');
- assert.deepEqual([...teacherRow(u,'مريم').querySelectorAll('td')].map(e=>e.textContent),['1','18','5','23']);
- assert.match(report(u).textContent,/خارج الجدول/);
+ assert.deepEqual([...teacherRow(u,'مريم').querySelectorAll('td')].map(e=>e.textContent),['1','23']);
+ assert.deepEqual([...report(u).querySelectorAll('thead th')].map(e=>e.textContent),['ت','اسم المدرس','عدد الحصص الأسبوعية']);
+ assert.match(report(u).textContent,/وفق الأنصبة المعتمدة/);
+ assert.doesNotMatch(u.container.textContent,/خارج الجدول|في الجدول|مجدول:/);
  const options=[...u.container.querySelectorAll('select[aria-label="مدرس النصاب الإضافي"] option')];assert.equal(options.length,2);assert.equal(options[1].value,'9');
  await click(button(u,'بالتفصيل حسب'));
- const extraRow=u.container.querySelector('.teacher-workload-extra');assert.deepEqual([...extraRow.cells].map(e=>e.textContent),['خارج الجدول','التربية المسيحية','5']);assert.equal(extraRow.cells[0].colSpan,2);
- assert.match(u.container.querySelector('.teacher-workload-subtotal').textContent,/مجدول: 18.*خارج الجدول: 5/);
+ const extraRow=u.container.querySelector('.teacher-workload-extra');assert.deepEqual([...extraRow.cells].map(e=>e.textContent),['—','—','التربية المسيحية','5']);
+ assert.equal(u.container.querySelector('.teacher-workload-subtotal td').textContent,'23');
+ assert.doesNotMatch(report(u).textContent,/خارج الجدول|في الجدول|مجدول:/);
  assert.equal(u.container.querySelector('.teacher-workload-total td').textContent,'72');
  assert.equal(u.container.querySelectorAll('.teacher-workload-teacher').length,3);
 });
