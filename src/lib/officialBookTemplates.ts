@@ -329,6 +329,27 @@ export const BUILT_IN_OFFICIAL_BOOK_TEMPLATES: BuiltInOfficialBookTemplate[] = [
       { ...COMMITTEE_FIELDS[3] },
     ],
   },
+  {
+    preset_key: 'staff-school-orders',
+    source: 'builtin',
+    category: 'administrative',
+    title: 'الأوامر المدرسية للمدرسين',
+    description: 'كتاب رسمي مع قائمة كادر قابلة لتعديل الأسماء والعناوين الوظيفية والترتيب، أو طباعة القائمة وحدها كمرفق.',
+    paper_size: 'A4',
+    requires_student: false,
+    requires_employee: false,
+    body_text: `إلى / {{recipient}}
+م / الأوامر المدرسية للمدرسين
+
+تحية طيبة...
+
+نرفق لكم الأوامر المدرسية الخاصة بالمدرسين لمدرستنا وحسب الاختصاصات، تفضلكم بإجراء اللازم وإعلامنا.
+
+المرفقات: قائمة بأسماء المدرسين.`,
+    fields: [
+      { key: 'recipient', label: 'الجهة المخاطَبة', type: 'text', placeholder: 'أدخل الجهة المخاطَبة في الكتاب', max_length: 300 },
+    ],
+  },
 ];
 
 export const OFFICIAL_BOOK_SYSTEM_PLACEHOLDERS = [

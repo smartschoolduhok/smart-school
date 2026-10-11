@@ -196,6 +196,7 @@ import {
   validateOfficialBookNumber,
   validateOfficialBookFieldValues,
 } from './lib/officialBookTemplates'
+import { parseOfficialBookStaffRoster, type OfficialBookStaffRoster } from './lib/officialBookStaff'
 import {
   normalizeOfficialBookLayout,
   resolvedOfficialBookLayout,
@@ -12578,6 +12579,27 @@ app.put('/api/settings/system', requireSameSchoolOrAdmin(), requireRoles(SETTING
 // PHASE 12: OFFICIAL BOOKS MODULE
 // ═══════════════════════════════════════════════════════════════
 
+// Only the fields needed to prepare staff official books; HR access stays separate.
+app.get('/api/official-book-staff', requireSameSchoolOrAdmin(), async (c) => {
+  const user = c.get('user') as UserContext | null;
+  if (!user || !canManageOfficialBooks(user.role_key)) {
+    return c.json({ error: 'غير مسموح: لا تملك صلاحية إدارة الكتب الرسمية' }, 403);
+  }
+  try {
+    const target = await resolveActiveWriteSchool(c.env.DB, user, c.req.query('school_id'));
+    if (!target.ok) return c.json({ error: target.error }, target.status);
+    const rows = await c.env.DB.prepare(`
+      SELECT id, school_id, full_name, job_title, role, status
+      FROM employees
+      WHERE school_id = ? AND status = 'active'
+      ORDER BY full_name, id
+    `).bind(target.schoolId).all<{ id: number; school_id: number; full_name: string; job_title: string | null; role: string; status: string }>();
+    return c.json({ data: rows.results || [] });
+  } catch {
+    return c.json({ error: 'فشل في جلب قائمة الكادر للكتب الرسمية' }, 500);
+  }
+});
+
 // ===========================================
 // GET /api/official-book-templates
 // ===========================================
@@ -12882,7 +12904,28 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       return c.json({ error: 'هذا القالب يتطلب اختيار موظف' }, 400);
     }
 
-    const numberError = validateOfficialBookNumber(body.document_number, presetKey === 'student-acceptance-no-objection');
+    let staffRoster: OfficialBookStaffRoster | null = null;
+    if (presetKey === 'staff-school-orders') {
+      const rosterResult = parseOfficialBookStaffRoster(body.staff_roster);
+      if (rosterResult.error || !rosterResult.value) return c.json({ error: rosterResult.error }, 400);
+      staffRoster = rosterResult.value;
+      const employeeIds = Array.from(new Set(staffRoster.rows.flatMap((row) => row.employee_id === null ? [] : [row.employee_id])));
+      if (employeeIds.length) {
+        const employees = await db.prepare(`SELECT id, school_id FROM employees WHERE id IN (${employeeIds.map(() => '?').join(',')})`)
+          .bind(...employeeIds).all<{ id: number; school_id: number }>();
+        if (employees.results?.some((employee) => employee.school_id !== schoolId)) {
+          return c.json({ error: 'غير مسموح: أحد أسماء الكادر مرتبط بموظف تابع لمدرسة أخرى' }, 403);
+        }
+        if (employees.results?.length !== employeeIds.length) {
+          return c.json({ error: 'أحد موظفي قائمة الكادر غير موجود؛ أعد اختياره أو أضفه كاسم يدوي' }, 404);
+        }
+      }
+    } else if (body.staff_roster !== undefined) {
+      return c.json({ error: 'قائمة الكادر متاحة في قالب الأوامر المدرسية للمدرسين' }, 400);
+    }
+
+    const numberError = validateOfficialBookNumber(body.document_number,
+      presetKey === 'student-acceptance-no-objection' || presetKey === 'staff-school-orders');
     if (numberError) return c.json({ error: numberError }, 400);
     const schoolDocumentNumber = typeof body.document_number === 'string' ? body.document_number.trim() : null;
     const documentDate = body.document_date === undefined ? todayOfficialBookDate() : body.document_date;
@@ -12897,6 +12940,9 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       ? validateOfficialBookFieldValues(template, body.field_values)
       : validateOfficialBookAdHocFieldValues(body.field_values);
     if (fieldResult.error) return c.json({ error: fieldResult.error }, 400);
+    if (staffRoster?.mode === 'letter_with_attachment' && !fieldResult.values.recipient) {
+      return c.json({ error: 'أدخل الجهة المخاطَبة للكتاب الرسمي' }, 400);
+    }
 
     const settings = await db.prepare(`
       SELECT official_book_header_text, official_book_footer_text,
@@ -12991,6 +13037,7 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
       preset_key: presetKey,
       template_fields: fieldResult.values,
       academic_year: activeAcademicYear?.name || null,
+      ...(staffRoster ? { staff_roster: staffRoster, source_body_text: sourceBodyText.trim() } : {}),
     };
 
     const dateStr = formatOfficialBookIssueDate(documentDate, snapshot.use_arabic_indic_digits ? 'ar-IQ' : 'en-GB');

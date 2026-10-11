@@ -16,6 +16,11 @@ import {
   validateOfficialBookFieldValues,
 } from '../src/lib/officialBookTemplates.ts';
 import {
+  defaultOfficialBookStaffRoster,
+  normalizeOfficialBookStaffRoster,
+  parseOfficialBookStaffRoster,
+} from '../src/lib/officialBookStaff.ts';
+import {
   normalizeOfficialBookLayout,
   resolvedOfficialBookLayout,
   validateOfficialBookLayout,
@@ -112,7 +117,8 @@ async function createFixture() {
     INSERT INTO users (id, school_id, full_name, email, role_id, status, auth_version) VALUES
       (1, 1, 'Owner One', 'owner-one@example.test', 2, 'active', 1),
       (2, 2, 'Owner Two', 'owner-two@example.test', 2, 'active', 1),
-      (3, 1, 'Parent One', 'parent-one@example.test', 8, 'active', 1);
+      (3, 1, 'Parent One', 'parent-one@example.test', 8, 'active', 1),
+      (4, 1, 'Registrar One', 'registrar-one@example.test', 7, 'active', 1);
   `);
 
   return {
@@ -122,6 +128,7 @@ async function createFixture() {
       ownerOne: await signJWT({ id: 1, email: 'owner-one@example.test', auth_version: 1 }, secret),
       ownerTwo: await signJWT({ id: 2, email: 'owner-two@example.test', auth_version: 1 }, secret),
       parent: await signJWT({ id: 3, email: 'parent-one@example.test', auth_version: 1 }, secret),
+      registrar: await signJWT({ id: 4, email: 'registrar-one@example.test', auth_version: 1 }, secret),
     },
   };
 }
@@ -135,14 +142,16 @@ async function api(fixture, token, method, path, body) {
 }
 
 test('built-in registry covers recurring student, verification, committee and staff books', () => {
-  assert.equal(BUILT_IN_OFFICIAL_BOOK_TEMPLATES.length, 10);
-  assert.equal(new Set(BUILT_IN_OFFICIAL_BOOK_TEMPLATES.map(item => item.preset_key)).size, 10);
+  assert.equal(BUILT_IN_OFFICIAL_BOOK_TEMPLATES.length, 11);
+  assert.equal(new Set(BUILT_IN_OFFICIAL_BOOK_TEMPLATES.map(item => item.preset_key)).size, 11);
   assert.deepEqual(
     new Set(BUILT_IN_OFFICIAL_BOOK_TEMPLATES.map(item => item.category)),
     new Set(['student', 'verification', 'committee', 'administrative']),
   );
   assert.ok(findBuiltInOfficialBookTemplate('student-attendance-confirmation')?.requires_student);
   assert.ok(findBuiltInOfficialBookTemplate('committee-examinations')?.body_text.includes('اللجنة الامتحانية'));
+  assert.equal(findBuiltInOfficialBookTemplate('staff-school-orders')?.requires_employee, false);
+  assert.doesNotMatch(findBuiltInOfficialBookTemplate('staff-school-orders').body_text, /نينوى|دهوك|المنار/);
   assert.equal(findBuiltInOfficialBookTemplate('unknown'), null);
 });
 
@@ -187,7 +196,7 @@ test('templates API returns built-ins without duplicating rows and hides them fr
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.data.length, 0);
-  assert.equal(payload.meta.presets.length, 10);
+  assert.equal(payload.meta.presets.length, 11);
   assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM official_book_templates').get().count, 0);
 
   const denied = await api(fixture, fixture.tokens.parent, 'GET', '/api/official-book-templates?school_id=1');
@@ -429,6 +438,7 @@ test('school-selected dates apply to every preset and stay separate from creatio
       school_id: 1, preset_key: preset.preset_key, document_number: `DATE-${index}`, document_date: '2024-02-29',
       ...(preset.requires_student ? {student_id: 1} : {}),
       ...(preset.requires_employee ? {employee_id: 1} : {}),
+      ...(preset.preset_key === 'staff-school-orders' ? {staff_roster: {mode: 'letter_with_attachment', rows: [{employee_id: 1, name: 'سعد محمود', job_title: 'معاون'}]}} : {}),
       field_values: Object.fromEntries(preset.fields.map(field => [field.key, field.default_value || 'نص المدرسة'])),
     });
     assert.equal(response.status, 201, `${preset.preset_key}: ${JSON.stringify(await response.clone().json())}`);
@@ -494,4 +504,162 @@ test('custom template date, header and footer use school settings and remain fro
   assert.equal(update.status, 200);
   const reread = await api(fixture, fixture.tokens.ownerOne, 'GET', `/api/official-books/${created.id}`);
   assert.equal(render((await reread.json()).data), html);
+});
+
+test('staff roster defaults keep active names, put the deputy first and use مدرس for teachers', () => {
+  const employees = [
+    { id: 4, full_name: 'فرهاد عبدالله طاهر (متقاعد)', role: 'teacher', job_title: 'فيزياء', status: 'active' },
+    { id: 3, full_name: 'انور يونس عيدان (متقاعد)', role: 'teacher', job_title: '', status: 'active' },
+    { id: 2, full_name: 'سارة سمير مصطفى', role: 'staff', job_title: 'معاونة', status: 'active' },
+    { id: 1, full_name: 'اسم مؤرشف', role: 'teacher', job_title: 'مدرس', status: 'archived' },
+  ];
+  const before = structuredClone(employees);
+  const rows = defaultOfficialBookStaffRoster(employees);
+  assert.deepEqual(rows.map(row => row.employee_id), [2, 3, 4]);
+  assert.equal(rows[0].job_title, 'معاونة');
+  assert.equal(rows[1].job_title, 'مدرس');
+  assert.equal(rows[2].name, 'فرهاد عبدالله طاهر (متقاعد)');
+  assert.equal(rows[2].job_title, 'مدرس');
+  assert.deepEqual(employees, before);
+  const defaults = defaultOfficialBookStaffRoster([
+    {id: 7, full_name: 'نائب الإدارة', role: 'vice_principal', job_title: null, status: 'active'},
+    {id: 8, full_name: 'أحمد الكاتب', role: 'staff', job_title: 'كاتب', status: 'active'},
+  ]);
+  assert.equal(defaults[0].job_title, 'معاون');
+  assert.equal(defaults[1].job_title, 'كاتب');
+  assert.equal(parseOfficialBookStaffRoster({mode: 'attachment_only', rows: [{...rows[2], job_title: 'مدرس أول'}]}).value.rows[0].job_title, 'مدرس أول');
+});
+
+test('official-book staff lookup lets the registrar prepare books without exposing HR fields or another school', async () => {
+  const fixture = await createFixture();
+  fixture.database.prepare("UPDATE employees SET phone = '07700000000', email = 'private@example.test', salary_amount = 900000, notes = 'بيانات إدارية خاصة' WHERE id = 1").run();
+  fixture.database.prepare("INSERT INTO employees (id, school_id, full_name, role, job_title, status) VALUES (3, 1, 'موظف مؤرشف', 'teacher', 'مدرس', 'archived')").run();
+  const response = await api(fixture, fixture.tokens.registrar, 'GET', '/api/official-book-staff?school_id=1');
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.deepEqual(payload.data, [{ id: 1, school_id: 1, full_name: 'سعد محمود', job_title: 'معاون المدير', role: 'staff', status: 'active' }]);
+  assert.deepEqual(Object.keys(payload.data[0]).sort(), ['id', 'school_id', 'full_name', 'job_title', 'role', 'status'].sort());
+  assert.equal((await api(fixture, fixture.tokens.registrar, 'GET', '/api/employees?school_id=1')).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.registrar, 'GET', '/api/employees/1/profile?school_id=1')).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.registrar, 'GET', '/api/official-book-staff?school_id=2')).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.parent, 'GET', '/api/official-book-staff?school_id=1')).status, 403);
+  const otherSchool = await api(fixture, fixture.tokens.ownerTwo, 'GET', '/api/official-book-staff?school_id=2');
+  assert.equal(otherSchool.status, 200);
+  assert.deepEqual((await otherSchool.json()).data.map(employee => employee.id), [2]);
+  const generated = await api(fixture, fixture.tokens.registrar, 'POST', '/api/official-books', {
+    school_id: 1, preset_key: 'staff-school-orders', document_number: 'كادر/تسجيل1', field_values: {recipient: 'الجهة المختصة'},
+    staff_roster: {mode: 'letter_with_attachment', rows: defaultOfficialBookStaffRoster(payload.data)},
+  });
+  assert.equal(generated.status, 201);
+});
+
+test('staff roster validates both modes, manual rows and bounds without silently dropping invalid rows', () => {
+  const row = { name: '  مدرس جديد (متقاعد)  ', job_title: '  مدرس  ' };
+  const parsed = parseOfficialBookStaffRoster({ mode: 'attachment_only', rows: [row] });
+  assert.equal(parsed.error, null);
+  assert.deepEqual(parsed.value.rows, [{ employee_id: null, name: 'مدرس جديد (متقاعد)', job_title: 'مدرس' }]);
+  assert.equal(normalizeOfficialBookStaffRoster(parsed.value).mode, 'attachment_only');
+  assert.equal(parseOfficialBookStaffRoster({ mode: 'letter_with_attachment', rows: Array.from({length: 100}, () => row) }).error, null);
+  const invalid = [
+    null, [], {}, { mode: 'invalid', rows: [row] }, { mode: 'attachment_only', rows: [] },
+    { mode: 'attachment_only', rows: Array.from({length: 101}, () => row) },
+    ...[
+      null, {}, { ...row, employee_id: -1 }, { ...row, employee_id: '1' }, { ...row, employee_id: 1.2 },
+      { ...row, name: '' }, { ...row, name: 'س'.repeat(301) }, { ...row, name: 'سارة\nسمير' },
+      { ...row, job_title: '' }, { ...row, job_title: 'س'.repeat(151) }, { ...row, job_title: 'مدرس\u0000' },
+    ].map(value => ({ mode: 'letter_with_attachment', rows: [row, value] })),
+  ];
+  for (const raw of invalid) {
+    assert.ok(parseOfficialBookStaffRoster(raw).error, JSON.stringify(raw));
+    assert.equal(normalizeOfficialBookStaffRoster(raw), null);
+  }
+});
+
+test('staff official book stores editable names, titles and order as a frozen school snapshot', async () => {
+  const fixture = await createFixture();
+  const rows = [
+    { employee_id: 1, name: 'سعد محمود (متقاعد)', job_title: 'معاون' },
+    { name: 'مدرس جديد', job_title: 'مدرس لغة عربية' },
+  ];
+  const response = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {
+    school_id: 1, preset_key: 'staff-school-orders', document_number: 'كادر/36', document_date: '2026-10-11',
+    field_values: { recipient: 'الجهة المختصة في المدرسة' },
+    staff_roster: { mode: 'letter_with_attachment', rows },
+    body_text: 'إلى / {{recipient}}\nم / أوامر مدرسية\nنرفق قائمة الكادر للعمل بموجبها بتاريخ {{date}}.',
+  });
+  assert.equal(response.status, 201);
+  const created = (await response.json()).data;
+  const record = fixture.database.prepare('SELECT * FROM official_books WHERE id = ?').get(created.id);
+  const snapshot = JSON.parse(record.settings_snapshot_json);
+  assert.equal(snapshot.preset_key, 'staff-school-orders');
+  assert.equal(snapshot.staff_roster.mode, 'letter_with_attachment');
+  assert.deepEqual(snapshot.staff_roster.rows, [rows[0], { ...rows[1], employee_id: null }]);
+  assert.equal(snapshot.school_name, 'مدرسة الحدباء');
+  assert.equal(snapshot.logo_url, '/school-logo.png');
+  assert.equal(snapshot.official_book_header_text, 'قسم التعليم العام');
+  assert.ok(record.body_text.includes('الجهة المختصة في المدرسة'));
+  assert.equal(snapshot.source_body_text, 'إلى / {{recipient}}\nم / أوامر مدرسية\nنرفق قائمة الكادر للعمل بموجبها بتاريخ {{date}}.');
+  assert.ok(record.body_text.includes(formatOfficialBookIssueDate('2026-10-11')));
+  const reissuedResponse = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {
+    school_id: 1, preset_key: 'staff-school-orders', document_number: 'كادر/37', document_date: '2026-10-12',
+    field_values: { recipient: 'جهة أخرى بعد تعديل النسخة' }, staff_roster: snapshot.staff_roster,
+    body_text: snapshot.source_body_text,
+  });
+  assert.equal(reissuedResponse.status, 201);
+  const reissued = (await reissuedResponse.json()).data;
+  const reissuedRecord = fixture.database.prepare('SELECT body_text, settings_snapshot_json FROM official_books WHERE id = ?').get(reissued.id);
+  assert.ok(reissuedRecord.body_text.includes('جهة أخرى بعد تعديل النسخة'));
+  assert.ok(reissuedRecord.body_text.includes(formatOfficialBookIssueDate('2026-10-12')));
+  assert.doesNotMatch(reissuedRecord.body_text, /الجهة المختصة في المدرسة|\{\{recipient\}\}|\{\{date\}\}/);
+  assert.equal(JSON.parse(reissuedRecord.settings_snapshot_json).source_body_text, snapshot.source_body_text);
+  assert.equal(fixture.database.prepare('SELECT body_text FROM official_books WHERE id = ?').get(created.id).body_text, record.body_text);
+  assert.equal(fixture.database.prepare('SELECT full_name, job_title FROM employees WHERE id = 1').get().full_name, 'سعد محمود');
+  assert.equal(fixture.database.prepare('SELECT full_name, job_title FROM employees WHERE id = 1').get().job_title, 'معاون المدير');
+  fixture.database.prepare("UPDATE employees SET full_name = 'اسم جديد', job_title = 'كاتب' WHERE id = 1").run();
+  fixture.database.prepare("UPDATE schools SET name = 'مدرسة بعد التعديل', logo_url = '/new-logo.png' WHERE id = 1").run();
+  const reread = await api(fixture, fixture.tokens.ownerOne, 'GET', `/api/official-books/${created.id}`);
+  assert.equal(reread.status, 200);
+  const frozen = (await reread.json()).data.settings_snapshot;
+  assert.deepEqual(frozen.staff_roster, snapshot.staff_roster);
+  assert.equal(frozen.logo_url, '/school-logo.png');
+  assert.equal(frozen.school_name, 'مدرسة الحدباء');
+});
+
+test('staff attachment-only mode needs no recipient and another school uses its own snapshot', async () => {
+  const fixture = await createFixture();
+  const response = await api(fixture, fixture.tokens.ownerTwo, 'POST', '/api/official-books', {
+    school_id: 2, preset_key: 'staff-school-orders', document_number: 'مرفق/1',
+    staff_roster: { mode: 'attachment_only', rows: [{ employee_id: 2, name: 'موظف آخر', job_title: 'كاتب' }] },
+  });
+  assert.equal(response.status, 201);
+  const created = (await response.json()).data;
+  const snapshot = JSON.parse(fixture.database.prepare('SELECT settings_snapshot_json FROM official_books WHERE id = ?').get(created.id).settings_snapshot_json);
+  assert.equal(snapshot.staff_roster.mode, 'attachment_only');
+  assert.equal(snapshot.school_name, 'مدرسة أخرى');
+  assert.equal(snapshot.logo_url, null);
+  assert.equal(snapshot.official_book_header_text, null);
+  assert.equal(snapshot.template_fields.recipient, '');
+  assert.deepEqual(snapshot.staff_roster.rows, [{ employee_id: 2, name: 'موظف آخر', job_title: 'كاتب' }]);
+});
+
+test('staff generation rejects invalid lists and other-school employee references without saving', async () => {
+  const fixture = await createFixture();
+  const validRow = { employee_id: 1, name: 'سعد محمود', job_title: 'مدرس' };
+  const draft = { school_id: 1, preset_key: 'staff-school-orders', document_number: 'كادر/اختبار1', field_values: { recipient: 'الجهة المختصة' } };
+  for (const roster of [undefined, null, {mode: 'attachment_only', rows: []}, {mode: 'bad', rows: [validRow]}, {mode: 'attachment_only', rows: [{...validRow, name: 'اسم\nآخر'}]}]) {
+    assert.equal((await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {...draft, staff_roster: roster})).status, 400);
+  }
+  const roster = {mode: 'letter_with_attachment', rows: [validRow]};
+  for (const documentNumber of [undefined, null, '', '  ']) {
+    const response = await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {...draft, document_number: documentNumber, staff_roster: roster});
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /العدد|عددًا/);
+  }
+  assert.equal((await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {...draft, field_values: {}, staff_roster: roster})).status, 400);
+  assert.equal((await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {...draft, staff_roster: {...roster, rows: [{...validRow, employee_id: 2}]}})).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', {...draft, staff_roster: {...roster, rows: [{...validRow, employee_id: 9999}]}})).status, 404);
+  assert.equal((await api(fixture, fixture.tokens.ownerTwo, 'POST', '/api/official-books', {...draft, staff_roster: roster})).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.parent, 'POST', '/api/official-books', {...draft, staff_roster: roster})).status, 403);
+  assert.equal((await api(fixture, fixture.tokens.ownerOne, 'POST', '/api/official-books', { school_id: 1, preset_key: 'student-attendance-confirmation', student_id: 1, field_values: { recipient: 'جامعة', purpose: 'التقديم' }, staff_roster: roster })).status, 400);
+  assert.equal(fixture.database.prepare('SELECT COUNT(*) AS count FROM official_books').get().count, 0);
 });

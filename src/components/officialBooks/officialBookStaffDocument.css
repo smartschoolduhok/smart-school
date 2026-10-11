@@ -1,0 +1,105 @@
+/* Loaded with the document renderer, including list modals opened before printing. */
+.official-book-staff-page {
+  position: relative;
+  isolation: isolate;
+  min-height: 267mm;
+  background: white;
+}
+
+.official-book-staff-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 267mm;
+}
+
+.official-book-staff-watermark {
+  position: absolute;
+  z-index: 0;
+  top: 48mm;
+  left: 50%;
+  width: min(176mm, 100%);
+  height: 190mm;
+  transform: translateX(-50%);
+  object-fit: contain;
+  opacity: 0.1;
+  pointer-events: none;
+}
+
+.official-book-staff-header {
+  flex-shrink: 0;
+}
+
+.official-book-staff-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: Arial, Tahoma, sans-serif;
+  font-size: 11.5pt;
+  line-height: 1.2;
+  direction: rtl;
+}
+
+.official-book-staff-serial-column { width: 13mm; }
+.official-book-staff-job-column { width: 48mm; }
+
+.official-book-staff-table th,
+.official-book-staff-table td {
+  height: 7.9mm;
+  border: 1px solid #334155;
+  padding: 1.2mm 2mm;
+  box-sizing: border-box;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.official-book-staff-table th {
+  background: #eef1f3;
+  font-weight: 700;
+}
+
+.official-book-staff-table td,
+.official-book-staff-table .official-book-staff-name {
+  font-weight: 400;
+}
+
+@media print {
+  .official-book-staff-letter {
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .official-book-staff-table {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  .official-book-staff-table thead {
+    display: table-header-group;
+  }
+
+  .official-book-staff-table tr,
+  .official-book-staff-list-title,
+  .official-book-staff-attachment-closing {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .official-book-staff-list-title {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+}
+
+@media screen {
+  .official-book-staff-document {
+    display: grid;
+    gap: 15mm;
+  }
+
+  .official-book-staff-letter {
+    border-bottom: 1px dashed #cbd5e1;
+    padding-bottom: 5mm;
+  }
+}
