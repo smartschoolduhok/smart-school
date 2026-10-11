@@ -6,7 +6,7 @@ import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSel
 import {
   getOfficialBookTemplates, createOfficialBookTemplate, updateOfficialBookTemplate,
   getOfficialBooks, createOfficialBook, cancelOfficialBook,
-  verifyOfficialBook, getStudents, getEmployees
+  verifyOfficialBook, getStudents, getOfficialBookStaff
 } from '../../lib/api';
 import {
   FileText, Printer, CheckCircle, AlertCircle,
@@ -17,6 +17,11 @@ import type { OfficialBookTemplateField } from '../../lib/officialBookTemplates'
 import { officialBookTemplateDefaults, OFFICIAL_BOOK_NUMBER_MAX_LENGTH, validateOfficialBookNumber } from '../../lib/officialBookTemplates';
 import { formatOfficialBookDisplayDate, todayOfficialBookDate, validateOfficialBookIssueDate } from '../../lib/officialBookDates';
 import { officialBookDate } from '../../lib/officialBookLayout';
+import {
+  defaultOfficialBookStaffRoster, normalizeOfficialBookStaffRoster, parseOfficialBookStaffRoster,
+  type OfficialBookStaffRoster,
+} from '../../lib/officialBookStaff';
+import { StaffRosterEditor } from '../../components/officialBooks/StaffRosterEditor';
 import {
   OfficialBookDocument,
   type OfficialBookDocumentRecord,
@@ -85,7 +90,16 @@ interface BookRecord extends OfficialBookDocumentRecord {
 }
 
 interface StudentOption { id: number; full_name: string; student_number: string; }
-interface EmployeeOption { id: number; full_name: string; job_title: string; }
+interface EmployeeOption { id: number; full_name: string; job_title: string; role?: string; status?: string; school_id?: number; }
+
+function schoolEmployeeOptions(rows: Record<string, any>[], schoolId: number): EmployeeOption[] {
+  return rows.filter(e => (!e.status || e.status === 'active') && (e.school_id == null || Number(e.school_id) === schoolId))
+    .map(e => ({ id: Number(e.id), full_name: String(e.full_name || ''), job_title: String(e.job_title || ''), role: e.role, status: e.status, school_id: schoolId }));
+}
+
+function staffBookSnapshot(book: BookRecord): Record<string, any> {
+  try { return JSON.parse(book.settings_snapshot_json || '{}'); } catch { return {}; }
+}
 
 const SYSTEM_BOOK_FIELDS = new Set([
   'school_name', 'principal_name', 'student_name', 'student_number', 'class_name',
@@ -121,6 +135,8 @@ export default function OfficialBooksPage() {
   const schoolScope = useTenantSchool();
   const { schoolId } = schoolScope;
   const [activeTab, setActiveTab] = useState<TabKey>('list');
+  const [copyDraft, setCopyDraft] = useState<BookRecord | null>(null);
+  useEffect(() => setCopyDraft(null), [schoolId]);
 
   if (!canViewBooks(user?.role_key)) {
     return (
@@ -151,7 +167,7 @@ export default function OfficialBooksPage() {
         {TAB_CONFIG.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => { setCopyDraft(null); setActiveTab(tab.key); }}
             className={`flex items-center gap-2 px-4 py-2 rounded-t-lg text-sm font-medium whitespace-nowrap transition-colors ${
               activeTab === tab.key
                 ? 'bg-primary-50 text-primary-700 border-b-2 border-primary-600'
@@ -166,8 +182,8 @@ export default function OfficialBooksPage() {
 
       {/* Tab Content */}
       {activeTab === 'templates' && <TemplatesTab user={user} schoolId={schoolId} />}
-      {activeTab === 'generate' && <GenerateTab user={user} schoolId={schoolId} />}
-      {activeTab === 'list' && <ListTab user={user} schoolId={schoolId} />}
+      {activeTab === 'generate' && <GenerateTab user={user} schoolId={schoolId} copyDraft={copyDraft} />}
+      {activeTab === 'list' && <ListTab user={user} schoolId={schoolId} onCopy={book => { setCopyDraft(book); setActiveTab('generate'); }} />}
       {activeTab === 'verify' && <VerifyTab />}
     </div>
   );
@@ -383,7 +399,7 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
 /* ═══════════════════════════════════════
    Generate Tab
    ═══════════════════════════════════════ */
-function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null }) {
+function GenerateTab({ user, schoolId, copyDraft }: { user: any; schoolId: number | null; copyDraft: BookRecord | null }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [templates, setTemplates] = useState<TemplateRecord[]>([]);
   const [presets, setPresets] = useState<TemplateRecord[]>([]);
@@ -398,6 +414,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
   const [documentDate, setDocumentDate] = useState(todayOfficialBookDate);
   const [bodyDraft, setBodyDraft] = useState('');
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const [staffRoster, setStaffRoster] = useState<OfficialBookStaffRoster>({ mode: 'letter_with_attachment', rows: [] });
   const [error, setError] = useState('');
   const [generated, setGenerated] = useState<any>(null);
 
@@ -414,6 +431,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     setDocumentDate(todayOfficialBookDate());
     setBodyDraft('');
     setFieldValues({});
+    setStaffRoster({ mode: 'letter_with_attachment', rows: [] });
     setError('');
     setGenerated(null);
     setLoading(false);
@@ -427,7 +445,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     void Promise.all([
       getOfficialBookTemplates(schoolId),
       getStudents(schoolId),
-      getEmployees(schoolId),
+      getOfficialBookStaff(schoolId),
     ]).then(([templateResult, studentResult, employeeResult]) => {
       if (!isCurrent()) return;
       if (templateResult.error || studentResult.error || employeeResult.error) {
@@ -439,16 +457,31 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
         .map((t) => ({ ...t, source: 'school' })));
       setPresets((templateResult.meta?.presets || []) as TemplateRecord[]);
       setStudents((studentResult.data || []).map((s: any) => ({ id: s.id, full_name: s.full_name, student_number: s.student_number })));
-      setEmployees((employeeResult.data || []).map((e: any) => ({ id: e.id, full_name: e.full_name, job_title: e.job_title })));
+      setEmployees(schoolEmployeeOptions(employeeResult.data || [], schoolId));
+      if (copyDraft?.school_id === schoolId) {
+        const snapshot = staffBookSnapshot(copyDraft);
+        const copiedRoster = normalizeOfficialBookStaffRoster(snapshot.staff_roster);
+        if (snapshot.preset_key === 'staff-school-orders' && copiedRoster) {
+          setSelectedTemplate('preset:staff-school-orders');
+          setTitleDraft(copyDraft.title);
+          setBodyDraft(typeof snapshot.source_body_text === 'string' ? snapshot.source_body_text : copyDraft.body_text);
+          setFieldValues(snapshot.template_fields || {});
+          setStaffRoster(copiedRoster);
+        }
+      }
     });
-  }, [schoolId]);
+  }, [schoolId, copyDraft]);
 
   const allTemplates = [...presets, ...templates];
   const optionKey = (item: TemplateRecord) => item.source === 'builtin'
     ? `preset:${item.preset_key}`
     : `school:${item.id}`;
   const template = allTemplates.find((item) => optionKey(item) === selectedTemplate);
-  const activeFields = template?.fields || (template ? inferredCustomFields(bodyDraft) : []);
+  const isStaffBook = template?.preset_key === 'staff-school-orders';
+  const requiresSchoolNumber = isStaffBook || template?.preset_key === 'student-acceptance-no-objection';
+  const attachmentOnly = isStaffBook && staffRoster.mode === 'attachment_only';
+  const activeFields = attachmentOnly ? [] : (template?.fields || (template ? inferredCustomFields(bodyDraft) : []))
+    .map(field => isStaffBook && field.key === 'recipient' ? { ...field, required: true } : field);
 
   const handleTemplateChange = (value: string) => {
     const nextTemplate = allTemplates.find((item) => optionKey(item) === value);
@@ -461,10 +494,27 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
     setDocumentNumber('');
     setDocumentDate(todayOfficialBookDate());
     setBodyDraft(nextTemplate?.body_text || '');
+    setStaffRoster({ mode: 'letter_with_attachment', rows: nextTemplate?.preset_key === 'staff-school-orders' ? defaultOfficialBookStaffRoster(employees) : [] });
     const nextFields = nextTemplate?.fields || (nextTemplate ? inferredCustomFields(nextTemplate.body_text) : []);
     setFieldValues(nextFields.length > 0
       ? officialBookTemplateDefaults({ fields: nextFields })
       : {});
+  };
+
+  const reloadStaff = async () => {
+    if (schoolId == null) return;
+    const isCurrent = captureSchoolRequest();
+    setLoading(true); setError('');
+    try {
+      const result = await getOfficialBookStaff(schoolId);
+      if (!isCurrent()) return;
+      if (result.error) { setError(result.error); return; }
+      const active = schoolEmployeeOptions(result.data || [], schoolId);
+      setEmployees(active);
+      setStaffRoster(prev => ({ ...prev, rows: defaultOfficialBookStaffRoster(active) }));
+      setGenerated(null);
+    } catch { if (isCurrent()) setError('فشل تحميل كادر المدرسة'); }
+    finally { if (isCurrent()) setLoading(false); }
   };
 
   const handleGenerate = async () => {
@@ -479,7 +529,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
       setError(dateError);
       return;
     }
-    const numberError = validateOfficialBookNumber(documentNumber.trim() || undefined, template.preset_key === 'student-acceptance-no-objection');
+    const numberError = validateOfficialBookNumber(documentNumber.trim() || undefined, requiresSchoolNumber);
     if (numberError) {
       setError(numberError);
       return;
@@ -497,6 +547,11 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
       document_date: documentDate,
       ...(documentNumber.trim() ? {document_number: documentNumber.trim()} : {}),
     };
+    if (isStaffBook) {
+      const result = parseOfficialBookStaffRoster(staffRoster);
+      if (result.error || !result.value) { setError(result.error || 'أكمل قائمة الكادر'); return; }
+      data.staff_roster = result.value;
+    }
     if (template.source === 'builtin') data.preset_key = template.preset_key;
     else data.template_id = template.id;
     if (template.requires_student) {
@@ -530,6 +585,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
   return (
     <div className="max-w-4xl space-y-4">
       <h3 className="text-lg font-bold">إنشاء كتاب رسمي</h3>
+      {copyDraft?.school_id === schoolId && <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-900">نسخة معدلة من كتاب سابق. راجع القائمة واختر العدد والتاريخ للإصدار الجديد.</p>}
 
       <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5">
         <div>
@@ -549,9 +605,9 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
         </div>
 
         {template && <label className="block">
-          <span className="mb-1 block text-sm font-medium text-gray-700">العدد (رقم الكتاب){template.preset_key === 'student-acceptance-no-objection' ? ' *' : ''}</span>
-          <input aria-label="العدد (رقم الكتاب)" type="text" required={template.preset_key === 'student-acceptance-no-objection'} value={documentNumber} onChange={event => setDocumentNumber(event.target.value)} maxLength={OFFICIAL_BOOK_NUMBER_MAX_LENGTH} placeholder="أدخل العدد المعتمد في المدرسة" className="w-full rounded-lg border px-3 py-2 text-sm"/>
-          <span className="mt-1 block text-xs text-gray-500">{template.preset_key === 'student-acceptance-no-objection' ? 'تحدده المدرسة ويظهر أعلى الكتاب عند الطباعة.' : 'يمكن للمدرسة تحديد العدد؛ يُنشأ رقم تلقائي إذا تُرك فارغًا.'}</span>
+          <span className="mb-1 block text-sm font-medium text-gray-700">العدد (رقم الكتاب){requiresSchoolNumber ? ' *' : ''}</span>
+          <input aria-label="العدد (رقم الكتاب)" type="text" required={requiresSchoolNumber} value={documentNumber} onChange={event => { setDocumentNumber(event.target.value); setGenerated(null); }} maxLength={OFFICIAL_BOOK_NUMBER_MAX_LENGTH} placeholder="أدخل العدد المعتمد في المدرسة" className="w-full rounded-lg border px-3 py-2 text-sm"/>
+          <span className="mt-1 block text-xs text-gray-500">{requiresSchoolNumber ? 'تحدده المدرسة ويظهر أعلى الكتاب عند الطباعة.' : 'يمكن للمدرسة تحديد العدد؛ يُنشأ رقم تلقائي إذا تُرك فارغًا.'}</span>
         </label>}
 
         {template && <label className="block">
@@ -580,6 +636,8 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
           </div>
         )}
 
+        {isStaffBook && <StaffRosterEditor value={staffRoster} disabled={loading} onReload={() => { void reloadStaff(); }} onChange={value => { setStaffRoster(value); setGenerated(null); }} />}
+
         {template && activeFields.length > 0 && (
           <fieldset className="rounded-xl border border-blue-100 bg-blue-50/40 p-4">
             <legend className="px-2 text-sm font-bold text-blue-900">بيانات الكتاب المتغيرة</legend>
@@ -593,7 +651,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
                     <textarea
                       rows={4}
                       value={fieldValues[field.key] || ''}
-                      onChange={event => setFieldValues(prev => ({ ...prev, [field.key]: event.target.value }))}
+                      onChange={event => { setFieldValues(prev => ({ ...prev, [field.key]: event.target.value })); setGenerated(null); }}
                       maxLength={field.max_length}
                       placeholder={field.placeholder}
                       className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
@@ -602,7 +660,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
                     <input
                       type="text"
                       value={fieldValues[field.key] || ''}
-                      onChange={event => setFieldValues(prev => ({ ...prev, [field.key]: event.target.value }))}
+                      onChange={event => { setFieldValues(prev => ({ ...prev, [field.key]: event.target.value })); setGenerated(null); }}
                       maxLength={field.max_length}
                       placeholder={field.placeholder}
                       className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
@@ -620,11 +678,11 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
             <div className="space-y-3 border-t border-gray-200 p-4">
               <label className="block">
                 <span className="mb-1 block text-sm font-medium text-gray-700">عنوان الكتاب</span>
-                <input type="text" value={titleDraft} onChange={event => setTitleDraft(event.target.value)} maxLength={180} className="w-full rounded-lg border px-3 py-2 text-sm" />
+                <input type="text" value={titleDraft} onChange={event => { setTitleDraft(event.target.value); setGenerated(null); }} maxLength={180} className="w-full rounded-lg border px-3 py-2 text-sm" />
               </label>
               <label className="block">
                 <span className="mb-1 block text-sm font-medium text-gray-700">نص الكتاب</span>
-                <textarea dir="rtl" rows={13} value={bodyDraft} onChange={event => setBodyDraft(event.target.value)} maxLength={12_000} className="w-full rounded-lg border px-3 py-2 text-sm leading-relaxed" />
+                <textarea dir="rtl" rows={13} value={bodyDraft} onChange={event => { setBodyDraft(event.target.value); setGenerated(null); }} maxLength={12_000} className="w-full rounded-lg border px-3 py-2 text-sm leading-relaxed" />
               </label>
               <p className="text-xs leading-relaxed text-gray-500">
                 اترك المتغيرات بين الأقواس كما هي ليملأها النظام، مثل {'{{student_name}}'} و{'{{academic_year}}'}. التعديل يخص هذا الإصدار ولا يغيّر أصل القالب الجاهز.
@@ -669,7 +727,7 @@ function GenerateTab({ user, schoolId }: { user: any; schoolId: number | null })
 /* ═══════════════════════════════════════
    List Tab
    ═══════════════════════════════════════ */
-function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
+function ListTab({ user, schoolId, onCopy }: { user: any; schoolId: number | null; onCopy: (book: BookRecord) => void }) {
   const captureSchoolRequest = useSchoolRequestGuard(schoolId);
   const [books, setBooks] = useState<BookRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -736,6 +794,7 @@ function ListTab({ user, schoolId }: { user: any; schoolId: number | null }) {
                <button onClick={() => { setPreviewBook(b); }} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="معاينة"><Eye size={16} /></button>
                {canManageBooks(user?.role_key) && schoolId != null && b.status === 'active' && (
                  <>
+                   {staffBookSnapshot(b).preset_key === 'staff-school-orders' && normalizeOfficialBookStaffRoster(staffBookSnapshot(b).staff_roster) && <button type="button" onClick={() => onCopy(b)} className="rounded-lg px-2 py-1 text-sm text-blue-700 hover:bg-blue-50">إنشاء نسخة معدلة</button>}
                    <a href={`/print/official-book/${b.id}`} className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg inline-flex items-center" title="معاينة A4 والطباعة"><Printer size={16} /></a>
                    <button onClick={() => handleCancel(b.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-lg" title="إلغاء"><XCircle size={16} /></button>
                  </>

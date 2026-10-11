@@ -28,21 +28,29 @@ const createdAt = Date.UTC(2026, 9, 9, 12) / 1_000;
 const record = (documentDate = '2026-09-15') => ({id: 12, school_id: 1, title: 'كتاب صادر', body_text: 'نص', paper_size: 'A4', status: 'active', document_number: 'مدرسة/١٢', document_date: documentDate, created_at: createdAt, verification_token: 'test-token'});
 const response = body => new Response(JSON.stringify(body), {headers: {'Content-Type': 'application/json'}});
 
-async function mount(t, {admin = false, issue = async body => record(body.document_date)} = {}) {
+async function mount(t, {admin = false, staff = false, historyBook = null, issue = async body => record(body.document_date)} = {}) {
   localStorage.clear(); sessionStorage.clear(); systemAdminSchoolSessionStore.setSchoolId(null);
   const writes = [];
   globalThis.fetch = async (url, options = {}) => {
     const path = String(url).split('?')[0];
     if (path === '/api/auth/me') return response({data: {id: 1, school_id: admin ? null : 1, role_key: admin ? 'system_admin' : 'school_owner', full_name: 'اختبار'}, csrf_token: 'a'.repeat(64)});
     if (path === '/api/schools') return response({data: [1, 2].map(id => ({id, name: `مدرسة ${id}`, status: 'active'}))});
-    if (path === '/api/official-book-templates') return response({data: [{...template, id: 8}], meta: {presets: [{...template, source: 'builtin', preset_key: 'administrative'}, {...template, source: 'builtin', preset_key: 'student-acceptance-no-objection', title: 'عدم ممانعة'}]}});
-    if (path === '/api/students' || path === '/api/employees') return response({data: []});
+    if (path === '/api/official-book-templates') return response({data: [{...template, id: 8}], meta: {presets: [{...template, source: 'builtin', preset_key: 'administrative'}, {...template, source: 'builtin', preset_key: 'student-acceptance-no-objection', title: 'عدم ممانعة'}, ...(staff ? [{...template, source: 'builtin', preset_key: 'staff-school-orders', title: 'الأوامر المدرسية للمدرسين'}] : [])]}});
+    if (path === '/api/students') return response({data: []});
+    if (path === '/api/official-book-staff') {
+      const schoolId = Number(new URL(String(url), 'http://localhost').searchParams.get('school_id'));
+      return response({data: staff ? [
+        {id: schoolId * 10 + 1, school_id: schoolId, full_name: `مدرس مدرسة ${schoolId}`, job_title: 'مدرس', role: 'teacher', status: 'active'},
+        {id: schoolId * 10 + 2, school_id: schoolId, full_name: `معاونة مدرسة ${schoolId}`, job_title: 'معاونة', role: 'staff', status: 'active'},
+        {id: schoolId * 10 + 3, school_id: schoolId, full_name: 'اسم مؤرشف', job_title: 'مدرس', status: 'archived'},
+      ] : []});
+    }
     if (path === '/api/official-books') {
       if (options.method === 'POST') {
         const body = JSON.parse(options.body); writes.push(body);
         return response({data: await issue(body)});
       }
-      return response({data: [record()]});
+      return response({data: [historyBook || record()]});
     }
     if (path === '/api/verify/official-book/test-token') {
       const {created_at, ...verified} = record();
@@ -133,4 +141,62 @@ test('history and verification distinguish the immutable issue date from the rec
   await click(button(ui, 'تحقق'));
   assert.ok(ui.container.textContent.includes(dateText));
   assert.ok(ui.container.textContent.includes(createdText));
+});
+
+test('staff book edits names and titles, adds manual rows, reorders and sends the chosen print mode', async t => {
+  const ui = await mount(t, {staff: true});
+  await generateTab(ui, 'preset:staff-school-orders');
+  assert.equal(ui.container.querySelector('[aria-label="اسم الكادر 1"]').value, 'معاونة مدرسة 1');
+  assert.equal(ui.container.querySelector('[aria-label="العنوان الوظيفي 1"]').value, 'معاونة');
+  assert.doesNotMatch(ui.container.textContent, /اسم مؤرشف/);
+  await input(ui.container.querySelector('[aria-label="اسم الكادر 2"]'), 'فرهاد عبدالله طاهر (متقاعد)');
+  await input(ui.container.querySelector('[aria-label="العنوان الوظيفي 2"]'), 'مدرس أول');
+  await click(button(ui, 'إضافة اسم'));
+  await input(ui.container.querySelector('[aria-label="اسم الكادر 3"]'), 'اسم مضاف');
+  await input(ui.container.querySelector('[aria-label="العنوان الوظيفي 3"]'), 'كاتب');
+  await click(ui.container.querySelector('[aria-label="رفع الاسم 3"]'));
+  await input(ui.container.querySelector('[aria-label="طريقة طباعة كتاب الكادر"]'), 'attachment_only');
+  await input(numberInput(ui), 'كادر/١');
+  await click(button(ui, 'إنشاء الكتاب'));
+  assert.equal(ui.writes.length, 1);
+  assert.equal(ui.writes[0].staff_roster.mode, 'attachment_only');
+  assert.deepEqual(ui.writes[0].staff_roster.rows, [
+    {employee_id: 12, name: 'معاونة مدرسة 1', job_title: 'معاونة'},
+    {employee_id: null, name: 'اسم مضاف', job_title: 'كاتب'},
+    {employee_id: 11, name: 'فرهاد عبدالله طاهر (متقاعد)', job_title: 'مدرس أول'},
+  ]);
+  await click(ui.container.querySelector('[aria-label="حذف الاسم 2"]'));
+  assert.equal(ui.container.querySelectorAll('[aria-label="تعديل قائمة الكادر"] tbody tr').length, 2);
+  assert.doesNotMatch(ui.container.textContent, /تم إنشاء الكتاب بنجاح/);
+});
+
+test('school switching discards the previous staff list and loads only the new school roster', async t => {
+  const ui = await mount(t, {admin: true, staff: true});
+  await input(ui.container.querySelector('#system-admin-target-school'), '1');
+  await generateTab(ui, 'preset:staff-school-orders');
+  await input(ui.container.querySelector('[aria-label="اسم الكادر 1"]'), 'تعديل المدرسة الأولى');
+  await input(ui.container.querySelector('#system-admin-target-school'), '2');
+  assert.equal(ui.container.querySelector('[aria-label="اسم الكادر 1"]'), null);
+  await input(templateInput(ui), 'preset:staff-school-orders');
+  assert.equal(ui.container.querySelector('[aria-label="اسم الكادر 1"]').value, 'معاونة مدرسة 2');
+  await input(numberInput(ui), 'كادر/٢');
+  await click(button(ui, 'إنشاء الكتاب'));
+  assert.equal(ui.writes[0].school_id, 2);
+  assert.deepEqual(ui.writes[0].staff_roster.rows.map(row => row.employee_id), [22, 21]);
+});
+
+test('saved staff letters reopen with editable source placeholders, snapshot rows and a fresh document number', async t => {
+  const sourceBody = 'إلى / {{recipient}} بتاريخ {{date}}';
+  const historyBook = {...record(), body_text: 'إلى / جهة سابقة بتاريخ 15/9/2026', settings_snapshot_json: JSON.stringify({preset_key: 'staff-school-orders', source_body_text: sourceBody, template_fields: {recipient: 'جهة سابقة'}, staff_roster: {mode: 'attachment_only', rows: [{employee_id: 11, name: 'اسم مصحح (متقاعد)', job_title: 'مدرس'}]}})};
+  const ui = await mount(t, {staff: true, historyBook});
+  await click(button(ui, 'إنشاء نسخة معدلة'));
+  assert.equal(ui.container.querySelector('[aria-label="اسم الكادر 1"]').value, 'اسم مصحح (متقاعد)');
+  assert.equal(numberInput(ui).value, '');
+  await click(button(ui, 'إنشاء الكتاب'));
+  assert.equal(ui.writes.length, 0);
+  await input(numberInput(ui), 'كادر/٣');
+  await input(ui.container.querySelector('[aria-label="العنوان الوظيفي 1"]'), 'معاون');
+  await click(button(ui, 'إنشاء الكتاب'));
+  assert.equal(ui.writes[0].staff_roster.rows[0].job_title, 'معاون');
+  assert.equal(ui.writes[0].body_text, sourceBody);
 });
