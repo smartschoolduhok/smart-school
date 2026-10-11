@@ -154,7 +154,7 @@ function staffLetterPresentation(book: OfficialBookDocumentRecord): { recipient:
   if (!/^(?:إلى|الى)[ \t]*\//.test(recipient) || !/^م[ \t]*\/[ \t]*\S/.test(subject)) {
     return { recipient: '', subject: book.title, body: book.body_text };
   }
-  return { recipient, subject, body: lines.slice(subjectIndex + 1).join('\n').replace(/^\n+/, '') };
+  return { recipient, subject: `م / ${book.title}`, body: lines.slice(subjectIndex + 1).join('\n').replace(/^\n+/, '') };
 }
 
 function StaffOfficialBookDocument({ book, roster, verificationUrl }: {

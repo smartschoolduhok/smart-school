@@ -77,6 +77,8 @@ test('builtin staff letter displays recipient before a single subject and preser
   assert.match(body.textContent, /^تحية طيبة/);
   assert.doesNotMatch(body.textContent, /إلى \/|م \/ الأوامر المدرسية للمدرسين/);
   assert.equal(issuedBook.body_text, issuedBody);
+  const renamed = render({ override: { ...issuedBook, title: 'قائمة الكادر المعدلة' } });
+  assert.equal(renamed.querySelector('.official-book-staff-letter h1').textContent, 'م / قائمة الكادر المعدلة');
 });
 
 test('custom staff letter bodies without the recipient-subject opening are displayed in full', () => {
