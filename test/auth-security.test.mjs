@@ -296,3 +296,10 @@ test('migration and worker store revoked jti values instead of raw JWTs', async 
   assert.doesNotMatch(worker, /token_blacklist/);
   assert.doesNotMatch(worker, /default-dev-secret-change-me/);
 });
+
+test('API error responses never echo raw runtime or database error messages', async () => {
+  const worker = await readFile(new URL('../src/worker.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(worker, /detail:\s*(err|error|message)\b/);
+  assert.doesNotMatch(worker, /detail:\s*\w+\.message/);
+  assert.match(worker, /function apiErrorResponse\(c: any, err: unknown/);
+});
