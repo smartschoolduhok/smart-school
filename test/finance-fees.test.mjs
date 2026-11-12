@@ -68,6 +68,8 @@ function runSingleStatement(db,query){
  statement.run();
 }
 function createdFinanceTriggers(db){return db.prepare("SELECT name FROM sqlite_schema WHERE type='trigger'").all().map(r=>r.name).filter(n=>financeTriggers.includes(n)).sort();}
+// Newer Wrangler keeps the comment lines that precede a statement inside its chunk.
+function statementBody(query){return query.replace(/^(?:\s*--[^\n]*\n)+\s*/,'');}
 test('Wrangler splits exact LF 0028 into 45 independently compiled statements and 18 complete triggers',t=>{
  const f=financeFixture(t,{through:'0027'}),bytes=readFileSync(new URL('../migrations/0028_finance_fee_payment_integrity.sql',import.meta.url));
  const sql=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes),queries=unstable_splitSqlQuery(sql);
@@ -76,10 +78,10 @@ test('Wrangler splits exact LF 0028 into 45 independently compiled statements an
  // statement boundary, not just at a regex/count assertion.
  for(const query of queries)runSingleStatement(f.db,query);
  assert.equal(queries.length,45);
- const triggers=queries.filter(q=>/^CREATE TRIGGER\b/i.test(q));assert.equal(triggers.length,18);
+ const triggers=queries.map(statementBody).filter(q=>/^CREATE TRIGGER\b/i.test(q));assert.equal(triggers.length,18);
  for(const query of queries)assert.ok((query.match(/\bCREATE TRIGGER\b/gi)??[]).length<=1);
  for(const trigger of triggers)assert.match(trigger,/\bBEGIN\b[\s\S]*\bEND;?$/);
- const view=queries.find(q=>/^CREATE VIEW finance_treasury_readiness\b/.test(q));assert.ok(view);assert.doesNotMatch(view,/CREATE TRIGGER/i);
+ const view=queries.map(statementBody).find(q=>/^CREATE VIEW finance_treasury_readiness\b/.test(q));assert.ok(view);assert.doesNotMatch(view,/CREATE TRIGGER/i);
  assert.deepEqual(createdFinanceTriggers(f.db),financeTriggers);
  const objects={table:['fee_receipt_payments'],view:['finance_fee_readiness','finance_treasury_readiness'],index:[
   'idx_student_fees_identity','idx_fee_payments_request','idx_fee_payments_active_fee','idx_fee_receipts_unique_number',
@@ -132,7 +134,7 @@ function assertTriggerTerminators(chunk){
 }
 for(const name of financeTriggers)test('remote-parser compatibility: one final END; in '+name,()=>{
  const chunks=unstable_splitSqlQuery(migrationSQL('0028_finance_fee_payment_integrity.sql'));
- const chunk=chunks.find(q=>q.startsWith('CREATE TRIGGER '+name+' '));assert.ok(chunk,name);
+ const chunk=chunks.map(statementBody).find(q=>q.startsWith('CREATE TRIGGER '+name+' '));assert.ok(chunk,name);
  assertTriggerTerminators(chunk);
 });
 test('terminator inspection ignores strings/comments but rejects inner CASE END; and lowercase begin',()=>{
@@ -199,8 +201,12 @@ for(const code of stableGuardCodes)test('CASE-to-WHERE preserves TRUE/FALSE/NULL
 });
 test('regression demonstrates why exec masked all 18 swallowed triggers in the old 27 chunks',t=>{
  const old=migrationSQL('0028_finance_fee_payment_integrity.sql').replace(/\bEND (?=[),])/g,'END');
- const chunks=unstable_splitSqlQuery(old);assert.equal(chunks.length,27);
- assert.match(chunks.at(-1),/^CREATE VIEW finance_treasury_readiness\b/);
+ const raw=unstable_splitSqlQuery(old);
+ // Older Wrangler swallowed the view and all 18 triggers into one final chunk; newer
+ // releases split them apart, so rebuild that exact chunk to keep the demonstration.
+ const viewAt=raw.findIndex(q=>/^CREATE VIEW finance_treasury_readiness\b/.test(statementBody(q)));
+ const chunks=raw.length===27?raw:[...raw.slice(0,viewAt),raw.slice(viewAt).map(q=>/;\s*$/.test(q)?q:q+';').join('\n')];assert.equal(chunks.length,27);
+ assert.match(statementBody(chunks.at(-1)),/^CREATE VIEW finance_treasury_readiness\b/);
  assert.equal((chunks.at(-1).match(/CREATE TRIGGER\b/g)??[]).length,18);
  const strict=financeFixture(t,{through:'0027'});
  assert.throws(()=>{for(const query of chunks)runSingleStatement(strict.db,query);},/trailing SQL/);
