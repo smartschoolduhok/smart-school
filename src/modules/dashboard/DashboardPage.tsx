@@ -33,8 +33,8 @@ export default function DashboardPage() {
   const [retry, setRetry] = useState(0);
   const isSystemAdmin = user?.role_key === 'system_admin';
   const isParent = user?.role_key === 'parent';
-  const quickActions = useMemo(() => getDailyNavigationItems(user?.role_key), [user?.role_key]);
-  const groups = useMemo(() => getVisibleNavigationGroups(user?.role_key), [user?.role_key]);
+  const quickActions = useMemo(() => getDailyNavigationItems(user?.role_key, user?.subscription?.modules), [user?.role_key, user?.subscription?.modules]);
+  const groups = useMemo(() => getVisibleNavigationGroups(user?.role_key, user?.subscription?.modules), [user?.role_key, user?.subscription?.modules]);
 
   useEffect(() => {
     let cancelled = false;

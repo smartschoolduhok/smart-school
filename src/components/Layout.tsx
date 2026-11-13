@@ -3,9 +3,10 @@ import { Navigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import SubscriptionBanner from './SubscriptionBanner';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, user } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   function closeSidebar() {
@@ -84,6 +85,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <Sidebar isOpen={isSidebarOpen} onClose={closeSidebar} />
       <div className="min-h-screen min-w-0 lg:mr-64" inert={isSidebarOpen ? true : undefined}>
         <Header onMenuClick={openSidebar} isMenuOpen={isSidebarOpen} />
+        <SubscriptionBanner subscription={user?.subscription} />
         <main id="main-content" tabIndex={-1} className="app-content min-w-0 p-3 outline-none sm:p-6 lg:p-7">
           {children}
         </main>
