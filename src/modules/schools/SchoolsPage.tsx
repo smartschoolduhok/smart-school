@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { School, Plus, Search, MapPin, Calendar, Loader2, AlertCircle, Pencil, Archive, X, Save } from 'lucide-react';
+import { School, Plus, Search, MapPin, Calendar, Loader2, AlertCircle, Pencil, Archive, X, Save, CreditCard } from 'lucide-react';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { getSchools, createSchool, updateSchool, archiveSchool } from '../../lib/api';
 import { useAuth } from '../../hooks/useAuth';
+import SchoolSubscriptionDialog from './SchoolSubscriptionDialog';
 import type { School as SchoolType } from '../../types';
 
 const SCHOOL_TYPES = [
@@ -35,6 +36,7 @@ export default function SchoolsPage() {
   const [search, setSearch] = useState('');
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [subscriptionSchool, setSubscriptionSchool] = useState<{ id: number; name: string } | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<Record<string, any>>(emptyForm);
   const [formLoading, setFormLoading] = useState(false);
@@ -263,6 +265,14 @@ export default function SchoolsPage() {
                             <Pencil size={16} />
                           </button>
                           <button
+                            onClick={() => setSubscriptionSchool({ id: school.id, name: school.name })}
+                            className="p-2 text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors"
+                            title="الاشتراك"
+                            aria-label={`اشتراك ${school.name}`}
+                          >
+                            <CreditCard size={16} />
+                          </button>
+                          <button
                             onClick={() => handleArchive(school.id)}
                             className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             title="أرشفة"
@@ -279,6 +289,8 @@ export default function SchoolsPage() {
           </div>
         )}
       </div>
+
+      {subscriptionSchool && <SchoolSubscriptionDialog school={subscriptionSchool} onClose={() => setSubscriptionSchool(null)} />}
 
       {/* Modal */}
       {modalOpen && (

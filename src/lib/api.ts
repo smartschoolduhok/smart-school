@@ -6,6 +6,7 @@ import type { TeacherWorkloadExtra, TeacherWorkloadExtraWrite } from './teacherW
 // ===========================================
 
 import type { AcademicYearRecord } from './academicYears';
+import type { ModuleOverrides, SchoolModuleKey, SubscriptionAccessState, SubscriptionPlanKey } from './schoolSubscriptions';
 import type { TeacherWorkloadSummary } from './teacherWorkloadSummary';
 export type { TeacherWorkloadSummary } from './teacherWorkloadSummary';
 import type { SectionAdvisorsResponse, SectionAdvisorSaveRequest, SectionAdvisorSaveResponse } from './sectionAdvisors';
@@ -560,6 +561,28 @@ export function updateSchool(id: number | string, data: Record<string, any>) {
 
 export function archiveSchool(id: number | string) {
   return fetchApi<Record<string, any>>(`/api/schools/${id}/archive`, { method: 'PUT', body: '{}' });
+}
+
+export interface SchoolSubscriptionDetails {
+  subscription: {
+    school_id: number; plan_key: SubscriptionPlanKey; status: 'active' | 'suspended';
+    starts_on: string | null; ends_on: string | null; grace_days: number; max_students: number | null;
+    notes: string | null; revision: number;
+  } | null;
+  overrides: ModuleOverrides;
+  modules: SchoolModuleKey[];
+  access: { state: SubscriptionAccessState; days_left: number | null; read_only_from: string | null };
+  active_students: number;
+  audit: Array<{ id: number; before_json: string | null; after_json: string; created_at: number; actor_name: string | null }>;
+  catalog: { modules: Array<{ key: SchoolModuleKey; label: string }>; plans: Array<{ key: SubscriptionPlanKey; label: string; modules: SchoolModuleKey[] }> };
+}
+
+export function getSchoolSubscription(schoolId: number) {
+  return fetchApi<SchoolSubscriptionDetails>(`/api/schools/${schoolId}/subscription`);
+}
+
+export function saveSchoolSubscription(schoolId: number, data: Record<string, unknown>) {
+  return fetchApi<SchoolSubscriptionDetails>(`/api/schools/${schoolId}/subscription`, { method: 'PUT', body: JSON.stringify(data) });
 }
 
 // ===========================================

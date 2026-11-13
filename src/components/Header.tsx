@@ -31,8 +31,8 @@ export default function Header({ onMenuClick, isMenuOpen }: HeaderProps) {
   const notificationsRef = useRef<HTMLDivElement>(null);
   const notificationsButtonRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLFormElement>(null);
-  const visibleItems = useMemo(() => getVisibleNavigationItems(user?.role_key), [user?.role_key]);
-  const currentLocation = getNavigationLocation(location.pathname, user?.role_key);
+  const visibleItems = useMemo(() => getVisibleNavigationItems(user?.role_key, user?.subscription?.modules), [user?.role_key, user?.subscription?.modules]);
+  const currentLocation = getNavigationLocation(location.pathname, user?.role_key, user?.subscription?.modules);
   const matches = useMemo(() => {
     const normalized = normalizeNavigationSearch(query);
     return normalized ? visibleItems.filter(item => normalizeNavigationSearch(item.label).includes(normalized)).slice(0, 6) : [];

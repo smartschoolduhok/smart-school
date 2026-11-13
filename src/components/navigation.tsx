@@ -48,6 +48,15 @@ import {
   USER_DIRECTORY_ROLES,
   hasRole,
 } from '../lib/rbac';
+import { moduleForNavPath } from '../lib/schoolSubscriptions';
+
+// Modules enabled by the school's subscription; null or undefined means no
+// restriction (system admin, or a school before subscriptions existed).
+export type EnabledModules = readonly string[] | null | undefined;
+function moduleEnabled(path: string, modules: EnabledModules): boolean {
+  const module = moduleForNavPath(path);
+  return !modules || !module || modules.includes(module);
+}
 
 export interface NavigationItem { label: string; path: string; icon: React.ReactNode; allowedRoles?: readonly RoleKey[]; }
 export interface NavigationGroup { key: string; label: string; description: string; icon: React.ReactNode; items: NavigationItem[]; }
@@ -104,23 +113,24 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
   ] },
 ];
 
-export function getVisibleNavigationGroups(roleKey?: RoleKey | null): NavigationGroup[] {
+export function getVisibleNavigationGroups(roleKey?: RoleKey | null, modules?: EnabledModules): NavigationGroup[] {
   if (!roleKey) return [];
   return NAVIGATION_GROUPS.map(group => ({ ...group, items: group.items
     .filter(item => !item.allowedRoles?.length || hasRole(roleKey, item.allowedRoles))
+    .filter(item => moduleEnabled(item.path, modules))
     .map(item => roleKey === 'parent' && item.path === '/students' ? { ...item, label: 'أبنائي' }
       : roleKey === 'parent' && item.path === '/grades' ? { ...item, label: 'متابعة الدرجات' } : item) }))
     .filter(group => group.items.length > 0);
 }
-export function getVisibleNavigationItems(roleKey?: RoleKey | null): NavigationItem[] {
-  return roleKey ? [DASHBOARD_NAVIGATION_ITEM, ...getVisibleNavigationGroups(roleKey).flatMap(group => group.items)] : [];
+export function getVisibleNavigationItems(roleKey?: RoleKey | null, modules?: EnabledModules): NavigationItem[] {
+  return roleKey ? [DASHBOARD_NAVIGATION_ITEM, ...getVisibleNavigationGroups(roleKey, modules).flatMap(group => group.items)] : [];
 }
 export function isNavigationPathActive(pathname: string, path: string): boolean {
   return pathname === path || (path !== '/' && pathname.startsWith(path + '/'));
 }
-export function getNavigationLocation(pathname: string, roleKey?: RoleKey | null) {
+export function getNavigationLocation(pathname: string, roleKey?: RoleKey | null, modules?: EnabledModules) {
   const canonicalPath = roleKey === 'parent' && pathname === '/grade-progress' ? '/grades' : pathname;
-  for (const group of getVisibleNavigationGroups(roleKey)) {
+  for (const group of getVisibleNavigationGroups(roleKey, modules)) {
     const item = group.items.find(item => isNavigationPathActive(canonicalPath, item.path));
     if (item) return { group, item };
   }
@@ -138,8 +148,8 @@ const DAILY_PATHS: Partial<Record<RoleKey, string[]>> = {
   teacher: ['/grades', '/attendance', '/homework', '/grade-progress', '/communication', '/staff-attendance'],
   accountant: ['/fees', '/treasury', '/employees', '/salary-receipts', '/students', '/staff-attendance'],
 };
-export function getDailyNavigationItems(roleKey?: RoleKey | null): NavigationItem[] {
-  const items = getVisibleNavigationItems(roleKey).filter(item => item.path !== '/');
+export function getDailyNavigationItems(roleKey?: RoleKey | null, modules?: EnabledModules): NavigationItem[] {
+  const items = getVisibleNavigationItems(roleKey, modules).filter(item => item.path !== '/');
   const paths = roleKey && DAILY_PATHS[roleKey];
   return paths ? paths.flatMap(path => items.filter(item => item.path === path)) : items.slice(0, 6);
 }

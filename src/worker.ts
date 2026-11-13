@@ -1,6 +1,8 @@
 import { parseTeacherWorkloadExtraWrite, type TeacherWorkloadExtra } from './lib/teacherWorkloadExtras'
 import { registerUserAccountRoutes, canManageAccount, updateOwnPassword, accountErrorResponse } from './lib/userAccounts'
 import { registerSchoolRegisterRoutes } from './lib/schoolRegistersDb'
+import { isMissingSubscriptionSchema, loadSchoolAccess, registerSchoolSubscriptionRoutes, schoolAccessColumnsSql, schoolAccessFromColumns, type SchoolAccessColumns } from './lib/schoolSubscriptionsDb'
+import { schoolAccessDenial, STUDENT_LIMIT_ERROR, type SchoolAccess } from './lib/schoolSubscriptions'
 import { registerStaffDossierRoutes } from './lib/staffDossierDb'
 import { employeeSpreadsheetQualifications, employeeQualificationCells, employeeSpreadsheetRole, employeeSpreadsheetDate, employeeSpreadsheetMatch, employeeSpreadsheetFields } from './lib/employeeSpreadsheet'
 import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualifications, qualificationRows, createEmployeeAuditStatement, publicEmployee, employeeQualifications, readEmployeePhotoBody, detectEmployeePhoto } from './lib/employeeRecords'
@@ -381,6 +383,8 @@ interface UserContext {
 interface AuthenticatedUserContext {
   user: UserContext;
   authVersion: number;
+  // Loaded in the same query as the user; null for the system admin or before migration 0061.
+  schoolAccess: SchoolAccess | null;
 }
 
 export type Variables = {
@@ -389,6 +393,7 @@ export type Variables = {
   sessionTransport: 'cookie' | 'bearer';
   resolvedSchoolId: number | null;
   scope: 'all' | 'single';
+  schoolAccess: SchoolAccess | null;
 };
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -398,16 +403,7 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 // ===========================================
 
 async function getCurrentUserContext(db: D1Database, userId: number, email: string): Promise<AuthenticatedUserContext | null> {
-  const row = await db.prepare(`
-    SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status, u.auth_version,
-           u.must_change_password, u.temporary_password_expires_at,
-           r.key AS role_key, r.name AS role_name,
-           s.name AS school_name
-    FROM users u
-    LEFT JOIN roles r ON u.role_id = r.id
-    LEFT JOIN schools s ON u.school_id = s.id
-    WHERE u.id = ? AND u.email = ? AND u.status = 'active'
-  `).bind(userId, email).first<{
+  type Row = {
     id: number;
     email: string;
     full_name: string;
@@ -420,7 +416,27 @@ async function getCurrentUserContext(db: D1Database, userId: number, email: stri
     role_key: string;
     role_name: string;
     school_name: string | null;
-  }>();
+  } & Partial<SchoolAccessColumns>;
+  const userQuery = (withSubscription: boolean) => db.prepare(`
+    SELECT u.id, u.email, u.full_name, u.role_id, u.school_id, u.status, u.auth_version,
+           u.must_change_password, u.temporary_password_expires_at,
+           r.key AS role_key, r.name AS role_name,
+           s.name AS school_name${withSubscription ? `, ${schoolAccessColumnsSql('u.school_id')}` : ''}
+    FROM users u
+    LEFT JOIN roles r ON u.role_id = r.id
+    LEFT JOIN schools s ON u.school_id = s.id
+    ${withSubscription ? 'LEFT JOIN school_subscriptions sub ON sub.school_id = u.school_id' : ''}
+    WHERE u.id = ? AND u.email = ? AND u.status = 'active'
+  `).bind(userId, email).first<Row>();
+  let row: Row | null;
+  let subscriptionsReady = true;
+  try {
+    row = await userQuery(true);
+  } catch (error) {
+    if (!isMissingSubscriptionSchema(error)) throw error;
+    subscriptionsReady = false;
+    row = await userQuery(false);
+  }
 
   if (!row) return null;
 
@@ -429,6 +445,8 @@ async function getCurrentUserContext(db: D1Database, userId: number, email: stri
 
   return {
     authVersion: row.auth_version,
+    schoolAccess: subscriptionsReady && role_key !== 'system_admin' && row.school_id != null
+      ? schoolAccessFromColumns(row.school_id, row as SchoolAccessColumns) : null,
     user: {
       id: row.id,
       email: row.email,
@@ -531,6 +549,9 @@ async function clearLoginThrottle(db: D1Database, subjectHash: string): Promise<
 
 // Log the internal failure server-side; never echo raw database/runtime errors to the client.
 function apiErrorResponse(c: any, err: unknown, body: Record<string, unknown>, status: number) {
+  if (/school_student_limit_reached/.test(String((err as Error)?.message))) {
+    return c.json({ error: STUDENT_LIMIT_ERROR, code: 'school_student_limit_reached' }, 409);
+  }
   console.error(`API error ${c.req.method} ${c.req.path}`, err);
   return c.json(body, status);
 }
@@ -1602,6 +1623,11 @@ app.use('/api/*', async (c, next) => {
         || (c.req.method === 'POST' && ['/api/auth/logout', '/api/auth/change-password'].includes(c.req.path));
       if (!allowed) return c.json({ error: 'يجب تغيير كلمة المرور المؤقتة أولًا', code: 'password_change_required' }, 403);
     }
+    // Subscription gate: disabled modules are closed, and an expired or
+    // suspended school is read-only. The system admin is never restricted.
+    c.set('schoolAccess', authenticated.schoolAccess);
+    const denial = authenticated.schoolAccess ? schoolAccessDenial(authenticated.schoolAccess, c.req.method, c.req.path) : null;
+    if (denial) return c.json(denial.body, denial.status);
     await next();
   } catch {
     return c.json({ error: 'خدمة المصادقة غير متاحة' }, 503);
@@ -1766,6 +1792,8 @@ app.post('/api/auth/login', async (c) => {
           school_id: row.school_id,
           school_name: row.school_name,
           must_change_password: Boolean(row.must_change_password),
+          subscription: row.role_key !== 'system_admin' && row.school_id != null
+            ? await loadSchoolAccess(c.env.DB, row.school_id) : null,
         },
       },
     });
@@ -1785,7 +1813,7 @@ app.get('/api/auth/me', async (c) => {
   }
   const csrfToken = c.get('sessionTransport') === 'cookie'
     ? await createSessionCsrfToken(c.get('session'), getValidatedJwtSecret(c.env.JWT_SECRET)) : undefined;
-  return c.json({ data: user, csrf_token: csrfToken })
+  return c.json({ data: { ...user, subscription: c.get('schoolAccess') ?? null }, csrf_token: csrfToken })
 })
 
 app.post('/api/auth/change-password', async (c) => {
@@ -2054,6 +2082,7 @@ app.get('/api/users/:id', requireRoles(USER_DIRECTORY_ROLES), async (c) => {
 })
 
 registerUserAccountRoutes(app);
+registerSchoolSubscriptionRoutes(app);
 
 // ===========================================
 // API ROUTES: Resource access links

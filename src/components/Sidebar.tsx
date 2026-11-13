@@ -17,8 +17,8 @@ export default function Sidebar({ isOpen = false, onClose = () => {} }: SidebarP
     sync(); query.addEventListener('change', sync);
     return () => query.removeEventListener('change', sync);
   }, []);
-  const visibleGroups = useMemo(() => getVisibleNavigationGroups(user?.role_key), [user?.role_key]);
-  const currentLocation = getNavigationLocation(pathname, user?.role_key);
+  const visibleGroups = useMemo(() => getVisibleNavigationGroups(user?.role_key, user?.subscription?.modules), [user?.role_key, user?.subscription?.modules]);
+  const currentLocation = getNavigationLocation(pathname, user?.role_key, user?.subscription?.modules);
   const activeGroupKey = currentLocation.group?.key || null;
   const [openGroup, setOpenGroup] = useState<string | null>(activeGroupKey);
   useEffect(() => { setOpenGroup(activeGroupKey); }, [activeGroupKey, pathname, user?.id]);

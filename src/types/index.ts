@@ -3,6 +3,8 @@
 // Multi-school SaaS Foundation
 // ===========================================
 
+import type { SchoolAccess } from '../lib/schoolSubscriptions';
+
 import type { TransportStudentFields } from '../lib/transport';
 
 export type SchoolType = 'خاص' | 'حكومي' | 'دولي' | 'مختلط';
@@ -112,6 +114,8 @@ export interface AuthUser {
   school_id: number | null;
   school_name: string | null;
   must_change_password?: boolean;
+  // null for the system admin and for schools before migration 0061.
+  subscription?: SchoolAccess | null;
 }
 
 export interface AuthState {
