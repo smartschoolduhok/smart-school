@@ -411,13 +411,13 @@ test('subject APIs validate religious_track and preflight conversion conflicts',
   assert.match(updateRoute, /}, 409\)/);
 });
 
-test('class and section bulk routes reject religious subjects while ordinary assignment loops remain', () => {
+test('class and section bulk routes reject religious subjects while ordinary assignments stay atomic', () => {
   const classRoute = routeBlock("app.post('/api/student-subjects/assign-class'", "app.post('/api/student-subjects/assign-section'");
   const sectionRoute = routeBlock("app.post('/api/student-subjects/assign-section'", "app.post('/api/student-subjects/assign-students'");
   for (const route of [classRoute, sectionRoute]) {
     assert.match(route, /religious_track/);
     assert.ok(route.includes('RELIGIOUS_SUBJECT_BULK_ERROR'));
-    assert.match(route, /INSERT INTO student_subjects/);
+    assert.ok(route.indexOf('RELIGIOUS_SUBJECT_BULK_ERROR') < route.indexOf('insertStudentSubjectsAtomically'));
   }
   assert.equal(RELIGIOUS_SUBJECT_BULK_ERROR, 'مواد الديانة يجب تعيينها لطلاب محددين، وليس للصف أو الشعبة بالكامل.');
 });
@@ -427,7 +427,7 @@ test('assign-students preflights all students and permits at most one religious 
   assert.match(route, /requestedReligiousSubjects\.length > 1/);
   assert.match(route, /validateStudentSubjectAssignment/);
   assert.match(route, /findActiveReligiousAssignment/);
-  assert.ok(route.indexOf('requestedReligiousSubjects.length > 1') < route.indexOf('INSERT INTO student_subjects'));
+  assert.ok(route.indexOf('requestedReligiousSubjects.length > 1') < route.indexOf('insertStudentSubjectsAtomically'));
   assert.match(route, /}, 409\)/);
 });
 

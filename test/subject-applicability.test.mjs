@@ -151,6 +151,7 @@ test('worker keeps applicability in assignments for Result Cards, analytics and 
     worker.indexOf('// PUT /api/grades/:id'),
   );
   assert.match(initializer, /ss\.is_active = 1 AND s\.status = 'active'/);
-  assert.match(initializer, /WHERE ss\.student_id = \? AND ss\.subject_id = \?[\s\S]*ss\.is_active = 1/);
+  assert.match(initializer, /WHERE ss\.school_id = \? AND ss\.subject_id = \?[\s\S]*ss\.is_active = 1[\s\S]*ss\.student_id IN \(SELECT CAST\(value AS INTEGER\) FROM json_each\(\?\)\)/);
+  assert.match(initializer, /su\.status = 'active'/);
   assert.doesNotMatch(initializer, /religion|religious_track/);
 });

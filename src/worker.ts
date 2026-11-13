@@ -233,6 +233,7 @@ import {
   updateStudentPlacementAtomically,
   type StudentWriteValues,
 } from './lib/studentEnrollments'
+import { insertStudentSubjectsAtomically } from './lib/studentSubjectBulk'
 import {
   executeOfficialStudentPromotion,
   listOfficialPromotionDecisions,
@@ -6779,21 +6780,13 @@ app.post('/api/student-subjects/assign-class', requireSameSchoolOrAdmin(), requi
       return c.json({ error: `بعض المواد لا تنتمي لهذا الصف: ${mismatchedSubjects.map((s) => s.id).join(', ')}` }, 400);
     }
 
-    const inserted: number[] = [];
-    const skipped: number[] = [];
-    for (const st of students) {
-      for (const suId of subject_ids) {
-        if (!validSubjectIds.has(Number(suId))) { skipped.push(st.id); continue; }
-        const existing = await db.prepare('SELECT id FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ? AND is_active = 1').bind(school_id, st.id, suId).first();
-        if (existing) { skipped.push(st.id); continue; }
-        await db.prepare(`
-          INSERT INTO student_subjects (school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, 1, ?, unixepoch(), unixepoch(), unixepoch())
-        `).bind(school_id, st.id, suId, class_id, st.section_id || null, user?.id || null).run();
-        inserted.push(st.id);
-      }
-    }
-    return c.json({ data: { inserted_count: inserted.length, skipped_count: skipped.length } });
+    const placed = students.map(st => ({ id: st.id, class_id: Number(class_id), section_id: st.section_id || null }));
+    const insertedCount = await insertStudentSubjectsAtomically(db, {
+      schoolId: school_id,
+      groups: [...new Set(subject_ids.map(Number))].filter(id => validSubjectIds.has(id)).map(subjectId => ({ subjectId, students: placed })),
+      userId: user?.id || null,
+    });
+    return c.json({ data: { inserted_count: insertedCount, skipped_count: students.length * subject_ids.length - insertedCount } });
   } catch (err: any) {
     return apiErrorResponse(c, err, { error: 'فشل في تعيين المواد للصف' }, 500);
   }
@@ -6836,21 +6829,13 @@ app.post('/api/student-subjects/assign-section', requireSameSchoolOrAdmin(), req
       return c.json({ error: `بعض المواد لا تنتمي لهذه الشعبة: ${mismatchedSubjects.map((s) => s.id).join(', ')}` }, 400);
     }
 
-    const inserted: number[] = [];
-    const skipped: number[] = [];
-    for (const st of students) {
-      for (const suId of subject_ids) {
-        if (!validSubjectIds.has(Number(suId))) { skipped.push(st.id); continue; }
-        const existing = await db.prepare('SELECT id FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ? AND is_active = 1').bind(sec.school_id, st.id, suId).first();
-        if (existing) { skipped.push(st.id); continue; }
-        await db.prepare(`
-          INSERT INTO student_subjects (school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, 1, ?, unixepoch(), unixepoch(), unixepoch())
-        `).bind(sec.school_id, st.id, suId, sec.class_id, section_id, user?.id || null).run();
-        inserted.push(st.id);
-      }
-    }
-    return c.json({ data: { inserted_count: inserted.length, skipped_count: skipped.length } });
+    const placed = students.map(st => ({ id: st.id, class_id: sec.class_id, section_id: Number(section_id) }));
+    const insertedCount = await insertStudentSubjectsAtomically(db, {
+      schoolId: sec.school_id,
+      groups: [...new Set(subject_ids.map(Number))].filter(id => validSubjectIds.has(id)).map(subjectId => ({ subjectId, students: placed })),
+      userId: user?.id || null,
+    });
+    return c.json({ data: { inserted_count: insertedCount, skipped_count: students.length * subject_ids.length - insertedCount } });
   } catch (err: any) {
     return apiErrorResponse(c, err, { error: 'فشل في تعيين المواد للشعبة' }, 500);
   }
@@ -6900,35 +6885,36 @@ app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), re
       }
     }
 
-    const inserted: number[] = [];
-    const skipped: number[] = [];
-    for (const sid of student_ids) {
-      const st = await getStudentClassSection(db, Number(sid));
-      if (!st) { skipped.push(Number(sid)); continue; }
-      const studentMeta = await db.prepare('SELECT school_id FROM students WHERE id = ?').bind(Number(sid)).first<{ school_id: number }>();
-      if (!studentMeta) { skipped.push(Number(sid)); continue; }
-      const school_id = studentMeta.school_id;
-      if (school_id !== targetSchool.schoolId) {
-        return c.json({ error: 'غير مسموح: أحد الطلاب لا ينتمي إلى مدرستك' }, 403);
-      }
-      for (const suId of subject_ids) {
-        const su = await db.prepare('SELECT school_id, class_id, section_id FROM subjects WHERE id = ?').bind(Number(suId)).first<{ school_id: number; class_id: number | null; section_id: number | null }>();
-        if (!su) { skipped.push(Number(sid)); continue; }
-        if (su.school_id !== school_id) {
-          return c.json({ error: 'غير مسموح: المادة والطالب لا ينتميان إلى المدرسة نفسها' }, 403);
-        }
-        if (su && su.class_id != null && String(su.class_id) !== String(st.class_id)) { skipped.push(Number(sid)); continue; }
-        if (su && su.section_id != null && String(su.section_id) !== String(st.section_id)) { skipped.push(Number(sid)); continue; }
-        const existing = await db.prepare('SELECT id FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ? AND is_active = 1').bind(school_id, sid, suId).first();
-        if (existing) { skipped.push(Number(sid)); continue; }
-        await db.prepare(`
-          INSERT INTO student_subjects (school_id, student_id, subject_id, class_id, section_id, is_active, assigned_by_user_id, assigned_at, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, 1, ?, unixepoch(), unixepoch(), unixepoch())
-        `).bind(school_id, sid, suId, st.class_id || null, st.section_id || null, user?.id || null).run();
-        inserted.push(Number(sid));
-      }
+    // Resolve every student and subject up front (one query each) so tenant
+    // rejections happen before any write, then insert everything in one batch.
+    const studentIds = [...new Set(student_ids.map(Number))];
+    const subjectIds = [...new Set(subject_ids.map(Number))];
+    const owners = await db.prepare('SELECT id, school_id FROM students WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))')
+      .bind(JSON.stringify(studentIds)).all<{ id: number; school_id: number }>();
+    if ((owners.results || []).some(row => row.school_id !== targetSchool.schoolId)) {
+      return c.json({ error: 'غير مسموح: أحد الطلاب لا ينتمي إلى مدرستك' }, 403);
     }
-    return c.json({ data: { inserted_count: inserted.length, skipped_count: skipped.length } });
+    const subjects = await db.prepare('SELECT id, school_id, class_id, section_id FROM subjects WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))')
+      .bind(JSON.stringify(subjectIds)).all<{ id: number; school_id: number; class_id: number | null; section_id: number | null }>();
+    if ((subjects.results || []).some(row => row.school_id !== targetSchool.schoolId)) {
+      return c.json({ error: 'غير مسموح: المادة والطالب لا ينتميان إلى المدرسة نفسها' }, 403);
+    }
+    const ownedIds = new Set((owners.results || []).map(row => row.id));
+    const placements = (await listStudentsWithEffectivePlacement(db, { schoolId: targetSchool.schoolId }))
+      .filter(student => ownedIds.has(student.id));
+    const groups = (subjects.results || []).map(su => ({
+      subjectId: su.id,
+      students: placements
+        .filter(st => su.class_id == null || String(su.class_id) === String(st.class_id))
+        .filter(st => su.section_id == null || String(su.section_id) === String(st.section_id))
+        .map(st => ({ id: st.id, class_id: st.class_id || null, section_id: st.section_id || null })),
+    }));
+    const insertedCount = await insertStudentSubjectsAtomically(db, {
+      schoolId: targetSchool.schoolId,
+      groups,
+      userId: user?.id || null,
+    });
+    return c.json({ data: { inserted_count: insertedCount, skipped_count: studentIds.length * subjectIds.length - insertedCount } });
   } catch (err: any) {
     return apiErrorResponse(c, err, { error: 'فشل في تعيين المواد للطلاب' }, 500);
   }
@@ -8361,34 +8347,25 @@ app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRo
       classId: section.class_id,
       sectionId: Number(section_id),
     })).filter((student) => student.status === 'active');
-    let created = 0;
-    let skipped = 0;
-
-    for (const st of students) {
-      if (!await studentGradesAreVisible(db, section.school_id, st.id)) { skipped += subject_ids.length; continue; }
-      for (const suId of subject_ids) {
-        const ss = await db.prepare(`
-          SELECT ss.id
-          FROM student_subjects ss
-          INNER JOIN subjects su
-            ON su.id = ss.subject_id
-           AND su.school_id = ss.school_id
-           AND su.status = 'active'
-          WHERE ss.student_id = ? AND ss.subject_id = ? AND ss.school_id = ?
-            AND ss.class_id = ? AND ss.section_id = ? AND ss.is_active = 1
-        `).bind(st.id, suId, section.school_id, section.class_id, Number(section_id)).first<{ id: number }>();
-        if (!ss) { skipped++; continue; }
-
-        const existing = await db.prepare('SELECT id FROM grades WHERE student_subject_id = ? AND is_active = 1').bind(ss.id).first<any>();
-        if (existing) { skipped++; continue; }
-
-        const inserted = await db.prepare(`
-          INSERT INTO grades (school_id, student_subject_id, is_active, created_at, updated_at, updated_by_user_id)
-          SELECT ?, ?, 1, unixepoch(), unixepoch(), ? WHERE ${studentGradesVisibleSql('?', '?')}
-        `).bind(section.school_id, ss.id, user?.id || null, section.school_id, st.id, section.school_id).run();
-        created += Number(inserted.meta.changes || 0);
-      }
-    }
+    // One INSERT ... SELECT per subject in a single batch: all-or-nothing, and
+    // the visibility predicate stays in the write itself to avoid a hide/save race.
+    const studentIds = JSON.stringify(students.map(st => st.id));
+    const statements = students.length === 0 ? [] : [...new Set(subject_ids.map(Number))].map(subjectId => db.prepare(`
+      INSERT INTO grades (school_id, student_subject_id, is_active, created_at, updated_at, updated_by_user_id)
+      SELECT ss.school_id, ss.id, 1, unixepoch(), unixepoch(), ?
+      FROM student_subjects ss
+      INNER JOIN subjects su
+        ON su.id = ss.subject_id
+       AND su.school_id = ss.school_id
+       AND su.status = 'active'
+      WHERE ss.school_id = ? AND ss.subject_id = ? AND ss.class_id = ? AND ss.section_id = ? AND ss.is_active = 1
+        AND ss.student_id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))
+        AND NOT EXISTS (SELECT 1 FROM grades existing WHERE existing.student_subject_id = ss.id)
+        AND ${studentGradesVisibleSql('ss.school_id', 'ss.student_id')}
+    `).bind(user?.id || null, section.school_id, subjectId, section.class_id, Number(section_id), studentIds));
+    const results = statements.length ? await db.batch(statements) : [];
+    const created = results.reduce((total, result) => total + Number(result.meta?.changes ?? 0), 0);
+    const skipped = students.length * subject_ids.length - created;
 
     return c.json({ data: { created, skipped } });
   } catch (err: any) {
