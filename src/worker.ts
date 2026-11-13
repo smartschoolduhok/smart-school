@@ -528,6 +528,12 @@ async function clearLoginThrottle(db: D1Database, subjectHash: string): Promise<
   await db.prepare('DELETE FROM login_throttles WHERE subject_hash = ?').bind(subjectHash).run();
 }
 
+// Log the internal failure server-side; never echo raw database/runtime errors to the client.
+function apiErrorResponse(c: any, err: unknown, body: Record<string, unknown>, status: number) {
+  console.error(`API error ${c.req.method} ${c.req.path}`, err);
+  return c.json(body, status);
+}
+
 function rateLimitedResponse(c: any, retryAfter: number) {
   c.header('Retry-After', String(Math.max(1, retryAfter)));
   return c.json({ error: 'محاولات تسجيل دخول كثيرة، حاول مرة أخرى لاحقاً' }, 429);
@@ -1868,7 +1874,7 @@ app.get('/api/schools', requireSameSchoolOrAdmin(), async (c) => {
     const { results } = await db.prepare(query).bind(...params).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب المدارس', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب المدارس' }, 500)
   }
 })
 
@@ -1887,7 +1893,7 @@ app.get('/api/schools/:id', async (c) => {
     if (!school) return c.json({ error: 'المدرسة غير موجودة' }, 404)
     return c.json({ data: school })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب المدرسة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب المدرسة' }, 500)
   }
 })
 
@@ -1920,7 +1926,7 @@ app.post('/api/schools', requireAdmin(), async (c) => {
 
     return c.json({ data: { id: result.meta.last_row_id, name, status: 'active' } }, 201)
   } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء المدرسة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في إنشاء المدرسة' }, 500)
   }
 })
 
@@ -1958,7 +1964,7 @@ app.put('/api/schools/:id', requireAdmin(), async (c) => {
 
     return c.json({ data: { id, name, status: status || 'active' } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث المدرسة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث المدرسة' }, 500)
   }
 })
 
@@ -1972,7 +1978,7 @@ app.put('/api/schools/:id/archive', requireAdmin(), async (c) => {
     await db.prepare(`UPDATE schools SET status = 'archived', updated_at = unixepoch() WHERE id = ?`).bind(id).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في أرشفة المدرسة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في أرشفة المدرسة' }, 500)
   }
 })
 
@@ -2014,7 +2020,7 @@ app.get('/api/users', requireSameSchoolOrAdmin(), requireRoles(USER_DIRECTORY_RO
     const { results } = await db.prepare(query).bind(...binds).all()
     return c.json({ data: (results || []).map((row: any) => ({ ...row, must_change_password: Boolean(row.must_change_password), can_manage: canManageAccount(c.get('user'), row) })) })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب المستخدمين', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب المستخدمين' }, 500)
   }
 })
 
@@ -2042,7 +2048,7 @@ app.get('/api/users/:id', requireRoles(USER_DIRECTORY_ROLES), async (c) => {
 
     return c.json({ data: { ...row, must_change_password: Boolean(row.must_change_password), can_manage: canManageAccount(c.get('user'), row) } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب المستخدم', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب المستخدم' }, 500)
   }
 })
 
@@ -2117,7 +2123,7 @@ app.get('/api/access-links', requireSameSchoolOrAdmin(), requireRoles(SCHOOL_MAN
       },
     })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب روابط الوصول', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب روابط الوصول' }, 500)
   }
 })
 
@@ -2159,7 +2165,7 @@ app.post('/api/access-links/parents', requireSameSchoolOrAdmin(), requireRoles(S
     if (/parent access (user|student|creator) invalid/i.test(message)) {
       return c.json({ error: 'تعذر إنشاء الربط: تأكد من أن الحساب والطالب نشطان ويتبعان المدرسة نفسها' }, 400)
     }
-    return c.json({ error: 'فشل في ربط ولي الأمر بالطالب', detail: message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في ربط ولي الأمر بالطالب' }, 500)
   }
 })
 
@@ -2178,7 +2184,7 @@ app.delete('/api/access-links/parents/:id', requireSameSchoolOrAdmin(), requireR
     if (Number(result.meta?.changes || 0) !== 1) return c.json({ error: 'الربط غير موجود أو ملغى مسبقًا' }, 404)
     return c.json({ data: { id, status: 'inactive' } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء ربط ولي الأمر', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في إلغاء ربط ولي الأمر' }, 500)
   }
 })
 
@@ -2212,7 +2218,7 @@ app.post('/api/access-links/teachers', requireSameSchoolOrAdmin(), requireRoles(
     if (/teacher access (user|employee|creator) invalid|UNIQUE constraint failed/i.test(message)) {
       return c.json({ error: 'تعذر إنشاء الربط: تأكد من الحساب وسجل المدرس ومن عدم ربطهما مسبقًا' }, 400)
     }
-    return c.json({ error: 'فشل في ربط حساب المدرس', detail: message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في ربط حساب المدرس' }, 500)
   }
 })
 
@@ -2231,7 +2237,7 @@ app.delete('/api/access-links/teachers/:id', requireSameSchoolOrAdmin(), require
     if (Number(result.meta?.changes || 0) !== 1) return c.json({ error: 'الربط غير موجود أو ملغى مسبقًا' }, 404)
     return c.json({ data: { id, status: 'inactive' } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء ربط المدرس', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في إلغاء ربط المدرس' }, 500)
   }
 })
 
@@ -2248,7 +2254,7 @@ app.get('/api/roles', async (c) => {
     `).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الأدوار', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الأدوار' }, 500)
   }
 })
 
@@ -2262,7 +2268,7 @@ app.get('/api/roles/:id', async (c) => {
     if (!role) return c.json({ error: 'الدور غير موجود' }, 404)
     return c.json({ data: role })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الدور', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الدور' }, 500)
   }
 })
 
@@ -2282,7 +2288,7 @@ app.get('/api/role-permissions', async (c) => {
     `).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الصلاحيات', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الصلاحيات' }, 500)
   }
 })
 
@@ -2299,7 +2305,7 @@ app.get('/api/permissions', async (c) => {
     `).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الصلاحيات', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الصلاحيات' }, 500)
   }
 })
 
@@ -2316,7 +2322,7 @@ app.get('/api/modules', async (c) => {
     `).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الموديلات', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الموديلات' }, 500)
   }
 })
 
@@ -2330,7 +2336,7 @@ app.get('/api/modules/:id', async (c) => {
     if (!mod) return c.json({ error: 'الموديل غير موجود' }, 404)
     return c.json({ data: mod })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الموديل', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الموديل' }, 500)
   }
 })
 
@@ -2368,7 +2374,7 @@ app.get('/api/school-modules', requireSameSchoolOrAdmin(), async (c) => {
     const { results } = await db.prepare(query).bind(...binds).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب موديلات المدرسة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب موديلات المدرسة' }, 500)
   }
 })
 
@@ -2390,7 +2396,7 @@ app.get('/api/academic-years', requireSameSchoolOrAdmin(), requireRoles(SETTINGS
     `).bind(resolvedSchoolId).all<AcademicYearRecord>()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب السنوات الدراسية', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب السنوات الدراسية' }, 500)
   }
 })
 
@@ -5073,7 +5079,7 @@ app.get('/api/dashboard/stats', requireSameSchoolOrAdmin(), requireRoles(DASHBOA
       }
     })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الإحصائيات', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الإحصائيات' }, 500)
   }
 })
 
@@ -5100,7 +5106,7 @@ app.get('/api/classes', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS
     const { results } = await db.prepare(query).bind(...binds).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الصفوف', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الصفوف' }, 500)
   }
 })
 
@@ -5142,7 +5148,7 @@ app.post('/api/classes', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAG
     `).bind(school_id, name, stage, order_index || 0).run()
     return c.json({ data: { id: result.meta.last_row_id, school_id, name, stage, order_index: order_index || 0, status: 'active' } }, 201)
   } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء الصف', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في إنشاء الصف' }, 500)
   }
 })
 
@@ -5173,7 +5179,7 @@ app.put('/api/classes/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MA
     if (!changed) return c.json({ error: 'لا يمكن تعطيل أو أرشفة صف له طلاب أو تسجيلات أو شعب فعالة', code: 'class_has_active_dependents' }, 409)
     return c.json({ data: { id, name, stage, order_index, status } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث الصف', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث الصف' }, 500)
   }
 })
 
@@ -5200,7 +5206,7 @@ app.put('/api/classes/:id/archive', requireSameSchoolOrAdmin(), requireRoles(ACA
     if (!changed) return c.json({ error: 'لا يمكن أرشفة صف له طلاب أو تسجيلات أو شعب فعالة', code: 'class_has_active_dependents' }, 409)
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في أرشفة الصف', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في أرشفة الصف' }, 500)
   }
 })
 
@@ -5230,7 +5236,7 @@ app.get('/api/sections', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCES
     const { results } = await db.prepare(query).bind(...binds).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الشعب', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الشعب' }, 500)
   }
 })
 
@@ -5261,7 +5267,7 @@ app.post('/api/sections', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
     `).bind(school_id, class_id, name, capacity || 30).run()
     return c.json({ data: { id: result.meta.last_row_id, school_id, class_id, name, capacity: capacity || 30, status: 'active' } }, 201)
   } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء الشعبة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في إنشاء الشعبة' }, 500)
   }
 })
 
@@ -5307,7 +5313,7 @@ app.put('/api/sections/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
   } catch (err: any) {
     if (/section_advisor_referenced_placement/.test(String(err)))
       return c.json({ error: 'لا يمكن نقل شعبة مرتبطة بسجل مرشد إلى صف آخر؛ أنشئ شعبة جديدة لحفظ السجل السابق', code: 'section_has_references' }, 409)
-    return c.json({ error: 'فشل في تحديث الشعبة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث الشعبة' }, 500)
   }
 })
 
@@ -5334,7 +5340,7 @@ app.put('/api/sections/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
     if (!changed) return c.json({ error: 'لا يمكن أرشفة شعبة لها طلاب أو تسجيلات فعالة', code: 'section_has_active_dependents' }, 409)
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في أرشفة الشعبة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في أرشفة الشعبة' }, 500)
   }
 })
 
@@ -5488,7 +5494,7 @@ app.get('/api/students', requireSameSchoolOrAdmin(), requireRoles(STUDENT_DIRECT
       : visibleStudents
     return c.json({ data })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الطلاب', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الطلاب' }, 500)
   }
 })
 
@@ -5506,7 +5512,7 @@ app.get('/api/students/:id', requireAuthEnforced(), requireRoles(STUDENT_RESOURC
 
     return c.json({ data: student })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب بيانات الطالب', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب بيانات الطالب' }, 500)
   }
 })
 
@@ -5534,7 +5540,7 @@ app.get('/api/students/:id/enrollments', requireSameSchoolOrAdmin(), requireRole
     const history = await listStudentEnrollmentHistory(db, resolvedSchoolId, id)
     return c.json({ data: history })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب سجل تسجيلات الطالب', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب سجل تسجيلات الطالب' }, 500)
   }
 })
 
@@ -5701,7 +5707,7 @@ app.post('/api/students', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANA
     }
     return c.json({ data: creation.student }, 201)
   } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء الطالب', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في إنشاء الطالب' }, 500)
   }
 })
 
@@ -5828,7 +5834,7 @@ app.put('/api/students/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_M
     if (err instanceof FinalizedEnrollmentPlacementError) {
       return c.json({ error: FINALIZED_ENROLLMENT_PLACEMENT_ERROR }, 409)
     }
-    return c.json({ error: 'فشل في تحديث بيانات الطالب', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث بيانات الطالب' }, 500)
   }
 })
 
@@ -5849,7 +5855,7 @@ app.put('/api/students/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
     await archiveStudentWithoutEnrollmentMutation(db, Number(id), targetSchool.schoolId)
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في أرشفة الطالب', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في أرشفة الطالب' }, 500)
   }
 })
 
@@ -5933,7 +5939,7 @@ app.get('/api/subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCES
     const { results } = await db.prepare(query).bind(...binds).all()
     return c.json({ data: results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب المواد', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في جلب المواد' }, 500)
   }
 })
 
@@ -6292,7 +6298,7 @@ app.put('/api/subjects/reorder', requireSameSchoolOrAdmin(), requireRoles(ACADEM
     `).bind(targetSchool.schoolId, classId).all()
     return c.json({ data: reordered.results || [] })
   } catch (err: any) {
-    return c.json({ error: 'فشل في حفظ ترتيب المواد', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في حفظ ترتيب المواد' }, 500)
   }
 })
 
@@ -6416,7 +6422,7 @@ app.put('/api/subjects/:id/archive', requireSameSchoolOrAdmin(), requireRoles(AC
     await db.prepare(`UPDATE subjects SET status = 'archived', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run()
     return c.json({ data: { id, status: 'archived' } })
   } catch (err: any) {
-    return c.json({ error: 'فشل في أرشفة المادة', detail: err.message }, 500)
+    return apiErrorResponse(c, err, { error: 'فشل في أرشفة المادة' }, 500)
   }
 })
 
@@ -6531,7 +6537,7 @@ app.get('/api/student-subjects', requireSameSchoolOrAdmin(), requireRoles(ACADEM
     const { results } = await db.prepare(query).bind(...binds).all();
     return c.json({ data: results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب تعيينات المواد', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب تعيينات المواد' }, 500);
   }
 });
 
@@ -6558,7 +6564,7 @@ app.get('/api/students/:id/subjects', requireAuthEnforced(), requireRoles(STUDEN
     `).bind(id, student.school_id, ...(user.role_key === 'teacher' ? [user.id] : [])).all();
     return c.json({ data: results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب مواد الطالب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب مواد الطالب' }, 500);
   }
 });
 
@@ -6614,7 +6620,7 @@ app.get('/api/students/:id/religious-subject', requireSameSchoolOrAdmin(), requi
       },
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب مادة الديانة الدراسية', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب مادة الديانة الدراسية' }, 500);
   }
 });
 
@@ -6733,7 +6739,7 @@ app.put('/api/students/:id/religious-subject', requireSameSchoolOrAdmin(), requi
     } : null;
     return c.json({ data: { current_assignment: nextAssignment, already_applied: false } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث مادة الديانة الدراسية', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث مادة الديانة الدراسية' }, 500);
   }
 });
 
@@ -6789,7 +6795,7 @@ app.post('/api/student-subjects/assign-class', requireSameSchoolOrAdmin(), requi
     }
     return c.json({ data: { inserted_count: inserted.length, skipped_count: skipped.length } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تعيين المواد للصف', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تعيين المواد للصف' }, 500);
   }
 });
 
@@ -6846,7 +6852,7 @@ app.post('/api/student-subjects/assign-section', requireSameSchoolOrAdmin(), req
     }
     return c.json({ data: { inserted_count: inserted.length, skipped_count: skipped.length } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تعيين المواد للشعبة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تعيين المواد للشعبة' }, 500);
   }
 });
 
@@ -6924,7 +6930,7 @@ app.post('/api/student-subjects/assign-students', requireSameSchoolOrAdmin(), re
     }
     return c.json({ data: { inserted_count: inserted.length, skipped_count: skipped.length } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تعيين المواد للطلاب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تعيين المواد للطلاب' }, 500);
   }
 });
 
@@ -6970,7 +6976,7 @@ app.post('/api/student-subjects/assign-one', requireSameSchoolOrAdmin(), require
     `).bind(school_id, student_id, subject_id, st?.class_id || null, st?.section_id || null, user?.id || null).run();
     return c.json({ data: { id: result.meta.last_row_id, student_id, subject_id, is_active: 1 } }, 201);
   } catch (err: any) {
-    return c.json({ error: 'فشل في تعيين المادة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تعيين المادة' }, 500);
   }
 });
 
@@ -7014,7 +7020,7 @@ app.put('/api/student-subjects/:id/reactivate', requireSameSchoolOrAdmin(), requ
     await db.prepare(`UPDATE student_subjects SET is_active = 1, removed_at = NULL, updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, is_active: 1, message: 'تم إعادة تفعيل التعيين بنجاح' } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في إعادة تفعيل التعيين', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في إعادة تفعيل التعيين' }, 500);
   }
 });
 
@@ -7033,7 +7039,7 @@ app.put('/api/student-subjects/:id/deactivate', requireSameSchoolOrAdmin(), requ
     }
     return c.json({ data: { id, is_active: 0 } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء التعيين', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في إلغاء التعيين' }, 500);
   }
 });
 
@@ -7053,7 +7059,7 @@ app.post('/api/student-subjects/bulk-deactivate', requireSameSchoolOrAdmin(), re
     }
     return c.json({ data: { affected: result.affected } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء التعيينات', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في إلغاء التعيينات' }, 500);
   }
 });
 
@@ -7147,7 +7153,7 @@ app.get('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SETTINGS
     }
     return c.json({ data: withNormalizedGradeScheme(row) });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب إعدادات الدرجات', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب إعدادات الدرجات' }, 500);
   }
 });
 
@@ -7288,7 +7294,7 @@ app.put('/api/grade-settings', requireSameSchoolOrAdmin(), requireRoles(SETTINGS
       message: 'تم حفظ إعدادات الدرجات وإعادة حساب الدرجات النشطة بنجاح',
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث إعدادات الدرجات', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث إعدادات الدرجات' }, 500);
   }
 });
 
@@ -7397,7 +7403,7 @@ app.get('/api/grade-policies', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC
     return c.json({ data: policies, meta: { academic_year_id: academicYearId, readiness } });
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -7471,7 +7477,7 @@ app.post('/api/grade-policies', requireRoles(SETTINGS_MANAGEMENT_ROLES), async (
     return c.json({ data: created ? normalizeAcademicGradePolicyRow(created) : null }, 201);
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -7533,7 +7539,7 @@ app.put('/api/grade-policies/:id', requireRoles(SETTINGS_MANAGEMENT_ROLES), asyn
     return c.json({ data: normalizeAcademicGradePolicyRow(updated) });
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -7596,7 +7602,7 @@ async function transitionGradePolicy(
     return c.json({ data: normalizeAcademicGradePolicyRow(updated) });
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 }
 
@@ -7696,7 +7702,7 @@ app.post('/api/grade-policies/:id/amend', requireRoles(SETTINGS_MANAGEMENT_ROLES
     return c.json({ data: created ? normalizeAcademicGradePolicyRow(created) : null }, 201);
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -7726,7 +7732,7 @@ app.get('/api/grade-policies/:id/history', requireRoles(ACADEMIC_ACCESS_ROLES), 
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -7752,7 +7758,7 @@ app.get('/api/grade-policies/:id/students/:student_id/decision-points', requireA
     })) });
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -7925,7 +7931,7 @@ app.get('/api/academic-outcomes/students/:id', requireAuthEnforced(), requireRol
     });
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -8058,7 +8064,7 @@ app.get('/api/academic-outcomes/summary', requireSameSchoolOrAdmin(), requireRol
     });
   } catch (err: any) {
     const mapped = gradePolicyDbError(err);
-    return c.json({ error: mapped.error, code: mapped.code, detail: err.message }, mapped.status);
+    return apiErrorResponse(c, err, { error: mapped.error, code: mapped.code }, mapped.status);
   }
 });
 
@@ -8207,7 +8213,7 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_
       data: resolution ? visibleRows.map(row => policyAwareGradeRow(row, resolution)) : visibleRows,
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الدرجات', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الدرجات' }, 500);
   }
 });
 
@@ -8279,7 +8285,7 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(ACADEMIC
       grades: gradeRows.map(row => policyAwareGradeRow(row, resolution)),
     } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب درجات الطالب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب درجات الطالب' }, 500);
   }
 });
 
@@ -8323,7 +8329,7 @@ app.post('/api/grades/initialize-student/:student_id', requireSameSchoolOrAdmin(
 
     return c.json({ data: { created, skipped, total: activeAssignments.length } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تهيئة درجات الطالب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تهيئة درجات الطالب' }, 500);
   }
 });
 
@@ -8386,7 +8392,7 @@ app.post('/api/grades/initialize-section', requireSameSchoolOrAdmin(), requireRo
 
     return c.json({ data: { created, skipped } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تهيئة درجات الشعبة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تهيئة درجات الشعبة' }, 500);
   }
 });
 
@@ -8513,7 +8519,7 @@ app.put('/api/grades/:id', requireRoles(GRADE_MANAGEMENT_ROLES), async (c) => {
     return c.json({ data: policyAwareGradeRow({ ...gradeRow, ...updated }, policyResolution) });
   } catch (err: any) {
     if (/workflow_write_guard|CHECK constraint failed: valid\s*=\s*1/i.test(String(err?.message || ''))) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 409);
-    return c.json({ error: 'فشل في تحديث الدرجة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث الدرجة' }, 500);
   }
 });
 
@@ -8686,7 +8692,7 @@ app.post('/api/grades/bulk-entry', requireRoles(GRADE_MANAGEMENT_ROLES), async (
     if (/grade_write_assertions|workflow_write_guard|CHECK constraint failed/i.test(String(err?.message || ''))) {
       return c.json({ error: 'تغيرت إحدى الدرجات بواسطة مستخدم آخر؛ أعد تحميل القائمة ثم حاول مجددًا', code: 'grade_write_stale' }, 409);
     }
-    return c.json({ error: 'فشل في الإدخال المجمّع', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في الإدخال المجمّع' }, 500);
   }
 });
 
@@ -8719,7 +8725,7 @@ app.get('/api/grades/:id/history', requireAuthEnforced(), requireRoles(GRADE_MAN
 
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب سجل التعديلات', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب سجل التعديلات' }, 500);
   }
 });
 
@@ -8851,7 +8857,7 @@ app.get('/api/analytics/overview', requireAuthEnforced(), requireRoles(ANALYTICS
       }
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب تحليل النظرة العامة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب تحليل النظرة العامة' }, 500);
   }
 });
 
@@ -8908,7 +8914,7 @@ app.get('/api/analytics/by-class', requireAuthEnforced(), requireRoles(ANALYTICS
 
     return c.json({ data });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب التحليل حسب الصف', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب التحليل حسب الصف' }, 500);
   }
 });
 
@@ -8967,7 +8973,7 @@ app.get('/api/analytics/by-section', requireAuthEnforced(), requireRoles(ANALYTI
 
     return c.json({ data });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب التحليل حسب الشعبة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب التحليل حسب الشعبة' }, 500);
   }
 });
 
@@ -9023,7 +9029,7 @@ app.get('/api/analytics/by-subject', requireAuthEnforced(), requireRoles(ANALYTI
 
     return c.json({ data });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب التحليل حسب المادة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب التحليل حسب المادة' }, 500);
   }
 });
 
@@ -9072,7 +9078,7 @@ app.get('/api/analytics/students-close-to-passing', requireAuthEnforced(), requi
 
     return c.json({ data: results });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب قائمة الطلاب القريبين من النجاح', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب قائمة الطلاب القريبين من النجاح' }, 500);
   }
 });
 
@@ -9122,7 +9128,7 @@ app.get('/api/analytics/students-close-to-exemption', requireAuthEnforced(), req
 
     return c.json({ data: results });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب قائمة الطلاب القريبين من الإعفاء', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب قائمة الطلاب القريبين من الإعفاء' }, 500);
   }
 });
 
@@ -9157,7 +9163,7 @@ app.get('/api/analytics/exemption-blockers', requireAuthEnforced(), requireRoles
 
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب المواد التي منعت الإعفاء', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب المواد التي منعت الإعفاء' }, 500);
   }
 });
 
@@ -9254,7 +9260,7 @@ app.get('/api/analytics/student-summary/:student_id', requireAuthEnforced(), req
       }
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب تحليل الطالب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب تحليل الطالب' }, 500);
   }
 });
 
@@ -10049,7 +10055,7 @@ app.get(
     const rows = await stmt.bind(...params).all<any>();
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب كارتات النتائج', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب كارتات النتائج' }, 500);
   }
   },
 );
@@ -10085,7 +10091,7 @@ app.get(
     } catch { /* leave as-is */ }
     return c.json({ data });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب كارت النتيجة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب كارت النتيجة' }, 500);
   }
   },
 );
@@ -10153,7 +10159,7 @@ app.post(
           : 'تم إعداد معاينة مكتملة دون حفظ',
       });
     } catch (err: any) {
-      return c.json({ error: 'فشل في معاينة كارت النتيجة', detail: err.message }, 500);
+      return apiErrorResponse(c, err, { error: 'فشل في معاينة كارت النتيجة' }, 500);
     }
   },
 );
@@ -10212,10 +10218,7 @@ app.post(
         message: 'تم إصدار كارت النتيجة وهو جاهز للطباعة؛ لم يُرسل إلى ولي الأمر بعد',
       });
     } catch (err: any) {
-      return c.json(
-        { error: 'فشل في إنشاء كارت النتيجة', detail: err.message },
-        500,
-      );
+      return apiErrorResponse(c, err, { error: 'فشل في إنشاء كارت النتيجة' }, 500);
     }
   },
 );
@@ -10354,10 +10357,7 @@ app.post(
         message: 'تم إصدار كارتات الشعبة الجاهزة للطباعة؛ لم تُرسل إلى أولياء الأمور بعد',
       });
     } catch (err: any) {
-      return c.json(
-        { error: 'فشل في إنشاء كارتات الشعبة', detail: err.message },
-        500,
-      );
+      return apiErrorResponse(c, err, { error: 'فشل في إنشاء كارتات الشعبة' }, 500);
     }
   },
 );
@@ -10550,7 +10550,7 @@ app.put(
     await db.prepare(`UPDATE result_cards SET printed_at = unixepoch(), updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { id, printed_at: Math.floor(Date.now() / 1000) }, message: 'تم تعليم الكارت كمطبوع' });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث الكارت', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث الكارت' }, 500);
   }
   },
 );
@@ -10594,7 +10594,7 @@ app.put(
     if (!cancelled) return c.json({ error: 'تغيرت حالة الكارت؛ أعد تحميل القائمة' }, 409);
     return c.json({ data: { id, status: 'cancelled' }, message: 'تم إلغاء الكارت' });
   } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء الكارت', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في إلغاء الكارت' }, 500);
   }
   },
 );
@@ -10664,7 +10664,7 @@ app.get('/api/verify/result-card/:token', async (c) => {
       verification_note: docSettings.verification_note_text || null,
     });
   } catch (err: any) {
-    return c.json({ valid: false, message: 'خطأ في التحقق', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { valid: false, message: 'خطأ في التحقق' }, 500);
   }
 });
 
@@ -10707,7 +10707,7 @@ app.get('/api/parent/students/:id/result-cards', async (c) => {
       },
     });
   } catch (error: any) {
-    return c.json({ error: 'تعذر تحميل النتائج المنشورة', detail: error.message }, 500);
+    return apiErrorResponse(c, error, { error: 'تعذر تحميل النتائج المنشورة' }, 500);
   }
 });
 
@@ -11170,7 +11170,7 @@ app.get('/api/salaries', requireSameSchoolOrAdmin(), async (c) => {
     const rows = await db.prepare(sql).bind(...params).all<any>();
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الرواتب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الرواتب' }, 500);
   }
 });
 
@@ -11207,7 +11207,7 @@ app.get('/api/salaries/:id', requireSameSchoolOrAdmin(), async (c) => {
 
     return c.json({ data: row });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الراتب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الراتب' }, 500);
   }
 });
 
@@ -11551,7 +11551,7 @@ app.get('/api/salaries/reports/monthly', requireSameSchoolOrAdmin(), async (c) =
     const rows = await db.prepare(sql).bind(...params).all<any>();
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب تقرير الرواتب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب تقرير الرواتب' }, 500);
   }
 });
 
@@ -11672,7 +11672,7 @@ app.get('/api/treasury/summary', requireSameSchoolOrAdmin(), async (c) => {
       }
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب ملخص الخزنة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب ملخص الخزنة' }, 500);
   }
 });
 
@@ -11744,7 +11744,7 @@ app.get('/api/treasury/transactions', requireSameSchoolOrAdmin(), async (c) => {
       business_timezone: FINANCE_BUSINESS_TIME_ZONE,
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب القيود المالية', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب القيود المالية' }, 500);
   }
 });
 
@@ -11955,7 +11955,7 @@ app.get('/api/treasury/daily-closings', requireSameSchoolOrAdmin(), async (c) =>
 
     return c.json({ data: rows.results || [], meta: { total: countRow?.total || 0, limit, offset } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب سجل الإقفالات', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب سجل الإقفالات' }, 500);
   }
 });
 
@@ -12102,7 +12102,7 @@ app.get('/api/treasury/reports/daily', requireSameSchoolOrAdmin(), async (c) => 
       transactions: transactions.results || [],
     }});
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب التقرير اليومي', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب التقرير اليومي' }, 500);
   }
 });
 
@@ -12189,7 +12189,7 @@ app.get('/api/treasury/reports/monthly', requireSameSchoolOrAdmin(), async (c) =
       category_summary: categorySummary.results || [],
     }});
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب التقرير الشهري', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب التقرير الشهري' }, 500);
   }
 });
 
@@ -12222,7 +12222,7 @@ app.get('/api/treasury/categories', requireSameSchoolOrAdmin(), async (c) => {
     const rows = await db.prepare(sql).bind(...params).all<any>();
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب التصنيفات', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب التصنيفات' }, 500);
   }
 });
 
@@ -12312,7 +12312,7 @@ app.get('/api/settings/school', requireSameSchoolOrAdmin(), requireRoles(SETTING
       },
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب إعدادات المدرسة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب إعدادات المدرسة' }, 500);
   }
 });
 
@@ -12351,7 +12351,7 @@ app.put('/api/settings/school', requireSameSchoolOrAdmin(), requireRoles(SETTING
 
     return c.json({ data: { message: 'تم تحديث بيانات المدرسة بنجاح' } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث بيانات المدرسة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث بيانات المدرسة' }, 500);
   }
 });
 
@@ -12395,7 +12395,7 @@ app.get('/api/settings/document', requireSameSchoolOrAdmin(), requireRoles(SETTI
 
     return c.json({ data: withDocumentPresentationSettings(row) });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب إعدادات الوثائق', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب إعدادات الوثائق' }, 500);
   }
 });
 
@@ -12488,7 +12488,7 @@ app.put('/api/settings/document', requireSameSchoolOrAdmin(), requireRoles(SETTI
 
     return c.json({ data: { message: 'تم تحديث إعدادات الوثائق بنجاح' } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث إعدادات الوثائق', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث إعدادات الوثائق' }, 500);
   }
 });
 
@@ -12520,7 +12520,7 @@ app.get('/api/settings/system', requireSameSchoolOrAdmin(), requireRoles(SETTING
 
     return c.json({ data: row });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب إعدادات النظام', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب إعدادات النظام' }, 500);
   }
 });
 
@@ -12571,7 +12571,7 @@ app.put('/api/settings/system', requireSameSchoolOrAdmin(), requireRoles(SETTING
 
     return c.json({ data: { message: 'تم تحديث إعدادات النظام بنجاح' } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث إعدادات النظام', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث إعدادات النظام' }, 500);
   }
 });
 
@@ -12629,7 +12629,7 @@ app.get('/api/official-book-templates', requireSameSchoolOrAdmin(), async (c) =>
       meta: { presets: BUILT_IN_OFFICIAL_BOOK_TEMPLATES },
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب قوالب الكتب الرسمية', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب قوالب الكتب الرسمية' }, 500);
   }
 });
 
@@ -12666,7 +12666,7 @@ app.post('/api/official-book-templates', requireSameSchoolOrAdmin(), async (c) =
     const id = result.meta?.last_row_id;
     return c.json({ data: { id, message: 'تم إنشاء القالب بنجاح' } }, 201);
   } catch (err: any) {
-    return c.json({ error: 'فشل في إنشاء القالب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في إنشاء القالب' }, 500);
   }
 });
 
@@ -12738,7 +12738,7 @@ app.put('/api/official-book-templates/:id', requireSameSchoolOrAdmin(), async (c
     await db.prepare(`UPDATE official_book_templates SET ${updates.join(', ')} WHERE id = ? AND school_id = ?`).bind(...params).run();
     return c.json({ data: { message: 'تم تحديث القالب بنجاح' } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تحديث القالب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تحديث القالب' }, 500);
   }
 });
 
@@ -12771,7 +12771,7 @@ app.get('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
     const rows = await db.prepare(sql).bind(...params).all<any>();
     return c.json({ data: (rows.results || []).map(row => ({ ...row, document_date: getOfficialBookIssueDate(row) })) });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الكتب الرسمية', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الكتب الرسمية' }, 500);
   }
 });
 
@@ -12824,7 +12824,7 @@ app.get('/api/official-books/:id', requireSameSchoolOrAdmin(), async (c) => {
 
     return c.json({ data });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب الكتاب الرسمي', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب الكتاب الرسمي' }, 500);
   }
 });
 
@@ -13106,7 +13106,7 @@ app.post('/api/official-books', requireSameSchoolOrAdmin(), async (c) => {
     if (/UNIQUE constraint failed: official_books\.school_id, official_books\.document_number/i.test(String(err?.message))) {
       return c.json({ error: 'هذا العدد مستخدم لكتاب آخر في المدرسة. أدخل العدد الصحيح من سجل الصادر.', code: 'duplicate_document_number' }, 409);
     }
-    return c.json({ error: 'فشل في إنشاء الكتاب الرسمي', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في إنشاء الكتاب الرسمي' }, 500);
   }
 });
 
@@ -13138,7 +13138,7 @@ app.put('/api/official-books/:id/cancel', requireSameSchoolOrAdmin(), async (c) 
     await db.prepare(`UPDATE official_books SET status = 'cancelled', updated_at = unixepoch() WHERE id = ? AND school_id = ?`).bind(id, targetSchool.schoolId).run();
     return c.json({ data: { message: 'تم إلغاء الكتاب بنجاح' } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في إلغاء الكتاب', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في إلغاء الكتاب' }, 500);
   }
 });
 
@@ -13172,7 +13172,7 @@ app.post('/api/official-books/:id/print', requireSameSchoolOrAdmin(), async (c) 
     await db.prepare(`INSERT INTO print_records (school_id, document_id, print_type, printed_at, printed_by_user_id, printer_info_json) VALUES (?, ?, 'official_book', unixepoch(), ?, ?)`).bind(targetSchool.schoolId, id, user.id, null).run();
     return c.json({ data: { message: 'تم تسجيل الطباعة بنجاح' } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في تسجيل الطباعة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تسجيل الطباعة' }, 500);
   }
 });
 
@@ -13230,7 +13230,7 @@ app.get('/api/print-records', requireSameSchoolOrAdmin(), async (c) => {
     const rows = await db.prepare(sql).bind(...params).all<any>();
     return c.json({ data: rows.results || [] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب سجلات الطباعة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب سجلات الطباعة' }, 500);
   }
 });
 
@@ -14305,7 +14305,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
       }
     });
   } catch (err: any) {
-    return c.json({ error: 'فشل في معالجة المعاينة', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في معالجة المعاينة' }, 500);
   }
 });
 
@@ -14787,7 +14787,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
     return c.json({ data: { job_id: jobId, ...summary } });
   } catch (err: any) {
     if (/workflow_write_guard/i.test(String(err?.message || ''))) return c.json({error: STUDENT_GRADES_HIDDEN, code: 'student_grades_hidden'}, 409);
-    return c.json({ error: 'فشل في تأكيد الاستيراد', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في تأكيد الاستيراد' }, 500);
   }
 });
 
@@ -14888,7 +14888,7 @@ app.get('/api/import-export/:type/export', requireSameSchoolOrAdmin(), async (c)
     }
     return c.json({ data: { type, school_id: schoolId, rows } });
   } catch (err: any) {
-    return c.json({ error: 'فشل في التصدير', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في التصدير' }, 500);
   }
 });
 
@@ -14916,7 +14916,7 @@ app.get('/api/import-export/jobs', requireSameSchoolOrAdmin(), async (c) => {
     const res = await db.prepare(sql).bind(...params).all<any>();
     return c.json({ data: await redactHiddenGradeImportJobs(db, res.results || []) });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب سجل الاستيراد', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب سجل الاستيراد' }, 500);
   }
 });
 
@@ -14942,7 +14942,7 @@ app.get('/api/import-export/jobs/:id', requireSameSchoolOrAdmin(), async (c) => 
     }
     return c.json({ data: (await redactHiddenGradeImportJobs(db, [row]))[0] });
   } catch (err: any) {
-    return c.json({ error: 'فشل في جلب تفاصيل السجل', detail: err.message }, 500);
+    return apiErrorResponse(c, err, { error: 'فشل في جلب تفاصيل السجل' }, 500);
   }
 });
 
