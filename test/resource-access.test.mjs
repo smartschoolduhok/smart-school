@@ -53,6 +53,9 @@ function createFixture(t) {
 }
 
 async function api(fixture, role, method, path, body) {
+  // Like the Workers runtime, finish waitUntil work (server-error logging)
+  // before the next request, so it never lands inside a later injected write.
+  const pending = [];
   const response = await app.request(`http://localhost${path}`, {
     method,
     headers: {
@@ -60,8 +63,10 @@ async function api(fixture, role, method, path, body) {
       Authorization: `Bearer ${tokens[role]}`,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
-  }, { DB: fixture.d1, JWT_SECRET: secret, APP_ENV: 'test' });
-  return { status: response.status, body: await response.json() };
+  }, { DB: fixture.d1, JWT_SECRET: secret, APP_ENV: 'test' }, { waitUntil: task => pending.push(task), passThroughOnException() {} });
+  const result = { status: response.status, body: await response.json() };
+  await Promise.allSettled(pending);
+  return result;
 }
 
 test('parent access fails closed and broad academic routes stay unavailable', async t => {

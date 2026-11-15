@@ -32,6 +32,7 @@ const LoginPage = lazy(() => import('./modules/auth/LoginPage'));
 const ChangePasswordPage = lazy(() => import('./modules/auth/ChangePasswordPage'));
 const DashboardPage = lazy(() => import('./modules/dashboard/DashboardPage'));
 const SchoolsPage = lazy(() => import('./modules/schools/SchoolsPage'));
+const SystemHealthPage = lazy(() => import('./modules/systemHealth/SystemHealthPage'));
 const UsersPage = lazy(() => import('./modules/users/UsersPage'));
 const RolesPage = lazy(() => import('./modules/roles/RolesPage'));
 const StudentsPage = lazy(() => import('./modules/students/StudentsPage'));
@@ -199,6 +200,7 @@ export default function App() {
 
           {/* Admin-only routes */}
           <Route path="/schools" element={<Layout><AdminRoute><SchoolsPage /></AdminRoute></Layout>} />
+          <Route path="/system-health" element={<Layout><AdminRoute><SystemHealthPage /></AdminRoute></Layout>} />
           <Route path="/users" element={<Layout><RoleGuard allowedRoles={USER_DIRECTORY_ROLES}><UsersPage /></RoleGuard></Layout>} />
           <Route path="/roles" element={<Layout><AdminRoute><RolesPage /></AdminRoute></Layout>} />
 

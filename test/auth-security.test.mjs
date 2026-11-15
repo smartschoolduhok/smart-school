@@ -171,8 +171,9 @@ test('JWTs require a positive immutable account id', async () => {
   }
 });
 
-test('the public API allowlist contains only login and QR verification routes', () => {
+test('the public API allowlist contains only the health probe, login and QR verification routes', () => {
   assert.deepEqual(PUBLIC_API_ROUTES, [
+    'GET /api/health',
     'POST /api/auth/login',
     'GET /api/verify/result-card/:token',
     'GET /api/verify/receipt/:token',
@@ -183,6 +184,10 @@ test('the public API allowlist contains only login and QR verification routes', 
   assert.equal(isPublicApiRequest('GET', '/api/verify/receipt/token'), true);
   assert.equal(isPublicApiRequest('GET', '/api/verify/official-book/token'), true);
   assert.equal(isPublicApiRequest('OPTIONS', '/api/students'), true);
+  assert.equal(isPublicApiRequest('GET', '/api/health'), true);
+  for (const [method, path] of [['POST', '/api/health'], ['GET', '/api/health/x'], ['GET', '/api/system/health'], ['GET', '/api/system/errors']]) {
+    assert.equal(isPublicApiRequest(method, path), false, `${method} ${path}`);
+  }
 });
 
 test('representative business and session routes are protected by default', () => {
