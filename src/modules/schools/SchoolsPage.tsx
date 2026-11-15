@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { School, Plus, Search, MapPin, Calendar, Loader2, AlertCircle, Pencil, Archive, X, Save, CreditCard } from 'lucide-react';
+import { School, Plus, Search, MapPin, Calendar, Loader2, AlertCircle, Pencil, Archive, X, Save, CreditCard, Activity } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { getSchools, createSchool, updateSchool, archiveSchool } from '../../lib/api';
 import { useAuth } from '../../hooks/useAuth';
@@ -158,13 +159,22 @@ export default function SchoolsPage() {
           <p className="text-sm text-gray-500 mt-1">إدارة المدارس المسجلة في النظام</p>
         </div>
         {canManage && (
-          <button
-            onClick={openCreate}
-            className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors"
-          >
-            <Plus size={18} />
-            <span>إضافة مدرسة</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              to="/system-health"
+              className="flex items-center gap-2 px-4 py-2 border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-lg text-sm font-medium transition-colors"
+            >
+              <Activity size={18} />
+              <span>صحة النظام</span>
+            </Link>
+            <button
+              onClick={openCreate}
+              className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              <Plus size={18} />
+              <span>إضافة مدرسة</span>
+            </button>
+          </div>
         )}
       </div>
 

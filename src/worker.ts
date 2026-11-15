@@ -3,6 +3,7 @@ import { registerUserAccountRoutes, canManageAccount, updateOwnPassword, account
 import { registerSchoolRegisterRoutes } from './lib/schoolRegistersDb'
 import { isMissingSubscriptionSchema, loadSchoolAccess, registerSchoolSubscriptionRoutes, schoolAccessColumnsSql, schoolAccessFromColumns, type SchoolAccessColumns } from './lib/schoolSubscriptionsDb'
 import { schoolAccessDenial, STUDENT_LIMIT_ERROR, type SchoolAccess } from './lib/schoolSubscriptions'
+import { registerSystemHealthRoutes, reportServerError } from './lib/systemHealthDb'
 import { registerStaffDossierRoutes } from './lib/staffDossierDb'
 import { employeeSpreadsheetQualifications, employeeQualificationCells, employeeSpreadsheetRole, employeeSpreadsheetDate, employeeSpreadsheetMatch, employeeSpreadsheetFields } from './lib/employeeSpreadsheet'
 import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualifications, qualificationRows, createEmployeeAuditStatement, publicEmployee, employeeQualifications, readEmployeePhotoBody, detectEmployeePhoto } from './lib/employeeRecords'
@@ -364,6 +365,9 @@ export type Bindings = {
   APP_ENV?: string;
   HOMEWORK_FILES?: HomeworkObjectStore;
   ASSETS?: { fetch(url: URL): Promise<{ status: number; body: ReadableStream | null }> };
+  // Optional secrets: server-error alerts go to this Telegram chat when both are set.
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_CHAT_ID?: string;
 }
 
 interface UserContext {
@@ -553,6 +557,7 @@ function apiErrorResponse(c: any, err: unknown, body: Record<string, unknown>, s
     return c.json({ error: STUDENT_LIMIT_ERROR, code: 'school_student_limit_reached' }, 409);
   }
   console.error(`API error ${c.req.method} ${c.req.path}`, err);
+  if (status >= 500) reportServerError(c, status, err);
   return c.json(body, status);
 }
 
@@ -1629,7 +1634,8 @@ app.use('/api/*', async (c, next) => {
     const denial = authenticated.schoolAccess ? schoolAccessDenial(authenticated.schoolAccess, c.req.method, c.req.path) : null;
     if (denial) return c.json(denial.body, denial.status);
     await next();
-  } catch {
+  } catch (error) {
+    reportServerError(c, 503, error);
     return c.json({ error: 'خدمة المصادقة غير متاحة' }, 503);
   }
 });
@@ -2083,6 +2089,7 @@ app.get('/api/users/:id', requireRoles(USER_DIRECTORY_ROLES), async (c) => {
 
 registerUserAccountRoutes(app);
 registerSchoolSubscriptionRoutes(app);
+registerSystemHealthRoutes(app);
 
 // ===========================================
 // API ROUTES: Resource access links
@@ -14950,6 +14957,13 @@ app.get('/api/import-export/jobs/:id', requireSameSchoolOrAdmin(), async (c) => 
   } catch (err: any) {
     return apiErrorResponse(c, err, { error: 'فشل في جلب تفاصيل السجل' }, 500);
   }
+});
+
+// Errors no route caught: log, record for the health page, and answer without internals.
+app.onError((err, c) => {
+  console.error(`Unhandled error ${c.req.method} ${c.req.path}`, err);
+  reportServerError(c as any, 500, err);
+  return c.json({ error: 'حدث خطأ غير متوقع في الخادم' }, 500);
 });
 
 export default app

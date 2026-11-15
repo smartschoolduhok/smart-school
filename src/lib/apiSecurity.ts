@@ -1,4 +1,5 @@
 export const PUBLIC_API_ROUTES = [
+  'GET /api/health',
   'POST /api/auth/login',
   'GET /api/verify/result-card/:token',
   'GET /api/verify/receipt/:token',
@@ -52,6 +53,7 @@ export function isPublicApiRequest(method: string, pathname: string): boolean {
   const normalizedMethod = method.toUpperCase();
   if (normalizedMethod === 'OPTIONS') return true;
   if (normalizedMethod === 'POST' && pathname === '/api/auth/login') return true;
+  if (normalizedMethod === 'GET' && pathname === '/api/health') return true;
   return normalizedMethod === 'GET'
     && /^\/api\/verify\/(result-card|receipt|official-book)\/[^/]+$/.test(pathname);
 }

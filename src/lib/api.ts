@@ -577,6 +577,34 @@ export interface SchoolSubscriptionDetails {
   catalog: { modules: Array<{ key: SchoolModuleKey; label: string }>; plans: Array<{ key: SubscriptionPlanKey; label: string; modules: SchoolModuleKey[] }> };
 }
 
+export interface SystemHealthSummary {
+  environment: string;
+  database: { status: 'ok'; latency_ms: number };
+  migrations: { applied: number; last: string } | null;
+  errors_24h: number;
+  errors_7d: number;
+  telegram_configured: boolean;
+  checked_at: string;
+}
+
+export interface SystemErrorGroup {
+  fingerprint: string; method: string; route: string; status: number;
+  error_name: string | null; error_message: string | null;
+  occurrences: number; first_seen: number; last_seen: number; schools: number;
+}
+
+export function getSystemHealth() {
+  return fetchApi<SystemHealthSummary>('/api/system/health');
+}
+
+export function getSystemErrors(days: number) {
+  return fetchApi<SystemErrorGroup[]>(`/api/system/errors?days=${days}`);
+}
+
+export function sendTestAlert() {
+  return fetchApi<{ sent: true }>('/api/system/alerts/test', { method: 'POST', body: '{}' });
+}
+
 export function getSchoolSubscription(schoolId: number) {
   return fetchApi<SchoolSubscriptionDetails>(`/api/schools/${schoolId}/subscription`);
 }

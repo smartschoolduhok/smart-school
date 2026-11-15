@@ -1,0 +1,53 @@
+name: Uptime check
+
+# Every 15 minutes, ask the deployed app whether it can reach its database.
+# Three failed attempts in a row send a Telegram alert (when the repository
+# secrets TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set) and fail the run.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime-check
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HEALTH_URL: ${{ vars.HEALTH_URL || 'https://smart-school-staging.pages.dev/api/health' }}
+    steps:
+      - name: Probe /api/health
+        id: probe
+        run: |
+          for attempt in 1 2 3; do
+            status=$(curl -s -o body.json -w '%{http_code}' --max-time 15 "$HEALTH_URL" || echo 000)
+            if [ "$status" = "200" ] && grep -q '"status":"ok"' body.json; then
+              echo "healthy on attempt $attempt"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $status"
+            sleep 20
+          done
+          echo "last_status=$status" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Alert Telegram
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LAST_STATUS: ${{ steps.probe.outputs.last_status }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets are not set; skipping alert."
+            exit 0
+          fi
+          text=$(printf '🔴 Smart School لا يستجيب\n%s\nآخر رد: HTTP %s بعد 3 محاولات\n%s' "$HEALTH_URL" "${LAST_STATUS:-000}" "$(date -u +%Y-%m-%dT%H:%MZ)")
+          curl -s --max-time 15 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${text}" > /dev/null

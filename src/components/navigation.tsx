@@ -105,8 +105,7 @@ export const NAVIGATION_GROUPS: NavigationGroup[] = [
     { label: 'استيراد وتصدير Excel', path: '/import-export', icon: <ArrowDownUp size={18} />, allowedRoles: IMPORT_EXPORT_ROLES },
   ] },
   { key: 'administration', label: 'الإدارة والإعدادات', description: 'الحسابات والصلاحيات وإعداد المدرسة', icon: <FolderCog size={19} />, items: [
-    { label: 'المدارس', path: '/schools', icon: <School size={18} />, allowedRoles: SYSTEM_ADMIN_ROLES },
-    { label: 'المستخدمون', path: '/users', icon: <Users size={18} />, allowedRoles: USER_DIRECTORY_ROLES },
+    { label: 'المدارس', path: '/schools', icon: <School size={18} />, allowedRoles: SYSTEM_ADMIN_ROLES },    { label: 'المستخدمون', path: '/users', icon: <Users size={18} />, allowedRoles: USER_DIRECTORY_ROLES },
     { label: 'الأدوار والصلاحيات', path: '/roles', icon: <Shield size={18} />, allowedRoles: SYSTEM_ADMIN_ROLES },
     { label: 'لوائح القبول والنقل', path: '/regulations', icon: <BookOpen size={18} />, allowedRoles: ACADEMIC_MANAGEMENT_ROLES },
     { label: 'إعدادات النظام', path: '/settings', icon: <Settings size={18} />, allowedRoles: SETTINGS_VIEW_ROLES },
