@@ -56,6 +56,10 @@ try{
  const parallelColumn='parallel_with_load_id INTEGER REFERENCES timetable_teaching_loads(id) ON DELETE RESTRICT';
  const placeholderColumn='teacher_placeholder TEXT';
  const loadColumns=[parallelColumn,placeholderColumn];
+ // Migration 0063 tags every assignment with its year and lets grades/assignments be archived per year.
+ const yearScopeColumns={student_subjects:['academic_year_id INTEGER REFERENCES academic_years(id) ON DELETE RESTRICT','year_archived_at INTEGER'],grades:['year_archived_at INTEGER']};
+ const yearScopeMigration=readFileSync(join(root,'migrations/0063_year_scoped_grades.sql'),'utf8');
+ for(const [table,columns] of Object.entries(yearScopeColumns))for(const column of columns)assert.ok(yearScopeMigration.includes('ALTER TABLE '+table+' ADD COLUMN '+column+';'),column);
  assert.match(parallelMigration,new RegExp('ALTER TABLE timetable_teaching_loads ADD COLUMN '+parallelColumn.replace(/[()]/g,'\\$&')+';'));
  assert.ok(placeholderMigration.includes('ALTER TABLE timetable_teaching_loads ADD COLUMN '+placeholderColumn+';'));
  const replacedEntryTriggers=new Set(['trg_timetable_entries_validate_insert','trg_timetable_entries_validate_update']);
@@ -94,6 +98,10 @@ try{
    assert.ok(statement,'replacement revocation trigger is declared');
    const sql=accountsMigration.slice(statement.start,statement.end).trim().replace(/;$/,'');
    assert.deepEqual(actual,{...old,sql:sqlTokens(sql).map(t=>[t.kind,t.text])},old.name);
+  }else if(old.type==='table'&&yearScopeColumns[old.name]){
+   assert.deepEqual(old.sql.at(-1),['symbol',')']);
+   const expected=[...old.sql.slice(0,-1),...yearScopeColumns[old.name].flatMap(column=>[['symbol',','],...sqlTokens(column).map(t=>[t.kind,t.text])]),old.sql.at(-1)];
+   assert.deepEqual(actual,{...old,sql:expected},'only the declared year-scope columns are appended to '+old.name);
   }else if(old.type==='table'&&old.name==='timetable_teaching_loads'){
    assert.deepEqual(old.sql.at(-1),['symbol',')']);
    const expected=[...old.sql.slice(0,-1),...loadColumns.flatMap(column=>[['symbol',','],...sqlTokens(column).map(t=>[t.kind,t.text])]),old.sql.at(-1)];
@@ -128,6 +136,17 @@ try{
    ]);
    const content=actual.content.map(encoded=>{const row=JSON.parse(encoded);assert.deepEqual(row.splice(-3),[['integer','0'],['null',null],['integer','1']]);return JSON.stringify(row);}).sort();
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-3),content,hash:digest(content)},value,'every previous account value and SQLite type is unchanged');
+  }else if(yearScopeColumns[name]){
+   const actual=after.tables[name],added=yearScopeColumns[name].length;
+   assert.deepEqual(actual.columns.slice(-added).map(column=>column.name),yearScopeColumns[name].map(declaration=>declaration.split(' ')[0]));
+   // Existing assignments take their school active year (fixture: school 1 -> year 1, school 2 -> year 3); nothing is archived.
+   const yearOf={'1':'1','2':'3'};
+   const content=actual.content.map(encoded=>{
+    const row=JSON.parse(encoded),values=row.splice(-added);
+    assert.deepEqual(values,name==='grades'?[['null',null]]:[['integer',yearOf[row[1][1]]],['null',null]],name+' year-scope backfill');
+    return JSON.stringify(row);
+   }).sort();
+   assert.deepEqual({...actual,columns:actual.columns.slice(0,-added),content,hash:digest(content)},value,'every previous '+name+' column, value and SQLite type is unchanged');
   }else if(name==='employees'){
    const actual=after.tables[name];
    assert.deepEqual(actual.columns.slice(-4),employeeColumns.map((declaration,index)=>{

@@ -1,3 +1,5 @@
+import { afterYearActivationStatements, beforeYearActivationStatements, isMissingYearScopeSchema } from './yearScopedAssignments.ts';
+
 export interface AcademicYearRecord {
   id: number;
   school_id: number;
@@ -114,7 +116,7 @@ export async function activateAcademicYearAtomically(
   if (!existing) return { ok: false, code: 'not_found' };
   if (existing.school_id !== schoolId) return { ok: false, code: 'wrong_school' };
 
-  await db.batch([
+  const coreStatements = [
     db.prepare(`
       UPDATE academic_years
       SET is_active = 0
@@ -157,7 +159,18 @@ export async function activateAcademicYearAtomically(
           )
         )
     `).bind(schoolId, yearId, schoolId),
-  ]);
+  ];
+  try {
+    await db.batch([
+      ...beforeYearActivationStatements(db, schoolId),
+      ...coreStatements,
+      ...afterYearActivationStatements(db, schoolId, yearId),
+    ]);
+  } catch (error) {
+    // Before migration 0063 the year columns do not exist; activate as before.
+    if (!isMissingYearScopeSchema(error)) throw error;
+    await db.batch(coreStatements);
+  }
 
   const activated = await db.prepare(`
     SELECT id, school_id, name, starts_at, ends_at, is_active, created_at

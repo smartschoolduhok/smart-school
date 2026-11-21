@@ -23,6 +23,9 @@ const initialSchema = readFileSync(join(rootDir, 'migrations', '0001_initial_sch
 const academicSchema = readFileSync(join(rootDir, 'migrations', '0002_phase2_academic_tables.sql'), 'utf8');
 const integrityMigration = readFileSync(join(rootDir, 'migrations', '0017_academic_year_integrity.sql'), 'utf8');
 const enrollmentMigration = readFileSync(join(rootDir, 'migrations', '0020_student_enrollments.sql'), 'utf8');
+// Subject assignments and grades let activation exercise the year archive (0063).
+const yearScopeMigrations = ['0003_student_subjects.sql', '0004_phase4_grades.sql', '0063_year_scoped_grades.sql']
+  .map(name => readFileSync(join(rootDir, 'migrations', name), 'utf8'));
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 const academicTabSource = readFileSync(join(rootDir, 'src', 'modules', 'settings', 'AcademicTab.tsx'), 'utf8');
 const settingsPageSource = readFileSync(join(rootDir, 'src', 'modules', 'settings', 'SettingsPage.tsx'), 'utf8');
@@ -90,6 +93,7 @@ function createDatabase({ applyIntegrity = true } = {}) {
   `);
   if (applyIntegrity) database.exec(integrityMigration);
   database.exec(enrollmentMigration);
+  for (const migration of yearScopeMigrations) database.exec(migration);
   return database;
 }
 
@@ -629,6 +633,7 @@ test('academic-year activation uses the explicit enrollment and placement impact
   assert.equal(ACADEMIC_YEAR_ROLLOVER_WARNING, [
     'سيتم تفعيل هذه السنة الدراسية وجعل تسجيلاتها هي المصدر الحالي لمواقع الطلاب.',
     'أي طالب لا يملك تسجيلًا في هذه السنة سيظهر بلا صف أو شعبة.',
+    'تعيينات المواد ودرجات السنة السابقة تُؤرشف وتبقى محفوظة، والسنة الجديدة تبدأ بتعيين مواد ودرجات جديدة.',
     'تأكد من إكمال تسجيل/ترفيع الطلاب قبل المتابعة إذا لم يكن هذا مقصودًا.',
     'هل تريد المتابعة؟',
   ].join('\n'));
