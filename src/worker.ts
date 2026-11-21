@@ -4,6 +4,7 @@ import { registerSchoolRegisterRoutes } from './lib/schoolRegistersDb'
 import { isMissingSubscriptionSchema, loadSchoolAccess, registerSchoolSubscriptionRoutes, schoolAccessColumnsSql, schoolAccessFromColumns, type SchoolAccessColumns } from './lib/schoolSubscriptionsDb'
 import { schoolAccessDenial, STUDENT_LIMIT_ERROR, type SchoolAccess } from './lib/schoolSubscriptions'
 import { registerSystemHealthRoutes, reportServerError } from './lib/systemHealthDb'
+import { currentYearAssignmentSql, GRADE_YEAR_ARCHIVED_ERROR, YEAR_CLOSED_ERROR } from './lib/yearScopedAssignments'
 import { registerStaffDossierRoutes } from './lib/staffDossierDb'
 import { employeeSpreadsheetQualifications, employeeQualificationCells, employeeSpreadsheetRole, employeeSpreadsheetDate, employeeSpreadsheetMatch, employeeSpreadsheetFields } from './lib/employeeSpreadsheet'
 import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualifications, qualificationRows, createEmployeeAuditStatement, publicEmployee, employeeQualifications, readEmployeePhotoBody, detectEmployeePhoto } from './lib/employeeRecords'
@@ -555,6 +556,12 @@ async function clearLoginThrottle(db: D1Database, subjectHash: string): Promise<
 function apiErrorResponse(c: any, err: unknown, body: Record<string, unknown>, status: number) {
   if (/school_student_limit_reached/.test(String((err as Error)?.message))) {
     return c.json({ error: STUDENT_LIMIT_ERROR, code: 'school_student_limit_reached' }, 409);
+  }
+  if (/student_subject_year_closed/.test(String((err as Error)?.message))) {
+    return c.json({ error: YEAR_CLOSED_ERROR, code: 'student_subject_year_closed' }, 409);
+  }
+  if (/grade_year_archived/.test(String((err as Error)?.message))) {
+    return c.json({ error: GRADE_YEAR_ARCHIVED_ERROR, code: 'grade_year_archived' }, 409);
   }
   console.error(`API error ${c.req.method} ${c.req.path}`, err);
   if (status >= 500) reportServerError(c, status, err);
@@ -7013,16 +7020,17 @@ app.put('/api/student-subjects/:id/reactivate', requireSameSchoolOrAdmin(), requ
     if (!targetSchool.ok) return c.json({ error: targetSchool.error }, targetSchool.status);
     const row = await db.prepare(`
       SELECT assignment.school_id, assignment.student_id, assignment.subject_id, assignment.is_active,
-             subject.religious_track
+             subject.religious_track, ${currentYearAssignmentSql('assignment')} AS in_current_year
       FROM student_subjects assignment
       JOIN subjects subject ON subject.id = assignment.subject_id AND subject.school_id = assignment.school_id
       WHERE assignment.id = ?
-    `).bind(id).first<{ school_id: number; student_id: number; subject_id: number; is_active: number; religious_track: ReligiousTrack | null }>();
+    `).bind(id).first<{ school_id: number; student_id: number; subject_id: number; is_active: number; religious_track: ReligiousTrack | null; in_current_year: number }>();
     if (!row) return c.json({ error: 'التعيين غير موجود' }, 404);
     if (row.school_id !== targetSchool.schoolId) {
       return c.json({ error: 'غير مسموح: لا يمكنك تعديل تعيين في مدرسة أخرى' }, 403);
     }
     if (row.is_active === 1) return c.json({ error: 'التعيين مفعّل مسبقًا' }, 400);
+    if (Number(row.in_current_year) !== 1) return c.json({ error: YEAR_CLOSED_ERROR, code: 'student_subject_year_closed' }, 409);
 
     // Prevent reactivation if another active assignment exists for same student+subject
     const existingActive = await db.prepare('SELECT id FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ? AND is_active = 1').bind(row.school_id, row.student_id, row.subject_id).first();
@@ -13629,8 +13637,8 @@ async function loadGradeImportContext(db: D1Database, schoolId: number): Promise
     // Keep archived subject metadata in context so religious-conflict preflight
     // matches the D1 trigger; subject resolution still excludes archived rows.
     db.prepare(`SELECT id, school_id, name, class_id, section_id, status, religious_track FROM subjects WHERE school_id = ?`).bind(schoolId),
-    db.prepare(`SELECT id, school_id, student_id, subject_id, class_id, section_id, is_active FROM student_subjects WHERE school_id = ?`).bind(schoolId),
-    db.prepare(`SELECT id, school_id, student_subject_id, first_term_grade, first_month, second_month, second_term_grade, third_month, fourth_month, mid_year_exam, final_exam, completion_exam, notes FROM grades WHERE school_id = ?`).bind(schoolId),
+    db.prepare(`SELECT id, school_id, student_id, subject_id, class_id, section_id, is_active FROM student_subjects AS ss WHERE school_id = ? AND ${currentYearAssignmentSql('ss')}`).bind(schoolId),
+    db.prepare(`SELECT id, school_id, student_subject_id, first_term_grade, first_month, second_month, second_term_grade, third_month, fourth_month, mid_year_exam, final_exam, completion_exam, notes FROM grades WHERE school_id = ? AND year_archived_at IS NULL`).bind(schoolId),
     db.prepare(`SELECT id, school_id, name, status FROM classes WHERE school_id = ?`).bind(schoolId),
     db.prepare(`SELECT id, school_id, class_id, name, status FROM sections WHERE school_id = ?`).bind(schoolId),
   ]);
@@ -14260,7 +14268,7 @@ app.post('/api/import-export/:type/preview', requireSameSchoolOrAdmin(), async (
         // Check for existing assignment
         let existingAssignment = null;
         if (student && subject && !student._ambiguous && !subject._ambiguous) {
-          const assignment = await db.prepare(`SELECT id, is_active, assigned_at FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, student.id, subject.id).first<any>();
+          const assignment = await db.prepare(`SELECT id, is_active, assigned_at FROM student_subjects AS ss WHERE school_id = ? AND student_id = ? AND subject_id = ? AND ${currentYearAssignmentSql('ss')} ORDER BY is_active DESC, id DESC`).bind(school_id, student.id, subject.id).first<any>();
           if (assignment) existingAssignment = assignment;
         }
 
@@ -14751,7 +14759,7 @@ app.post('/api/import-export/:type/confirm', requireSameSchoolOrAdmin(), async (
             if (conflict) { rowError(i, 'assignment', RELIGIOUS_SUBJECT_CONFLICT_ERROR); continue; }
           }
 
-          const existingAssignment = await db.prepare(`SELECT id, is_active FROM student_subjects WHERE school_id = ? AND student_id = ? AND subject_id = ?`).bind(school_id, studentId, subjectId).first<any>();
+          const existingAssignment = await db.prepare(`SELECT id, is_active FROM student_subjects AS ss WHERE school_id = ? AND student_id = ? AND subject_id = ? AND ${currentYearAssignmentSql('ss')} ORDER BY is_active DESC, id DESC`).bind(school_id, studentId, subjectId).first<any>();
 
           if (existingAssignment) {
             if (mode === 'error_on_existing') { rowError(i, 'assignment', 'التسجيل في المادة موجود مسبقاً'); continue; }
