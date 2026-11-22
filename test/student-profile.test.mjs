@@ -146,7 +146,7 @@ test('student name opens a role-scoped dossier with grades and authoritative fin
   assert.match(profileSource, /<StudentGradesSection studentId=\{student\.id\} refreshKey=\{studyStatusRefreshKey\} \/>/);
   assert.match(profileSource, /hasRole\(user\?\.role_key, FINANCE_ACCESS_ROLES\)/);
   assert.match(profileSource, /<ParentFinanceSection studentId=\{student\.id\} schoolId=\{schoolId\} \/>/);
-  assert.match(source('src/modules/students/StudentGradesSection.tsx'), /getStudentGrades\(studentId\)/);
+  assert.match(source('src/modules/students/StudentGradesSection.tsx'), /getStudentGrades\(studentId, \{ years: true, academicYearId: yearId \}\)/);
   assert.match(source('src/modules/students/ParentFinanceSection.tsx'), /getStudentFinance\(studentId,schoolId\)/);
   assert.match(studentsSource, /to=\{`\/students\/\$\{s\.id\}\/finance`\}/);
   assert.match(appSource, /path="\/students\/:id\/finance"[\s\S]*?<FinanceRoute><StudentFinancePage \/><\/FinanceRoute>/);
