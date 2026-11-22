@@ -14,6 +14,7 @@ import {
   type TimetableTeacherAvailabilityMatrix,
   type TimetableTeacherConstraints,
 } from '../../lib/timetable';
+import { appConfirm } from '../../components/AppDialogs';
 
 interface TeacherOption {
   id: number;
@@ -186,7 +187,7 @@ export function TeacherAvailabilityTab({
   }
 
   async function resetAvailability() {
-    if (selectedTeacherId == null || !window.confirm('سيتم حذف جميع استثناءات توفر هذا المدرس وإعادتها إلى متاح. هل تريد المتابعة؟')) return;
+    if (selectedTeacherId == null || !(await appConfirm('سيتم حذف جميع استثناءات توفر هذا المدرس وإعادتها إلى متاح. هل تريد المتابعة؟', { danger: true }))) return;
     const requestSchoolId = schoolId;
     const requestYearId = academicYearId;
     const requestTeacherId = selectedTeacherId;

@@ -23,6 +23,7 @@ import {
   FileText, Printer, Search, User, Users, CheckCircle, AlertCircle,
   Loader2, QrCode, XCircle, Eye, CheckSquare, Globe, Send, Undo2
 } from 'lucide-react';
+import { appConfirm, appPrompt } from '../../components/AppDialogs';
 
 /* ─── Helpers ─── */
 function displayNum(n: number | null | undefined): string {
@@ -654,7 +655,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
 
   async function handlePublish(card: CardRecord) {
     if (schoolId == null || card.id == null) return;
-    if (!window.confirm('إرسال هذه النتيجة سيجعلها ظاهرة في حساب ولي الأمر المرتبط بهذا الطالب فقط. الطباعة ورمز QR يعملان قبل الإرسال. هل تريد المتابعة؟')) return;
+    if (!(await appConfirm('إرسال هذه النتيجة سيجعلها ظاهرة في حساب ولي الأمر المرتبط بهذا الطالب فقط. الطباعة ورمز QR يعملان قبل الإرسال. هل تريد المتابعة؟'))) return;
     const isCurrent = captureSchoolRequest();
     const res = await publishResultCard(card.id, schoolId, card.publication_revision);
     if (!isCurrent()) return;
@@ -665,7 +666,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
 
   async function handleWithdraw(card: CardRecord) {
     if (schoolId == null || card.id == null) return;
-    const reason = window.prompt('اكتب سبب سحب النتيجة من حساب ولي الأمر. سيُحفظ السبب في سجل التدقيق:')?.trim();
+    const reason = (await appPrompt('اكتب سبب سحب النتيجة من حساب ولي الأمر. سيُحفظ السبب في سجل التدقيق:', { danger: true }))?.trim();
     if (!reason) return;
     const isCurrent = captureSchoolRequest();
     const res = await withdrawResultCard(card.id, schoolId, card.publication_revision, reason);
@@ -677,7 +678,7 @@ function ListTab({ schoolId }: { schoolId: number | null }) {
 
   async function handleCancel(id: number) {
     if (schoolId == null) return;
-    if (!window.confirm('هل أنت متأكد من إلغاء هذا الكارت؟ سيتوقف رمز QR عن التحقق.')) return;
+    if (!(await appConfirm('هل أنت متأكد من إلغاء هذا الكارت؟ سيتوقف رمز QR عن التحقق.', { danger: true }))) return;
     const isCurrent = captureSchoolRequest();
     const res = await cancelResultCard(id, schoolId);
     if (!isCurrent()) return;

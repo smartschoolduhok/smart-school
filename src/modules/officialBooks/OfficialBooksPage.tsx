@@ -32,6 +32,7 @@ import {
   SCHOOL_MANAGEMENT_ROLES,
   hasRole,
 } from '../../lib/rbac';
+import { appAlert, appConfirm } from '../../components/AppDialogs';
 
 /* ─── Helpers ─── */
 function canManageTemplates(roleKey?: RoleKey): boolean {
@@ -253,7 +254,7 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
       await fetchTemplates();
     } catch (e: any) {
       if (!isCurrent()) return;
-      alert(e?.error || 'فشل في حفظ القالب');
+      void appAlert(e?.error || 'فشل في حفظ القالب');
     }
   };
 
@@ -269,7 +270,7 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
 
   const archiveTemplate = async (id: number) => {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من أرشفة هذا القالب؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من أرشفة هذا القالب؟', { danger: true }))) return;
     const isCurrent = captureSchoolRequest();
     try {
       const result = await updateOfficialBookTemplate(id, { status: 'archived' }, schoolId);
@@ -281,7 +282,7 @@ function TemplatesTab({ user, schoolId }: { user: any; schoolId: number | null }
       await fetchTemplates();
     } catch (e: any) {
       if (!isCurrent()) return;
-      alert(e?.error || 'فشل في أرشفة القالب');
+      void appAlert(e?.error || 'فشل في أرشفة القالب');
     }
   };
 
@@ -742,7 +743,7 @@ function ListTab({ user, schoolId, onCopy }: { user: any; schoolId: number | nul
       if (!isCurrent()) return;
       if (res.error) throw new Error(res.error);
       setBooks((res.data || []) as BookRecord[]);
-    } catch (e: any) { alert(e?.message || 'فشل في جلب الكتب الرسمية'); }
+    } catch (e: any) { void appAlert(e?.message || 'فشل في جلب الكتب الرسمية'); }
     finally { if (isCurrent()) setLoading(false); }
   };
 
@@ -755,17 +756,17 @@ function ListTab({ user, schoolId, onCopy }: { user: any; schoolId: number | nul
 
   const handleCancel = async (id: number) => {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من إلغاء هذا الكتاب؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من إلغاء هذا الكتاب؟', { danger: true }))) return;
     const isCurrent = captureSchoolRequest();
     try {
       const result = await cancelOfficialBook(id, schoolId);
       if (!isCurrent()) return;
       if (result.error) {
-        alert(result.error);
+        void appAlert(result.error);
         return;
       }
       await fetchBooks();
-    } catch (e) { alert('فشل في الإلغاء'); }
+    } catch (e) { void appAlert('فشل في الإلغاء'); }
   };
 
   return (

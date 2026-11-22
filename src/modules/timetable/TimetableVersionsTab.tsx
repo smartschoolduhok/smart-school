@@ -13,6 +13,7 @@ import type {
   TimetableScheduleVersionDetails,
 } from '../../lib/timetableAdoption';
 import { WeekArchivesPanel } from './WeekArchivesPanel';
+import { appConfirm } from '../../components/AppDialogs';
 
 interface TimetableVersionsTabProps {
   schoolId: number;
@@ -90,7 +91,7 @@ export function TimetableVersionsTab({
 
   async function restoreVersion() {
     if (!restorePreview?.can_apply) return;
-    if (!window.confirm('سيتم حفظ نسخة من الجدول الحالي ثم استعادة هذا الإصدار بالكامل. هل تريد المتابعة؟')) return;
+    if (!(await appConfirm('سيتم حفظ نسخة من الجدول الحالي ثم استعادة هذا الإصدار بالكامل. هل تريد المتابعة؟'))) return;
     const generation = ++generationRef.current;
     setLoading(true);
     setError('');

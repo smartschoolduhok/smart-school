@@ -16,6 +16,7 @@ import {
   isStudentPlacementFinalized,
 } from '../../lib/studentPlacementUx';
 import { Search, Plus, Filter, Archive, Edit2, Eye, X, Check, User, Users, CalendarSearch, Printer } from 'lucide-react';
+import { appAlert, appConfirm } from '../../components/AppDialogs';
 
 interface StudentRecord extends TransportStudentFields {
   id: number;
@@ -380,11 +381,11 @@ export default function StudentsPage() {
 
   async function handleArchive(id: number) {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من أرشفة هذا الطالب؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من أرشفة هذا الطالب؟', { danger: true }))) return;
     const isCurrentRequest = captureSchoolRequest();
     const res = await archiveStudent(id, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) void appAlert(res.error);
     else loadData();
   }
 

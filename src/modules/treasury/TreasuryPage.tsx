@@ -12,6 +12,7 @@ import {
   getTreasuryMonthlyReport, getTreasurySummary, getTreasuryTransactions,
 } from '../../lib/api';
 import { BUSINESS_TIME_ZONE_LABEL, businessDate, businessMonth } from '../../lib/businessTime';
+import { appConfirm, appPrompt } from '../../components/AppDialogs';
 
 function toArabicIndic(value: number | string | null | undefined): string {
   if (value == null) return '';
@@ -205,8 +206,8 @@ export default function TreasuryPage() {
 
   async function handleCancelTx(id: number) {
     if (schoolId == null) return;
-    const reason = window.prompt('اكتب سبب إلغاء القيد المالي:')?.trim();
-    if (!reason || !window.confirm('سيُعكس أثر القيد مرة واحدة، ولن يمكن تعديل فترة مقفلة. هل تريد المتابعة؟')) return;
+    const reason = (await appPrompt('اكتب سبب إلغاء القيد المالي:', { danger: true }))?.trim();
+    if (!reason || !(await appConfirm('سيُعكس أثر القيد مرة واحدة، ولن يمكن تعديل فترة مقفلة. هل تريد المتابعة؟', { danger: true }))) return;
     const isCurrent = captureSchoolRequest(); setSubmitting(true);
     const response = await cancelTreasuryTransaction(id, schoolId, reason);
     if (!isCurrent()) return;
@@ -218,7 +219,7 @@ export default function TreasuryPage() {
 
   async function handleCloseDay() {
     if (schoolId == null) { showError('يجب اختيار المدرسة المستهدفة أولاً'); return; }
-    if (!window.confirm(`إقفال يوم ${closingDate} يمنع إضافة أو إلغاء أي حركة في هذا اليوم وما قبله. هل تريد المتابعة؟`)) return;
+    if (!(await appConfirm(`إقفال يوم ${closingDate} يمنع إضافة أو إلغاء أي حركة في هذا اليوم وما قبله. هل تريد المتابعة؟`, { danger: true }))) return;
     const isCurrent = captureSchoolRequest(); setSubmitting(true);
     const response = await closeTreasuryDay({ school_id: schoolId, closing_date: closingDate, notes: closingNotes });
     if (!isCurrent()) return;

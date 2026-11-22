@@ -6,6 +6,7 @@ import { getSchools, createSchool, updateSchool, archiveSchool } from '../../lib
 import { useAuth } from '../../hooks/useAuth';
 import SchoolSubscriptionDialog from './SchoolSubscriptionDialog';
 import type { School as SchoolType } from '../../types';
+import { appConfirm } from '../../components/AppDialogs';
 
 const SCHOOL_TYPES = [
   { value: 'public', label: 'حكومية' },
@@ -136,7 +137,7 @@ export default function SchoolsPage() {
   }
 
   async function handleArchive(id: number) {
-    if (!window.confirm('هل أنت متأكد من أرشفة هذه المدرسة؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من أرشفة هذه المدرسة؟', { danger: true }))) return;
     setLoading(true);
     const { error: err } = await archiveSchool(id);
     if (err) {

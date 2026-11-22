@@ -20,6 +20,7 @@ import {
   Search, Filter, Plus, X, Check, BookMarked, GraduationCap, Users, User,
   Layers, BookOpen, ToggleLeft, ToggleRight, AlertCircle, Loader2, ChevronDown, ChevronUp
 } from 'lucide-react';
+import { appAlert, appConfirm } from '../../components/AppDialogs';
 
 type Mode = 'list' | 'class' | 'section' | 'students' | 'one';
 
@@ -237,31 +238,31 @@ export default function StudentSubjectsPage() {
 
   async function handleDeactivate(id: number) {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من إلغاء التعيين؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من إلغاء التعيين؟', { danger: true }))) return;
     const isCurrentRequest = captureSchoolRequest();
     const res = await deactivateStudentSubject(id, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE ? RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE : res.error);
+    if (res.error) void appAlert(res.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE ? RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE : res.error);
     else loadData();
   }
 
   async function handleReactivate(id: number) {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من إعادة تفعيل التعيين؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من إعادة تفعيل التعيين؟'))) return;
     const isCurrentRequest = captureSchoolRequest();
     const res = await reactivateStudentSubject(id, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) void appAlert(res.error);
     else loadData();
   }
 
   async function handleBulkDeactivate() {
     if (schoolId == null) return;
-    if (!confirm(`هل أنت متأكد من إلغاء ${selectedIds.length} تعيين مختار؟`)) return;
+    if (!(await appConfirm(`هل أنت متأكد من إلغاء ${selectedIds.length} تعيين مختار؟`, { danger: true }))) return;
     const isCurrentRequest = captureSchoolRequest();
     const res = await bulkDeactivateStudentSubject(selectedIds, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE ? RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE : res.error);
+    if (res.error) void appAlert(res.code === RELIGIOUS_SUBJECT_HAS_GRADES_CODE ? RELIGIOUS_SUBJECT_GRADE_HISTORY_GUIDANCE : res.error);
     else { setSelectedIds([]); setConfirmBulkOpen(false); loadData(); }
   }
 

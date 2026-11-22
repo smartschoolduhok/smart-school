@@ -2,6 +2,8 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import Layout from './components/Layout';
+import ErrorBoundary from './components/ErrorBoundary';
+import { AppDialogHost } from './components/AppDialogs';
 import type { RoleKey } from './types';
 import {
   ACADEMIC_ACCESS_ROLES,
@@ -176,6 +178,12 @@ function RouteLoading() {
   );
 }
 
+// Clears a page error when the user navigates elsewhere.
+function RoutedErrorBoundary({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation();
+  return <ErrorBoundary resetKey={pathname}>{children}</ErrorBoundary>;
+}
+
 export function SessionGate({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated, isLoading } = useAuth();
   const { pathname } = useLocation();
@@ -189,8 +197,10 @@ export function SessionGate({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <AuthProvider>
       <BrowserRouter>
+        <RoutedErrorBoundary>
         <Suspense fallback={<RouteLoading />}>
           <SessionGate>
           <Routes>
@@ -275,7 +285,10 @@ export default function App() {
           </Routes>
           </SessionGate>
         </Suspense>
+        </RoutedErrorBoundary>
       </BrowserRouter>
     </AuthProvider>
+    <AppDialogHost />
+    </ErrorBoundary>
   );
 }

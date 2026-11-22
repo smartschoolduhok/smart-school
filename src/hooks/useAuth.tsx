@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import type { AuthState, AuthUser } from '../types';
 import { AUTH_STORAGE_CLEARED_EVENT, clearAuthentication, discardLegacyAuthentication, getSessionCsrfToken, setSessionCsrfToken } from '../lib/authStorage';
+import { appAlert } from '../components/AppDialogs';
 
 interface LoginResult { success: boolean; error?: string; }
 interface AuthContextType extends AuthState {
@@ -78,7 +79,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.location.href = '/login';
     } catch {
       // A failed server revocation must never look like a completed logout.
-      window.alert('تعذر تأكيد تسجيل الخروج. تحقق من الاتصال وحدّث الصفحة ثم حاول مجددًا.');
+      void appAlert('تعذر تأكيد تسجيل الخروج. تحقق من الاتصال وحدّث الصفحة ثم حاول مجددًا.');
     }
   }, []);
 

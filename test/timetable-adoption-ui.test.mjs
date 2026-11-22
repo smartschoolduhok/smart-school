@@ -73,7 +73,7 @@ test('version restore uses stale request protection, preview and confirmation be
   assert.match(versionsSource, /useSchoolRequestGuard\(schoolId\)/);
   assert.match(versionsSource, /generationRef/);
   assert.match(versionsSource, /previewTimetableVersionRestore/);
-  assert.match(versionsSource, /window\.confirm/);
+  assert.match(versionsSource, /appConfirm\(/);
   assert.match(versionsSource, /confirm_restore: true/);
   assert.match(pageSource, /onRestored=\{async \(\) => \{/);
   assert.match(pageSource, /setTab\('grid'\)/);

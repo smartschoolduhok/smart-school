@@ -21,6 +21,7 @@ import {
 import type { Class, Section } from '../../types';
 import type { TimetableScope } from '../../lib/timetableScope';
 import { parallelTimetableLoadGroup } from '../../lib/timetableParallel';
+import { appConfirm } from '../../components/AppDialogs';
 
 interface TimetableGridTabProps {
   schoolId: number;
@@ -351,7 +352,7 @@ export function TimetableGridTab({
       setError('لا يمكن تبديل درس مثبت. ألغِ تثبيته أولًا ثم أعد النقل.');
       return;
     }
-    if (!window.confirm(parallelPartnerName(moveDialog.entry) ? 'هذه مجموعة دروس متزامنة مثبتة. هل تريد إلغاء التثبيت ونقل الدرسين معًا؟' : 'هذا الدرس مثبت. هل تريد إلغاء التثبيت ونقله؟')) return;
+    if (!(await appConfirm(parallelPartnerName(moveDialog.entry) ? 'هذه مجموعة دروس متزامنة مثبتة. هل تريد إلغاء التثبيت ونقل الدرسين معًا؟' : 'هذا الدرس مثبت. هل تريد إلغاء التثبيت ونقله؟'))) return;
     const expectedScope = currentScopeRef.current;
     const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
@@ -430,7 +431,7 @@ export function TimetableGridTab({
     const message = partner ? `سيُحذف درسا ${entry.subject_name} و${partner} المتزامنان من هذه الفترة معًا.${locked ? ' سيُلغى تثبيتهما أيضًا.' : ''} يبقى النصابان فعالين. هل تريد المتابعة؟` : locked
       ? `هذا الدرس مثبت. هل تريد إلغاء التثبيت وحذف درس ${entry.subject_name}؟`
       : `هل تريد حذف درس ${entry.subject_name} من الجدول؟`;
-    if (!window.confirm(message)) return;
+    if (!(await appConfirm(message))) return;
     const expectedScope = currentScopeRef.current;
     const expectedGeneration = requestGenerationRef.current;
     setSaving(true);
@@ -472,7 +473,7 @@ export function TimetableGridTab({
       : lockScopeKind === 'class' || selectedSectionId == null ? { kind: 'class', class_id: selectedClassId }
       : { kind: 'section', class_id: selectedClassId, section_id: selectedSectionId };
     const label = scope.kind === 'stage' ? `مرحلة ${selectedClass.stage}` : scope.kind === 'class' ? `الصف ${selectedClass.name} بكل شعبه` : `${selectedClass.name} / ${classSections.find(item => item.id === selectedSectionId)?.name || ''}`;
-    if (!window.confirm(`${isLocked ? 'تثبيت' : 'إلغاء تثبيت'} جميع الدروس المحفوظة ضمن ${label}؟${isLocked ? '\nستبقى مواقعها ثابتة في أي توليد لاحق.' : ''}`)) return;
+    if (!(await appConfirm(`${isLocked ? 'تثبيت' : 'إلغاء تثبيت'} جميع الدروس المحفوظة ضمن ${label}؟${isLocked ? '\nستبقى مواقعها ثابتة في أي توليد لاحق.' : ''}`, { danger: true }))) return;
     const expectedScope = currentScopeRef.current, expectedGeneration = requestGenerationRef.current;
     setSaving(true); setError('');
     const response = await setTimetableScopeLock({ school_id: schoolId, academic_year_id: academicYearId,

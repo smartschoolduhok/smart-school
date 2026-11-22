@@ -45,6 +45,7 @@ import {
   type ParentGateAttendanceFeed,
 } from '../../lib/gateAttendance';
 import { ATTENDANCE_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
+import { appConfirm } from '../../components/AppDialogs';
 
 const STATUS_COLORS: Record<AttendanceStatus, string> = {
   present: 'border-emerald-200 bg-emerald-50 text-emerald-800',
@@ -303,7 +304,7 @@ function StaffAttendance() {
       setError('اكتب سبب التصحيح قبل حفظ سجل معتمد.');
       return;
     }
-    if (action === 'confirm' && !correcting && !window.confirm('بعد الاعتماد سيظهر السجل لولي الأمر ولن يستطيع المدرس تعديله. هل تريد المتابعة؟')) return;
+    if (action === 'confirm' && !correcting && !(await appConfirm('بعد الاعتماد سيظهر السجل لولي الأمر ولن يستطيع المدرس تعديله. هل تريد المتابعة؟'))) return;
     const expected = { schoolId, date, entryId: detail.lesson.timetable_entry_id };
     setSaving(true);
     setError('');

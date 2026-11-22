@@ -39,6 +39,7 @@ import {
   type ParentHomeworkItem,
 } from '../../lib/homework';
 import { HOMEWORK_AUTHOR_ROLES, hasRole } from '../../lib/rbac';
+import { appConfirm, appPrompt } from '../../components/AppDialogs';
 
 type EditorMode = 'create' | 'edit' | 'replacement';
 type ParentTimingFilter = 'all' | 'upcoming' | 'overdue' | 'undated';
@@ -381,7 +382,7 @@ export default function HomeworkPage() {
   }
 
   async function publish(item: HomeworkRecord): Promise<void> {
-    if (schoolId == null || !window.confirm('هل تريد نشر الواجب الآن؟ ستُثبّت قائمة الطلاب والمرفقات ولن يعود المحتوى قابلًا للتعديل.')) return;
+    if (schoolId == null || !(await appConfirm('هل تريد نشر الواجب الآن؟ ستُثبّت قائمة الطلاب والمرفقات ولن يعود المحتوى قابلًا للتعديل.'))) return;
     await runAction(
       item.homework_key,
       () => publishHomework(item.homework_key, schoolId, item.revision),
@@ -391,7 +392,7 @@ export default function HomeworkPage() {
 
   async function withdraw(item: HomeworkRecord): Promise<void> {
     if (schoolId == null) return;
-    const reason = window.prompt('اكتب سبب سحب الواجب (إلزامي):')?.trim();
+    const reason = (await appPrompt('اكتب سبب سحب الواجب (إلزامي):', { danger: true }))?.trim();
     if (!reason) return;
     await runAction(
       item.homework_key,
@@ -422,7 +423,7 @@ export default function HomeworkPage() {
     const confirmation = cleanupPending
       ? 'إعادة محاولة تنظيف هذا المرفق من التخزين؟'
       : 'إزالة هذا المرفق من المسودة؟';
-    if (!window.confirm(confirmation)) return;
+    if (!(await appConfirm(confirmation))) return;
     const actionKey = `${item.homework_key}:${attachment.attachment_key}`;
     setBusyKey(actionKey);
     setError('');

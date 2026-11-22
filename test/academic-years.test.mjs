@@ -669,7 +669,7 @@ test('inactive-year activation confirms before calling the existing activation A
   const confirmationIndex = handler.indexOf('confirmAcademicYearRollover');
   const requestIndex = handler.indexOf('activateAcademicYear(year.id, schoolId)');
 
-  assert.match(handler, /if \(!confirmAcademicYearRollover\([\s\S]*?\)\) return;/);
+  assert.match(handler, /if \(!\(await confirmAcademicYearRollover\([\s\S]*?\)\)\) return;/);
   assert.ok(confirmationIndex >= 0 && confirmationIndex < requestIndex);
   assert.doesNotMatch(handler, /activeYear\s*&&\s*!confirmAcademicYearRollover/);
 });
@@ -682,7 +682,7 @@ test('create-and-activate always confirms while create-only bypasses the rollove
   const confirmationIndex = saveHandler.indexOf('confirmAcademicYearRollover');
   const requestIndex = saveHandler.indexOf('createAcademicYear');
 
-  assert.match(saveHandler, /!editingYear[\s\S]*?&& activateAfterCreate[\s\S]*?&& !confirmAcademicYearRollover/);
+  assert.match(saveHandler, /!editingYear[\s\S]*?&& activateAfterCreate[\s\S]*?&& !\(await confirmAcademicYearRollover/);
   assert.ok(confirmationIndex >= 0 && confirmationIndex < requestIndex);
   assert.doesNotMatch(saveHandler, /activeYear[\s\S]*?confirmAcademicYearRollover/);
   assert.match(saveHandler, /createAcademicYear\(\{ school_id: schoolId, \.\.\.form, activate: activateAfterCreate \}\)/);

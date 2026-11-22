@@ -3,6 +3,7 @@ import { Plus, Search, Loader2, Pencil, Lock, X, Copy, RefreshCw } from 'lucide-
 import { getUsers, getSchools, getRoles, createUser, updateUser, updateUserStatus, resetUserPassword, type TemporaryUserPassword } from '../../lib/api';
 import { useAuth } from '../../hooks/useAuth';
 import type { AuthUser, UserWithSchoolAndRole } from '../../types';
+import { appConfirm } from '../../components/AppDialogs';
 
 const SCHOOL_ROLES = ['principal', 'vice_principal', 'teacher', 'accountant', 'registrar', 'parent'];
 const ROLE_LABELS: Record<string, string> = {
@@ -142,7 +143,7 @@ function UserAccounts({ actor }: { actor: AuthUser }) {
   async function handleStatus(target: UserWithSchoolAndRole) {
     if (!mayManage(target) || busyRef.current) return;
     const next = target.status === 'active' ? 'inactive' : 'active';
-    if (!window.confirm(`هل تريد ${next === 'active' ? 'تفعيل' : 'تعطيل'} حساب ${target.full_name}؟ ستُنهى جلساته الحالية.`) || !beginWrite()) return;
+    if (!(await appConfirm(`هل تريد ${next === 'active' ? 'تفعيل' : 'تعطيل'} حساب ${target.full_name}؟ ستُنهى جلساته الحالية.`, { danger: true })) || !beginWrite()) return;
     try {
       const result = await updateUserStatus(target.id, next, target.account_revision!);
       if (!alive.current) return;

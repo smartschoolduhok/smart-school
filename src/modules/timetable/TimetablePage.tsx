@@ -61,6 +61,7 @@ import { parallelTimetableLoadGroup } from '../../lib/timetableParallel';
 import { MATRIX_LEAVE_MESSAGE } from '../../lib/teachingLoadMatrix';
 import { WeekSetupTab } from './WeekSetupTab';
 import { WEEK_LEAVE_MESSAGE } from '../../lib/weekSetup';
+import { appConfirm } from '../../components/AppDialogs';
 
 type TabKey = 'grid' | 'master' | 'automatic' | 'versions' | 'week' | 'loads' | 'availability' | 'readiness';
 type WorkflowKey = 'current' | 'setup' | 'history';
@@ -404,7 +405,7 @@ export default function TimetablePage() {
   }
 
   async function removeSlot(slot: TimetableSlot) {
-    if (schoolId == null || academicYearId == null || !window.confirm('هل تريد حذف هذه الفترة؟')) return;
+    if (schoolId == null || academicYearId == null || !(await appConfirm('هل تريد حذف هذه الفترة؟', { danger: true }))) return;
     const requestSchoolId = schoolId;
     const requestAcademicYearId = academicYearId;
     const response = await deleteTimetableSlot(slot.id, schoolId, academicYearId);
@@ -474,14 +475,14 @@ export default function TimetablePage() {
   }
 
   async function removeLoad(load: TimetableTeachingLoad) {
-    if (saving || schoolId == null || academicYearId == null || !window.confirm('سيتم استبعاد هذا النصاب وحده من الجدول مع الاحتفاظ بسجله. إذا كان متزامنًا مع مادة أخرى، تبقى الأخرى فعالة ويُفك الربط بينهما. هل تريد المتابعة؟')) return;
+    if (saving || schoolId == null || academicYearId == null || !(await appConfirm('سيتم استبعاد هذا النصاب وحده من الجدول مع الاحتفاظ بسجله. إذا كان متزامنًا مع مادة أخرى، تبقى الأخرى فعالة ويُفك الربط بينهما. هل تريد المتابعة؟', { danger: true }))) return;
     const requestSchoolId = schoolId;
     const requestAcademicYearId = academicYearId;
     setSaving(true);
     let response = await deactivateTimetableTeachingLoad(load.id, schoolId, academicYearId);
     if (!scopeIsCurrent(requestSchoolId, requestAcademicYearId)) return;
     if (response.code === 'parallel_load_deactivation_confirmation_required' && Number.isInteger(response.data?.revision)) {
-      const confirmed = window.confirm(`للمادة «${load.subject_name}» ${response.data?.scheduled_count ?? 0} درس محفوظ، منها ${response.data?.locked_count ?? 0} مثبت. سيُحفظ أرشيف ثم تُزال دروس هذه المادة وحدها من الجدول، بما فيها المثبتة. تبقى المادة المتزامنة الأخرى ودروسها كما هي ويُفك الربط عنها. هل تؤكد الاستبعاد؟`);
+      const confirmed = (await appConfirm(`للمادة «${load.subject_name}» ${response.data?.scheduled_count ?? 0} درس محفوظ، منها ${response.data?.locked_count ?? 0} مثبت. سيُحفظ أرشيف ثم تُزال دروس هذه المادة وحدها من الجدول، بما فيها المثبتة. تبقى المادة المتزامنة الأخرى ودروسها كما هي ويُفك الربط عنها. هل تؤكد الاستبعاد؟`, { danger: true }));
       if (!confirmed) { setSaving(false); return; }
       response = await deactivateTimetableTeachingLoad(load.id, schoolId, academicYearId, {confirm_deactivate_scheduled: true, expected_revision: response.data!.revision!});
       if (!scopeIsCurrent(requestSchoolId, requestAcademicYearId)) return;

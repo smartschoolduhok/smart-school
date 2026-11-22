@@ -6,8 +6,10 @@ export const ACADEMIC_YEAR_ROLLOVER_WARNING = [
   'هل تريد المتابعة؟',
 ].join('\n');
 
+export function confirmAcademicYearRollover(confirmAction: (message: string) => boolean): boolean;
+export function confirmAcademicYearRollover(confirmAction: (message: string) => Promise<boolean>): Promise<boolean>;
 export function confirmAcademicYearRollover(
-  confirmAction: (message: string) => boolean,
-): boolean {
+  confirmAction: (message: string) => boolean | Promise<boolean>,
+): boolean | Promise<boolean> {
   return confirmAction(ACADEMIC_YEAR_ROLLOVER_WARNING);
 }

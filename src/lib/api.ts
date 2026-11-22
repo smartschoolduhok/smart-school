@@ -117,6 +117,7 @@ import type {
   TimetableSolverProposalWithIntegrity,
 } from './timetableAdoption';
 import type { PreparedTimetableSolver } from './timetableSolverPrepared';
+import { appAlert } from '../components/AppDialogs';
 
 const API_BASE = import.meta.env.PROD ? '' : '';
 
@@ -127,7 +128,7 @@ function clearAuthAndRedirect() {
 
 function showError(message: string) {
   // Try to use a toast or alert - fallback to alert for now
-  alert(message);
+  void appAlert(message);
 }
 
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<{ data?: T; meta?: any; error?: string; code?: string; status?: number }> {

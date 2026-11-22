@@ -5,6 +5,7 @@ import { generateWeekTemplate, minuteOfDay, periodValues, recalculateWeekTimes, 
   type WeekMode, type WeekPlan, type WeekRequest, type WeekSnapshot } from '../../lib/weekSetup';
 import { compilePeriods, draftPeriodValues, editablePeriods, WeekDraftFence, type DraftPeriod } from './weekDraft';
 import { WeekPeriodEditor } from './WeekPeriodEditor';
+import { appConfirm } from '../../components/AppDialogs';
 
 const services = {load: getWeekSetup, preview: previewWeekSetup, apply: applyWeekSetup};
 const inputClass = 'w-full min-w-0 rounded-lg border border-gray-300 bg-white px-3 py-2';
@@ -112,8 +113,8 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
     setPreview(null); setPreviewInput(null); setAck(false); setReplaceAck(false); setError(''); setSuccess(''); setBusy(null); setExpanded(null);
     markDirty(false); setOpen(true); openRef.current = true;
   }
-  function generate() {
-    if (rows.length && !window.confirm('سيتم استبدال فترات المسودة وتعديلاتها بالتوليد الجديد. هل تريد المتابعة؟')) return;
+  async function generate() {
+    if (rows.length && !(await appConfirm('سيتم استبدال فترات المسودة وتعديلاتها بالتوليد الجديد. هل تريد المتابعة؟', { danger: true }))) return;
     try {
       const generated = generateWeekTemplate({start_time: generator.start, lesson_count: Number(generator.count), lesson_minutes: Number(generator.minutes), desired_end_time: generator.desired,
         breaks: generator.breaks.filter(b => profileDay === null || Number(b.after) < Number(generator.count)).map(b => ({after_lesson: Number(b.after), minutes: Number(b.minutes), label: b.label}))});
@@ -221,7 +222,7 @@ export function WeekSetupTab({schoolId, academicYearId, dataVersion, onDirtyChan
               <button className={buttonClass} onClick={() => { edit(); setGenerator({...generator, breaks: generator.breaks.filter((_, j) => j !== i)}); }}>إزالة قاعدة الاستراحة {i + 1}</button>
             </div>)}
             <div className="flex flex-wrap gap-2"><button className={buttonClass} onClick={() => { edit(); setGenerator({...generator, breaks: [...generator.breaks, {after: '', minutes: '', label: ''}]}); }}>إضافة قاعدة استراحة</button>
-              <button className={buttonClass} onClick={() => { if ((dirtyRef.current || loadedDay !== null) && !window.confirm('سيستبدل المثال إعدادات التوليد الحالية ويضع الاستراحتين بعد الدرسين 2 و4. هل تريد المتابعة؟')) return; edit(); setLoadedDay(null); setGenerator({start: '13:00', count: '7', minutes: '35', desired: '', breaks: [{after: '2', minutes: '15', label: ''}, {after: '4', minutes: '10', label: ''}]}); }}>تحميل مثال فقط: 7 دروس و2 استراحة</button>
+              <button className={buttonClass} onClick={async () => { if ((dirtyRef.current || loadedDay !== null) && !(await appConfirm('سيستبدل المثال إعدادات التوليد الحالية ويضع الاستراحتين بعد الدرسين 2 و4. هل تريد المتابعة؟'))) return; edit(); setLoadedDay(null); setGenerator({start: '13:00', count: '7', minutes: '35', desired: '', breaks: [{after: '2', minutes: '15', label: ''}, {after: '4', minutes: '10', label: ''}]}); }}>تحميل مثال فقط: 7 دروس و2 استراحة</button>
               <button className={primaryClass} onClick={generate}>توليد الفترات</button></div>
             <p className="text-xs text-gray-600">المثال للتجربة ويضع الاستراحات بعد الدرسين 2 و4؛ لتعديل جدول المدرسة ابدأ بتحميل يوم محفوظ.</p>
           </section>

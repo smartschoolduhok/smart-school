@@ -2,6 +2,7 @@ import {useCallback,useEffect,useMemo,useState} from 'react';
 import {AlertTriangle,CalendarDays,Check,Plus,ReceiptText,Trash2,Wallet,X} from 'lucide-react';
 import {disableFeeInstallmentPlan,getStudentFinance,saveFeeInstallmentPlan} from '../../lib/api';
 import {formatFinanceDate,formatIqd,formatPercentageBasisPoints,installmentStatusClasses,installmentStatusLabel} from '../../lib/financePresentation';
+import { appConfirm } from '../../components/AppDialogs';
 
 interface FeeRecord {
   id:number;student_id:number;student_name?:string;student_number?:string;fee_type:string;amount:number;paid_amount:number;
@@ -48,7 +49,7 @@ export default function FeeAccountPanel({fee,schoolId,onClose,onCollect,onEdit,o
     setSaving(false);if(response.error){setError(response.error);return;}setEditorOpen(false);await load();onChanged();
   }
   async function disable(){
-    if(!plan||!window.confirm('تعطيل خطة التقسيط الحالية؟ سيبقى سجلها محفوظًا.'))return;
+    if(!plan||!(await appConfirm('تعطيل خطة التقسيط الحالية؟ سيبقى سجلها محفوظًا.', { danger: true })))return;
     setSaving(true);setError('');const response=await disableFeeInstallmentPlan(fee.id,schoolId,plan.id);setSaving(false);
     if(response.error){setError(response.error);return;}await load();onChanged();
   }
