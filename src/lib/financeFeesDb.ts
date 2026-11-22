@@ -2,6 +2,7 @@ import type { Context, Hono } from 'hono';
 import type { Bindings, Variables } from '../worker';
 import { FINANCE_ACCESS_ROLES, hasRole } from './rbac';
 import { businessDate } from './businessTime';
+import { pageMeta, parsePaging, PAGING_ERROR } from './listPaging';
 import { allocateInstallments, FinanceError, financeDatabaseError, financeId, financeObject, financeQueryId, financeText, feeStatus, parseFee, parseInstallmentPlan, parsePayment, parseReceipt, requireFinance } from './financeFees';
 
 type FinanceEnv = { Bindings: Bindings; Variables: Variables };
@@ -328,8 +329,13 @@ export function registerFinanceRoutes(app: Hono<FinanceEnv>) {
   });
   route('GET','fee-payments',async c=>{
     const q=c.req.query(),schoolId=await school(c,financeQueryId(q.school_id)),student=financeQueryId(q.student_id),fee=financeQueryId(q.student_fee_id);
-    const rows=await c.env.DB.prepare(paymentSelect+' WHERE p.school_id=? AND (? IS NULL OR p.student_id=?) AND (? IS NULL OR p.student_fee_id=?) ORDER BY p.id DESC')
-      .bind(schoolId,student??null,student??null,fee??null,fee??null).all();return c.json({data:rows.results});
+    const paging=parsePaging(q);if(paging==='invalid')return c.json({error:PAGING_ERROR,code:'invalid_pagination'},400);
+    const where=' WHERE p.school_id=? AND (? IS NULL OR p.student_id=?) AND (? IS NULL OR p.student_fee_id=?)',binds=[schoolId,student??null,student??null,fee??null,fee??null];
+    if(!paging){const rows=await c.env.DB.prepare(paymentSelect+where+' ORDER BY p.id DESC').bind(...binds).all();return c.json({data:rows.results});}
+    // Paged: one batch for the page and its total, so both describe the same snapshot.
+    const [page,count]=await c.env.DB.batch([c.env.DB.prepare(paymentSelect+where+' ORDER BY p.id DESC LIMIT ? OFFSET ?').bind(...binds,paging.pageSize,paging.offset),
+      c.env.DB.prepare('SELECT COUNT(*) total FROM fee_payments p'+where).bind(...binds)]);
+    return c.json({data:page.results,meta:pageMeta(paging,Number((count.results?.[0] as Row)?.total??0))});
   });
   route('POST','fee-payments',async c=>{
     const input=parsePayment(await body(c)),schoolId=await school(c,input.school_id),db=c.env.DB,user=c.get('user');
@@ -381,8 +387,13 @@ export function registerFinanceRoutes(app: Hono<FinanceEnv>) {
   });
   route('GET','fee-receipts',async c=>{
     const q=c.req.query(),schoolId=await school(c,financeQueryId(q.school_id)),student=financeQueryId(q.student_id);
-    const rows=await c.env.DB.prepare(`SELECT r.*,u.full_name created_by_name FROM fee_receipts r LEFT JOIN users u ON u.id=r.created_by_user_id AND u.school_id=r.school_id
-      WHERE r.school_id=? AND (? IS NULL OR r.student_id=?) ORDER BY r.id DESC`).bind(schoolId,student??null,student??null).all();return c.json({data:rows.results});
+    const paging=parsePaging(q);if(paging==='invalid')return c.json({error:PAGING_ERROR,code:'invalid_pagination'},400);
+    const select=`SELECT r.*,u.full_name created_by_name FROM fee_receipts r LEFT JOIN users u ON u.id=r.created_by_user_id AND u.school_id=r.school_id
+      WHERE r.school_id=? AND (? IS NULL OR r.student_id=?) ORDER BY r.id DESC`,binds=[schoolId,student??null,student??null];
+    if(!paging){const rows=await c.env.DB.prepare(select).bind(...binds).all();return c.json({data:rows.results});}
+    const [page,count]=await c.env.DB.batch([c.env.DB.prepare(select+' LIMIT ? OFFSET ?').bind(...binds,paging.pageSize,paging.offset),
+      c.env.DB.prepare('SELECT COUNT(*) total FROM fee_receipts r WHERE r.school_id=? AND (? IS NULL OR r.student_id=?)').bind(...binds)]);
+    return c.json({data:page.results,meta:pageMeta(paging,Number((count.results?.[0] as Row)?.total??0))});
   });
   route('GET','fee-receipts/:id',async c=>{
     const schoolId=await school(c,financeQueryId(c.req.query('school_id'))),id=financeQueryId(c.req.param('id'))!;

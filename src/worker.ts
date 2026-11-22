@@ -5,7 +5,8 @@ import { isMissingSubscriptionSchema, loadSchoolAccess, registerSchoolSubscripti
 import { schoolAccessDenial, STUDENT_LIMIT_ERROR, type SchoolAccess } from './lib/schoolSubscriptions'
 import { registerSystemHealthRoutes, reportServerError } from './lib/systemHealthDb'
 import { currentYearAssignmentSql, GRADE_YEAR_ARCHIVED_ERROR, YEAR_CLOSED_ERROR } from './lib/yearScopedAssignments'
-import { loadArchivedYearGrades, loadStudentGradeYears } from './lib/gradeHistoryDb'
+import { loadArchivedYearGrades, loadStudentGradeYears } from './lib/gradeHistoryDb'
+import { pageMeta, parsePaging, PAGING_ERROR } from './lib/listPaging'
 import { registerStaffDossierRoutes } from './lib/staffDossierDb'
 import { employeeSpreadsheetQualifications, employeeQualificationCells, employeeSpreadsheetRole, employeeSpreadsheetDate, employeeSpreadsheetMatch, employeeSpreadsheetFields } from './lib/employeeSpreadsheet'
 import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualifications, qualificationRows, createEmployeeAuditStatement, publicEmployee, employeeQualifications, readEmployeePhotoBody, detectEmployeePhoto } from './lib/employeeRecords'
@@ -13280,9 +13281,18 @@ app.get('/api/print-records', requireSameSchoolOrAdmin(), async (c) => {
       params.push(userId);
     }
 
-    sql += ` ORDER BY pr.printed_at DESC`;
-    const rows = await db.prepare(sql).bind(...params).all<any>();
-    return c.json({ data: rows.results || [] });
+    const paging = parsePaging(query);
+    if (paging === 'invalid') return c.json({ error: PAGING_ERROR, code: 'invalid_pagination' }, 400);
+    if (!paging) {
+      const rows = await db.prepare(sql + ` ORDER BY pr.printed_at DESC`).bind(...params).all<any>();
+      return c.json({ data: rows.results || [] });
+    }
+    const countSql = `SELECT COUNT(*) AS total FROM (${sql})`;
+    const [page, count] = await db.batch([
+      db.prepare(sql + ` ORDER BY pr.printed_at DESC, pr.id DESC LIMIT ? OFFSET ?`).bind(...params, paging.pageSize, paging.offset),
+      db.prepare(countSql).bind(...params),
+    ]);
+    return c.json({ data: page.results || [], meta: pageMeta(paging, Number((count.results?.[0] as any)?.total ?? 0)) });
   } catch (err: any) {
     return apiErrorResponse(c, err, { error: 'فشل في جلب سجلات الطباعة' }, 500);
   }

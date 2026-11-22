@@ -58,8 +58,11 @@ test('fee list exposes one row action and opens the authoritative account with a
 });
 test('receipts first visit loads eligible payments without visiting payments tab, excludes cancelled/reserved/non-IQD',async t=>{
  const u=await mount(t);assert.equal(u.calls.filter(c=>c.path==='/api/fee-payments').length,0);
- await click(button(u,'الإيصالات'));assert.equal(u.calls.filter(c=>c.path==='/api/fee-payments').length,1);
- await input(u.container.querySelector('select'),'1');assert.equal(u.container.querySelectorAll('input[type="checkbox"]').length,1);
+ // The school-wide payment list is no longer loaded; choosing a student loads that student's payments only.
+ await click(button(u,'الإيصالات'));assert.equal(u.calls.filter(c=>c.path==='/api/fee-payments').length,0);
+ await input(u.container.querySelector('select'),'1');
+ const studentPayments=u.calls.filter(c=>c.path==='/api/fee-payments');assert.equal(studentPayments.length,1);assert.match(studentPayments[0].url,/student_id=1/);assert.doesNotMatch(studentPayments[0].url,/page=/);
+ assert.equal(u.container.querySelectorAll('input[type="checkbox"]').length,1);
  const row=u.container.querySelector('input[type="checkbox"]').closest('tr');assert.match(row.textContent,/١٠٠/);assert.ok(!row.textContent.includes('٣٠٠'));
 });
 test('payment busy double-submit guard, uncertain retry retains exact UUID/payload; confirmed new draft uses new key',async t=>{

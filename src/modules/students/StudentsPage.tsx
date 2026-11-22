@@ -17,6 +17,10 @@ import {
 } from '../../lib/studentPlacementUx';
 import { Search, Plus, Filter, Archive, Edit2, Eye, X, Check, User, Users, CalendarSearch, Printer } from 'lucide-react';
 import { appAlert, appConfirm } from '../../components/AppDialogs';
+import Pagination from '../../components/Pagination';
+import { pageSlice } from '../../lib/listPaging';
+
+const STUDENTS_PAGE_SIZE = 50;
 
 interface StudentRecord extends TransportStudentFields {
   id: number;
@@ -218,6 +222,12 @@ export default function StudentsPage() {
     }
     return list;
   }, [students, search, filterClass, filterSection, filterGender, filterStatus, isFinanceDirectory, canManage, filterStudyStatus, studyStatuses, studyRoster.data]);
+
+  // Long rosters render 50 rows at a time; filters and search still cover the whole list.
+  const [studentPage, setStudentPage] = useState(1);
+  useEffect(() => { setStudentPage(1); }, [schoolId, search, filterClass, filterSection, filterGender, filterStatus, filterStudyStatus]);
+  const studentPageView = useMemo(() => pageSlice(filteredStudents, studentPage, STUDENTS_PAGE_SIZE), [filteredStudents, studentPage]);
+  const studentRowOffset = (studentPageView.page - 1) * STUDENTS_PAGE_SIZE;
 
   const availableClasses = useMemo(() => {
     if (!isFinanceDirectory) return classes;
@@ -599,9 +609,9 @@ export default function StudentsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filteredStudents.map((s, idx) => (
+                {studentPageView.rows.map((s, idx) => (
                   <tr key={s.id} className="hover:bg-gray-50 transition-colors">
-                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-500">{toArabicDigits(idx + 1)}</td>}
+                    {!isFinanceDirectory && <td className="px-4 py-3 text-sm text-gray-500">{toArabicDigits(studentRowOffset + idx + 1)}</td>}
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">
                       <bdi dir="ltr">{s.student_number}</bdi>
                     </td>
@@ -662,6 +672,7 @@ export default function StudentsPage() {
                 ))}
               </tbody>
             </table>
+            <Pagination page={studentPageView.page} pageSize={STUDENTS_PAGE_SIZE} total={filteredStudents.length} onPageChange={setStudentPage} label="صفحات قائمة الطلاب" />
           </div>
         )}
       </div>

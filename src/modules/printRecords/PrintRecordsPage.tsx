@@ -4,6 +4,10 @@ import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
 import { getPrintRecords } from '../../lib/api';
 import { toArabicDigits } from '../../lib/arabicDigits';
+import Pagination from '../../components/Pagination';
+
+// Print history grows with every print, so the server returns one page at a time.
+const PRINT_RECORDS_PAGE_SIZE = 50;
 import { Printer, Loader2, FileText, Receipt, GraduationCap, Filter, Calendar, User } from 'lucide-react';
 
 /* ─── Helpers ─── */
@@ -57,6 +61,8 @@ export default function PrintRecordsPage() {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [filterUser, setFilterUser] = useState('');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
 
   const fetchRecords = async () => {
     if (schoolId == null) { setRecords([]); setLoading(false); return; }
@@ -69,9 +75,12 @@ export default function PrintRecordsPage() {
       if (fromDate) filters.from_date = Math.floor(new Date(fromDate).getTime() / 1000);
       if (toDate) filters.to_date = Math.floor(new Date(toDate + 'T23:59:59').getTime() / 1000);
       if (filterUser) filters.user_id = parseInt(filterUser, 10);
+      filters.page = page;
+      filters.page_size = PRINT_RECORDS_PAGE_SIZE;
       const res = await getPrintRecords(filters, schoolId);
       if (!isCurrentSchool() || requestId !== recordsRequestId.current) return;
       setRecords((res.data || []) as RecordItem[]);
+      setTotal(Number(res.meta?.total ?? res.data?.length ?? 0));
     } catch (e) { /* ignore */ }
     finally {
       if (isCurrentSchool() && requestId === recordsRequestId.current) setLoading(false);
@@ -87,7 +96,9 @@ export default function PrintRecordsPage() {
     setFilterUser('');
   }, [schoolId]);
 
-  useEffect(() => { void fetchRecords(); }, [schoolId, filterType, fromDate, toDate, filterUser]);
+  // A new filter or school starts again from the first page.
+  useEffect(() => { setPage(1); }, [schoolId, filterType, fromDate, toDate, filterUser]);
+  useEffect(() => { void fetchRecords(); }, [schoolId, filterType, fromDate, toDate, filterUser, page]);
 
   return (
     <div className="space-y-6" dir="rtl">
@@ -164,6 +175,7 @@ export default function PrintRecordsPage() {
              ))}
            </tbody>
          </table>
+         <Pagination page={page} pageSize={PRINT_RECORDS_PAGE_SIZE} total={total} onPageChange={setPage} disabled={loading} label="صفحات سجل الطباعة" />
        </div>}
     </div>
   );

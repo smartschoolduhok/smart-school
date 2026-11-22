@@ -1788,11 +1788,15 @@ export function getFeePayments(filters?: {
   school_id?: number | null;
   student_id?: number | null;
   student_fee_id?: number | null;
+  page?: number;
+  page_size?: number;
 }) {
   const params = new URLSearchParams();
   if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
   if (filters?.student_id != null) params.append('student_id', String(filters.student_id));
   if (filters?.student_fee_id != null) params.append('student_fee_id', String(filters.student_fee_id));
+  if (filters?.page != null) params.append('page', String(filters.page));
+  if (filters?.page_size != null) params.append('page_size', String(filters.page_size));
   const qs = params.toString() ? `?${params.toString()}` : '';
   return fetchApi<Array<Record<string, any>>>(`/api/fee-payments${qs}`);
 }
@@ -1804,10 +1808,14 @@ export function createFeePayment(data: Record<string, any>) {
 export function getFeeReceipts(filters?: {
   school_id?: number | null;
   student_id?: number | null;
+  page?: number;
+  page_size?: number;
 }) {
   const params = new URLSearchParams();
   if (filters?.school_id != null) params.append('school_id', String(filters.school_id));
   if (filters?.student_id != null) params.append('student_id', String(filters.student_id));
+  if (filters?.page != null) params.append('page', String(filters.page));
+  if (filters?.page_size != null) params.append('page_size', String(filters.page_size));
   const qs = params.toString() ? `?${params.toString()}` : '';
   return fetchApi<Array<Record<string, any>>>(`/api/fee-receipts${qs}`);
 }
