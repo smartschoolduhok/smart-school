@@ -9,6 +9,7 @@ import {
 } from '../../lib/api';
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import { confirmAcademicYearRollover } from './academicYearActivation';
+import { appConfirm } from '../../components/AppDialogs';
 
 interface Props {
   schoolName: string | null;
@@ -93,7 +94,7 @@ export default function AcademicTab({ schoolName, canEdit, schoolId, onSuccess, 
     if (
       !editingYear
       && activateAfterCreate
-      && !confirmAcademicYearRollover(message => window.confirm(message))
+      && !(await confirmAcademicYearRollover(message => appConfirm(message, { title: 'تفعيل سنة دراسية', confirmLabel: 'تفعيل السنة', danger: true })))
     ) return;
     const wasEditing = editingYear != null;
     const isCurrent = captureSchoolRequest();
@@ -114,7 +115,7 @@ export default function AcademicTab({ schoolName, canEdit, schoolId, onSuccess, 
 
   const handleActivate = async (year: AcademicYearRecord) => {
     if (!canEdit || year.is_active === 1 || activatingId != null) return;
-    if (!confirmAcademicYearRollover(message => window.confirm(message))) return;
+    if (!(await confirmAcademicYearRollover(message => appConfirm(message, { title: 'تفعيل سنة دراسية', confirmLabel: 'تفعيل السنة', danger: true })))) return;
     const isCurrent = captureSchoolRequest();
     setActivatingId(year.id);
     const response = await activateAcademicYear(year.id, schoolId);

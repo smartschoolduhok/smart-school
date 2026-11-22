@@ -15,6 +15,7 @@ import {
 import type { AcademicGradePolicy } from '../../lib/gradePolicy';
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { appConfirm } from '../../components/AppDialogs';
 
 type PolicyRow = AcademicGradePolicy & Record<string, any>;
 
@@ -189,7 +190,7 @@ export function GradePoliciesTab({ schoolId }: { schoolId: number | null }) {
   async function transition(action: 'approve' | 'lock') {
     if (!selected || schoolId == null) return;
     const verb = action === 'approve' ? 'اعتماد' : 'قفل';
-    if (!window.confirm(`${verb} السياسة بالإصدار ${selected.version}؟`)) return;
+    if (!(await appConfirm(`${verb} السياسة بالإصدار ${selected.version}؟`))) return;
     setBusy(true); setMessage(null);
     const res = await transitionGradePolicy(Number(selected.id), action, {
       school_id: schoolId,
@@ -204,7 +205,7 @@ export function GradePoliciesTab({ schoolId }: { schoolId: number | null }) {
 
   async function amend() {
     if (!selected || schoolId == null) return;
-    if (!window.confirm('إنشاء مسودة تعديل جديدة مع حفظ الإصدار الحالي في السجل؟')) return;
+    if (!(await appConfirm('إنشاء مسودة تعديل جديدة مع حفظ الإصدار الحالي في السجل؟'))) return;
     setBusy(true); setMessage(null);
     const res = await amendGradePolicy(Number(selected.id), {
       school_id: schoolId,

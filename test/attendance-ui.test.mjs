@@ -53,7 +53,7 @@ test('teacher workflow is timetable-derived, Arabic RTL, explicit draft then con
   assert.match(page, /getAttendanceLessons\(schoolId, date\)/);
   assert.match(page, /getAttendanceLesson\(schoolId, entryId, date\)/);
   assert.match(page, /expected_revision: detail\.lesson\.revision/);
-  assert.match(page, /window\.confirm/);
+  assert.match(page, /appConfirm\(/);
 });
 
 test('student attendance editor exposes every agreed state, delay and note visibility', () => {

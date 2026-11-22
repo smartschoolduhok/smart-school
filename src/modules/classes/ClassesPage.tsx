@@ -7,6 +7,7 @@ import { getClasses, getSections, createClass, updateClass, archiveClass, create
 import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import { Search, Plus, Filter, Archive, Edit2, X, Check, Layers, Users, BookOpen, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { appAlert, appConfirm } from '../../components/AppDialogs';
 
 interface ClassRecord {
   id: number;
@@ -167,12 +168,12 @@ export default function ClassesPage() {
   async function handleArchiveClass(id: number) {
     if (schoolId == null) return;
     const secCount = sectionsOf(id).length;
-    if (secCount > 0) { alert(`لا يمكن أرشفة الصف لأنه يحتوي على ${toArabicDigits(secCount)} شعب. أرشف الشعب أولاً.`); return; }
-    if (!confirm('هل أنت متأكد من أرشفة هذا الصف؟')) return;
+    if (secCount > 0) { void appAlert(`لا يمكن أرشفة الصف لأنه يحتوي على ${toArabicDigits(secCount)} شعب. أرشف الشعب أولاً.`); return; }
+    if (!(await appConfirm('هل أنت متأكد من أرشفة هذا الصف؟', { danger: true }))) return;
     const isCurrentRequest = captureSchoolRequest();
     const res = await archiveClass(id, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) void appAlert(res.error);
     else loadData();
   }
 
@@ -217,11 +218,11 @@ export default function ClassesPage() {
 
   async function handleArchiveSection(id: number) {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من أرشفة هذه الشعبة؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من أرشفة هذه الشعبة؟', { danger: true }))) return;
     const isCurrentRequest = captureSchoolRequest();
     const res = await archiveSection(id, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) void appAlert(res.error);
     else loadData();
   }
 

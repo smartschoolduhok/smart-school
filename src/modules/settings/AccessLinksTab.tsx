@@ -8,6 +8,7 @@ import {
   unlinkTeacherEmployee,
 } from '../../lib/api';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
+import { appConfirm } from '../../components/AppDialogs';
 
 interface Props {
   schoolId: number;
@@ -135,7 +136,7 @@ export default function AccessLinksTab({ schoolId, onSuccess, onError }: Props) 
   }
 
   async function removeParentLink(link: ParentLink) {
-    if (!window.confirm(`إلغاء وصول ${link.parent_name} إلى ملف ${link.student_name}؟`)) return;
+    if (!(await appConfirm(`إلغاء وصول ${link.parent_name} إلى ملف ${link.student_name}؟`, { danger: true }))) return;
     const isCurrent = captureSchoolRequest();
     setSaving(true);
     const response = await unlinkParentStudent(link.id, schoolId);
@@ -147,7 +148,7 @@ export default function AccessLinksTab({ schoolId, onSuccess, onError }: Props) 
   }
 
   async function removeTeacherLink(link: TeacherLink) {
-    if (!window.confirm(`إلغاء ربط حساب ${link.user_name} بسجل ${link.employee_name}؟`)) return;
+    if (!(await appConfirm(`إلغاء ربط حساب ${link.user_name} بسجل ${link.employee_name}؟`, { danger: true }))) return;
     const isCurrent = captureSchoolRequest();
     setSaving(true);
     const response = await unlinkTeacherEmployee(link.id, schoolId);

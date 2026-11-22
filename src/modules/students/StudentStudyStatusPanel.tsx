@@ -6,6 +6,7 @@ import { STUDY_STATUS_LABELS, ageExceptionEvidence, isAgeExceptionApplicable, ty
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import type { EffectiveStudentRecord, StudentEnrollmentHistoryRecord } from '../../lib/studentEnrollments';
 import type { RoleKey } from '../../types';
+import { appConfirm } from '../../components/AppDialogs';
 
 const field = 'mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm disabled:bg-gray-100';
 type Draft = { study_status: StudyStatus; grades_visible: boolean; exception: boolean; reference: string; document_date: string; authority: string; reason: string; class_id: string; change_reason: string; confirmed: boolean };
@@ -108,15 +109,16 @@ export default function StudentStudyStatusPanel({ student, schoolId, role, histo
     } catch (error) { if (liveScope.current === captured && sequence === requestNumber.current) setSaveError(error instanceof Error ? error.message : 'تعذر الحفظ.'); }
     finally { if (liveScope.current === captured && sequence === requestNumber.current) setSaving(false); }
   }
-  const reset = () => { if (!dirty || window.confirm('ستُستبدل التعديلات غير المحفوظة بالحالة المحفوظة. هل تريد المتابعة؟')) setReload(value => value + 1); };
+  const reset = async () => { if (!dirty || (await appConfirm('ستُستبدل التعديلات غير المحفوظة بالحالة المحفوظة. هل تريد المتابعة؟'))) setReload(value => value + 1); };
   const ageApplicable = data?.age_exception && isAgeExceptionApplicable(data.age_exception, {class_id: enrollmentClass ?? data.age_exception.class_id, birth_date: student.birth_date, gender: student.gender});
   return <section className="rounded-xl border border-blue-200 bg-white p-5" aria-label="الوضع الدراسي السنوي">
     <h2 className="text-lg font-bold text-gray-900">الوضع الدراسي السنوي</h2>
     <p className="mt-1 text-sm text-gray-600">الانتظام والاستضافة والانتساب تُحدد لكل سنة. عرض الدرجات اختيار مستقل، ويبقى اسم الطالب في قوائم التوزيع.</p>
     {!authorized ? <p className="mt-4 rounded-lg bg-gray-50 p-3 text-sm text-gray-600">تتولى إدارة المدرسة تعديل الوضع الدراسي وعرض الدرجات وتوثيق استثناء العمر.</p> : <>
-      <label className="mt-4 block text-sm font-medium">السنة الدراسية للوضع الدراسي<select aria-label="السنة الدراسية للوضع الدراسي" className={field} value={yearId ?? ''} disabled={saving || !visibleCatalog} onChange={event => {
-        if (dirty && !window.confirm('هناك تعديلات غير محفوظة. هل تريد تركها والانتقال إلى السنة الأخرى؟')) return;
-        setYear({key: baseKey, id: Number(event.target.value) || null});
+      <label className="mt-4 block text-sm font-medium">السنة الدراسية للوضع الدراسي<select aria-label="السنة الدراسية للوضع الدراسي" className={field} value={yearId ?? ''} disabled={saving || !visibleCatalog} onChange={async event => {
+        const nextYear = Number(event.target.value) || null;
+        if (dirty && !(await appConfirm('هناك تعديلات غير محفوظة. هل تريد تركها والانتقال إلى السنة الأخرى؟'))) return;
+        setYear({key: baseKey, id: nextYear});
       }}><option value="">اختر السنة الدراسية</option>{visibleCatalog?.years.map(item => <option key={item.id} value={item.id}>{item.name}{item.is_active ? ' — الحالية' : ''}</option>)}</select></label>
       {visibleCatalog?.error && <p role="alert" className="mt-3 text-red-700">{visibleCatalog.error}<button type="button" className="mr-3 underline" onClick={() => setCatalogReload(value => value + 1)}>إعادة تحميل السنوات والصفوف</button></p>}
       {!visibleCatalog && <p role="status" className="mt-3">جاري تحميل السنوات والصفوف…</p>}

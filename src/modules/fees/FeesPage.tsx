@@ -17,6 +17,7 @@ import {
   CheckCircle, AlertTriangle, XCircle, ArrowRight, Printer, QrCode, FileText,
   Wallet, GraduationCap, Layers, School, ChevronDown, ChevronUp, Ban, Eye
 } from 'lucide-react';
+import { appConfirm, appPrompt } from '../../components/AppDialogs';
 
 // Arabic-Indic digit converter
 function toArabicIndic(num: number | string | null | undefined): string {
@@ -267,7 +268,7 @@ export default function FeesPage() {
 
   async function handleDeleteFee(id: number) {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من حذف هذا القسط؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من حذف هذا القسط؟', { danger: true }))) return;
     const isCurrent = captureSchoolRequest();
     const res = await deleteStudentFee(id, schoolId);
     if (!isCurrent()) return;
@@ -339,7 +340,7 @@ export default function FeesPage() {
 
   async function handleCancelReceipt(id: number) {
     if (schoolId == null) return;
-    const reason = window.prompt('سبب إلغاء الإيصال (إلغاء المستند فقط، لا يعكس المال):')?.trim();
+    const reason = (await appPrompt('سبب إلغاء الإيصال (إلغاء المستند فقط، لا يعكس المال):', { danger: true }))?.trim();
     if (!reason) return;
     const isCurrent = captureSchoolRequest();
     const res = await cancelFeeReceipt(id, schoolId, reason);
@@ -350,7 +351,7 @@ export default function FeesPage() {
 
   async function handleCancelPayment(id: number) {
     if (schoolId == null) return;
-    const reason = window.prompt('سبب إلغاء الدفعة وعكس مبلغها في الخزنة (ألغِ إيصالها أولًا إن وُجد):')?.trim();
+    const reason = (await appPrompt('سبب إلغاء الدفعة وعكس مبلغها في الخزنة (ألغِ إيصالها أولًا إن وُجد):', { danger: true }))?.trim();
     if (!reason) return;
     const isCurrent = captureSchoolRequest();
     const res = await cancelFeePayment(id,schoolId,reason);
@@ -359,9 +360,9 @@ export default function FeesPage() {
     else { showSuccess('تم إلغاء الدفعة وعكسها في الخزنة'); loadPayments(); loadFees(); }
   }
 
-  function newPaymentDraft() {
+  async function newPaymentDraft() {
     if (paymentFlight.current) return;
-    if (paymentKey.current && !window.confirm('قد تكون الدفعة السابقة قد حُفظت. راجع المدفوعات أولًا. هل تريد بدء دفعة جديدة مستقلة؟')) return;
+    if (paymentKey.current && !(await appConfirm('قد تكون الدفعة السابقة قد حُفظت. راجع المدفوعات أولًا. هل تريد بدء دفعة جديدة مستقلة؟'))) return;
     paymentKey.current = null; setPaymentUncertain(false); setPayFeeId(''); setPayAmount(''); setPayNotes('');
   }
 

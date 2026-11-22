@@ -18,6 +18,7 @@ import {
   CheckCircle, AlertTriangle, ArrowRight, BarChart3, Wallet,
   UserCheck, TrendingUp, TrendingDown, FileText
 } from 'lucide-react';
+import { appConfirm } from '../../components/AppDialogs';
 
 // Arabic-Indic digit converter
 function toArabicIndic(num: number | string | null | undefined): string {
@@ -267,7 +268,7 @@ export default function EmployeesPage() {
 
   async function handleArchive(id: number) {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من أرشفة هذا الموظف؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من أرشفة هذا الموظف؟', { danger: true }))) return;
     const isCurrent = captureSchoolRequest();
     const res = await archiveEmployee(id, schoolId);
     if (!isCurrent()) return;

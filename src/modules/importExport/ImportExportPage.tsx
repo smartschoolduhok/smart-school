@@ -37,6 +37,7 @@ import {
   religiousTrackLabel,
 } from '../../lib/religiousSubjects';
 import { Upload, Download, FileSpreadsheet, Table, AlertTriangle, CheckCircle, XCircle, FileText, History, ChevronRight, ArrowLeft, ArrowRight, Loader2, BookOpen, Layers, GraduationCap, Users } from 'lucide-react';
+import { appAlert } from '../../components/AppDialogs';
 
 // ===========================================
 // Phase 13A: Excel Import/Export Page
@@ -450,11 +451,11 @@ export default function ImportExportPage() {
 
   const processFile = async (f: File) => {
     if (!/\.xlsx?$/i.test(f.name)) {
-      alert('يرجى اختيار ملف Excel بصيغة XLSX أو XLS');
+      void appAlert('يرجى اختيار ملف Excel بصيغة XLSX أو XLS');
       return;
     }
     if (f.size > 5 * 1024 * 1024) {
-      alert('حجم الملف كبير جداً');
+      void appAlert('حجم الملف كبير جداً');
       return;
     }
     setFile(f);
@@ -505,7 +506,7 @@ export default function ImportExportPage() {
       setGradeConfirmPayload(null);
       setStep('sheets');
     } catch (err: any) {
-      alert('فشل في قراءة الملف: ' + (err.message || 'خطأ غير معروف'));
+      void appAlert('فشل في قراءة الملف: ' + (err.message || 'خطأ غير معروف'));
     }
     setLoading(false);
   };
@@ -602,7 +603,7 @@ export default function ImportExportPage() {
   const openGradeWorkbookMapping = () => {
     const selected = gradeSheetConfigs.filter(config => config.selected);
     if (!selected.length) {
-      alert('اختر ورقة درجات واحدة على الأقل');
+      void appAlert('اختر ورقة درجات واحدة على الأقل');
       return;
     }
     setSelectedType('grades');
@@ -806,7 +807,7 @@ export default function ImportExportPage() {
           setGradeConfirmPayload(payload);
           setPreview(res.data as PreviewResult);
           setStep('preview');
-        } else if (res.error) alert(res.error);
+        } else if (res.error) void appAlert(res.error);
         if (isCurrent()) setLoading(false);
         return;
       }
@@ -874,11 +875,11 @@ export default function ImportExportPage() {
         setPreview(res.data as PreviewResult);
         setStep('preview');
       } else if (res.error) {
-        alert(res.error);
+        void appAlert(res.error);
       }
     } catch (err: any) {
       if (!isCurrent()) return;
-      alert('فشل في المعاينة: ' + (err.message || 'خطأ غير معروف'));
+      void appAlert('فشل في المعاينة: ' + (err.message || 'خطأ غير معروف'));
     }
     if (isCurrent()) setLoading(false);
   };
@@ -900,7 +901,7 @@ export default function ImportExportPage() {
         if (res.data) {
           setConfirmResult(res.data);
           setStep('confirm');
-        } else if (res.error) alert(res.error);
+        } else if (res.error) void appAlert(res.error);
         if (isCurrent()) setLoading(false);
         return;
       }
@@ -926,11 +927,11 @@ export default function ImportExportPage() {
         setConfirmResult(res.data);
         setStep('confirm');
       } else if (res.error) {
-        alert(res.error);
+        void appAlert(res.error);
       }
     } catch (err: any) {
       if (!isCurrent()) return;
-      alert('فشل في تأكيد الاستيراد: ' + (err.message || 'خطأ غير معروف'));
+      void appAlert('فشل في تأكيد الاستيراد: ' + (err.message || 'خطأ غير معروف'));
     }
     if (isCurrent()) setLoading(false);
   };
@@ -969,11 +970,11 @@ export default function ImportExportPage() {
         a.click();
         URL.revokeObjectURL(url);
       } else if (res.error) {
-        alert(res.error);
+        void appAlert(res.error);
       }
     } catch (err: any) {
       if (!isCurrent()) return;
-      alert('فشل في التصدير: ' + (err.message || 'خطأ غير معروف'));
+      void appAlert('فشل في التصدير: ' + (err.message || 'خطأ غير معروف'));
     }
     if (isCurrent()) setLoading(false);
   };
@@ -995,7 +996,7 @@ export default function ImportExportPage() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      alert('فشل في إنشاء القالب');
+      void appAlert('فشل في إنشاء القالب');
     }
     setLoading(false);
   };

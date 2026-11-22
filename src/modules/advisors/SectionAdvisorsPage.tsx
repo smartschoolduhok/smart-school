@@ -7,6 +7,7 @@ import { getAcademicYears, getSectionAdvisors, saveSectionAdvisor } from '../../
 import type { AcademicYearRecord } from '../../lib/academicYears';
 import type { SectionAdvisorPlacement, SectionAdvisorsResponse } from '../../lib/sectionAdvisors';
 import { TIMETABLE_DAY_NAMES } from '../../lib/timetable';
+import { appConfirm } from '../../components/AppDialogs';
 
 type Draft = { employee_id: number | null; attendance_confirmed: boolean; notes: string };
 const keyFor = (placement: SectionAdvisorPlacement) => `${placement.class_id}:${placement.section_id ?? 'class'}`;
@@ -215,9 +216,9 @@ export function SectionAdvisorsManager({ schoolId, loadYears = getAcademicYears,
 export default function SectionAdvisorsPage() {
   const schoolScope = useTenantSchool();
   const dirty = useRef(false);
-  const selectSchool = (schoolId: number | null) => {
+  const selectSchool = async (schoolId: number | null) => {
     if (schoolId === schoolScope.schoolId) return;
-    if (dirty.current && !window.confirm('توجد تعديلات غير محفوظة على المرشدين. هل تريد تغيير المدرسة وإلغاء هذه التعديلات؟')) return;
+    if (dirty.current && !(await appConfirm('توجد تعديلات غير محفوظة على المرشدين. هل تريد تغيير المدرسة وإلغاء هذه التعديلات؟', { danger: true }))) return;
     schoolScope.selectSchool(schoolId);
   };
   return <div className="space-y-5">

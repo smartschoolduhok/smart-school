@@ -47,6 +47,7 @@ import {
   type StudentGateEvent,
 } from '../../lib/gateAttendance';
 import { defaultAttendanceDate } from '../../lib/attendance';
+import { appPrompt } from '../../components/AppDialogs';
 
 type Tab = 'scanner' | 'events' | 'cards' | 'settings';
 
@@ -352,7 +353,7 @@ export default function GateAttendancePage() {
 
   async function revokeCard(card: StudentGateCard) {
     if (schoolId == null || saving) return;
-    const reason = window.prompt(`اكتب سبب إلغاء بطاقة ${card.student_name}:`, 'البطاقة مفقودة');
+    const reason = (await appPrompt(`اكتب سبب إلغاء بطاقة ${card.student_name}:`, { defaultValue: 'البطاقة مفقودة', danger: true }));
     if (!reason?.trim()) return;
     const valid = captureSchoolRequest();
     setSaving(true);
@@ -416,7 +417,7 @@ export default function GateAttendancePage() {
 
   async function voidEvent(event: StudentGateEvent) {
     if (schoolId == null || saving || event.record_status !== 'active') return;
-    const reason = window.prompt(`سبب إبطال حركة ${event.student_name}:`);
+    const reason = (await appPrompt(`سبب إبطال حركة ${event.student_name}:`, { danger: true }));
     if (!reason?.trim()) return;
     const valid = captureSchoolRequest();
     setSaving(true);

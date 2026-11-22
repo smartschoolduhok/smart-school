@@ -12,6 +12,7 @@ import { DOSSIER_BLOOD_GROUPS, DOSSIER_HISTORY_KINDS, DOSSIER_MARITAL_STATUSES, 
 import { SCHOOL_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import type { EmployeeProfile } from '../../types/employees';
 import type { RoleKey } from '../../types';
+import { appConfirm } from '../../components/AppDialogs';
 
 export function StaffDossierEditor({ schoolId, employeeId, role, loadProfile = getEmployeeProfile, loadDossier = getStaffDossier, saveDossier = saveStaffDossier }: {
   schoolId: number | null; employeeId: number | null; role: RoleKey | undefined;
@@ -93,7 +94,7 @@ export function StaffDossierEditor({ schoolId, employeeId, role, loadProfile = g
         <button className="dossier-button dossier-button-primary" disabled={!current || busy || !dirty} onClick={() => void save()}><Save size={16}/> حفظ</button>
         {preview && <button className="dossier-button" disabled={!printReady.current || print.isPrinting} onClick={() => void print.handlePrint()}><Printer size={16}/> طباعة / PDF</button>}
       </div></div>
-      {(error || print.error) && <div role="alert" ref={errorRef} tabIndex={-1} className="dossier-alert">{error || print.error} <button className="underline" onClick={() => { if (!dirty || window.confirm('إعادة التحميل ستستبدل التعديلات غير المحفوظة. متابعة؟')) setReload(value => value + 1); }}>إعادة التحميل</button></div>}
+      {(error || print.error) && <div role="alert" ref={errorRef} tabIndex={-1} className="dossier-alert">{error || print.error} <button className="underline" onClick={async () => { if (!dirty || (await appConfirm('إعادة التحميل ستستبدل التعديلات غير المحفوظة. متابعة؟'))) setReload(value => value + 1); }}>إعادة التحميل</button></div>}
       {success && !dirty && <p role="status" className="dossier-success">{success}</p>}
       {!schoolId && <p className="dossier-hint">اختر المدرسة أولاً.</p>}{busy && <p role="status" className="dossier-hint">جارٍ تجهيز السجل…</p>}
       {dirty && <p className="dossier-alert">توجد تعديلات غير محفوظة. احفظ السجل لتفعيل الطباعة.</p>}

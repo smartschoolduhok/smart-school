@@ -21,6 +21,7 @@ import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import { mergeReturnedSubjectOrder, moveOrderedItem } from '../../lib/subjectOrdering';
 import { religiousTrackLabel, type ReligiousTrack } from '../../lib/religiousSubjects';
 import { Search, Plus, Filter, Archive, Edit2, X, Check, ListOrdered, GripVertical, ArrowUp, ArrowDown, ArrowRight, Layers } from 'lucide-react';
+import { appAlert, appConfirm } from '../../components/AppDialogs';
 
 interface SubjectRecord {
   id: number;
@@ -285,11 +286,11 @@ export default function SubjectsPage() {
 
   async function handleArchive(id: number) {
     if (schoolId == null) return;
-    if (!confirm('هل أنت متأكد من أرشفة هذه المادة؟')) return;
+    if (!(await appConfirm('هل أنت متأكد من أرشفة هذه المادة؟', { danger: true }))) return;
     const isCurrentRequest = captureSchoolRequest();
     const res = await archiveSubject(id, schoolId);
     if (!isCurrentRequest()) return;
-    if (res.error) alert(res.error);
+    if (res.error) void appAlert(res.error);
     else loadData();
   }
 

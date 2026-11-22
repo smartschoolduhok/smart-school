@@ -29,6 +29,7 @@ import {
   type TimetableAdoptionPreview,
   type TimetableSolverProposalWithIntegrity,
 } from '../../lib/timetableAdoption';
+import { appConfirm } from '../../components/AppDialogs';
 
 interface AutomaticTimetableTabProps {
   classes?: Class[];
@@ -364,7 +365,7 @@ export function AutomaticTimetableTab({
 
   async function applyProposal() {
     if (!result || !adoptionPreview?.can_apply) return;
-    if (!window.confirm('سيصبح هذا المقترح هو الجدول الرسمي للسنة الدراسية.\nسيتم حفظ نسخة من الجدول الحالي قبل الاستبدال.\nهل تريد المتابعة؟')) return;
+    if (!(await appConfirm('سيصبح هذا المقترح هو الجدول الرسمي للسنة الدراسية.\nسيتم حفظ نسخة من الجدول الحالي قبل الاستبدال.\nهل تريد المتابعة؟', { danger: true }))) return;
     const generation = ++requestGenerationRef.current;
     setApplying(true);
     setError('');

@@ -82,7 +82,7 @@ test('weekly grid uses accessible move, atomic drop-swap and delete controls wit
   assert.match(gridSource, /moveTimetableEntry/);
   assert.match(gridSource, /dropTimetableEntry/);
   assert.match(gridSource, /deleteTimetableEntry/);
-  assert.match(gridSource, /window\.confirm/);
+  assert.match(gridSource, /appConfirm\(/);
   assert.match(gridSource, /aria-live="polite"/);
   assert.match(gridSource, /target_entry_id: targetEntry\?\.id \?\? null/);
   assert.match(gridSource, /expected_revision: expectedRevision/);

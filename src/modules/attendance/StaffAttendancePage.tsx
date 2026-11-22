@@ -59,6 +59,7 @@ import {
   type StaffAttendanceSettings,
   type StaffAttendanceSettingsInput,
 } from '../../lib/staffAttendance';
+import { appPrompt } from '../../components/AppDialogs';
 
 type Tab = 'scanner' | 'report' | 'cards' | 'settings' | 'self';
 
@@ -436,7 +437,7 @@ export default function StaffAttendancePage() {
 
   async function revokeCard(card: EmployeeAttendanceCard) {
     if (schoolId == null || saving || !canManage) return;
-    const reason = window.prompt(`اكتب سبب إلغاء بطاقة ${card.employee_name}:`, 'البطاقة مفقودة');
+    const reason = (await appPrompt(`اكتب سبب إلغاء بطاقة ${card.employee_name}:`, { defaultValue: 'البطاقة مفقودة', danger: true }));
     if (!reason?.trim()) return;
     const valid = captureSchoolRequest();
     setSaving(true);
@@ -484,7 +485,7 @@ export default function StaffAttendancePage() {
 
   async function voidEvent(event: EmployeeAttendanceEvent) {
     if (schoolId == null || saving || event.record_status !== 'active' || !canManage) return;
-    const reason = window.prompt(`سبب إبطال حركة ${event.employee_name}:`);
+    const reason = (await appPrompt(`سبب إبطال حركة ${event.employee_name}:`, { danger: true }));
     if (!reason?.trim()) return;
     const valid = captureSchoolRequest();
     setSaving(true);
