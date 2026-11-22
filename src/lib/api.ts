@@ -1464,8 +1464,13 @@ export function getGrades(filters?: {
   return fetchApi<Array<Record<string, any>>>(`/api/grades${qs}`);
 }
 
-export function getStudentGrades(studentId: number | string) {
-  return fetchApi<Record<string, any>>(`/api/students/${studentId}/grades`);
+/** `years` lists the student's grade years; `academicYearId` reads an archived year (management only). */
+export function getStudentGrades(studentId: number | string, options: { years?: boolean; academicYearId?: number | null } = {}) {
+  const query = new URLSearchParams();
+  if (options.years) query.set('years', '1');
+  if (options.academicYearId != null) query.set('academic_year_id', String(options.academicYearId));
+  const suffix = query.toString();
+  return fetchApi<Record<string, any>>(`/api/students/${studentId}/grades${suffix ? `?${suffix}` : ''}`);
 }
 
 export function initializeStudentGrades(studentId: number | string, schoolId: number) {

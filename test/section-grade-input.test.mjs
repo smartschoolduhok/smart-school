@@ -101,7 +101,7 @@ test('student dossier displays active subject grades using the configured scheme
   });
   await act(async () => root.render(createElement(StudentGradesSection, { studentId: 50 })));
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  assert.deepEqual(requests, ['/api/students/50/grades']);
+  assert.deepEqual(requests, ['/api/students/50/grades?years=1']);
   assert.match(host.textContent, /Subject/);
   assert.match(host.textContent, /الشهر الأول/);
   assert.match(host.textContent, /٥١/);

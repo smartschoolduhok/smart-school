@@ -4,7 +4,8 @@ import { registerSchoolRegisterRoutes } from './lib/schoolRegistersDb'
 import { isMissingSubscriptionSchema, loadSchoolAccess, registerSchoolSubscriptionRoutes, schoolAccessColumnsSql, schoolAccessFromColumns, type SchoolAccessColumns } from './lib/schoolSubscriptionsDb'
 import { schoolAccessDenial, STUDENT_LIMIT_ERROR, type SchoolAccess } from './lib/schoolSubscriptions'
 import { registerSystemHealthRoutes, reportServerError } from './lib/systemHealthDb'
-import { currentYearAssignmentSql, GRADE_YEAR_ARCHIVED_ERROR, YEAR_CLOSED_ERROR } from './lib/yearScopedAssignments'
+import { currentYearAssignmentSql, GRADE_YEAR_ARCHIVED_ERROR, YEAR_CLOSED_ERROR } from './lib/yearScopedAssignments'
+import { loadArchivedYearGrades, loadStudentGradeYears } from './lib/gradeHistoryDb'
 import { registerStaffDossierRoutes } from './lib/staffDossierDb'
 import { employeeSpreadsheetQualifications, employeeQualificationCells, employeeSpreadsheetRole, employeeSpreadsheetDate, employeeSpreadsheetMatch, employeeSpreadsheetFields } from './lib/employeeSpreadsheet'
 import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualifications, qualificationRows, createEmployeeAuditStatement, publicEmployee, employeeQualifications, readEmployeePhotoBody, detectEmployeePhoto } from './lib/employeeRecords'
@@ -8263,9 +8264,40 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(ACADEMIC
       return c.json({ error: 'غير مسموح: لا يمكنك الوصول إلى درجات هذا الطالب' }, 403);
     }
 
+    // Optional year history (migration 0063): ?years=1 lists the student's grade years and
+    // ?academic_year_id= reads an archived year. Archived years are for school management only.
+    const yearParam = c.req.query('academic_year_id');
+    const requestedYear = yearParam == null ? null : Number(yearParam);
+    if (yearParam != null && (!Number.isSafeInteger(requestedYear) || Number(requestedYear) <= 0)) {
+      return c.json({ error: 'السنة الدراسية غير صالحة' }, 400);
+    }
+    const canSeeGradeHistory = user.role_key !== 'teacher' && user.role_key !== 'parent';
+    const years = c.req.query('years') === '1' && canSeeGradeHistory
+      ? await loadStudentGradeYears(db, student.school_id, studentId)
+      : undefined;
+
     const resolution = await getActiveGradePolicyResolution(db, student.school_id);
+    if (requestedYear != null && requestedYear !== resolution.academicYearId) {
+      if (!canSeeGradeHistory) return c.json({ error: 'درجات السنوات السابقة متاحة لإدارة المدرسة فقط' }, 403);
+      const year = await db.prepare('SELECT id, name FROM academic_years WHERE id = ? AND school_id = ?')
+        .bind(requestedYear, student.school_id).first<{ id: number; name: string }>();
+      if (!year) return c.json({ error: 'السنة الدراسية غير موجودة' }, 404);
+      const archived = { student_name: student.full_name, academic_year_id: year.id, academic_year_name: year.name, archived: true, ...(years ? { years } : {}) };
+      if (!await studentGradesAreVisible(db, student.school_id, studentId, year.id)) {
+        return c.json({ data: { ...archived, grades_visible: false, grades: [], settings: null, academic_policy: null, academic_outcome: null } });
+      }
+      return c.json({ data: {
+        ...archived,
+        grades_visible: true,
+        settings: gradeCalculationSettingsForPolicy(resolution.baseSettings, null),
+        academic_policy: null,
+        academic_outcome: null,
+        grades: await loadArchivedYearGrades(db, student.school_id, studentId, year.id),
+      } });
+    }
+    const currentYear = years ? { academic_year_id: resolution.academicYearId, archived: false, years } : {};
     if (!await studentGradesAreVisible(db, student.school_id, studentId, resolution.academicYearId)) {
-      return c.json({data: {student_name: student.full_name, grades_visible: false, grades: [], settings: null, academic_policy: null, academic_outcome: null}});
+      return c.json({data: {student_name: student.full_name, ...currentYear, grades_visible: false, grades: [], settings: null, academic_policy: null, academic_outcome: null}});
     }
 
     const rows = await db.prepare(`
@@ -8308,6 +8340,7 @@ app.get('/api/students/:id/grades', requireAuthEnforced(), requireRoles(ACADEMIC
 
     return c.json({ data: {
       student_name: student.full_name,
+      ...currentYear,
       grades_visible: true,
       settings: effectiveSettings,
       academic_policy: policy,
