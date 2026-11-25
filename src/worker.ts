@@ -4,9 +4,10 @@ import { registerSchoolRegisterRoutes } from './lib/schoolRegistersDb'
 import { isMissingSubscriptionSchema, loadSchoolAccess, registerSchoolSubscriptionRoutes, schoolAccessColumnsSql, schoolAccessFromColumns, type SchoolAccessColumns } from './lib/schoolSubscriptionsDb'
 import { schoolAccessDenial, STUDENT_LIMIT_ERROR, type SchoolAccess } from './lib/schoolSubscriptions'
 import { registerSystemHealthRoutes, reportServerError } from './lib/systemHealthDb'
-import { currentYearAssignmentSql, GRADE_YEAR_ARCHIVED_ERROR, YEAR_CLOSED_ERROR } from './lib/yearScopedAssignments'
-import { loadArchivedYearGrades, loadStudentGradeYears } from './lib/gradeHistoryDb'
+import { currentYearAssignmentSql, GRADE_YEAR_ARCHIVED_ERROR, YEAR_CLOSED_ERROR } from './lib/yearScopedAssignments'
+import { loadArchivedYearGrades, loadStudentGradeYears } from './lib/gradeHistoryDb'
 import { pageMeta, parsePaging, PAGING_ERROR } from './lib/listPaging'
+import { isRosterOrder, rosterOrderSql } from './lib/rosterOrder'
 import { registerStaffDossierRoutes } from './lib/staffDossierDb'
 import { employeeSpreadsheetQualifications, employeeQualificationCells, employeeSpreadsheetRole, employeeSpreadsheetDate, employeeSpreadsheetMatch, employeeSpreadsheetFields } from './lib/employeeSpreadsheet'
 import { EmployeeRecordError, validateEmployeeFields, validateEmployeeQualifications, qualificationRows, createEmployeeAuditStatement, publicEmployee, employeeQualifications, readEmployeePhotoBody, detectEmployeePhoto } from './lib/employeeRecords'
@@ -5187,12 +5188,14 @@ app.post('/api/classes', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MANAG
     if (!name || !stage) {
       return c.json({ error: 'المدرسة والاسم والمرحلة مطلوبة' }, 400)
     }
+    const roster_order = body.roster_order ?? 'alphabetical'
+    if (!isRosterOrder(roster_order)) return c.json({ error: 'ترتيب الطلاب غير صالح' }, 400)
 
     const result = await db.prepare(`
-      INSERT INTO classes (school_id, name, stage, order_index, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'active', unixepoch(), unixepoch())
-    `).bind(school_id, name, stage, order_index || 0).run()
-    return c.json({ data: { id: result.meta.last_row_id, school_id, name, stage, order_index: order_index || 0, status: 'active' } }, 201)
+      INSERT INTO classes (school_id, name, stage, order_index, roster_order, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'active', unixepoch(), unixepoch())
+    `).bind(school_id, name, stage, order_index || 0, roster_order).run()
+    return c.json({ data: { id: result.meta.last_row_id, school_id, name, stage, order_index: order_index || 0, roster_order, status: 'active' } }, 201)
   } catch (err: any) {
     return apiErrorResponse(c, err, { error: 'فشل في إنشاء الصف' }, 500)
   }
@@ -5216,14 +5219,17 @@ app.put('/api/classes/:id', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_MA
 
     const nextStatus = status || 'active'
     if (!['active', 'inactive', 'archived'].includes(nextStatus)) return c.json({ error: 'حالة الصف غير صالحة' }, 400)
+    // Omitted keeps the saved roster order.
+    const rosterOrder = body.roster_order ?? null
+    if (rosterOrder !== null && !isRosterOrder(rosterOrder)) return c.json({ error: 'ترتيب الطلاب غير صالح' }, 400)
     const changed = await db.prepare(`
-      UPDATE classes SET name = ?, stage = ?, order_index = ?, status = ?, updated_at = unixepoch()
+      UPDATE classes SET name = ?, stage = ?, order_index = ?, status = ?, roster_order = COALESCE(?, roster_order), updated_at = unixepoch()
       WHERE id = ? AND school_id = ?
         AND (? = 'active' OR NOT (${CLASS_ACTIVE_DEPENDENCIES_SQL}))
       RETURNING id
-    `).bind(name, stage, order_index || 0, nextStatus, id, targetSchool.schoolId, nextStatus).first()
+    `).bind(name, stage, order_index || 0, nextStatus, rosterOrder, id, targetSchool.schoolId, nextStatus).first()
     if (!changed) return c.json({ error: 'لا يمكن تعطيل أو أرشفة صف له طلاب أو تسجيلات أو شعب فعالة', code: 'class_has_active_dependents' }, 409)
-    return c.json({ data: { id, name, stage, order_index, status } })
+    return c.json({ data: { id, name, stage, order_index, status, ...(rosterOrder ? { roster_order: rosterOrder } : {}) } })
   } catch (err: any) {
     return apiErrorResponse(c, err, { error: 'فشل في تحديث الصف' }, 500)
   }
@@ -8228,7 +8234,7 @@ app.get('/api/grades', requireSameSchoolOrAdmin(), requireRoles(ACADEMIC_ACCESS_
       sql += ' AND g.is_active = 1';
     }
 
-    sql += ' ORDER BY st.full_name, st.id, s.order_index, s.id';
+    sql += ` ORDER BY ${rosterOrderSql('st', 'st.class_id')}, s.order_index, s.id`;
 
     const stmt = db.prepare(sql);
     const rows = await (params.length > 0 ? stmt.bind(...params).all<any>() : stmt.all<any>());

@@ -57,9 +57,12 @@ try{
  const placeholderColumn='teacher_placeholder TEXT';
  const loadColumns=[parallelColumn,placeholderColumn];
  // Migration 0063 tags every assignment with its year and lets grades/assignments be archived per year.
- const yearScopeColumns={student_subjects:['academic_year_id INTEGER REFERENCES academic_years(id) ON DELETE RESTRICT','year_archived_at INTEGER'],grades:['year_archived_at INTEGER']};
+ const yearScopeColumns={student_subjects:['academic_year_id INTEGER REFERENCES academic_years(id) ON DELETE RESTRICT','year_archived_at INTEGER'],grades:['year_archived_at INTEGER'],
+  // Migration 0064: per-class roster order, existing classes default to alphabetical.
+  classes:["roster_order TEXT NOT NULL DEFAULT 'alphabetical' CHECK (roster_order IN ('alphabetical', 'girls_first', 'boys_first'))"]};
  const yearScopeMigration=readFileSync(join(root,'migrations/0063_year_scoped_grades.sql'),'utf8');
- for(const [table,columns] of Object.entries(yearScopeColumns))for(const column of columns)assert.ok(yearScopeMigration.includes('ALTER TABLE '+table+' ADD COLUMN '+column+';'),column);
+ const rosterMigration=readFileSync(join(root,'migrations/0064_class_roster_order.sql'),'utf8').replace(/\s+/g,' ');
+ for(const [table,columns] of Object.entries(yearScopeColumns))for(const column of columns)assert.ok((table==='classes'?rosterMigration:yearScopeMigration).includes('ALTER TABLE '+table+' ADD COLUMN '+column+';'),column);
  assert.match(parallelMigration,new RegExp('ALTER TABLE timetable_teaching_loads ADD COLUMN '+parallelColumn.replace(/[()]/g,'\\$&')+';'));
  assert.ok(placeholderMigration.includes('ALTER TABLE timetable_teaching_loads ADD COLUMN '+placeholderColumn+';'));
  const replacedEntryTriggers=new Set(['trg_timetable_entries_validate_insert','trg_timetable_entries_validate_update']);
@@ -143,7 +146,7 @@ try{
    const yearOf={'1':'1','2':'3'};
    const content=actual.content.map(encoded=>{
     const row=JSON.parse(encoded),values=row.splice(-added);
-    assert.deepEqual(values,name==='grades'?[['null',null]]:[['integer',yearOf[row[1][1]]],['null',null]],name+' year-scope backfill');
+    assert.deepEqual(values,name==='classes'?[['text',Buffer.from('alphabetical').toString('hex').toUpperCase()]]:name==='grades'?[['null',null]]:[['integer',yearOf[row[1][1]]],['null',null]],name+' added-column backfill');
     return JSON.stringify(row);
    }).sort();
    assert.deepEqual({...actual,columns:actual.columns.slice(0,-added),content,hash:digest(content)},value,'every previous '+name+' column, value and SQLite type is unchanged');
