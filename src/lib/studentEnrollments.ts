@@ -1,5 +1,6 @@
 import type { StudentReligion } from './studentReligion.ts';
 import type { TransportStudentFields } from './transport.ts';
+import { rosterOrderSql } from './rosterOrder.ts';
 
 export interface StudentEnrollmentPreparedStatement {
   bind(...values: unknown[]): StudentEnrollmentPreparedStatement;
@@ -482,7 +483,7 @@ export async function listStudentsWithEffectivePlacement(
   const response = await db.prepare(`
     ${EFFECTIVE_STUDENT_SELECT}
     ${whereSql}
-    ORDER BY ${EFFECTIVE_CLASS_ID_SQL}, ${EFFECTIVE_SECTION_ID_SQL}, student.full_name
+    ORDER BY ${EFFECTIVE_CLASS_ID_SQL}, ${EFFECTIVE_SECTION_ID_SQL}, ${rosterOrderSql('student', EFFECTIVE_CLASS_ID_SQL)}
   `).bind(...values).all<EffectiveStudentRecord>();
   return response.results ?? [];
 }

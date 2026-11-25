@@ -7,6 +7,7 @@ import {
   type GradePolicyEvaluationOptions,
   type StudentAcademicPolicyOutcome,
 } from './gradePolicy';
+import { rosterOrderSql } from './rosterOrder';
 
 export interface StudentAcademicPolicyContext {
   student_id: number;
@@ -189,7 +190,7 @@ async function loadContexts(
     LEFT JOIN sections section
       ON section.id=enrollment.section_id AND section.school_id=enrollment.school_id
     WHERE ${conditions.join(' AND ')}
-    ORDER BY class.order_index, class.id, section.name, student.full_name, student.id
+    ORDER BY class.order_index, class.id, section.name, ${rosterOrderSql('student', 'enrollment.class_id')}
   `).bind(...params).all<StudentAcademicPolicyContext>();
   return rows.results || [];
 }

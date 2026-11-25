@@ -8,6 +8,7 @@ import { toArabicDigits } from '../../lib/arabicDigits';
 import { ACADEMIC_MANAGEMENT_ROLES, hasRole } from '../../lib/rbac';
 import { Search, Plus, Filter, Archive, Edit2, X, Check, Layers, Users, BookOpen, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import { appAlert, appConfirm } from '../../components/AppDialogs';
+import { ROSTER_ORDER_LABELS, ROSTER_ORDERS, type RosterOrder } from '../../lib/rosterOrder';
 
 interface ClassRecord {
   id: number;
@@ -15,6 +16,7 @@ interface ClassRecord {
   name: string;
   stage: string;
   order_index: number;
+  roster_order?: RosterOrder;
   status: 'active' | 'inactive' | 'archived';
   created_at: string;
   updated_at: string;
@@ -37,7 +39,7 @@ interface SectionRecord {
 
 const STAGES = ['رياض', 'ابتدائي', 'متوسط', 'إعدادي', 'ثانوي', 'جامعي'];
 
-const emptyClassForm = { name: '', stage: 'ابتدائي' as string, order_index: 0 };
+const emptyClassForm = { name: '', stage: 'ابتدائي' as string, order_index: 0, roster_order: 'alphabetical' as RosterOrder };
 const emptySectionForm = { class_id: '' as string | number, name: '', capacity: 30 };
 
 export default function ClassesPage() {
@@ -137,7 +139,7 @@ export default function ClassesPage() {
 
   function openClassEdit(c: ClassRecord) {
     if (schoolId == null) return;
-    setClassForm({ name: c.name, stage: c.stage, order_index: c.order_index });
+    setClassForm({ name: c.name, stage: c.stage, order_index: c.order_index, roster_order: c.roster_order ?? 'alphabetical' });
     setClassFormError('');
     setClassMode('edit');
     setEditingClassId(c.id);
@@ -150,7 +152,7 @@ export default function ClassesPage() {
     if (!classForm.name.trim() || !classForm.stage) { setClassFormError('الاسم والمرحلة مطلوبة'); return; }
     const isCurrentRequest = captureSchoolRequest();
     setSavingClass(true);
-    const payload = { school_id: schoolId, name: classForm.name.trim(), stage: classForm.stage, order_index: Number(classForm.order_index) || 0 };
+    const payload = { school_id: schoolId, name: classForm.name.trim(), stage: classForm.stage, order_index: Number(classForm.order_index) || 0, roster_order: classForm.roster_order };
     if (classMode === 'create') {
       const res = await createClass(payload);
       if (!isCurrentRequest()) return;
@@ -333,6 +335,7 @@ export default function ClassesPage() {
                       <div className="flex items-center gap-2">
                         <h3 className="text-base font-bold text-gray-900">{cls.name}</h3>
                         <span className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs font-medium">{cls.stage}</span>
+                        {cls.roster_order && cls.roster_order !== 'alphabetical' && <span className="px-2 py-0.5 bg-pink-50 text-pink-700 rounded text-xs font-medium">{ROSTER_ORDER_LABELS[cls.roster_order]}</span>}
                         <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
                           cls.status === 'active' ? 'bg-green-100 text-green-700' : cls.status === 'archived' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'
                         }`}>
@@ -434,6 +437,13 @@ export default function ClassesPage() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">الترتيب</label>
                 <input type="number" value={classForm.order_index} onChange={(e) => setClassForm({ ...classForm, order_index: Number(e.target.value) })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label htmlFor="class-roster-order" className="block text-sm font-medium text-gray-700 mb-1">ترتيب الطلاب بالقوائم</label>
+                <select id="class-roster-order" value={classForm.roster_order} onChange={(e) => setClassForm({ ...classForm, roster_order: e.target.value as RosterOrder })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  {ROSTER_ORDERS.map(order => <option key={order} value={order}>{ROSTER_ORDER_LABELS[order]}</option>)}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">يطبّق على قوائم الطلاب والدرجات والحضور والواجبات. «البنات أولاً» للصفوف المختلطة.</p>
               </div>
             </div>
             <div className="flex items-center justify-end gap-3 p-6 border-t border-gray-100">
