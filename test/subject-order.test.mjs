@@ -154,7 +154,8 @@ test('student subject and grade lists use canonical subject order', () => {
 
 test('generic section-grade retrieval orders students deterministically then subjects canonically', () => {
   const route = routeBlock("app.get('/api/grades'", "app.get('/api/students/:id/grades'");
-  assert.match(route, /ORDER BY st\.full_name, st\.id, s\.order_index, s\.id/);
+  // Students follow their class roster order (Arabic key, then id), then subjects canonically.
+  assert.match(route, /ORDER BY \$\{rosterOrderSql\('st', 'st\.class_id'\)\}, s\.order_index, s\.id/);
   assert.doesNotMatch(route, /ORDER BY st\.full_name, s\.name/);
 });
 

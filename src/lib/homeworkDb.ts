@@ -32,6 +32,7 @@ import {
   type ParentHomeworkFeed,
   type ParentHomeworkItem,
 } from './homework';
+import { rosterOrderSql } from './rosterOrder';
 
 type HomeworkEnv = { Bindings: Bindings; Variables: Variables };
 type C = Context<HomeworkEnv>;
@@ -409,7 +410,7 @@ async function eligibleAudience(db: D1Database, homework: Row): Promise<Row[]> {
             AND subject_assignment.is_active = 1
         )
       )
-    ORDER BY student.full_name, student.id
+    ORDER BY ${rosterOrderSql('student', 'enrollment.class_id')}
   `).bind(
     homework.school_id,
     homework.academic_year_id,

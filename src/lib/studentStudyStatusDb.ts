@@ -6,6 +6,7 @@ import { ageExceptionEvidence, defaultStudentStudyStatus, parseStudentAgeExcepti
   type StudentAgeException, type StudentStudyStatus, type StudentStudyRosterRow } from './studentStudyStatus';
 import { boundedText, ensure, positiveId, workflowBody, workflowResponse, workflowSchool,
   type WorkflowContext } from './schoolWorkflow';
+import { rosterOrderSql } from './rosterOrder';
 
 type Row = Record<string, any>;
 function dto(row: Row): StudentStudyStatus {
@@ -40,7 +41,7 @@ export function registerStudentStudyStatusRoutes(app: Hono<{ Bindings: Bindings;
         LEFT JOIN sections sec ON sec.id=e.section_id AND sec.school_id=e.school_id AND sec.class_id=e.class_id
         LEFT JOIN student_study_status ss ON ss.school_id=e.school_id AND ss.student_id=e.student_id AND ss.academic_year_id=e.academic_year_id
         WHERE e.school_id=? AND e.academic_year_id=? AND e.status='active' AND s.status='active'
-        ORDER BY cl.order_index,cl.id,sec.name,s.full_name,s.id`).bind(school, year).all<Row>(),
+        ORDER BY cl.order_index,cl.id,sec.name,${rosterOrderSql('s', 'e.class_id')}`).bind(school, year).all<Row>(),
       c.env.DB.prepare('SELECT id,name FROM schools WHERE id=?').bind(school).first(),
     ]);
     return c.json({ data: { rows: (settings.results || []).map(dto),

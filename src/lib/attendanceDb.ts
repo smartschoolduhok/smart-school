@@ -23,6 +23,7 @@ import {
   type ParentAttendanceRecord,
 } from './attendance';
 import { businessDate } from './businessTime';
+import { rosterOrderSql } from './rosterOrder';
 
 type AttendanceEnv = { Bindings: Bindings; Variables: Variables };
 type C = Context<AttendanceEnv>;
@@ -194,7 +195,7 @@ async function loadCurrentRoster(db: D1Database, context: LessonContext): Promis
             AND subject_assignment.is_active = 1
         )
       )
-    ORDER BY student.full_name, student.id
+    ORDER BY ${rosterOrderSql('student', 'enrollment.class_id')}
   `).bind(
     context.school_id,
     context.academic_year_id,

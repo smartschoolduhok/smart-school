@@ -30,6 +30,7 @@ const academicYearIntegrity = readFileSync(join(rootDir, 'migrations', '0017_aca
 const enrollmentMigration = readFileSync(join(rootDir, 'migrations', '0020_student_enrollments.sql'), 'utf8');
 const religionMigration = readFileSync(join(rootDir, 'migrations', '0021_student_religion.sql'), 'utf8');
 const transportMigration = readFileSync(join(rootDir, 'migrations', '0056_student_transport.sql'), 'utf8');
+const rosterOrderMigration = readFileSync(join(rootDir, 'migrations', '0064_class_roster_order.sql'), 'utf8');
 const workerSource = readFileSync(join(rootDir, 'src', 'worker.ts'), 'utf8');
 
 class LocalPreparedStatement {
@@ -104,6 +105,7 @@ function createFixture() {
   database.exec(enrollmentMigration);
   database.exec(religionMigration);
   database.exec(transportMigration);
+  database.exec(rosterOrderMigration);
   database.exec(`
     INSERT INTO schools (id, name, school_type, city, status) VALUES
       (1, 'School A', 'private', 'Duhok', 'active'),
