@@ -470,13 +470,15 @@ export async function listStudentsWithEffectivePlacement(
     conditions.push('student.school_id = ?');
     values.push(filters.schoolId);
   }
-  if (filters.classId != null && filters.classId !== '') {
-    conditions.push(`${EFFECTIVE_CLASS_ID_SQL} = ?`);
-    values.push(filters.classId);
-  }
-  if (filters.sectionId != null && filters.sectionId !== '') {
-    conditions.push(`${EFFECTIVE_SECTION_ID_SQL} = ?`);
-    values.push(filters.sectionId);
+  // The effective placement is an expression without column affinity, so a
+  // query-string id ('1') never equals the integer 1: compare as integers.
+  // A malformed id matches no student.
+  for (const [value, expression] of [[filters.classId, EFFECTIVE_CLASS_ID_SQL], [filters.sectionId, EFFECTIVE_SECTION_ID_SQL]] as const) {
+    if (value == null || value === '') continue;
+    const id = typeof value === 'number' ? value : /^[1-9]\d{0,15}$/.test(String(value).trim()) ? Number(String(value).trim()) : NaN;
+    if (!Number.isSafeInteger(id) || id <= 0) return [];
+    conditions.push(`${expression} = ?`);
+    values.push(id);
   }
 
   const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
