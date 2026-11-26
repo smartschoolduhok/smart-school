@@ -7,6 +7,9 @@ import { businessDate } from '../../lib/businessTime';
 import { useTenantSchool } from '../../hooks/useTenantSchool';
 import { useSchoolRequestGuard } from '../../hooks/useSchoolRequestGuard';
 import { SystemAdminSchoolSelector } from '../../components/SystemAdminSchoolSelector';
+import Pagination from '../../components/Pagination';
+
+const FINANCE_PAGE_SIZE = 50;
 import {
   getStudentFees, createStudentFee, updateStudentFee, deleteStudentFee,
   getFeePayments, createFeePayment, getFeeReceipts, generateFeeReceipt, cancelFeeReceipt, cancelFeePayment,
@@ -129,12 +132,17 @@ export default function FeesPage() {
   const paymentKey = useRef<string | null>(null);
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paymentUncertain, setPaymentUncertain] = useState(false);
-  const loadGeneration = useRef({fees:0,payments:0,receipts:0});
+  const [paymentsPage, setPaymentsPage] = useState(1);
+  const [paymentsTotal, setPaymentsTotal] = useState(0);
+  const loadGeneration = useRef({fees:0,payments:0,receipts:0,receiptPayments:0});
 
   // Receipts tab
   const [receipts, setReceipts] = useState<ReceiptRecord[]>([]);
   const [selectedPayments, setSelectedPayments] = useState<number[]>([]);
   const [receiptStudentFilter, setReceiptStudentFilter] = useState<number | ''>('');
+  const [receiptsPage, setReceiptsPage] = useState(1);
+  const [receiptsTotal, setReceiptsTotal] = useState(0);
+  const [receiptPayments, setReceiptPayments] = useState<PaymentRecord[]>([]);
 
   // Verify tab
   const [verifyToken, setVerifyToken] = useState('');
@@ -190,22 +198,33 @@ export default function FeesPage() {
     if (schoolId == null) { setPayments([]); setLoading(false); return; }
     const isCurrent = captureSchoolRequest();
     setLoading(true);
-    const res = await getFeePayments({ school_id: schoolId });
+    // Payments grow every day: the server returns one page, filtered by student when chosen.
+    const res = await getFeePayments({ school_id: schoolId, student_id: paymentStudentFilter || null, page: paymentsPage, page_size: FINANCE_PAGE_SIZE });
     if (!isCurrent() || generation !== loadGeneration.current.payments) return;
-    if (res.data) setPayments(res.data as any);
+    if (res.data) { setPayments(res.data as any); setPaymentsTotal(Number(res.meta?.total ?? res.data.length)); }
     setLoading(false);
-  }, [schoolId]);
+  }, [schoolId, paymentStudentFilter, paymentsPage]);
+
+  // All of one student's payments (bounded) for choosing what a new receipt covers.
+  const loadReceiptPayments = useCallback(async () => {
+    const generation = ++loadGeneration.current.receiptPayments;
+    if (schoolId == null || !receiptStudentFilter) { setReceiptPayments([]); return; }
+    const isCurrent = captureSchoolRequest();
+    const res = await getFeePayments({ school_id: schoolId, student_id: Number(receiptStudentFilter) });
+    if (!isCurrent() || generation !== loadGeneration.current.receiptPayments) return;
+    if (res.data) setReceiptPayments(res.data as any);
+  }, [schoolId, receiptStudentFilter]);
 
   const loadReceipts = useCallback(async () => {
     const generation = ++loadGeneration.current.receipts;
     if (schoolId == null) { setReceipts([]); setLoading(false); return; }
     const isCurrent = captureSchoolRequest();
     setLoading(true);
-    const res = await getFeeReceipts({ school_id: schoolId });
+    const res = await getFeeReceipts({ school_id: schoolId, student_id: receiptStudentFilter || null, page: receiptsPage, page_size: FINANCE_PAGE_SIZE });
     if (!isCurrent() || generation !== loadGeneration.current.receipts) return;
-    if (res.data) setReceipts(res.data as any);
+    if (res.data) { setReceipts(res.data as any); setReceiptsTotal(Number(res.meta?.total ?? res.data.length)); }
     setLoading(false);
-  }, [schoolId]);
+  }, [schoolId, receiptStudentFilter, receiptsPage]);
 
   useEffect(() => {
     setStudents([]);
@@ -216,6 +235,7 @@ export default function FeesPage() {
     setSelectedStudent('');
     setPaymentStudentFilter('');
     setReceiptStudentFilter('');
+    setPaymentsPage(1); setReceiptsPage(1); setReceiptPayments([]);
     setSelectedPayments([]);
     setPayFeeId('');
     setPayAmount(''); setPayNotes('');
@@ -234,8 +254,8 @@ export default function FeesPage() {
   useEffect(() => {
     if (activeTab === 'list') loadFees();
     if (activeTab === 'payments') { loadPayments(); loadFees(); }
-    if (activeTab === 'receipts') { loadReceipts(); loadPayments(); }
-  }, [activeTab, loadFees, loadPayments, loadReceipts]);
+    if (activeTab === 'receipts') { loadReceipts(); loadReceiptPayments(); }
+  }, [activeTab, loadFees, loadPayments, loadReceipts, loadReceiptPayments]);
 
   async function handleAddFee(e: React.FormEvent) {
     e.preventDefault();
@@ -334,7 +354,7 @@ export default function FeesPage() {
       showSuccess('تم إنشاء الإيصال بنجاح');
       setSelectedPayments([]);
       loadReceipts();
-      loadPayments();
+      loadReceiptPayments();
     }
   }
 
@@ -346,7 +366,7 @@ export default function FeesPage() {
     const res = await cancelFeeReceipt(id, schoolId, reason);
     if (!isCurrent()) return;
     if (res.error) { showError(res.error); }
-    else { showSuccess('تم إلغاء المستند فقط؛ الدفعات لم تتغير'); loadReceipts(); loadPayments(); }
+    else { showSuccess('تم إلغاء المستند فقط؛ الدفعات لم تتغير'); loadReceipts(); loadReceiptPayments(); }
   }
 
   async function handleCancelPayment(id: number) {
@@ -385,9 +405,10 @@ export default function FeesPage() {
     return matchesSearch && matchesStatus;
   });
 
-  const studentPayments = payments.filter(p => !paymentStudentFilter || p.student_id === Number(paymentStudentFilter));
+  // The server already filtered by student and paged.
+  const studentPayments = payments;
   const studentUnpaidFees = fees.filter(f => f.currency === 'IQD' && feeRemaining(f) > 0 && (!paymentStudentFilter || f.student_id === Number(paymentStudentFilter)));
-  const eligiblePayments = payments.filter(p => p.student_id === Number(receiptStudentFilter) && p.status === 'active' && p.currency === 'IQD' && p.active_receipt_id == null);
+  const eligiblePayments = receiptPayments.filter(p => p.student_id === Number(receiptStudentFilter) && p.status === 'active' && p.currency === 'IQD' && p.active_receipt_id == null);
 
   function formatDate(ts: number | null): string {
     if (!ts) return '---';
@@ -406,6 +427,7 @@ export default function FeesPage() {
 
   function openPaymentForFee(fee: FeeRecord) {
     setPaymentStudentFilter(fee.student_id);
+    setPaymentsPage(1);
     setPayFeeId(fee.id);
     setPayAmount(String(feeRemaining(fee)));
     setPayDate(businessDate());
@@ -723,7 +745,7 @@ export default function FeesPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">الطالب</label>
                     <select
                       value={paymentStudentFilter}
-                      onChange={e => { setPaymentStudentFilter(Number(e.target.value) || ''); setPayFeeId(''); }}
+                      onChange={e => { setPaymentStudentFilter(Number(e.target.value) || ''); setPaymentsPage(1); setPayFeeId(''); }}
                       className="w-full px-3 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"
                       dir="rtl"
                     >
@@ -857,6 +879,7 @@ export default function FeesPage() {
                   </tbody>
                 </table>
               </div>
+              <Pagination page={paymentsPage} pageSize={FINANCE_PAGE_SIZE} total={paymentsTotal} onPageChange={setPaymentsPage} disabled={loading} label="صفحات المدفوعات" />
             </div>
           )}
 
@@ -873,7 +896,7 @@ export default function FeesPage() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">الطالب</label>
                     <select
                       value={receiptStudentFilter}
-                      onChange={e => { setReceiptStudentFilter(Number(e.target.value) || ''); setSelectedPayments([]); }}
+                      onChange={e => { setReceiptStudentFilter(Number(e.target.value) || ''); setReceiptsPage(1); setSelectedPayments([]); }}
                       className="w-full px-3 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-primary-500 text-sm"
                       dir="rtl"
                     >
@@ -952,7 +975,7 @@ export default function FeesPage() {
                       <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">جاري التحميل...</td></tr>
                     ) : receipts.length === 0 ? (
                       <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">لا توجد إيصالات</td></tr>
-                    ) : receipts.filter(r => !receiptStudentFilter || r.student_id === Number(receiptStudentFilter)).map(r => (
+                    ) : receipts.map(r => (
                       <tr key={r.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 font-mono text-xs">{r.receipt_number}</td>
                         <td className="px-4 py-3 font-medium">{r.student_name_snapshot}</td>
@@ -997,6 +1020,7 @@ export default function FeesPage() {
                   </tbody>
                 </table>
               </div>
+              <Pagination page={receiptsPage} pageSize={FINANCE_PAGE_SIZE} total={receiptsTotal} onPageChange={setReceiptsPage} disabled={loading} label="صفحات الإيصالات" />
             </div>
           )}
 

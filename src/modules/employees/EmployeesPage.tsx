@@ -19,6 +19,10 @@ import {
   UserCheck, TrendingUp, TrendingDown, FileText
 } from 'lucide-react';
 import { appConfirm } from '../../components/AppDialogs';
+import Pagination from '../../components/Pagination';
+import { pageSlice } from '../../lib/listPaging';
+
+const EMPLOYEES_PAGE_SIZE = 50;
 
 // Arabic-Indic digit converter
 function toArabicIndic(num: number | string | null | undefined): string {
@@ -120,6 +124,8 @@ export default function EmployeesPage() {
   const [success, setSuccess] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
+  const [employeePage, setEmployeePage] = useState(1);
+  useEffect(() => { setEmployeePage(1); }, [search, schoolId]);
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeRecord | null>(null);
   const [selectedSalary, setSelectedSalary] = useState<SalaryRecord | null>(null);
 
@@ -359,6 +365,8 @@ export default function EmployeesPage() {
     e.full_name.includes(search) || (e.employee_number && e.employee_number.includes(search)) || (e.job_title && e.job_title.includes(search))
   );
 
+  const employeePageView = pageSlice(filteredEmployees, employeePage, EMPLOYEES_PAGE_SIZE);
+
   const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
     { key: 'list', label: 'الموظفون', icon: <Users size={18} /> },
     { key: 'salaries', label: 'الرواتب الشهرية', icon: <DollarSign size={18} /> },
@@ -448,7 +456,7 @@ export default function EmployeesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filteredEmployees.map(emp => (
+                {employeePageView.rows.map(emp => (
                   <tr key={emp.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3">
                       <Link to={`/employees/${emp.id}?school_id=${schoolId}`} className="font-medium text-primary-700 hover:underline">{emp.full_name}</Link>
@@ -492,6 +500,7 @@ export default function EmployeesPage() {
                 )}
               </tbody>
             </table>
+            <Pagination page={employeePageView.page} pageSize={EMPLOYEES_PAGE_SIZE} total={filteredEmployees.length} onPageChange={setEmployeePage} label="صفحات قائمة الموظفين" />
           </div>
         </div>
       )}

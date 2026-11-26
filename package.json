@@ -58,6 +58,7 @@
     "test:academic-years": "node --experimental-strip-types --test test/academic-years.test.mjs",
     "test:year-scoped-grades": "node --experimental-strip-types --test --test-concurrency=1 test/year-scoped-grades.test.mjs",
     "test:grade-history": "node --experimental-strip-types --test --test-concurrency=1 test/grade-history.test.mjs",
+    "test:list-pagination": "node --experimental-strip-types --test --test-concurrency=1 test/list-pagination.test.mjs",
     "test:roster-order": "node --experimental-strip-types --test --test-concurrency=1 test/roster-order.test.mjs",
     "test:student-enrollments": "node --experimental-strip-types --test test/student-enrollments.test.mjs test/student-enrollment-bridge.test.mjs test/student-placement-ux.test.mjs",
     "test:student-promotion": "node --experimental-strip-types --test test/student-promotion.test.mjs test/student-promotion-ui.test.mjs",
